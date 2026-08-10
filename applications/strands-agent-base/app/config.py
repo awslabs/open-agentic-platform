@@ -72,12 +72,6 @@ For example, always use the time tool when asked about the current time or date.
             return {}
         return json.loads(self._MEMORY_CONFIG_RAW)
 
-    # AgentCore Tools configuration
-    CODE_INTERPRETER_ID: Optional[str] = os.getenv("CODE_INTERPRETER_ID")
-    CODE_INTERPRETER_REGION: str = os.getenv("CODE_INTERPRETER_REGION", os.getenv("AWS_REGION", "us-east-1"))
-    BROWSER_ID: Optional[str] = os.getenv("BROWSER_ID")
-    BROWSER_REGION: str = os.getenv("BROWSER_REGION", os.getenv("AWS_REGION", "us-east-1"))
-
     # Server configuration
     PORT: int = int(os.getenv("PORT", "8083"))
     HOST: str = os.getenv("HOST", "0.0.0.0")

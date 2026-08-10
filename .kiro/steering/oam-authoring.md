@@ -78,15 +78,16 @@ file, not a follow-up.
 
 ### Known violations (fix when touched)
 
-- `agentcore-code-interpreter.yaml` has no CUE source and hardcodes `us-east-1`.
-  Slated for removal along with the rest of the in-image AgentCore tooling.
 - `decentralized-observability-identity.yaml` has no CUE source.
 - `agent.yaml` contains a `command: ["opentelemetry-instrument", "python", ...]`
   block that is absent from `agent.cue`, so regenerating drops it and breaks
   tracing. Tracked in issue #50, which also covers moving auto-instrumentation
   into the image where it belongs.
 - `agent.yaml` still has `region: *"us-east-1"` defaults on the browser and
-  codeInterpreter parameters, which go away with those parameters.
+  codeInterpreter parameters, which are themselves leftovers that regeneration
+  removes. Both are blocked on issue #50: until the opentelemetry command moves
+  into the image, `generate.sh` cannot be run on `agent.yaml` without losing
+  tracing, and hand-editing generated YAML is not an option.
 
 ## 3. Component and trait shape
 
