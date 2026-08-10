@@ -399,6 +399,44 @@ failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its f
 budget expiry. E2E, gateway and gateway-isolation suites all passed against the
 recovered pod, and the pristine example was then redeployed to a clean healthy state.
 
+### End-to-end through a real agent
+
+`platform/oam/examples/example-agent-with-browser.yaml` deploys a Strands agent that
+consumes the browser as an ordinary MCP tool server. The only wiring is the MCP
+server's component name:
+
+```yaml
+mcpServers:
+  - name: browser-mcp
+traits:
+  - type: gateway-identity
+```
+
+The agent resolves that to `<gateway>/mcp/browser-mcp` and authenticates with the
+projected ServiceAccount token the `gateway-identity` trait mounts. No secret, no URL,
+and no AWS detail appears in the agent's OAM.
+
+Verified on-cluster after a cold deploy of both applications. Asked to open
+`https://example.com`, take a snapshot and quote the top-level heading, the agent
+called `navigate_page` then `take_snapshot` and answered `"Example Domain"`, which is
+the real page content.
+
+The backend's own log is the proof that this is the intended architecture rather than
+an accident of timing:
+
+```
+20:50:41  browser-mcp ready, 29 tools advertised, no browser session
+20:55:02  MCP session initialised (agent connects)        <- still zero browsers
+20:56:05  Started AgentCore browser session 01KZPQC389M1TG2CR3X4Y6MA25
+20:56:07  Attached to browser over CDP
+```
+
+`liveBrowserSessions` went 0 -> 1 across the call while `mcpSessions` stayed at 1. The
+63 seconds between the agent connecting and a browser existing is lazy activation: the
+agent had all 29 tools available to reason about for free, and AWS provisioned nothing
+until a tool was actually invoked. Confirms the requirement end to end, through the
+gateway, with a real model in the loop rather than a synthetic client.
+
 ### dependsOn and retry-forever are complementary, not redundant
 
 An earlier draft of this document called `dependsOn: web-browser` "a nicety" once the

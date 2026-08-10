@@ -1,0 +1,59 @@
+# An agent that browses the web, using the AgentCore Browser as an MCP tool.
+#
+#   agent --(JWT via agentgateway)--> [browser-mcp] --(SigV4 / CDP wss)--> AgentCore Browser
+#
+# Deploy example-browser-mcp.yaml first: it provisions the browser and the MCP server
+# this agent talks to. The link is the MCP server's component name, which becomes the
+# gateway path /mcp/browser-mcp.
+#
+# Portable by design: no region, account or cluster appears below. The agent's
+# credential to the gateway is a projected ServiceAccount token supplied by the
+# gateway-identity trait, so there is no secret to manage here either.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: web-agent
+  namespace: default
+spec:
+  components:
+    - name: web-browsing-agent
+      type: agent
+      properties:
+        description: "Agent that can browse the web through AgentCore Browser"
+
+        # Session state lives in the browser-mcp pod, not here, so this can scale.
+        replicas: 1
+
+        systemMessage: |
+          You are a web browsing assistant with real browser tools.
+
+          When asked about a web page, use your browser tools rather than answering
+          from memory: navigate to the page, take a snapshot, and report what the
+          page actually says. Quote exact text when the user asks for it.
+
+          Browser sessions are a shared resource. Do not open more pages than the
+          task needs.
+
+        modelConfig:
+          modelId: claude-sonnet
+
+        # The MCP server to load tools from. The name is the mcp-server component's
+        # name in example-browser-mcp.yaml; the agent resolves it to /mcp/<name> on
+        # the gateway. All 29 browser tools arrive over this one entry.
+        mcpServers:
+          - name: browser-mcp
+
+        registerWithGateway: true
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+
+      traits:
+        # Secretless identity to agentgateway: mounts a projected ServiceAccount
+        # token that the agent presents when loading MCP tools.
+        - type: gateway-identity
