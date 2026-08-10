@@ -36,9 +36,15 @@ spec:
       dependsOn:
         - web-browser
       properties:
-        image: public.ecr.aws/z0a4o2j5/browser-mcp:0.1.1
+        image: public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2
         port: 8000
+        # Liveness on /healthz: up as soon as the process serves HTTP.
+        # Readiness on /readyz: 503 until the browser is resolved and the tool
+        # catalog is known. Keeping these separate is what stops the liveness
+        # probe from killing the pod during a slow first start, e.g. while a
+        # freshly attached IAM policy is still propagating.
         healthPath: /healthz
+        readinessPath: /readyz
         replicas: 1
         env:
           # Which provisioned browser to use. Resolved to a browser id at runtime.

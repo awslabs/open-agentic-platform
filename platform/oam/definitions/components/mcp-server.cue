@@ -94,13 +94,19 @@ template: {
 							periodSeconds:       30
 						}
 						readinessProbe: {
-							if parameter.healthPath != _|_ {
+							if parameter.readinessPath != _|_ {
+								httpGet: {
+									path: parameter.readinessPath
+									port: parameter.port
+								}
+							}
+							if parameter.readinessPath == _|_ && parameter.healthPath != _|_ {
 								httpGet: {
 									path: parameter.healthPath
 									port: parameter.port
 								}
 							}
-							if parameter.healthPath == _|_ {
+							if parameter.readinessPath == _|_ && parameter.healthPath == _|_ {
 								tcpSocket: port: parameter.port
 							}
 							initialDelaySeconds: 5
@@ -268,8 +274,15 @@ template: {
 			name:  string
 			value: string
 		}]
-		// +usage=HTTP path for liveness/readiness probes; if unset, a TCP socket probe is used
+		// +usage=HTTP path for the liveness probe; if unset, a TCP socket probe is used.
+		// Liveness should report only that the process is serving, never that a
+		// dependency is reachable, or a slow/failing dependency causes restart loops.
 		healthPath?: string
+		// +usage=HTTP path for the readiness probe; defaults to healthPath. Set this
+		// separately when the server needs slow startup work (e.g. an AWS call that
+		// can fail for minutes while IAM propagates) before it can serve: liveness on
+		// a path that is up immediately, readiness on one that gates traffic.
+		readinessPath?: string
 		// +usage=Blue-green auto-promotion
 		autoPromotionEnabled:   *true | bool
 		autoPromotionSeconds?:  int

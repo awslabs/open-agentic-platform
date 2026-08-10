@@ -43,20 +43,32 @@ All via environment. Region and credentials come from EKS Pod Identity (the
 | `BROWSER_READY_TIMEOUT_SECONDS` | `300` | How long to wait for a named browser to become `READY`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 
-Endpoints: `/mcp` (MCP), `/healthz` (liveness), `/readyz` (readiness, reports
-session and tool counts).
+Endpoints:
+
+- `/mcp` — MCP (StreamableHTTP)
+- `/healthz` — liveness. Answers as soon as the process is serving HTTP, and stays
+  200 even if AWS is unreachable, so a slow or failing dependency can never cause a
+  restart loop.
+- `/readyz` — readiness. `503 {"status":"initializing"}` until the browser id and
+  tool catalog are resolved, then `200` with session and tool counts.
+
+Point the liveness probe at `/healthz` and the readiness probe at `/readyz`. Using
+one path for both reintroduces the restart loop this split exists to prevent: the
+server has to call AWS before it can serve, and on a first deploy that call can fail
+for minutes while a freshly attached IAM policy propagates.
 
 ## Image
 
 ```
-public.ecr.aws/z0a4o2j5/browser-mcp:0.1.1
+public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2
 ```
 
 Multi-arch (`linux/arm64` + `linux/amd64`), 184 MB, no Chromium bundled.
-Manifest list digest `sha256:bde75bdf7c73919ef5c8cc577a0d8e8f2e07e919f91264b964519bfd737b7766`.
+Manifest list digest `sha256:d0ff5bdaebc54ddcc74c4ff377af5db5b26e538bab33ffa990a271fa69934214`.
 Pin by digest in production if you want immutability.
 
-Tags: `0.1.1` (TTL default 900s), `0.1.0` (initial, TTL default 3600s).
+Tags: `0.1.2` (listens before initialising; split liveness/readiness),
+`0.1.1` (TTL default 900s), `0.1.0` (initial, TTL default 3600s).
 
 All tunables are environment variables, so a team overrides them per application
 through the `mcp-server` component's `env` list with no rebuild. See

@@ -54,18 +54,25 @@ function makeLimiter(max) {
 }
 
 /** Build the MCP server for one session: catalog for list, routing for call. */
-function buildMcpServer(browserSession) {
+function buildMcpServer(browserSession, initState) {
   const server = new Server(
     { name: 'browser-mcp', version: '0.1.0' },
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: getCatalog(),
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    if (!initState.ready) throw new Error('browser-mcp is still initialising');
+    return { tools: getCatalog() };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    if (!initState.ready) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'browser-mcp is still initialising; retry shortly' }],
+      };
+    }
     if (!isAdvertised(name)) {
       return {
         isError: true,
@@ -93,13 +100,21 @@ async function main() {
   validate();
 
   const region = resolveRegion();
-  const browserId = await resolveBrowserId(region);
-  const dataPlane = makeDataPlaneClient(region);
   const limiter = makeLimiter(config.maxSessions);
-  const deps = { region, browserId, dataPlane, limiter };
 
-  // Advertise tools without ever touching a browser.
-  await discoverTools();
+  // `browserId` is resolved AFTER the HTTP listener is up (see below), so this
+  // object is deliberately mutable. BrowserSession reads it at activation time,
+  // which is always after initialisation completed.
+  const deps = { region, browserId: null, dataPlane: makeDataPlaneClient(region), limiter };
+
+  // Startup is split from listening on purpose. Resolving the browser calls AWS,
+  // and on a first deploy that call can fail for minutes while a freshly attached
+  // IAM policy propagates. If we did that work before binding the port, the
+  // liveness probe would fail from its initialDelay onward and the kubelet would
+  // kill the container long before our own retry budget expired. So: listen
+  // immediately, report liveness on /healthz, and gate traffic on /readyz until
+  // initialisation genuinely completes.
+  const initState = { ready: false, error: null, startedAt: Date.now() };
 
   /** mcpSessionId -> { transport, server, browserSession } */
   const sessions = new Map();
@@ -107,17 +122,31 @@ async function main() {
   const app = express();
   app.use(express.json({ limit: '4mb' }));
 
+  // Liveness: the process is up and serving HTTP. Deliberately independent of
+  // AWS reachability, so a transient AWS problem cannot cause a restart loop.
   app.get('/healthz', (_req, res) => res.status(200).send('ok'));
-  app.get('/readyz', (_req, res) =>
+
+  // Readiness: only true once we know the browser id and the tool catalog, i.e.
+  // once we can actually answer MCP requests.
+  app.get('/readyz', (_req, res) => {
+    if (!initState.ready) {
+      res.status(503).json({
+        status: initState.error ? 'failed' : 'initializing',
+        error: initState.error || undefined,
+        elapsedSeconds: Math.round((Date.now() - initState.startedAt) / 1000),
+        region,
+      });
+      return;
+    }
     res.status(200).json({
       status: 'ok',
-      browserId,
+      browserId: deps.browserId,
       region,
       mcpSessions: sessions.size,
       liveBrowserSessions: limiter.live,
       toolsAdvertised: getCatalog().length,
-    }),
-  );
+    });
+  });
 
   const teardown = async (sid, reason) => {
     const entry = sessions.get(sid);
@@ -140,7 +169,7 @@ async function main() {
 
       if (!sid && isInitializeRequest(req.body)) {
         const browserSession = new BrowserSession(null, deps);
-        const server = buildMcpServer(browserSession);
+        const server = buildMcpServer(browserSession, initState);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newId) => {
@@ -212,14 +241,32 @@ async function main() {
         port: config.port,
         path: config.mcpPath,
         region,
-        browserId,
-        tools: getCatalog().length,
         maxBrowserSessions: config.maxSessions,
         sessionTimeoutSeconds: config.sessionTimeoutSeconds,
         idleSeconds: config.sessionIdleSeconds,
       },
-      'browser-mcp listening (no browser session started yet)',
+      'browser-mcp listening; initialising (not ready yet)',
     );
+  });
+
+  // Initialise in the background now that the port is bound. Resolving the
+  // browser retries internally for BROWSER_READY_TIMEOUT_SECONDS, which covers
+  // both Crossplane still provisioning it and IAM policy propagation.
+  (async () => {
+    deps.browserId = await resolveBrowserId(region);
+    await discoverTools();
+    initState.ready = true;
+    log.info(
+      {
+        browserId: deps.browserId,
+        tools: getCatalog().length,
+        initSeconds: Math.round((Date.now() - initState.startedAt) / 1000),
+      },
+      'browser-mcp ready (no browser session started yet)',
+    );
+  })().catch((err) => {
+    initState.error = err.message;
+    log.error({ err: err.message }, 'Initialisation failed; staying unready');
   });
 
   let shuttingDown = false;
