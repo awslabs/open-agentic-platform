@@ -399,6 +399,64 @@ failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its f
 budget expiry. E2E, gateway and gateway-isolation suites all passed against the
 recovered pod, and the pristine example was then redeployed to a clean healthy state.
 
+### How many sessions a single pod actually sustains (measured)
+
+`MAX_BROWSER_SESSIONS` defaults to 25. That number was chosen as a guardrail, not
+derived from measurement, and measurement does not support it as a concurrency target.
+
+**Per-session cost on the pod: roughly 80 MB.** Each active session spawns a
+`chrome-devtools-mcp` child (72-78 MB RSS observed) plus a telemetry watchdog process
+(~8 MB). No Chromium runs locally; the browser is remote and the child only speaks CDP
+over a websocket. Two independent measurements agree: summing per-process RSS gives
+~85 MB, and total pod memory went 43 MiB idle to 452 MiB with 5 sessions, a marginal
+~81 MB each. Extrapolated, the 25-session cap implies roughly 2 GB.
+
+**The pod currently declares no resource requests or limits at all** (`resources: {}`;
+the example sets none and `mcp-server` has no default). So it is BestEffort QoS, first
+to be evicted under node pressure, with a documented cap that permits ~2 GB. That
+combination should be fixed before anyone runs near the cap.
+
+**Activation concurrency, not memory, is the real ceiling today.** Five simultaneous
+cold activations:
+
+```
+session A  AgentCore session start -> CDP attach    4.1s   ok
+session B                                          61.6s  past the client's 60s default
+session C                                          61.5s
+session D                                          61.5s
+session E                                          never attached
+```
+
+All five AgentCore sessions started within 0.8s of each other, so `StartBrowserSession`
+is not the bottleneck. Three attaches then completed within 70 ms of one another after
+~61 s, which is a released-all-at-once signature. With an 8-second stagger and a
+180-second client timeout, all five succeeded, but latency still degraded with depth:
+4.1s, 3.7s, 4.7s, 5.0s, then 52.1s for the fifth.
+
+Root cause is **not yet identified**. The leading hypothesis, unconfirmed, is AWS-side
+capacity warmup: the first attach lands on warm capacity while additional concurrent
+sessions wait for more to come online, which would explain both the ~60 s plateau and
+the simultaneous release. Alternatives not ruled out are contention in
+`chrome-devtools-mcp` startup and CPU contention from several Node process starts at
+once, though the pod only reached 26m CPU under load, which argues against the latter.
+
+So the honest answer to "how many sessions can one pod sustain":
+
+- 5 concurrent sessions coexist fine once attached, at ~450 MiB.
+- Simultaneous cold activation already fails at 5 against a default 60 s client timeout.
+- Above 5 is unmeasured. The 25 default should be treated as untested.
+
+Follow-ups this implies:
+
+1. Set requests and limits, sized from the ~80 MB per session figure and whatever cap
+   is chosen. Do not leave this BestEffort.
+2. Limit *concurrent activations* (a small global gate, 2-3 at a time) so a burst of
+   agents queues instead of stampeding into 60 s attaches and client timeouts.
+3. Release a session immediately when activation fails. After the 5 failed calls,
+   4 live browser sessions lingered until the 300 s idle reaper collected them.
+4. Either lower the default cap to something measured, or document it as a guardrail
+   that has not been validated as a throughput target.
+
 ### End-to-end through a real agent
 
 `platform/oam/examples/example-agent-with-browser.yaml` deploys a Strands agent that
