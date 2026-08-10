@@ -2,8 +2,8 @@
 
 import logging
 import os
+import time
 import uuid
-from contextlib import ExitStack
 from typing import Optional
 
 logging.basicConfig(
@@ -11,10 +11,19 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+from botocore.exceptions import ClientError
 from mcp.client.streamable_http import streamablehttp_client
 from strands import Agent
 from strands.models.openai import OpenAIModel
 from strands.tools.mcp.mcp_client import MCPClient
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential, before_sleep_log
+
+try:
+    from strands.multiagent.a2a.server import _AGENT_CARD_CONTEXT_ID
+except ImportError:
+    # Fallback if the SDK renames/removes this internal constant; matches
+    # the value as of strands-agents 1.48.0.
+    _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
 
@@ -24,44 +33,29 @@ logger = logging.getLogger(__name__)
 
 _model: Optional[OpenAIModel] = None
 _mcp_tools: list = []
-_mcp_exit_stack: Optional[ExitStack] = None
-_agentcore_tools: list = []
+_mcp_clients: list = []
+_mcp_connected_at: Optional[float] = None
+
+# The gateway-identity token (audience "agentgateway") mounted at
+# WORKLOAD_TOKEN_PATH has a fixed TTL (expirationSeconds on the projected
+# ServiceAccount token, currently 1h). _get_mcp_tools() opens a persistent
+# MCP connection per server and reuses it, so a long-lived agent session
+# eventually calls a tool with the credentials the connection authenticated
+# with at connect time — which expire even though the token *file* on disk
+# gets rotated by the kubelet, because the open connection doesn't re-read
+# it. Recycle each MCPClient in place (stop() + start() on the same
+# instance, which re-invokes the transport callable and therefore
+# _gateway_headers()) after this many seconds, well under the token's 1h
+# lifetime. Reconnecting the same instances (rather than creating new ones)
+# keeps any already-built Agent's cached tool objects valid, since those
+# tools are bound to the MCPClient object identity, not a point-in-time
+# session.
+_MCP_CONNECTION_MAX_AGE_SECONDS = 45 * 60
 
 
-def _get_agentcore_tools() -> list:
-    """Initialize AgentCore tools (CodeInterpreter, Browser) based on env config."""
-    global _agentcore_tools
-    if _agentcore_tools:
-        return _agentcore_tools
-
-    tools = []
-
-    # CodeInterpreter
-    if config.CODE_INTERPRETER_ID:
-        try:
-            from strands_tools.code_interpreter import AgentCoreCodeInterpreter
-            ci = AgentCoreCodeInterpreter(region=config.CODE_INTERPRETER_REGION)
-            tools.append(ci.code_interpreter)
-            logger.info(f"AgentCore CodeInterpreter initialized (region={config.CODE_INTERPRETER_REGION})")
-        except ImportError:
-            logger.warning("strands_tools.code_interpreter not available — install strands-agents-tools")
-        except Exception as exc:
-            logger.warning(f"Failed to initialize CodeInterpreter: {exc}")
-
-    # Browser
-    if config.BROWSER_ID:
-        try:
-            from strands_tools.browser import AgentCoreBrowser
-            browser = AgentCoreBrowser(region=config.BROWSER_REGION)
-            tools.extend(browser.browser_tools)
-            logger.info(f"AgentCore Browser initialized (region={config.BROWSER_REGION})")
-        except ImportError:
-            logger.warning("strands_tools.browser not available — install strands-agents-tools[browser]")
-        except Exception as exc:
-            logger.warning(f"Failed to initialize Browser: {exc}")
-
-    _agentcore_tools = tools
-    return _agentcore_tools
+def _is_access_denied(exc: BaseException) -> bool:
+    """True if *exc* is a botocore AccessDeniedException (any service)."""
+    return isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") == "AccessDeniedException"
 
 
 def _get_model() -> OpenAIModel:
@@ -104,29 +98,47 @@ def _gateway_headers() -> dict:
 
 
 def _get_mcp_tools() -> list:
-    global _mcp_tools, _mcp_exit_stack
-    if _mcp_exit_stack is not None:
+    global _mcp_tools, _mcp_clients, _mcp_connected_at
+
+    if _mcp_clients:
+        age = time.monotonic() - _mcp_connected_at
+        if age < _MCP_CONNECTION_MAX_AGE_SECONDS:
+            return _mcp_tools
+        logger.info(
+            "Recycling %d MCP connection(s) after %.0fs (max age %ds) so the "
+            "gateway auth token is re-read fresh",
+            len(_mcp_clients), age, _MCP_CONNECTION_MAX_AGE_SECONDS,
+        )
+        for client in _mcp_clients:
+            try:
+                client.stop(None, None, None)
+                client.start()
+            except Exception as exc:
+                logger.warning(f"  Failed to recycle MCP connection: {exc}")
+        _mcp_connected_at = time.monotonic()
         return _mcp_tools
 
     urls = config.MCP_SERVER_URLS
     if not urls:
         return []
 
-    stack = ExitStack()
+    clients: list = []
     tools: list = []
     for url in urls:
         logger.info(f"Connecting to MCP server: {url}")
         try:
             client = MCPClient(lambda u=url: streamablehttp_client(u, headers=_gateway_headers()))
-            stack.enter_context(client)
+            client.start()
             server_tools = client.list_tools_sync()
             logger.info(f"  Loaded {len(server_tools)} tools from {url}")
+            clients.append(client)
             tools.extend(server_tools)
         except Exception as exc:
             logger.warning(f"  Failed to connect to MCP server {url}: {exc}")
 
     _mcp_tools = tools
-    _mcp_exit_stack = stack
+    _mcp_clients = clients
+    _mcp_connected_at = time.monotonic()
     return _mcp_tools
 
 
@@ -135,6 +147,14 @@ def _get_mcp_tools() -> list:
 def _build_session_manager(session_id: str, actor_id: str):
     """Build an AgentCoreMemorySessionManager for a specific session."""
     if config.MEMORY_PROVIDER != "agentcore":
+        return None
+
+    # The A2AServer agent_factory is invoked once at construction with a
+    # placeholder context id ("__agent_card__") solely to derive agent-card
+    # metadata; that agent is never used for request handling. Skip memory
+    # attachment for it — AgentCore session ids must start with an
+    # alphanumeric character, which the placeholder does not satisfy.
+    if session_id == _AGENT_CARD_CONTEXT_ID:
         return None
 
     mem_config = config.MEMORY_CONFIG
@@ -161,19 +181,23 @@ def _build_session_manager(session_id: str, actor_id: str):
     return sm
 
 
-def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Agent:
-    """Create a Strands agent for a given session.
+@retry(
+    retry=retry_if_exception(_is_access_denied),
+    wait=wait_exponential(multiplier=1, max=16),
+    stop=stop_after_attempt(6),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _construct_agent(session_id: str, actor_id: str) -> Agent:
+    """Build the session manager + Agent.
 
-    Args:
-        session_id: Conversation session id. A new UUID is generated when None.
-        actor_id: Identity of the caller (default "user").
+    Retries on AccessDeniedException (first-boot IAM propagation race
+    between Pod Identity association and the AgentCore access policy)
+    with exponential backoff instead of crashing the process.
     """
-    session_id = session_id or str(uuid.uuid4())
     session_manager = _build_session_manager(session_id, actor_id)
-    all_tools = _get_mcp_tools() + _get_agentcore_tools()
-    tools = all_tools or None
-
-    agent = Agent(
+    tools = _get_mcp_tools() or None
+    return Agent(
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT,
         tools=tools,
@@ -182,6 +206,17 @@ def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Ag
         description=config.AGENT_DESCRIPTION,
         session_manager=session_manager,
     )
+
+
+def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Agent:
+    """Create a Strands agent for a given session.
+
+    Args:
+        session_id: Conversation session id. A new UUID is generated when None.
+        actor_id: Identity of the caller (default "user").
+    """
+    session_id = session_id or str(uuid.uuid4())
+    agent = _construct_agent(session_id, actor_id)
     logger.info(f"Agent created: {config.AGENT_NAME} session={session_id}")
     return agent
 
@@ -208,8 +243,12 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: str = "user"
 # ── cleanup ──────────────────────────────────────────────────────────────
 
 def shutdown_mcp() -> None:
-    global _mcp_exit_stack
-    if _mcp_exit_stack is not None:
+    global _mcp_clients
+    if _mcp_clients:
         logger.info("Closing MCP client connections")
-        _mcp_exit_stack.close()
-        _mcp_exit_stack = None
+        for client in _mcp_clients:
+            try:
+                client.stop(None, None, None)
+            except Exception as exc:
+                logger.warning(f"  Failed to close MCP connection: {exc}")
+        _mcp_clients = []

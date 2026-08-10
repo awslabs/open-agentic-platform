@@ -65,13 +65,14 @@ async def lifespan(app):
     shutdown_mcp()
 
 
-# A2A server needs an agent for the agent card / default executor.
-# Per-session routing for A2A would require a custom executor; for now
-# the default A2A executor uses this shared agent (no memory).
-_default_agent = create_agent()
-
+# A2AServer builds one Agent per A2A context via agent_factory (context_id ->
+# Agent), so each caller/session gets its own AgentCore-backed session_manager
+# instead of all A2A callers sharing a single memory-less agent. create_agent's
+# signature (session_id, actor_id="user") matches (context_id) -> Agent when
+# called positionally. The factory is invoked once up front (with a placeholder
+# context id) purely to derive agent-card metadata.
 a2a_server = A2AServer(
-    agent=_default_agent,
+    agent_factory=create_agent,
     host=config.HOST,
     port=config.PORT,
     version="1.0.0",

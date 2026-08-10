@@ -10,9 +10,19 @@
 // Ordering: EKS injects Pod Identity creds via a mutating webhook at pod
 // admission, which only fires if the association already exists. To avoid that
 // race we SELF-INJECT the creds URI + the pods.eks.amazonaws.com projected
-// token and add an init container that blocks until `aws sts get-caller-identity`
-// succeeds. Verified: the EKS webhook skips injection when the creds URI env is
-// already present (no duplicate volume), and STS resolves without a region env.
+// token, and add an init container that blocks (via `kubectl wait
+// --for=condition=Ready`) until the PodIdentity resource is Ready — i.e. the
+// Composition has created the IAM Role + PodIdentityAssociation.
+//
+// NOTE: this gate is CONTROL-PLANE readiness only. The brief AWS IAM data-plane
+// propagation window (e.g. freshly-attached accessFor policies not yet enforced)
+// is intentionally NOT handled here — handle it with app-level retry.
+//
+// The init container reads the PodIdentity via the pod's ServiceAccount, so the
+// trait also emits a namespaced Role/RoleBinding granting get/list/watch on it.
+// The image is distroless (no shell); `kubectl wait` is a single invocation, and
+// if the PodIdentity isn't created yet the init container fails and the kubelet
+// retries it (init-container restart) until it exists and is Ready.
 //
 // Cloud-agnostic sibling pattern: gcp-service-identity / azure-service-identity.
 "aws-service-identity": {
@@ -35,8 +45,9 @@ template: {
 		accessFor?: [...string]
 		// +usage=Container to inject AWS credentials into (defaults to the component name)
 		containerName: *context.name | string
-		// +usage=Image for the init container that waits for AWS identity readiness
-		waitImage: *"public.ecr.aws/aws-cli/aws-cli:latest" | string
+		// +usage=Distroless kubectl image for the PodIdentity-readiness init gate (entrypoint = kubectl).
+		// Chainguard kubectl:latest, pinned by multi-arch index digest (amd64+arm64) for immutability.
+		waitImage: *"public.ecr.aws/chainguard/kubectl:latest@sha256:5cd49041fed950723afaefcd141a163e5a5306f243841510d3e1e3667b0cdfb9" | string
 	}
 
 	// Self-injected creds URI + token mount (the EKS webhook skips injection when
@@ -68,6 +79,40 @@ template: {
 			}
 		}
 
+		// RBAC so the pod's ServiceAccount can read its own PodIdentity resource
+		// (used by the wait-for-pod-identity init container). Namespaced, read-only.
+		"\(context.name)-podidentity-reader-role": {
+			apiVersion: "rbac.authorization.k8s.io/v1"
+			kind:       "Role"
+			metadata: {
+				name:      "\(context.name)-podidentity-reader"
+				namespace: context.namespace
+			}
+			rules: [{
+				apiGroups: ["platform.gitops.io"]
+				resources: ["podidentities"]
+				verbs: ["get", "list", "watch"]
+			}]
+		}
+		"\(context.name)-podidentity-reader-binding": {
+			apiVersion: "rbac.authorization.k8s.io/v1"
+			kind:       "RoleBinding"
+			metadata: {
+				name:      "\(context.name)-podidentity-reader"
+				namespace: context.namespace
+			}
+			roleRef: {
+				apiGroup: "rbac.authorization.k8s.io"
+				kind:     "Role"
+				name:     "\(context.name)-podidentity-reader"
+			}
+			subjects: [{
+				kind:      "ServiceAccount"
+				name:      context.name
+				namespace: context.namespace
+			}]
+		}
+
 		// Attach sibling components' IAM policies to the role the Composition
 		// creates (deterministic name "<serviceAccount>-role").
 		if parameter.accessFor != _|_ {
@@ -88,8 +133,8 @@ template: {
 		}
 	}
 
-	// Patch the workload pod: token volume, init-wait container, creds env on the
-	// app container.
+	// Patch the workload pod: token volume (for app creds), a PodIdentity-readiness
+	// init gate, and creds env on the app container.
 	patch: spec: template: spec: {
 		// +patchKey=name
 		volumes: [{
@@ -103,12 +148,18 @@ template: {
 			}]
 		}]
 		// +patchKey=name
+		// Control-plane readiness gate: distroless kubectl (entrypoint = kubectl)
+		// blocks until the PodIdentity resource reports Ready. Uses the pod's
+		// ServiceAccount (in-cluster config) + the Role/RoleBinding emitted above.
 		initContainers: [{
-			name:    "wait-for-aws-identity"
-			image:   parameter.waitImage
-			command: ["sh", "-c", "until aws sts get-caller-identity >/dev/null 2>&1; do echo 'waiting for AWS pod identity...'; sleep 2; done; echo 'AWS identity ready'"]
-			env:         _credsEnv
-			volumeMounts: [_tokenMount]
+			name:  "wait-for-pod-identity"
+			image: parameter.waitImage
+			args: [
+				"wait", "--for=condition=Ready",
+				"podidentities.platform.gitops.io/\(context.name)",
+				"-n", context.namespace,
+				"--timeout=300s",
+			]
 		}]
 		// +patchKey=name
 		containers: [{
