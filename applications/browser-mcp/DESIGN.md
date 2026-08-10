@@ -231,8 +231,8 @@ with the reasoning for each.
 
 ### Published image
 
-`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.1` — multi-arch (arm64 + amd64), list
-digest `sha256:bde75bdf7c73919ef5c8cc577a0d8e8f2e07e919f91264b964519bfd737b7766`.
+`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2` — multi-arch (arm64 + amd64), list
+digest `sha256:d0ff5bdaebc54ddcc74c4ff377af5db5b26e538bab33ffa990a271fa69934214`.
 Startup logs the effective `sessionTimeoutSeconds` / `idleSeconds` /
 `maxBrowserSessions`; verified as `900 / 300 / 25` with no overrides.
 `0.1.0` remains available (TTL default 3600).
@@ -299,15 +299,56 @@ Verified by observation on the backend rather than assumed: 2 client sessions
 produced exactly 2 backend sessions. Do not rely on correlating a client-visible
 session id with a backend one; correlate through the backend's own logs.
 
+### Root cause of the startup restarts (corrected diagnosis)
+
+The first deploy restarted twice with **exit code 137**. My initial reading, that the
+`BROWSER_READY_TIMEOUT_SECONDS=300` budget had elapsed, was **wrong**: the last log
+was retry attempt 24, about 120 seconds in, so that budget never came close to
+expiring.
+
+The real cause: the server did its slow startup work (resolve the browser via AWS,
+discover the tool catalog) **before binding the port**, so nothing answered
+`/healthz`. The liveness probe runs at `initialDelay 10s, period 30s,
+failureThreshold 3`, and there was no `startupProbe`, so the kubelet killed the
+container after roughly 100 seconds. IAM propagation for the freshly attached policy
+took about five minutes, which meant the pod was killed three times over before its
+own retry budget could ever be reached. A larger timeout would have changed nothing.
+
+**Fix (0.1.2):** bind the listener first, initialise in the background.
+
+- `/healthz` answers as soon as the process serves HTTP and stays 200 even when AWS
+  is unreachable. Liveness reports that the process is alive, never that a
+  dependency is healthy, so a slow or failing dependency cannot restart-loop us.
+- `/readyz` returns `503 {"status":"initializing"|"failed"}` until the browser id and
+  tool catalog are known, then 200 with counts. Readiness gates traffic.
+- MCP handlers return a clear "still initialising" error instead of throwing.
+- `mcp-server` gained a **`readinessPath`** parameter (defaults to `healthPath`).
+  Both probes previously shared one path, so an always-200 `/healthz` would have
+  made the pod Ready before it could serve. Any server with slow startup work needs
+  the two paths separated.
+
+Verified by running the image with **no credentials at all**, so initialisation
+cannot succeed: `/healthz` returned 200 within 2s while `/readyz` reported
+`503 {"status":"initializing"}`.
+
+Re-verified on-cluster with 0.1.2: pod shows `live=/healthz ready=/readyz`,
+**0 restarts**, and logs the intended ordering (`listening; initialising (not ready
+yet)` then `ready ... initSeconds=1`). E2E PASS, GATEWAY PASS and GATEWAY ISOLATION
+PASS all re-run against the redeployed pod.
+
+Generalisable lesson for other platform workloads: a liveness probe must not depend
+on an external dependency being reachable, and a workload that must call AWS before
+it can serve should bind its port first or declare a `startupProbe`.
+
 ### Two operational notes
 
 **IAM propagation took roughly 5 minutes.** The pod logged repeated
 `AccessDenied ... not authorized to perform: bedrock-agentcore:ListBrowsers` while
-the freshly-attached policy propagated, then recovered on its own with no
-intervention. This is the window `aws-service-identity`'s comment says to handle
-with app-level retry, and our retry loop did. It is uncomfortably close to the
-`BROWSER_READY_TIMEOUT_SECONDS=300` default: slower propagation would CrashLoop the
-pod. Consider raising that default.
+the freshly-attached policy propagated, then recovered with no intervention. This is
+the window `aws-service-identity`'s comment says to handle with app-level retry, and
+our retry loop does. Note this is a first-deploy cost only: it does not recur once
+the policy exists. What it exposed was the probe bug above, not a timeout that needs
+raising.
 
 **`kubectl get application` is ambiguous on this cluster.** ArgoCD and OAM both
 register an `application` kind, and the short name resolves to ArgoCD's. Use
@@ -419,8 +460,9 @@ Remaining:
 - **`replicas: 1` only.** Session state is in-memory and pod-local, so scaling out
   requires session affinity first. Not a capacity limit: one pod serves many
   browser sessions.
-- **`BROWSER_READY_TIMEOUT_SECONDS=300` vs IAM propagation**, which was observed at
-  roughly 5 minutes. Slower propagation would CrashLoop the pod on first deploy.
+- **First-deploy IAM propagation** was observed at roughly 5 minutes, during which
+  the server retries and is correctly not-ready. Fixed the restart loop it exposed
+  (0.1.2); the retry budget itself was never the constraint.
 - **Resource sizing** not tuned: no requests/limits set on the example.
 - **IAM policy is a wildcard** (`bedrock-agentcore:*` on `*`) inherited from the
   original AgentCore components. Should be scoped to the browser ARN.
