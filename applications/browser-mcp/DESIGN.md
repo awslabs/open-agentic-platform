@@ -399,9 +399,39 @@ failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its f
 budget expiry. E2E, gateway and gateway-isolation suites all passed against the
 recovered pod, and the pristine example was then redeployed to a clean healthy state.
 
-Worth noting as a side effect: because the server now converges on its own, the
-`dependsOn: web-browser` ordering in the example is a nicety rather than a
-requirement. Phase 1 deliberately omitted it and the workload still came good.
+### dependsOn and retry-forever are complementary, not redundant
+
+An earlier draft of this document called `dependsOn: web-browser` "a nicety" once the
+server could self-heal. That was wrong, and measurement on a cold deploy shows why:
+
+```
+browser MR created:  20:49:50
+browser Ready=True:  20:49:51
+pod created:         20:49:52   <- one second after the dependency went healthy
+```
+
+`dependsOn` is a real just-in-time gate. It works because `agentcore-browser` declares
+a meaningful health policy (`isHealth: browserId != ""`), so KubeVela withholds the MCP
+component until a browser id actually exists. Phase 1 of the self-healing test only
+started a pod against nothing because it deliberately removed that gate.
+
+What `dependsOn` cannot do is cover the failure mode that broke 0.1.1 and 0.1.2. On
+that same cold deploy, with the gate in place, the pod still logged **5 AccessDenied
+retries** over 27s, because the browser being Ready says nothing about whether the IAM
+policy attached to the pod's *role* has propagated. Those are two different
+dependencies and ordering only expresses one of them.
+
+So each covers what the other cannot:
+
+- `dependsOn` compresses the happy path: no pod until the browser exists, no wasted
+  init cycles, no confusing AccessDenied noise from a dependency that is merely
+  absent, and a shorter path to Ready.
+- Retry-forever covers what ordering structurally cannot: credential propagation, a
+  dependency that disappears or rotates after startup, and any ordering the platform
+  cannot model. It is also the safety net when a health policy is wrong, since
+  `dependsOn` is a hard gate: if health never passes, the workload never starts.
+
+Keep both. Removing either one leaves a real hole.
 
 Lesson worth applying to other platform workloads: liveness must not depend on a
 dependency being reachable, AND initialisation must never give up. Those two together
