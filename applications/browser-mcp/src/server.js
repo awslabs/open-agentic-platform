@@ -31,6 +31,10 @@ import { makeDataPlaneClient, resolveBrowserId, resolveRegion } from './agentcor
 import { discoverTools, getCatalog, isAdvertised } from './catalog.js';
 import { BrowserSession } from './session.js';
 
+// How long to wait between whole initialisation cycles. Each cycle itself retries
+// internally for BROWSER_READY_TIMEOUT_SECONDS, so this is the pause between cycles.
+const INIT_RETRY_SECONDS = Number.parseInt(process.env.INIT_RETRY_SECONDS || '15', 10);
+
 /** Caps concurrent LIVE browser sessions (MCP sessions themselves are free). */
 function makeLimiter(max) {
   let live = 0;
@@ -114,7 +118,7 @@ async function main() {
   // kill the container long before our own retry budget expired. So: listen
   // immediately, report liveness on /healthz, and gate traffic on /readyz until
   // initialisation genuinely completes.
-  const initState = { ready: false, error: null, startedAt: Date.now() };
+  const initState = { ready: false, lastError: null, cycles: 0, startedAt: Date.now() };
 
   /** mcpSessionId -> { transport, server, browserSession } */
   const sessions = new Map();
@@ -130,9 +134,12 @@ async function main() {
   // once we can actually answer MCP requests.
   app.get('/readyz', (_req, res) => {
     if (!initState.ready) {
+      // Still 'initializing' even after a failed cycle: we never stop retrying, so
+      // there is no terminal state to report.
       res.status(503).json({
-        status: initState.error ? 'failed' : 'initializing',
-        error: initState.error || undefined,
+        status: 'initializing',
+        lastError: initState.lastError || undefined,
+        failedCycles: initState.cycles || undefined,
         elapsedSeconds: Math.round((Date.now() - initState.startedAt) / 1000),
         region,
       });
@@ -249,25 +256,39 @@ async function main() {
     );
   });
 
-  // Initialise in the background now that the port is bound. Resolving the
-  // browser retries internally for BROWSER_READY_TIMEOUT_SECONDS, which covers
-  // both Crossplane still provisioning it and IAM policy propagation.
-  (async () => {
-    deps.browserId = await resolveBrowserId(region);
-    await discoverTools();
-    initState.ready = true;
-    log.info(
-      {
-        browserId: deps.browserId,
-        tools: getCatalog().length,
-        initSeconds: Math.round((Date.now() - initState.startedAt) / 1000),
-      },
-      'browser-mcp ready (no browser session started yet)',
-    );
-  })().catch((err) => {
-    initState.error = err.message;
-    log.error({ err: err.message }, 'Initialisation failed; staying unready');
-  });
+  // Initialise in the background now that the port is bound, and retry FOREVER.
+  // Giving up would leave the pod alive but permanently unready, which needs a
+  // human to notice and delete it. Since readiness gates traffic and liveness only
+  // reports that the process is up, retrying indefinitely is both safe and
+  // self-healing: whenever the dependency becomes available, we converge.
+  (async function initLoop() {
+    for (let cycle = 1; ; cycle += 1) {
+      try {
+        deps.browserId = await resolveBrowserId(region);
+        await discoverTools();
+        initState.ready = true;
+        initState.lastError = null;
+        log.info(
+          {
+            browserId: deps.browserId,
+            tools: getCatalog().length,
+            initSeconds: Math.round((Date.now() - initState.startedAt) / 1000),
+            cycles: cycle,
+          },
+          'browser-mcp ready (no browser session started yet)',
+        );
+        return;
+      } catch (err) {
+        initState.lastError = err.message;
+        initState.cycles = cycle;
+        log.error(
+          { cycle, err: err.message, retryInSeconds: INIT_RETRY_SECONDS },
+          'Initialisation attempt failed; will retry',
+        );
+        await new Promise((r) => setTimeout(r, INIT_RETRY_SECONDS * 1000));
+      }
+    }
+  })();
 
   let shuttingDown = false;
   const shutdown = async (signal) => {

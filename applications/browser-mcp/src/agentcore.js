@@ -77,6 +77,7 @@ export async function resolveBrowserId(region) {
   const client = new BedrockAgentCoreControlClient({ region });
   const deadline = Date.now() + config.browserReadyTimeoutSeconds * 1000;
   let attempt = 0;
+  let lastError = null;
 
   for (;;) {
     attempt += 1;
@@ -90,6 +91,7 @@ export async function resolveBrowserId(region) {
           if (b.name === name) {
             // READY is required before a session can be started.
             if (b.status && b.status !== 'READY') {
+              lastError = `browser status is ${b.status}`;
               log.info({ name, status: b.status }, 'Browser found but not READY yet');
             } else {
               log.info({ name, browserId: b.browserId }, 'Resolved browser name to id');
@@ -99,13 +101,18 @@ export async function resolveBrowserId(region) {
         }
         nextToken = resp.nextToken;
       } while (nextToken);
+      if (!lastError) lastError = 'browser not present in ListBrowsers yet';
     } catch (err) {
+      lastError = err.message;
       log.warn({ attempt, err: err.message }, 'ListBrowsers failed; retrying');
     }
 
     if (Date.now() > deadline) {
+      // Report the underlying cause, not just the timeout. "not READY" alone is
+      // misleading when the real problem was AccessDenied while IAM propagated.
       throw new Error(
-        `AgentCore browser "${name}" not READY within ${config.browserReadyTimeoutSeconds}s`,
+        `could not resolve AgentCore browser "${name}" within ` +
+          `${config.browserReadyTimeoutSeconds}s: ${lastError}`,
       );
     }
     await sleep(5000);

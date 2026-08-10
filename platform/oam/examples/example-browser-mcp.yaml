@@ -36,7 +36,7 @@ spec:
       dependsOn:
         - web-browser
       properties:
-        image: public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2
+        image: public.ecr.aws/z0a4o2j5/browser-mcp:0.1.3
         port: 8000
         # Liveness on /healthz: up as soon as the process serves HTTP.
         # Readiness on /readyz: 503 until the browser is resolved and the tool

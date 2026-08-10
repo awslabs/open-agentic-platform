@@ -40,7 +40,8 @@ All via environment. Region and credentials come from EKS Pod Identity (the
 | `REAPER_INTERVAL_SECONDS` | `60` | How often to scan for abandoned sessions. |
 | `MAX_BROWSER_SESSIONS` | `25` | Cap on concurrent live browser sessions per pod. Keep under the account quota. |
 | `TOOLS_ALLOW` / `TOOLS_DENY` | — | Comma-separated tool names to narrow the advertised surface. `TOOLS_ALLOW` wins. |
-| `BROWSER_READY_TIMEOUT_SECONDS` | `300` | How long to wait for a named browser to become `READY`. |
+| `BROWSER_READY_TIMEOUT_SECONDS` | `300` | Budget for ONE initialisation cycle to resolve the browser. |
+| `INIT_RETRY_SECONDS` | `15` | Pause between initialisation cycles. Initialisation retries forever; it never gives up, so the pod recovers on its own once the dependency appears. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 
 Endpoints:
@@ -60,14 +61,15 @@ for minutes while a freshly attached IAM policy propagates.
 ## Image
 
 ```
-public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2
+public.ecr.aws/z0a4o2j5/browser-mcp:0.1.3
 ```
 
 Multi-arch (`linux/arm64` + `linux/amd64`), 184 MB, no Chromium bundled.
-Manifest list digest `sha256:d0ff5bdaebc54ddcc74c4ff377af5db5b26e538bab33ffa990a271fa69934214`.
+Manifest list digest `sha256:232bcddee221693976692c2a3f9ad3b0a5cd0c189b7b8d72cbf9def668c4644a`.
 Pin by digest in production if you want immutability.
 
-Tags: `0.1.2` (listens before initialising; split liveness/readiness),
+Tags: `0.1.3` (initialisation retries forever, so the pod always self-heals),
+`0.1.2` (listens before initialising; split liveness/readiness),
 `0.1.1` (TTL default 900s), `0.1.0` (initial, TTL default 3600s).
 
 All tunables are environment variables, so a team overrides them per application
