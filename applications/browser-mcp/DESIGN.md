@@ -255,6 +255,64 @@ Startup logs the effective `sessionTimeoutSeconds` / `idleSeconds` /
    is the only mitigation that covers hard pod death, and it also gives CloudTrail
    correlation between the two id spaces.
 
+## On-cluster verification (2026-08-10, peeks-hub, us-west-2)
+
+Deployed via `platform/oam/examples/example-browser-mcp.yaml` with ArgoCD tracking
+`feature/agentcore-browser-mcp`. All previously-unverified risks are now closed.
+
+**Crossplane provisioned the custom browser.** The `Browser` managed resource went
+`SYNCED=True READY=True` with browserId `agents_web_browser-XZ8Aazris5`. The server
+resolved AWS name `agents_web_browser` to that id at runtime, so resolve-by-name
+works and no cross-component output wiring was needed.
+
+**Region injection works end to end.** The pod logs `region=us-west-2` with no
+region anywhere in the OAM Application. The portability invariant holds in practice,
+not just on paper.
+
+**Pod Identity + `accessFor` works.** The pod assumed `browser-mcp-role`, and the
+`RolePolicyAttachment` bound `browser-tools-web-browser-iam-policy` to it by naming
+convention.
+
+**E2E PASS against the deployed pod** (port-forward, real Pod Identity credentials,
+real provisioned browser): 29 tools with 0 browser sessions at boot, `tools/list`
+served at 0, `navigate_page` + `take_snapshot` returned real page content, two
+concurrent isolated sessions, both released on terminate.
+
+**GATEWAY PASS.** A Keycloak JWT (realm `platform`, role `default-roles-platform`)
+was accepted, 29 tools were visible through `/mcp/browser-mcp`, and a `tools/call`
+returned real browser content while `liveBrowserSessions` went 0 -> 1.
+
+**GATEWAY ISOLATION PASS.** Two concurrent clients produced **two distinct backend
+MCP sessions and two independent browser sessions**, and session A kept its own page
+while B navigated elsewhere.
+
+### Finding: agentgateway does NOT pass the MCP session id through
+
+The session id the client sees through the gateway is an opaque agentgateway-issued
+token (long base64), not our `randomUUID`. The gateway terminates the MCP session
+and maintains its own id, mapped to a backend session.
+
+This matters because the earlier open question ("does agentgateway preserve
+`Mcp-Session-Id`?") had the wrong shape. It does not preserve the id, but it does
+preserve the **1:1 session mapping**, which is what isolation actually depends on.
+Verified by observation on the backend rather than assumed: 2 client sessions
+produced exactly 2 backend sessions. Do not rely on correlating a client-visible
+session id with a backend one; correlate through the backend's own logs.
+
+### Two operational notes
+
+**IAM propagation took roughly 5 minutes.** The pod logged repeated
+`AccessDenied ... not authorized to perform: bedrock-agentcore:ListBrowsers` while
+the freshly-attached policy propagated, then recovered on its own with no
+intervention. This is the window `aws-service-identity`'s comment says to handle
+with app-level retry, and our retry loop did. It is uncomfortably close to the
+`BROWSER_READY_TIMEOUT_SECONDS=300` default: slower propagation would CrashLoop the
+pod. Consider raising that default.
+
+**`kubectl get application` is ambiguous on this cluster.** ArgoCD and OAM both
+register an `application` kind, and the short name resolves to ArgoCD's. Use
+`kubectl get applications.core.oam.dev <name> -n <ns>` for OAM apps.
+
 ## Design decisions (implementation status marked per item)
 
 Region injection and the example app are still TODO. The browser-mcp server
@@ -352,14 +410,20 @@ scaling pods to add browser sessions is explicitly rejected.
 
 ## Open risks
 
-- **SigV4 WS-upgrade signing in Node** must match what AgentCore validates. De-risk
-  by diffing Node-signed headers against Python `generate_ws_headers` output for
-  the same session before wiring the bridge.
-- **MCP session preservation through agentgateway**: observed earlier
-  (`mcp.session.id` in proxy logs) but reconfirm for the multiplexer.
-- **MCP TS SDK API churn**: pin the version.
-- **Resource sizing**: cap max concurrent sessions per pod; set pod requests/limits
-  accordingly.
+CLOSED 2026-08-10 by on-cluster verification (see above): Node SigV4 signing,
+Crossplane provisioning of a custom browser, region injection, `accessFor` policy
+attachment, and agentgateway session handling including two-client isolation.
+
+Remaining:
+- **MCP TS SDK API churn.** Pinned to 1.30.0; 79 releases in ~20 months.
+- **`replicas: 1` only.** Session state is in-memory and pod-local, so scaling out
+  requires session affinity first. Not a capacity limit: one pod serves many
+  browser sessions.
+- **`BROWSER_READY_TIMEOUT_SECONDS=300` vs IAM propagation**, which was observed at
+  roughly 5 minutes. Slower propagation would CrashLoop the pod on first deploy.
+- **Resource sizing** not tuned: no requests/limits set on the example.
+- **IAM policy is a wildcard** (`bedrock-agentcore:*` on `*`) inherited from the
+  original AgentCore components. Should be scoped to the browser ARN.
 
 ## Still-open platform items (separate from the broker)
 
