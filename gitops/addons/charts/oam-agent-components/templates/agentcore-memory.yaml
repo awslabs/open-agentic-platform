@@ -65,8 +65,9 @@ spec:
         parameter: {
         	// +usage=Memory name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$). Defaults to <namespace>_<componentName>
         	memoryName: *_autoName | string
-        	// +usage=AWS region
-        	region: *"us-west-2" | string
+        	// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
+        	// is portable across regions; override only for a cross-region memory store.
+        	region: *"{{ .Values.global.awsRegion }}" | string
         	// +usage=Description of the memory
         	description: *"AgentCore Memory" | string
         	// +usage=Number of days after which events expire (3-365)

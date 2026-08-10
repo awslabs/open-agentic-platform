@@ -12,7 +12,9 @@ spec:
     cue:
       template: |
         import "strings"
+
         let _autoName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
+
         output: {
         	apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
         	kind:       "Browser"
@@ -22,13 +24,12 @@ spec:
         			name:        parameter.browserName
         			region:      parameter.region
         			description: parameter.description
-        			networkConfiguration: {
-        				networkMode: parameter.networkMode
-        			}
+        			networkConfiguration: networkMode: parameter.networkMode
         		}
         		providerConfigRef: name: "default"
         	}
         }
+
         outputs: "\(context.name)-iam-policy": {
         	apiVersion: "iam.aws.upbound.io/v1beta1"
         	kind:       "Policy"
@@ -52,14 +53,12 @@ spec:
         		providerConfigRef: name: "default"
         	}
         }
+
         parameter: {
-        	// +usage=Browser name in AWS. Defaults to <namespace>_<componentName>
+        	// +usage=Browser name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]*$). Defaults to <namespace>_<componentName>
         	browserName: *_autoName | string
-        	// +usage=AWS region. Defaults to the cluster's region (global.awsRegion,
-        	// sourced from the cluster secret's aws_region annotation; the chart's
-        	// values.yaml carries a fallback), so the same OAM Application deploys
-        	// unchanged to any region. Override only to provision the browser in a
-        	// different region than the cluster.
+        	// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
+        	// is portable across regions; override only for a cross-region browser.
         	region: *"{{ .Values.global.awsRegion }}" | string
         	// +usage=Description of the browser
         	description: *"AgentCore Browser" | string
@@ -73,3 +72,4 @@ spec:
     healthPolicy: 'isHealth: *( context.output.status.atProvider.browserId != "" ) | false'
   workload:
     type: autodetects.core.oam.dev
+
