@@ -376,10 +376,32 @@ and still retrying, `/healthz` 200 throughout, `/readyz` reporting
 ListBrowsers yet"}`. Redeployed clean on-cluster: ready in 1s with `cycles: 1`,
 0 restarts, and E2E / GATEWAY / GATEWAY ISOLATION all passing again.
 
-Caveat on what is NOT yet proven on-cluster: the 0.1.3 deploy reused the existing IAM
-policy, so it did not sit through a fresh propagation delay. The self-healing path is
-proven locally, not against a real multi-minute AWS delay. Deleting the Application
-and redeploying 0.1.3 would close that gap.
+**Self-healing proven on-cluster.** Deleting and redeploying turned out to be a poor
+test: on the retry, IAM propagated in seconds and the pod went ready at t+44s with
+zero failed cycles, so it never entered the failure path. A test whose outcome depends
+on AWS timing proves nothing on a fast run, so the dependency was made absent
+deliberately instead.
+
+Two phases, with the `mcp-server` component byte-identical between them so phase 2
+could not roll a new pod:
+
+1. Deploy the MCP component **alone**, with no `agentcore-browser` component. There is
+   then no browser and no IAM policy at all, so `ListBrowsers` returns AccessDenied
+   indefinitely. `BROWSER_READY_TIMEOUT_SECONDS` was cut to 60 to make cycles
+   observable in minutes.
+2. Add the browser component. This changes nothing in the pod spec, so the same pod
+   has to notice and recover on its own.
+
+Result: pod `browser-mcp-695f8b8598-t9qft` stayed Running with **0 restarts** through
+4 failed cycles, then reached Ready on cycle 5 at **initSeconds=350**, same pod, with
+no delete, no rollout restart, and no human action. That one number spans both earlier
+failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its first
+budget expiry. E2E, gateway and gateway-isolation suites all passed against the
+recovered pod, and the pristine example was then redeployed to a clean healthy state.
+
+Worth noting as a side effect: because the server now converges on its own, the
+`dependsOn: web-browser` ordering in the example is a nicety rather than a
+requirement. Phase 1 deliberately omitted it and the workload still came good.
 
 Lesson worth applying to other platform workloads: liveness must not depend on a
 dependency being reachable, AND initialisation must never give up. Those two together

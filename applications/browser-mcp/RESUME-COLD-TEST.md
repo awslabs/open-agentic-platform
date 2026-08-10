@@ -1,4 +1,14 @@
-# Resume here: cold-state test of browser-mcp 0.1.3
+# DONE: cold-state test of browser-mcp 0.1.3 — PASSED
+
+> Closed 2026-08-10. Self-healing is proven on-cluster: same pod, 0 restarts,
+> 4 failed cycles, Ready on cycle 5 at initSeconds=350, all three suites passing.
+> See the "Clean-state redeploy" section of DESIGN.md for the method and result.
+> The delete-and-redeploy procedure below is kept because it is the right way to
+> reproduce a first-deploy IAM delay, with one lesson learned: if IAM propagates
+> fast the run proves nothing, so force the dependency absent (deploy the MCP
+> component without the browser component) rather than relying on AWS timing.
+
+## Original notes
 
 Written 2026-08-10. Read this, then run the test in "The test to run" below.
 Background and prior results live in `applications/browser-mcp/DESIGN.md`; this file
