@@ -231,8 +231,8 @@ with the reasoning for each.
 
 ### Published image
 
-`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.2` — multi-arch (arm64 + amd64), list
-digest `sha256:d0ff5bdaebc54ddcc74c4ff377af5db5b26e538bab33ffa990a271fa69934214`.
+`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.3` — multi-arch (arm64 + amd64), list
+digest `sha256:232bcddee221693976692c2a3f9ad3b0a5cd0c189b7b8d72cbf9def668c4644a`.
 Startup logs the effective `sessionTimeoutSeconds` / `idleSeconds` /
 `maxBrowserSessions`; verified as `900 / 300 / 25` with no overrides.
 `0.1.0` remains available (TTL default 3600).
@@ -339,6 +339,51 @@ PASS all re-run against the redeployed pod.
 Generalisable lesson for other platform workloads: a liveness probe must not depend
 on an external dependency being reachable, and a workload that must call AWS before
 it can serve should bind its port first or declare a `startupProbe`.
+
+### Clean-state redeploy found a second bug: terminal unready (0.1.3)
+
+Deleting the OAM Application and redeploying reproduced the original conditions
+exactly, because deleting it also deletes the IAM policy and role attachment, so
+re-applying re-triggers propagation. That test found a flaw local testing could not.
+
+0.1.2's liveness fix worked: the pod was alive and retrying at **264 seconds**, where
+0.1.1 was killed at ~100s, with 0 restarts. But when the
+`BROWSER_READY_TIMEOUT_SECONDS` budget expired, initialisation logged "staying
+unready" and **stopped trying**. The pod then sat Running and permanently NotReady
+until a human deleted it. Everything it needed was healthy by then (browser
+`True/True`, policy `True/True`, attachment `True/True`), so a retry would have
+succeeded immediately.
+
+That is worse than the crash loop it replaced: a crashing pod at least retries. It
+also violates the platform's customer bar, which requires convergence without human
+intervention.
+
+**Fix (0.1.3):** initialisation retries in an outer loop with **no terminal state**.
+Each cycle still retries internally for `BROWSER_READY_TIMEOUT_SECONDS`, then pauses
+`INIT_RETRY_SECONDS` (default 15) and starts over, forever. Readiness gates traffic
+and liveness only reports that the process is up, so retrying indefinitely is safe
+and converges whenever the dependency appears. `/readyz` reports `lastError` and
+`failedCycles` instead of a `failed` status, because there is no giving up.
+
+Also fixed a misleading error that cost real diagnosis time: resolution failure
+always reported `browser "X" not READY within 300s` even when the cause was
+`AccessDenied` during IAM propagation. The underlying cause is now carried into the
+message.
+
+Verified locally against a nonexistent browser with a 10s budget: three failed cycles
+and still retrying, `/healthz` 200 throughout, `/readyz` reporting
+`{"status":"initializing","failedCycles":3,"lastError":"...not present in
+ListBrowsers yet"}`. Redeployed clean on-cluster: ready in 1s with `cycles: 1`,
+0 restarts, and E2E / GATEWAY / GATEWAY ISOLATION all passing again.
+
+Caveat on what is NOT yet proven on-cluster: the 0.1.3 deploy reused the existing IAM
+policy, so it did not sit through a fresh propagation delay. The self-healing path is
+proven locally, not against a real multi-minute AWS delay. Deleting the Application
+and redeploying 0.1.3 would close that gap.
+
+Lesson worth applying to other platform workloads: liveness must not depend on a
+dependency being reachable, AND initialisation must never give up. Those two together
+are what make a workload self-healing; either alone leaves a hole.
 
 ### Two operational notes
 
