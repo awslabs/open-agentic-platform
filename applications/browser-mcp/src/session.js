@@ -33,6 +33,11 @@ export class BrowserSession {
     this.ttlTimer = null;
     this.closed = false;
     this.holdsSlot = false;
+    // Set while we tear down on purpose, so the child's onclose is not mistaken
+    // for an unexpected death and does not recurse back into deactivate().
+    this.tearingDown = false;
+    // Bounded tail of the child's stderr, reported if it dies unexpectedly.
+    this.childStderr = '';
     // Serialises concurrent first-calls so we mint exactly one browser session.
     this.activating = null;
   }
@@ -77,6 +82,38 @@ export class BrowserSession {
       const client = new Client({ name: 'browser-mcp', version: '0.1.0' });
       await client.connect(this.transport);
       this.client = client;
+
+      // Always consume the child's stderr. It is piped, and an unread pipe fills
+      // (~64KB) and then blocks the child on write, which would present as tool
+      // calls hanging rather than failing. Keep only a tail, to report if it dies.
+      if (this.transport.stderr) {
+        this.transport.stderr.on('data', (chunk) => {
+          this.childStderr = (this.childStderr + chunk.toString()).slice(-2048);
+        });
+      }
+
+      // Detect a child that dies on its own: crash, OOM, or the CDP websocket
+      // closing because AWS ended the browser session early. Without this the
+      // session parks in a broken state: `client` stays non-null so `active`
+      // reports true, every later tool call fails, and the AgentCore session plus
+      // the limiter slot stay held until the idle timer fires minutes later.
+      //
+      // NOTE: these must be set AFTER connect(). Protocol.connect() overwrites
+      // transport.onclose/onerror, so wiring the transport directly is silently
+      // discarded; the protocol-level callbacks are the supported hook.
+      client.onclose = () => {
+        if (this.tearingDown || this.closed) return;
+        log.warn(
+          { mcpSessionId: this.mcpSessionId, stderrTail: this.childStderr.slice(-400) || undefined },
+          'Browser child exited unexpectedly; releasing session so the next call re-mints',
+        );
+        this.deactivate('child-exited').catch((err) =>
+          log.error({ mcpSessionId: this.mcpSessionId, err: err.message }, 'Cleanup after child exit failed'),
+        );
+      };
+      client.onerror = (err) => {
+        log.warn({ mcpSessionId: this.mcpSessionId, err: String(err?.message || err) }, 'Browser child error');
+      };
 
       // Each session owns its TTL, so expiry is handled per session rather than
       // by recycling the whole pod.
@@ -158,8 +195,17 @@ export class BrowserSession {
 
     if (client) {
       log.info({ mcpSessionId: this.mcpSessionId, reason }, 'Releasing browser');
-      await client.close().catch(() => {});
+      // Suppress our own onclose: closing the client is what we are doing, not a
+      // failure to react to. Closing also kills the child process, and its
+      // orphaned watchdog is then reaped by tini as PID 1.
+      this.tearingDown = true;
+      try {
+        await client.close().catch(() => {});
+      } finally {
+        this.tearingDown = false;
+      }
     }
+    this.childStderr = '';
     await this.#stopBrowserSession();
   }
 

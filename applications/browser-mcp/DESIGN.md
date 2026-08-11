@@ -231,8 +231,8 @@ with the reasoning for each.
 
 ### Published image
 
-`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.3` — multi-arch (arm64 + amd64), list
-digest `sha256:232bcddee221693976692c2a3f9ad3b0a5cd0c189b7b8d72cbf9def668c4644a`.
+`public.ecr.aws/z0a4o2j5/browser-mcp:0.1.4` — multi-arch (arm64 + amd64), list
+digest `sha256:57df2de8f256956678748abb4c52bddb6dc3305e073a80ce000b59f297911fa9`.
 Startup logs the effective `sessionTimeoutSeconds` / `idleSeconds` /
 `maxBrowserSessions`; verified as `900 / 300 / 25` with no overrides.
 `0.1.0` remains available (TTL default 3600).
@@ -398,6 +398,56 @@ no delete, no rollout restart, and no human action. That one number spans both e
 failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its first
 budget expiry. E2E, gateway and gateway-isolation suites all passed against the
 recovered pod, and the pristine example was then redeployed to a clean healthy state.
+
+### Child process lifecycle: reaping and death detection (0.1.4)
+
+Two defects came out of asking what serves the liveness probe when many children
+exist, and what happens when a session dies midway.
+
+**PID 1 was the server itself, and nothing reaped orphans.** The image ran
+`CMD ["node", "src/server.js"]`, so Node was PID 1. Each `chrome-devtools-mcp` child
+spawns its own telemetry watchdog, and when the child exits that watchdog is
+re-parented to PID 1. Node does not `wait()` on processes it did not spawn, so every
+session left a zombie: 12 observed after roughly 11 sessions, against a container PID
+limit of 4478. That is a slow fork bomb, and the probes would never catch it, because
+the parent stays healthy. `/healthz` keeps returning 200 while the server can no
+longer fork. Same shape as the 0.1.2 failure: alive but unable to work.
+
+Fixed by installing `tini` and making it PID 1 (`ENTRYPOINT ["/sbin/tini", "--"]`),
+which exists precisely to reap orphans and to forward signals so graceful shutdown is
+unaffected. Verified: `PID 1 /sbin/tini -- node src/server.js`, `PID 2 node
+src/server.js`, and zero zombies across a full session lifecycle where the old image
+accumulated one per session.
+
+Note this fixes the symptom only. Each session still starts a watchdog we do not want,
+costing ~8 MB and a PID, and `chrome-devtools-mcp --help` offers no flag to disable
+telemetry.
+
+**A child dying on its own was not detected.** `transport.onclose` was never wired, so
+on a crash, an OOM, or AWS ending the browser session early, `client` stayed non-null.
+`active` therefore reported true, `#ensureActive()` short-circuited, and every later
+tool call failed while the AgentCore session and the limiter slot stayed held until
+the idle timer fired minutes later. One crash cost real capacity for up to five
+minutes and returned errors instead of recovering.
+
+Fixed by wiring the protocol-level `client.onclose` to the existing `deactivate()`,
+which already stops the AWS session, releases the slot and clears `client`, so the
+next tool call transparently re-mints. A `tearingDown` guard distinguishes our own
+teardown from an unexpected death.
+
+Worth recording as a trap: `Protocol.connect()` **overwrites**
+`transport.onclose`/`onerror` (protocol.js:221). Wiring the transport before connect
+compiles, runs, and silently never fires. The protocol-level callbacks set after
+connect are the supported hook.
+
+Also fixed: the child's piped stderr was never read. An unread pipe fills at ~64 KB
+and then blocks the child on write, which would appear as tool calls hanging rather
+than failing. It is now always drained into a bounded tail that is logged if the child
+dies unexpectedly.
+
+`test/child-death.js` covers all of it by killing the child under a live session:
+live sessions 1 -> 0 on death with no leak, a re-mint to 1 on the next call over the
+same MCP session, and no zombie growth.
 
 ### How many sessions a single pod actually sustains (measured)
 

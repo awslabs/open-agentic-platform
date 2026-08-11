@@ -61,14 +61,15 @@ for minutes while a freshly attached IAM policy propagates.
 ## Image
 
 ```
-public.ecr.aws/z0a4o2j5/browser-mcp:0.1.3
+public.ecr.aws/z0a4o2j5/browser-mcp:0.1.4
 ```
 
 Multi-arch (`linux/arm64` + `linux/amd64`), 184 MB, no Chromium bundled.
-Manifest list digest `sha256:232bcddee221693976692c2a3f9ad3b0a5cd0c189b7b8d72cbf9def668c4644a`.
+Manifest list digest `sha256:57df2de8f256956678748abb4c52bddb6dc3305e073a80ce000b59f297911fa9`.
 Pin by digest in production if you want immutability.
 
-Tags: `0.1.3` (initialisation retries forever, so the pod always self-heals),
+Tags: `0.1.4` (tini reaps orphaned watchdogs; child death releases the session),
+`0.1.3` (initialisation retries forever, so the pod always self-heals),
 `0.1.2` (listens before initialising; split liveness/readiness),
 `0.1.1` (TTL default 900s), `0.1.0` (initial, TTL default 3600s).
 
