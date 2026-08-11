@@ -436,7 +436,7 @@ next tool call transparently re-mints. A `tearingDown` guard distinguishes our o
 teardown from an unexpected death.
 
 On which callback to use, since an earlier draft of this document got it wrong: with
-the pinned SDK (1.22.1), `Protocol.connect()` does **not** discard a handler you set on
+the pinned SDK (1.30.0), `Protocol.connect()` does **not** discard a handler you set on
 the transport first. It captures and chains it:
 
 ```js
