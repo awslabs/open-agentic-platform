@@ -28,9 +28,15 @@ spec:
         description: Shared web browser for agent tool use
 
     # The MCP server that fronts it. One pod serves MANY concurrent browser
-    # sessions (it holds no browser itself, it signs and routes), so do NOT raise
-    # replicas to get more sessions. Note also that session state is in-memory and
-    # pod-local: replicas must stay at 1 until session affinity is in place.
+    # sessions (it holds no browser itself, it signs and routes), so raising
+    # replicas is about pod capacity and redundancy, not about getting more
+    # sessions.
+    #
+    # Scaling past one replica is safe now: the component registers a
+    # selector-based gateway target with sessionRouting Stateful, so the gateway
+    # pins each MCP session to the pod that owns it. Verified at 2 replicas, where
+    # exactly one pod held the session. Omit replicas and attach an hpa trait to
+    # autoscale.
     - name: browser-mcp
       type: mcp-server
       dependsOn:

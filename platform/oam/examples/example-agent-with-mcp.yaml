@@ -10,7 +10,14 @@ spec:
       properties:
         description: "AI assistant with MCP tool integration"
 
-        replicas: 3
+        # No replicas set on purpose, which means one pod.
+        #
+        # Scaling an agent past one replica is only safe when conversation state
+        # lives outside the pod. This agent caches one Agent object per session in
+        # memory and there is no A2A session affinity in this stack, so a follow-up
+        # request landing on another pod starts from nothing. Add a memory provider
+        # (see example-agent-agentcore-memory.yaml) before scaling, then either set
+        # replicas or attach an hpa trait.
 
         systemMessage: |
           You are an AI assistant with access to various tools via MCP.
