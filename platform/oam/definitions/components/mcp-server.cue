@@ -143,13 +143,21 @@ template: {
 		}
 
 		// Stable service (active) — targeted by the AgentgatewayBackend.
+		//
+		// The agentgateway.dev/target label is what the backend's selector matches. It
+		// exists because both the stable and preview Services carry
+		// app.kubernetes.io/name, so selecting on that alone would send live sessions to
+		// preview pods mid-rollout.
 		stableService: {
 			apiVersion: "v1"
 			kind:       "Service"
 			metadata: {
 				name:      context.name + "-stable"
 				namespace: context.namespace
-				labels: "app.kubernetes.io/name": context.name
+				labels: {
+					"app.kubernetes.io/name": context.name
+					"agentgateway.dev/target": context.name
+				}
 			}
 			spec: {
 				selector: "app.kubernetes.io/name": context.name
@@ -195,14 +203,30 @@ template: {
 				namespace: context.namespace
 				labels: "app.kubernetes.io/name": context.name
 			}
-			spec: mcp: targets: [{
-				name: context.name + "-target"
-				static: {
-					host:     context.name + "-stable." + context.namespace + ".svc.cluster.local"
-					port:     parameter.servicePort
-					protocol: parameter.mcpProtocol
+			// A selector target, not a static host. This is what makes session affinity
+			// possible: with a static host the gateway talks to the Service's ClusterIP and
+			// kube-proxy picks a pod per connection, so the gateway has no pod to pin a
+			// session to. Upstream documents this explicitly: stateful session routing and
+			// session affinity require non-static, selector-based targets. Measured with a
+			// static target and 2 replicas: connect succeeded and the next call failed with
+			// "no valid session ID provided".
+			//
+			// The protocol comes from the Service's appProtocol (agentgateway.dev/mcp) in
+			// this form, so parameter.mcpProtocol only applies to the static fallback.
+			spec: {
+				mcp: {
+					targets: [{
+						name: context.name + "-target"
+						selector: services: matchLabels: "agentgateway.dev/target": context.name
+					}]
+					if parameter.sessionAffinity {
+						sessionRouting: "Stateful"
+					}
+					if !parameter.sessionAffinity {
+						sessionRouting: "Stateless"
+					}
 				}
-			}]
+			}
 		}
 
 		// HTTPRoute — registers the MCP server with the gateway at /mcp/<name>.
@@ -273,6 +297,12 @@ template: {
 		// Only safe to autoscale if the server holds no pod-local session state, or if
 		// the gateway provides session affinity.
 		replicas?: int
+		// +usage=Pin each MCP session to one backend pod (sessionRouting: Stateful).
+		// ON by default, because an MCP session is stateful by specification and most
+		// servers keep per-session state in memory. Turn it off ONLY for a server that
+		// is genuinely stateless, where every request carries its full context; that
+		// lets requests spread across all pods instead of following a session.
+		sessionAffinity: *true | bool
 		// +usage=Container port the MCP server listens on (FastMCP default 8000)
 		port: *8000 | int
 		// +usage=Service port exposed by the stable/preview Services
