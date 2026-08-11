@@ -449,16 +449,25 @@ Two reasons it stays off for this component:
    the pod that had never seen the session. Session state is in-memory and pod-local,
    and agentgateway maps its own opaque session id 1:1 onto a backend session, so
    scaling out without affinity breaks every conversation.
-2. **The component hardcodes replicas, so KubeVela and the HPA fight.**
-   `mcp-server.cue` renders `replicas: parameter.replicas` unconditionally, and the
-   observed result at `min=max=2` was a flap: `spec.replicas` went 2, then 1 when
-   KubeVela reconciled (killing a pod), then back to 2 when the HPA re-applied. It
-   converges, but each flap destroys a pod's sessions.
+2. ~~The component hardcodes replicas, so KubeVela and the HPA fight.~~ **Fixed.**
+   `mcp-server.cue` used to render `replicas: parameter.replicas` unconditionally, and
+   at `min=max=2` that produced a flap: `spec.replicas` went 2, then 1 when KubeVela
+   reconciled (killing a pod), then back to 2 when the HPA re-applied. `replicas` is
+   now optional and only rendered when the developer sets it, so omitting it hands
+   ownership to an `hpa`/`cpuscaler` trait. Re-tested with the HPA pinned at 2:
+   `spec.replicas` held at 2 for five minutes with zero reverts, and no manager in the
+   Rollout's `managedFields` claims `spec.replicas` any more. Setting `replicas`
+   explicitly keeps the old behaviour, which is why this is not a breaking change.
 
-Prerequisites before autoscaling is worth revisiting, in order: session affinity at
-the gateway (`platform/oam/examples/kgateway-session-affinity.yaml` is the starting
-point), then a way for `mcp-server` to stop declaring `replicas` when a scaler trait
-is attached, so the two controllers do not fight.
+So the remaining prerequisite is only the first one: **session affinity at the
+gateway** (`platform/oam/examples/kgateway-session-affinity.yaml` is the starting
+point). Once follow-up calls reliably return to the pod holding the session, this
+component can omit `replicas`, attach an `hpa` trait, and scale. The mechanism is
+already proven end to end; only the routing is missing.
+
+For any MCP server that holds no pod-local session state, autoscaling works today:
+omit `replicas` and attach the `hpa` trait with `targetAPIVersion: argoproj.io/v1alpha1`
+and `targetKind: Rollout`.
 
 A trap worth recording for anyone using the `hpa` trait: its CPU parameter is
 `cpu.value`, not `cpu.usage`. Passing `usage: 80` is silently ignored and the HPA

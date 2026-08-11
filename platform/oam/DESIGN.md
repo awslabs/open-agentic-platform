@@ -163,3 +163,41 @@ CEL expressions use OR logic — any matching expression grants access.
 ### Route Path Convention
 
 Each MCP server is exposed at `/mcp/<name>`. Agents connect via `http://<gateway-address>/mcp/<name>`.
+
+## Autoscaling mcp-server components
+
+`replicas` on `mcp-server` is optional by design. Set it and KubeVela owns the count;
+omit it and an `hpa` or `cpuscaler` trait can own it. Rendering it unconditionally
+made the two controllers fight, because an HPA writes `spec.replicas` through the
+Rollout's `/scale` subresource while KubeVela reconciles it back to the declared value.
+Measured before the fix: `spec.replicas` went 2, then 1 (killing a pod), then 2. After:
+held at 2 for five minutes with zero reverts.
+
+KubeVela's `hpa` trait does drive an Argo Rollout, even though it declares
+`appliesToWorkloads: ['deployments.apps','statefulsets.apps']`, which is not enforced
+on this path. Point it at the Rollout explicitly:
+
+```yaml
+traits:
+  - type: hpa
+    properties:
+      min: 1
+      max: 5
+      targetAPIVersion: argoproj.io/v1alpha1
+      targetKind: Rollout
+      cpu:
+        value: 70          # note: `value`, not `usage`
+```
+
+Two prerequisites, both easy to get wrong:
+
+- **CPU requests must be set.** HPA utilization is a percentage of requests, so a
+  container with no requests cannot be autoscaled on CPU.
+- **The workload must tolerate more than one replica.** Any server holding session
+  state in memory needs gateway session affinity first. `browser-mcp` demonstrates the
+  failure: with 2 replicas, connect succeeds and the next call returns
+  `Bad Request: no valid session ID provided`, because the follow-up POST lands on a
+  pod that never saw the session.
+
+`cpu.usage` is not a parameter. Passing it is silently ignored and the target renders
+as the default 50%.
