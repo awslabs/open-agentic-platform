@@ -38,29 +38,41 @@ spec:
         		forProvider: {
         			name: "\(context.appName)-\(context.name)-iam-policy"
         			// Least privilege, replacing an inherited "bedrock-agentcore:*" on "*".
-        			// The action list is exactly what a browser consumer needs, taken from the
-        			// AgentCore Browser permissions reference, and narrowed further to the
-        			// operations this platform actually performs: resolve a browser by name,
-        			// start and stop sessions, and connect the CDP automation stream.
+        			// The action list is exactly what a browser consumer needs, from the AgentCore
+        			// Browser permissions reference, narrowed to what this platform performs:
+        			// resolve a browser by name, drive sessions on it, and connect the CDP
+        			// automation stream. CreateBrowser and DeleteBrowser are deliberately absent,
+        			// because Crossplane provisions the browser under its own credentials.
         			//
-        			// Two statements because ListBrowsers enumerates a collection and is
-        			// granted over all browsers in the account and region, while the session
-        			// operations are restricted to THIS component's browser. The browser id is
-        			// "<browserName>-<generated suffix>", so the name prefix identifies it
-        			// without knowing the suffix at policy-creation time.
+        			// The split is dictated by how the service authorizes, established with
+        			// `aws iam simulate-custom-policy` against the real browser ARN:
+        			//
+        			//   StartBrowserSession / StopBrowserSession -> allowed against
+        			//     browser/<name>-* , including the .../session/<id> sub-resource, so these
+        			//     are scoped to THIS component's browser (the id is
+        			//     "<browserName>-<generated suffix>", so a name prefix identifies it).
+        			//   ListBrowsers, ConnectBrowserAutomationStream -> implicitDeny against a
+        			//     browser ARN, allowed on "*". They evidently authorize against a
+        			//     different resource type, so scoping them to browser/* would deny at
+        			//     runtime and break the data plane. They stay on "*" until the service
+        			//     authorization reference confirms their resource type. ListBrowsers is a
+        			//     collection read, which is the usual reason an action takes no resource.
         			//
         			// The account id comes from platform config (the cluster secret's
-        			// aws_account_id annotation), never from developer OAM. It falls back to
-        			// "*" so the ARN stays valid if the global is unset.
+        			// aws_account_id annotation), never from developer OAM, and falls back to "*"
+        			// so the ARN stays valid if the global is unset.
         			policy: """
         					{
         					  "Version": "2012-10-17",
         					  "Statement": [
         					    {
-        					      "Sid": "ResolveBrowserByName",
+        					      "Sid": "DiscoverAndStream",
         					      "Effect": "Allow",
-        					      "Action": ["bedrock-agentcore:ListBrowsers"],
-        					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser/*"
+        					      "Action": [
+        					        "bedrock-agentcore:ListBrowsers",
+        					        "bedrock-agentcore:ConnectBrowserAutomationStream"
+        					      ],
+        					      "Resource": "*"
         					    },
         					    {
         					      "Sid": "UseThisBrowser",
@@ -70,8 +82,7 @@ spec:
         					        "bedrock-agentcore:StartBrowserSession",
         					        "bedrock-agentcore:GetBrowserSession",
         					        "bedrock-agentcore:ListBrowserSessions",
-        					        "bedrock-agentcore:StopBrowserSession",
-        					        "bedrock-agentcore:ConnectBrowserAutomationStream"
+        					        "bedrock-agentcore:StopBrowserSession"
         					      ],
         					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser/\(parameter.browserName)-*"
         					    }
