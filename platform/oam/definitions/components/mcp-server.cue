@@ -46,7 +46,15 @@ template: {
 			}
 		}
 		spec: {
-			replicas: parameter.replicas
+			// Only set replicas when the developer actually asked for a count. Rendering
+			// it unconditionally makes KubeVela fight any autoscaler: an HPA writes
+			// spec.replicas through the Rollout's /scale subresource, KubeVela reconciles
+			// it back to the declared value, and the pair flaps (observed going 2 -> 1,
+			// killing a pod, -> 2). Omit the parameter to hand ownership of replicas to
+			// an hpa/cpuscaler trait.
+			if parameter.replicas != _|_ {
+				replicas: parameter.replicas
+			}
 			strategy: blueGreen: {
 				activeService:        context.name + "-stable"
 				previewService:       context.name + "-preview"
@@ -259,8 +267,12 @@ template: {
 		image: string
 		// +usage=Human-readable description (annotation only)
 		description?: string
-		// +usage=Number of replicas
-		replicas: *1 | int
+		// +usage=Number of replicas. OMIT this to let an autoscaler (hpa/cpuscaler
+		// trait) own replicas: when set, KubeVela keeps reconciling it and would fight
+		// the HPA. Omitted leaves the field off the Rollout, which Argo treats as 1.
+		// Only safe to autoscale if the server holds no pod-local session state, or if
+		// the gateway provides session affinity.
+		replicas?: int
 		// +usage=Container port the MCP server listens on (FastMCP default 8000)
 		port: *8000 | int
 		// +usage=Service port exposed by the stable/preview Services
