@@ -358,3 +358,4 @@ oam-agent-components:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      awsAccountId: '{{.metadata.annotations.aws_account_id}}'

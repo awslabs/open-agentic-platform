@@ -45,14 +45,43 @@ template: {
 		spec: {
 			forProvider: {
 				name: "\(context.appName)-\(context.name)-iam-policy"
+				// Least privilege, replacing an inherited "bedrock-agentcore:*" on "*".
+				// The action list is exactly what a browser consumer needs, taken from the
+				// AgentCore Browser permissions reference, and narrowed further to the
+				// operations this platform actually performs: resolve a browser by name,
+				// start and stop sessions, and connect the CDP automation stream.
+				//
+				// Two statements because ListBrowsers enumerates a collection and is
+				// granted over all browsers in the account and region, while the session
+				// operations are restricted to THIS component's browser. The browser id is
+				// "<browserName>-<generated suffix>", so the name prefix identifies it
+				// without knowing the suffix at policy-creation time.
+				//
+				// The account id comes from platform config (the cluster secret's
+				// aws_account_id annotation), never from developer OAM. It falls back to
+				// "*" so the ARN stays valid if the global is unset.
 				policy: """
 					{
 					  "Version": "2012-10-17",
 					  "Statement": [
 					    {
+					      "Sid": "ResolveBrowserByName",
 					      "Effect": "Allow",
-					      "Action": ["bedrock-agentcore:*"],
-					      "Resource": "*"
+					      "Action": ["bedrock-agentcore:ListBrowsers"],
+					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser/*"
+					    },
+					    {
+					      "Sid": "UseThisBrowser",
+					      "Effect": "Allow",
+					      "Action": [
+					        "bedrock-agentcore:GetBrowser",
+					        "bedrock-agentcore:StartBrowserSession",
+					        "bedrock-agentcore:GetBrowserSession",
+					        "bedrock-agentcore:ListBrowserSessions",
+					        "bedrock-agentcore:StopBrowserSession",
+					        "bedrock-agentcore:ConnectBrowserAutomationStream"
+					      ],
+					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser/\(parameter.browserName)-*"
 					    }
 					  ]
 					}
