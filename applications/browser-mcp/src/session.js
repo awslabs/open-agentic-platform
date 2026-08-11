@@ -98,9 +98,12 @@ export class BrowserSession {
       // reports true, every later tool call fails, and the AgentCore session plus
       // the limiter slot stay held until the idle timer fires minutes later.
       //
-      // NOTE: these must be set AFTER connect(). Protocol.connect() overwrites
-      // transport.onclose/onerror, so wiring the transport directly is silently
-      // discarded; the protocol-level callbacks are the supported hook.
+      // Use the protocol-level callbacks rather than transport.onclose. The SDK
+      // never assigns Protocol.onclose itself, so these are ours alone. Do NOT
+      // assign transport.onclose after connect(): connect() installs its own
+      // wrapper there (which chains any handler present beforehand), and
+      // replacing it would stop the SDK's internal _onclose() from running, so
+      // in-flight requests would never be rejected.
       client.onclose = () => {
         if (this.tearingDown || this.closed) return;
         log.warn(

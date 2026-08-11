@@ -435,10 +435,21 @@ which already stops the AWS session, releases the slot and clears `client`, so t
 next tool call transparently re-mints. A `tearingDown` guard distinguishes our own
 teardown from an unexpected death.
 
-Worth recording as a trap: `Protocol.connect()` **overwrites**
-`transport.onclose`/`onerror` (protocol.js:221). Wiring the transport before connect
-compiles, runs, and silently never fires. The protocol-level callbacks set after
-connect are the supported hook.
+On which callback to use, since an earlier draft of this document got it wrong: with
+the pinned SDK (1.22.1), `Protocol.connect()` does **not** discard a handler you set on
+the transport first. It captures and chains it:
+
+```js
+const _onclose = this.transport?.onclose;
+this._transport.onclose = () => { _onclose?.(); this._onclose(); };
+```
+
+The real constraint runs the other way. Do not assign `transport.onclose` *after*
+connect, because that replaces the SDK's wrapper and its internal `_onclose()` stops
+running, so in-flight requests are never rejected. `Protocol.onclose` is assigned zero
+times inside the SDK, so `client.onclose` is ours alone and is the stable hook. This
+behaviour is version-specific; whether older or newer SDK releases chain the same way
+is unverified.
 
 Also fixed: the child's piped stderr was never read. An unread pipe fills at ~64 KB
 and then blocks the child on write, which would appear as tool calls hanging rather
