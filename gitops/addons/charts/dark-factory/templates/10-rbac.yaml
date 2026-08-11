@@ -213,7 +213,7 @@ spec:
   clusterName: {{ .Values.microvm.podIdentity.clusterName }}
   namespace: {{ .Values.argo.namespace }}
   serviceAccount: {{ .Values.microvm.workflowServiceAccount | default "dark-factory-workflow" }}
-  roleARN: "arn:aws:iam::{{ .Values.microvm.podIdentity.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+  roleARN: "arn:aws:iam::{{ required "microvm.podIdentity.accountId is required when microvm.enabled=true (injected from the cluster's aws_account_id annotation in gitops/addons/registry/sandbox.yaml)" .Values.microvm.podIdentity.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
 {{- end }}
 {{- if .Values.deployTest.enabled }}
 ---

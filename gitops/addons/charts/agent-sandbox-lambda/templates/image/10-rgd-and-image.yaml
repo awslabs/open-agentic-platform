@@ -62,15 +62,33 @@ spec:
       # arn:aws:lambda:<region>:aws:microvm-image:al2023-1 (ARM_64 — the only arch
       # Lambda MicroVM supports).
       baseImageARN: string
-      # S3 URI of the coder code artifact zip (app + Dockerfile), e.g.
-      # s3://<bucket>/<key>. Lambda MicroVM's codeArtifact.uri is S3-ONLY — it is
-      # NOT an ECR image reference (the Dockerfile inside the zip MAY pull private
-      # ECR base layers, which is why buildRole keeps ecr:Get*/BatchGetImage). The
-      # artifact must be published to the bucket before the first build runs.
-      codeArtifactUri: string
+      # OBJECT KEY (not a full URI) of the coder code artifact zip (app + Dockerfile).
+      # The bucket half is NOT passed in — resource 4 composes the URI as
+      #   s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+      # from the bucket THIS graph creates, so the artifact location and the bucket can
+      # never name different things. Taking a full s3:// URI here (the previous shape)
+      # meant the caller had to restate `<name>-microvm-artifacts-<accountId>` by hand,
+      # and it drifted twice — see the accountId comment below.
+      # Lambda MicroVM's codeArtifact.uri is S3-ONLY — it is NOT an ECR image reference
+      # (the Dockerfile inside the zip MAY pull private ECR base layers, which is why
+      # buildRole keeps ecr:Get*/BatchGetImage). The artifact must be published to the
+      # bucket before the first build runs.
+      codeArtifactKey: string
       # AWS region + a name stem for the created resources.
       region: string | default="{{ .Values.microvm.region }}"
       name: string
+      # AWS account id of the DEPLOYING cluster — suffixed onto the artifact bucket
+      # name to make it globally unique. S3 bucket names share ONE global namespace
+      # across all AWS accounts, so the un-suffixed `<name>-microvm-artifacts` is
+      # first-come-first-served: on this account CreateBucket returned
+      #   409 BucketAlreadyExists: the bucket namespace is shared by all users
+      # because another account already held `coder-microvm-artifacts`. The Bucket CR
+      # then never got an ARN, the build role's S3 grant pointed at a bucket this
+      # account cannot read, and the MicrovmImage build failed with
+      #   "Access denied when fetching artifact from S3" → CREATE_FAILED.
+      # Injected from the cluster's aws_account_id annotation (see the registry
+      # entry), the same portability pattern as the pod-identity role ARN.
+      accountId: string
     status:
       # The HANDOFF the shim reads to RunMicrovm (imperatively) per session:
       #   imageARN         → Microvm.imageIdentifier
@@ -87,9 +105,14 @@ spec:
         apiVersion: s3.services.k8s.aws/v1alpha1
         kind: Bucket
         metadata:
+          # metadata.name stays account-free: the CR name only has to be unique in the
+          # namespace, and keeping it stable avoids orphaning the existing Bucket CR.
           name: ${schema.spec.name}-microvm-artifacts
         spec:
-          name: ${schema.spec.name}-microvm-artifacts
+          # spec.name IS the real S3 bucket name → must be GLOBALLY unique, hence the
+          # account suffix (see schema.spec.accountId above). buildRole's inline S3
+          # policy references ${bucket.spec.name}, so it follows this automatically.
+          name: ${schema.spec.name}-microvm-artifacts-${schema.spec.accountId}
     # 2) IAM role the image BUILD assumes (GA — Managed ACK). Platform-owned.
     #    Lambda assumes this during create-microvm-image to pull the code artifact
     #    (ECR/S3) + write build logs. Trust = lambda.amazonaws.com (verified in the
@@ -148,7 +171,12 @@ spec:
           baseImageARN: ${schema.spec.baseImageARN}
           buildRoleARN: ${buildRole.status.ackResourceMetadata.arn}
           codeArtifact:
-            uri: ${schema.spec.codeArtifactUri}
+            # Composed from the BUCKET THIS GRAPH CREATES (resource 1) + the object key —
+            # never from a caller-supplied full URI. ${bucket.spec.name} already carries the
+            # `-${accountId}` suffix, so the build always reads from the exact bucket that
+            # was provisioned and that buildRole's S3 grant (also ${bucket.spec.name}) allows.
+            # Restating the bucket name in a second place is what drifted twice before.
+            uri: s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
           # Lambda MicroVM is ARM_64-ONLY — the sole supported architecture. The
           # code artifact + any bundled binaries must be arm64 (dark-factory-coder
           # is built for arm64 for exactly this substrate).
@@ -194,7 +222,7 @@ spec:
 # slow-changing platform infra (one image per cluster), NOT per-session — so it lives
 # here in the chart, not in the per-claim shim. The shim reads THIS object's status
 # (imageARN + executionRoleARN) to RunMicrovm per session. Rebuild the image by
-# bumping microvm.codeArtifactUri (a new artifact) and re-syncing.
+# bumping microvm.codeArtifactKey (a new artifact) and re-syncing.
 apiVersion: {{ .Values.microvm.apiGroup | default "kro.run" }}/v1alpha1
 kind: MicrovmSandbox
 metadata:
@@ -212,6 +240,12 @@ spec:
   name: {{ .Values.microvm.image.name | default "coder" }}
   region: {{ .Values.microvm.region | quote }}
   baseImageARN: {{ .Values.microvm.baseImageARN | quote }}
-  codeArtifactUri: {{ .Values.microvm.codeArtifactUri | quote }}
+  # Object key only — the RGD prefixes s3://${bucket.spec.name}/ (see resource 4), so the
+  # bucket is never named twice and cannot drift from the one the graph creates.
+  codeArtifactKey: {{ required "microvm.codeArtifactKey is required when microvm.enabled=true (object key of the arm64 coder zip inside the RGD-created <image.name>-microvm-artifacts-<accountId> bucket)" .Values.microvm.codeArtifactKey | quote }}
+  # Hard-fail the render rather than emit `<name>-microvm-artifacts-` (a trailing-hyphen,
+  # invalid bucket name) if the account id never got injected. microvm.enabled=true
+  # cannot work without it, so a loud template error beats a silently broken bucket.
+  accountId: {{ required "microvm.accountId is required when microvm.enabled=true (injected from the cluster's aws_account_id annotation in gitops/addons/registry/sandbox.yaml)" .Values.microvm.accountId | quote }}
 {{- end }}
 {{- end }}

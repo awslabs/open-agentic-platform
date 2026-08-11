@@ -364,7 +364,19 @@ microvm:
   # additive; no existing role policy changes). ACK eks PodIdentityAssociation.
   podIdentity:
     clusterName: hub
-    accountId: "940019131157"
+    # accountId is EMPTY on purpose — 10-rbac.yaml builds the PodIdentityAssociation as
+    #   arn:aws:iam::<accountId>:role/<clusterName>-ack-lambdamicrovms-controller
+    # so a committed account id is a cross-account landmine: this default used to be
+    # 940019131157 (the authoring account), and on every other account the ACK eks
+    # controller rejected the association with
+    #   AccessDeniedException: Cross-account pass role is not allowed
+    # while the role itself existed locally — only the ARN named the wrong account. Because
+    # ArgoCD health-waits on that CR, the dark-factory app then never reached Synced
+    # (observed live on 259732043995). It is injected from the deploying cluster's
+    # aws_account_id annotation in gitops/addons/registry/sandbox.yaml, and the template
+    # `require`s it when microvm.enabled=true so a missing annotation fails the render
+    # loudly instead of emitting `arn:aws:iam:::role/...` and failing deep in ACK.
+    accountId: ""
     # role: <clusterName>-ack-lambdamicrovms-controller
   workflowServiceAccount: dark-factory-workflow
 

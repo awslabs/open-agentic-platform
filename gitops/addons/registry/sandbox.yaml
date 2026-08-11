@@ -381,9 +381,10 @@ dark-factory:
     # ── Flow D pod identity: account + cluster from THIS cluster's annotations ──
     # 10-rbac.yaml builds the PodIdentityAssociation roleARN as
     #   arn:aws:iam::<accountId>:role/<clusterName>-ack-lambdamicrovms-controller
-    # from microvm.podIdentity. The chart default hardcodes accountId 940019131157
-    # (the author's account) and clusterName `hub`, so on any other account the ACK
-    # eks controller rejects it with:
+    # from microvm.podIdentity. The chart default for accountId is now EMPTY behind a
+    # Helm `required` guard (it used to hardcode 940019131157, the author's account) and
+    # clusterName defaults to `hub`, so on any other account the ACK eks controller
+    # rejected it with:
     #   AccessDeniedException: Cross-account pass role is not allowed
     # and — because ArgoCD health-waits on that CR — the dark-factory app never
     # reaches Synced. Observed live on account 259732043995: the role DID exist
@@ -456,6 +457,24 @@ agent-sandbox-lambda:
     # default is correctly EMPTY, but the hub overlay carried a hardcoded foreign
     # account; injecting from annotations here is authoritative (valuesObject wins
     # over overlay value files) and portable.
+    #
+    # accountId has a SECOND consumer: the MicroVM artifact S3 bucket the KRO RGD
+    # creates is `<image.name>-microvm-artifacts-<accountId>`. S3 bucket names are
+    # ONE global namespace shared by every AWS account, so the old un-suffixed
+    # `coder-microvm-artifacts` was already taken by a foreign account — CreateBucket
+    # returned 409 BucketAlreadyExists, the Bucket CR never got an ARN, and the
+    # MicrovmImage build died with "Access denied when fetching artifact from S3"
+    # (CREATE_FAILED), which parked agent-sandbox-lambda-hub at Progressing forever.
+    #
+    # NOTE the artifact S3 URI is deliberately NOT set here. It would have to restate
+    # the bucket name a second time, and this ApplicationSet Go template can only see
+    # CLUSTER metadata/annotations — it cannot read another Helm value such as
+    # microvm.image.name, so a URI written here would hardcode the `coder-` stem and
+    # silently diverge the moment image.name changed. Instead the chart holds a bare
+    # microvm.codeArtifactKey and the RGD composes
+    #   s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+    # from the bucket it actually creates — one source of truth, still account-portable
+    # because accountId below is what makes the bucket name unique.
     microvm:
       accountId: '{{.metadata.annotations.aws_account_id}}'
       podIdentity:
