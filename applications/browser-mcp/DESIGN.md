@@ -399,6 +399,72 @@ failure modes: 0.1.1 was killed at ~100s, and 0.1.2 gave up permanently at its f
 budget expiry. E2E, gateway and gateway-isolation suites all passed against the
 recovered pod, and the pristine example was then redeployed to a clean healthy state.
 
+### Resource requests and limits, and why autoscaling is not enabled
+
+**Limits are now set, sized from measurement.** The pod previously declared
+`resources: {}` and ran BestEffort, first to be evicted, with a session cap that
+permitted ~2 GB. The example now sets:
+
+```yaml
+resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits:   { memory: 1Gi }
+```
+
+with `MAX_BROWSER_SESSIONS` lowered from 25 to 10 so the cap and the limit agree. The
+sizing rule is `memory limit >= ~64Mi baseline + 80Mi per session`, which gives 864Mi
+for 10 sessions and 160Mi of headroom inside 1Gi. Raising the cap without raising the
+limit converts a full pod into an OOMKill. Verified on-cluster: QoS moved from
+BestEffort to Burstable with those values on the container.
+
+There is deliberately **no CPU limit**. Activation is bursty (spawn a Node child, then
+wait on a CDP attach) while steady state is nearly idle: 1m at rest, 26m across five
+concurrent activations. A CPU limit would throttle precisely the spike that matters and
+lengthen an attach that already risks the MCP client's 60s default. Memory is what
+actually runs away here, so memory carries the guardrail.
+
+**Autoscaling: the machinery works, the workload cannot use it yet.** KubeVela ships
+`hpa` and `cpuscaler` traits, and the `hpa` trait does drive an Argo Rollout despite
+declaring `appliesToWorkloads: ['deployments.apps','statefulsets.apps']`, which is not
+enforced on this path. Measured with `min=max=1`:
+
+```
+browser-mcp   Rollout/browser-mcp   cpu: 0%/50%   1  1  1
+scaleTargetRef: {apiVersion: argoproj.io/v1alpha1, kind: Rollout, name: browser-mcp}
+AbleToScale=True    ScalingActive=True  ValidMetricFound
+```
+
+The Rollout CRD exposes a `scale` subresource (`specReplicasPath: .spec.replicas`,
+`statusReplicasPath: .status.HPAReplicas`), which is what makes this work: the HPA
+writes `spec.replicas` through `/scale` and the Rollouts controller reconciles the pods
+underneath while preserving its blue-green or canary ratios. Note also that HPA on CPU
+utilization only became possible because requests now exist, since utilization is a
+percentage of requests.
+
+Two reasons it stays off for this component:
+
+1. **Sessions do not survive more than one replica.** Demonstrated, not assumed. With
+   2 replicas behind the gateway, connect succeeded and the very next call failed with
+   `Bad Request: no valid session ID provided`, because the follow-up POST landed on
+   the pod that had never seen the session. Session state is in-memory and pod-local,
+   and agentgateway maps its own opaque session id 1:1 onto a backend session, so
+   scaling out without affinity breaks every conversation.
+2. **The component hardcodes replicas, so KubeVela and the HPA fight.**
+   `mcp-server.cue` renders `replicas: parameter.replicas` unconditionally, and the
+   observed result at `min=max=2` was a flap: `spec.replicas` went 2, then 1 when
+   KubeVela reconciled (killing a pod), then back to 2 when the HPA re-applied. It
+   converges, but each flap destroys a pod's sessions.
+
+Prerequisites before autoscaling is worth revisiting, in order: session affinity at
+the gateway (`platform/oam/examples/kgateway-session-affinity.yaml` is the starting
+point), then a way for `mcp-server` to stop declaring `replicas` when a scaler trait
+is attached, so the two controllers do not fight.
+
+A trap worth recording for anyone using the `hpa` trait: its CPU parameter is
+`cpu.value`, not `cpu.usage`. Passing `usage: 80` is silently ignored and the HPA
+renders the default 50% target, which is what the output above shows. Unknown
+properties do not error.
+
 ### Child process lifecycle: reaping and death detection (0.1.4)
 
 Two defects came out of asking what serves the liveness probe when many children
