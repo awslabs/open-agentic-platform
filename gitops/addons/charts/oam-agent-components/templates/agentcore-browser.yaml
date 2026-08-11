@@ -44,19 +44,25 @@ spec:
         			// automation stream. CreateBrowser and DeleteBrowser are deliberately absent,
         			// because Crossplane provisions the browser under its own credentials.
         			//
-        			// The split is dictated by how the service authorizes, established with
-        			// `aws iam simulate-custom-policy` against the real browser ARN:
+        			// The split, and the resource type, are dictated by how the service actually
+        			// authorizes. A custom browser's ARN uses the "browser-custom" resource type,
+        			// not "browser":
         			//
-        			//   StartBrowserSession / StopBrowserSession -> allowed against
-        			//     browser/<name>-* , including the .../session/<id> sub-resource, so these
-        			//     are scoped to THIS component's browser (the id is
-        			//     "<browserName>-<generated suffix>", so a name prefix identifies it).
-        			//   ListBrowsers, ConnectBrowserAutomationStream -> implicitDeny against a
-        			//     browser ARN, allowed on "*". They evidently authorize against a
-        			//     different resource type, so scoping them to browser/* would deny at
-        			//     runtime and break the data plane. They stay on "*" until the service
-        			//     authorization reference confirms their resource type. ListBrowsers is a
-        			//     collection read, which is the usual reason an action takes no resource.
+        			//   arn:aws:bedrock-agentcore:us-west-2:<acct>:browser-custom/agents_web_browser-qeMtO5hyb1
+        			//
+        			// Note the AgentCore documentation's own example policy scopes these actions to
+        			// "browser/*", which does not match a custom browser. Scoping to "browser/*"
+        			// was observed denying StartBrowserSession at runtime:
+        			//   "not authorized to perform: bedrock-agentcore:StartBrowserSession on
+        			//    resource: arn:...:browser-custom/agents_web_browser-qeMtO5hyb1"
+        			//
+        			// ListBrowsers and ConnectBrowserAutomationStream stay on "*". ListBrowsers is
+        			// a collection read: the request is authorized against browser-custom/* rather
+        			// than a single browser. ConnectBrowserAutomationStream authorizes against
+        			// neither the browser ARN nor a session sub-resource under it, so its resource
+        			// type is something else again and scoping it denies the CDP stream, which is
+        			// the call every browser tool depends on. Both were checked with
+        			// `aws iam simulate-custom-policy` and confirmed against runtime behaviour.
         			//
         			// The account id comes from platform config (the cluster secret's
         			// aws_account_id annotation), never from developer OAM, and falls back to "*"
@@ -84,7 +90,7 @@ spec:
         					        "bedrock-agentcore:ListBrowserSessions",
         					        "bedrock-agentcore:StopBrowserSession"
         					      ],
-        					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser/\(parameter.browserName)-*"
+        					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:browser-custom/\(parameter.browserName)-*"
         					    }
         					  ]
         					}
