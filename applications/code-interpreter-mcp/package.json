@@ -1,0 +1,22 @@
+{
+  "name": "code-interpreter-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Amazon Bedrock AgentCore Code Interpreter as a session-multiplexing MCP server",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test:e2e": "node test/e2e-multisession.js",
+    "test:idle": "node test/idle-eviction.js",
+    "test:task": "node test/task-eviction.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "3.1105.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "3.1105.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "express": "5.1.0"
+  }
+}
