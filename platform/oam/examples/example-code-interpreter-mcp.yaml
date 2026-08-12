@@ -1,0 +1,118 @@
+# AgentCore Code Interpreter exposed to agents as an MCP tool through agentgateway.
+#
+#   agent --(JWT via agentgateway)--> [code-interpreter-mcp] --(AWS SDK)--> AgentCore Code Interpreter
+#
+# Portable by design: no region, account or cluster appears anywhere below, so this same
+# file deploys unchanged to any region or environment. The region is injected by the
+# platform via the aws-service-identity trait; credentials come from EKS Pod Identity.
+#
+# The interpreter NAME is application config and appears twice on purpose: once to
+# provision it, once to tell the MCP server which one to use. That makes switching to a
+# different interpreter a one-line change.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: code-tools
+  namespace: default
+spec:
+  components:
+    # The AgentCore Code Interpreter itself (Crossplane). Shared and long-lived; the
+    # sessions against it are ephemeral and are managed by code-interpreter-mcp.
+    #
+    # The name must be unique in the ACCOUNT, and a collision does not self-heal: the
+    # provider retries CreateCodeInterpreter forever against a taken name and the resource
+    # stays Synced=False with an empty status. Omit interpreterName to get the
+    # <namespace>_<component> default, which is unique per namespace.
+    - name: sandbox
+      type: agentcore-code-interpreter
+      properties:
+        # Must match [a-zA-Z][a-zA-Z0-9_]* : underscores, not hyphens.
+        interpreterName: agents_code_sandbox
+        networkMode: PUBLIC
+        description: Shared code sandbox for agent tool use
+
+    # The MCP server that fronts it. One pod serves MANY concurrent interpreter sessions,
+    # each isolated, so raising replicas is about redundancy rather than session capacity.
+    #
+    # Scaling past one replica is safe: the component registers a selector-based gateway
+    # target with sessionRouting Stateful, so the gateway pins each MCP session to the pod
+    # that owns it. Omit replicas and attach an hpa trait to autoscale.
+    - name: code-interpreter-mcp
+      type: mcp-server
+      dependsOn:
+        - sandbox
+      properties:
+        image: public.ecr.aws/z0a4o2j5/code-interpreter-mcp:0.1.0
+        port: 8000
+        # Liveness on /healthz: up as soon as the process serves HTTP.
+        # Readiness on /readyz: 503 until the interpreter is resolved. Keeping these
+        # separate is what stops the liveness probe from killing the pod during a slow
+        # first start, e.g. while a freshly attached IAM policy is still propagating,
+        # which took over five minutes in one measured case.
+        healthPath: /healthz
+        readinessPath: /readyz
+        replicas: 1
+        env:
+          # Which provisioned interpreter to use, resolved to an id at startup. Leave this
+          # unset to use the AWS built-in (aws.codeinterpreter.v1), which needs no
+          # provisioning and no agentcore-code-interpreter component at all.
+          - name: AGENTCORE_CODE_INTERPRETER_NAME
+            value: agents_code_sandbox
+
+          # ---- Per-team tuning. All optional; the image ships sane defaults. ----
+
+          # TTL requested when starting a session. Enforced by AWS, so it is the only bound
+          # on a leak if this pod dies hard. It also bounds background tasks, which cannot
+          # outlive their session. Default 900.
+          - name: SESSION_TIMEOUT_SECONDS
+            value: "900"
+
+          # Release an idle session; the next call transparently starts a fresh one.
+          # Note that this discards variables AND the sandbox filesystem, so raise it if
+          # your flows expect long gaps between calls. Suppressed automatically while a
+          # background task from startCommandExecution is still running.
+          - name: SESSION_IDLE_SECONDS
+            value: "300"
+
+          # Cap on concurrent live interpreter sessions for this pod. Unlike browser-mcp,
+          # this is NOT a memory guardrail: measured per-session cost is below the noise
+          # floor (node RSS was 83MB idle and 78MB with 8 live sessions, because there is
+          # no child process per session). Size this against the account's AgentCore
+          # session quota instead.
+          - name: MAX_INTERPRETER_SESSIONS
+            value: "25"
+
+          # Optional: narrow what agents even see. Omit to advertise all 9 tools. Use the
+          # authPolicy below for enforcement; use this to save agent context.
+          # - name: TOOLS_DENY
+          #   value: "startCommandExecution,getTask,stopTask"
+
+        # Sized from measurement: RSS is ~80Mi and flat in session count, so the request
+        # covers the baseline and the limit is headroom for request payloads (the server
+        # accepts up to 8mb JSON bodies, and readFiles can return large content).
+        #
+        # Deliberately no CPU limit, matching browser-mcp. Steady state is nearly idle and
+        # the work is dominated by waiting on AWS, so a limit would only risk throttling a
+        # call that is already on a client timeout.
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 384Mi
+
+        # Optional: let agentgateway enforce which tools callers may invoke. Enforcement
+        # lives at the gateway, so it applies regardless of what the server advertises.
+        # Useful here to withhold shell access while still allowing code execution.
+        # authPolicy:
+        #   action: Allow
+        #   matchExpressions:
+        #     - 'mcp.tool.name in ["executeCode", "readFiles", "writeFiles", "listFiles"]'
+
+      traits:
+        # Grants this workload AWS access (Pod Identity) to the interpreter component, and
+        # supplies the region so it never has to appear in this file.
+        - type: aws-service-identity
+          properties:
+            accessFor:
+              - sandbox
