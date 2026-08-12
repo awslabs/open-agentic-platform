@@ -252,7 +252,7 @@ never appears in a developer's OAM.
 Against the live service in `us-west-2` using the built-in interpreter, with the final run
 against the published image.
 
-`test/e2e-multisession.js` — **E2E PASS**
+`test/e2e-multisession.js`: **E2E PASS**
 
 - 9 tools advertised with zero interpreter sessions at rest
 - `tools/list` served while still at zero, so activation really is lazy
@@ -263,7 +263,7 @@ against the published image.
 - a raised exception arrived as `isError: true` with the traceback, not a transport failure
 - teardown released both sessions: `live=0 mcpSessions=0`
 
-`test/task-eviction.js` — **TASK EVICTION PASS**
+`test/task-eviction.js`: **TASK EVICTION PASS**
 
 With `SESSION_IDLE_SECONDS=15` and a 30s background command, the session survived 40s of total
 silence with `openAsyncTasks=1`, `getTask` then returned `taskStatus=completed` with the output

@@ -22,7 +22,7 @@ state and remaining work. Issue #51 tracks the overall task.
 | OAM component | `platform/oam/definitions/components/agentcore-code-interpreter.cue` | `generate.sh` produced only the intended file; rendered with `--set global.awsRegion=eu-west-1 --set global.awsAccountId=111122223333` and both flowed with no leftover placeholders; `kubectl apply --dry-run=server` accepted it |
 | IAM policy | in that CUE | four granted actions `allowed`, three negative controls `implicitDeny` |
 | Example app | `platform/oam/examples/example-code-interpreter-mcp.yaml` | resource sizing derived from measurement |
-| Measurements | `DESIGN.md` | per-session memory below noise floor; 8 simultaneous activations at 1.3–1.4s, zero failures |
+| Measurements | `DESIGN.md` | per-session memory below noise floor; 8 simultaneous activations at 1.3 to 1.4s, zero failures |
 
 The ECR Public repository `code-interpreter-mcp` did not exist and was created as part of
 publishing, matching the existing `browser-mcp` repository.
