@@ -42,7 +42,7 @@ spec:
       dependsOn:
         - sandbox
       properties:
-        image: public.ecr.aws/z0a4o2j5/code-interpreter-mcp:0.1.0
+        image: public.ecr.aws/z0a4o2j5/code-interpreter-mcp:0.1.1
         port: 8000
         # Liveness on /healthz: up as soon as the process serves HTTP.
         # Readiness on /readyz: 503 until the interpreter is resolved. Keeping these

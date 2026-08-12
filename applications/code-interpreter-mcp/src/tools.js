@@ -204,3 +204,22 @@ export function getCatalog() {
 }
 
 export const isKnownTool = (name) => ALL_TOOLS.some((t) => t.name === name);
+
+/**
+ * Fill in defaults the schema promises but the service will not apply itself.
+ *
+ * `executeCode` advertises `language` as optional, but AgentCore rejects the call outright
+ * with "code and language fields are required in argument" when it is missing. A model that
+ * reads the schema and omits the field therefore gets a hard failure, and in one observed
+ * case answered from its own knowledge while claiming it had used the sandbox, which is
+ * worse than an error.
+ *
+ * Applying the default here rather than marking the field required keeps the tool easy to
+ * call and makes the documented default true instead of aspirational. Any parameter
+ * described as optional must be honoured somewhere; this is that somewhere.
+ */
+export function normalizeArgs(name, args) {
+  const a = { ...(args || {}) };
+  if (name === 'executeCode' && !a.language) a.language = 'python';
+  return a;
+}

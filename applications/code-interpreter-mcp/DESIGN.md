@@ -280,17 +280,66 @@ flowing with no leftover placeholders; `kubectl apply --dry-run=server` accepted
 `linux/arm64` `sha256:4bfd16cb2762c3bb764c1aedb34f0d43dde865cd49f748b5a4848f03d5da1cd2`. 170MB.
 Pulled fresh, served `/readyz` with 9 tools, PID 1 is `node`.
 
-## Remaining verification
+## Verified on the cluster
 
-Not yet done, and the parts only a cluster can exercise:
+Deployed to `peeks-hub` from `platform/oam/examples/example-code-interpreter-mcp.yaml`, using
+a provisioned custom interpreter rather than the built-in.
 
-- the agent-to-gateway-to-server path against this server
-- `dependsOn` actually gating on `codeInterpreterId != ""`
-- whether the flat memory profile holds under a real agent's payload sizes rather than the
-  `print(i)` calls the harness makes
-- IAM propagation delay on a first deploy, and the init loop riding it out
+- **Provisioning**: the `CodeInterpreter` MR reached `Synced=True Ready=True` with
+  `codeInterpreterId=agents_code_sandbox-oNLZikqPdJ`, and the IAM policy MR came up alongside
+  it.
+- **`dependsOn` gating works**: interpreter `Ready` at 14:14:34, MCP pod created at 14:14:35.
+- **The retry loop earned its keep.** The pod logged 13 consecutive `ListCodeInterpreters`
+  `AccessDenied` failures over 65 seconds while the freshly created IAM policy propagated,
+  then resolved the interpreter and went ready, with **0 restarts** and `initSeconds=66`. This
+  is the first time that path was exercised for this server; locally the permissions always
+  existed already.
+- **IAM as enforced by AWS** (read back with `get-policy-version`, not simulated):
+  `ListCodeInterpreters` on `*`, and Start/Stop/Invoke session on
+  `code-interpreter-custom/agents_code_sandbox-*`.
+- **Gateway registration**: `sessionRouting: Stateful` with a selector target matching
+  `agentgateway.dev/target: code-interpreter-mcp`, a label present on the stable Service only,
+  not on preview.
+- `test/e2e-multisession.js`: **E2E PASS** against the cluster pod.
+- `test/gateway.js`: **GATEWAY PASS** through agentgateway with a real JWT. Tools visible
+  without starting a session, a `tools/call` activating one, session state surviving the proxy
+  hop, and a second gateway session isolated from the first.
+- `test/tool-matrix.js`: **TOOL MATRIX PASS**, all nine tools called with only their required
+  arguments.
+- **A real agent used it.** The agent loaded 9 tools from
+  `agentgateway-proxy...:8080/mcp/code-interpreter-mcp` and executed code on request, with
+  zero tool-call failures in the server log.
 
-See `RESUME.md`.
+### The defect a live agent found
+
+The first agent run *looked* like a success and was not. Asked for the 25th Fibonacci number
+and the sum of primes below 1000, the agent returned correct values and a plausible code
+listing, while the server log showed:
+
+```
+Tool call failed  {tool: executeCode, err: "code and language fields are required in argument."}
+```
+
+The service rejects `executeCode` without `language`, but the schema advertised `language` as
+optional with a default that nothing implemented. Every earlier test passed it explicitly, so
+only a model reading the schema and omitting it triggered the failure. The model then answered
+from its own knowledge and *claimed* it had used the sandbox, which is worse than an error,
+because a plausible answer hides the fault.
+
+Two changes came out of it:
+
+- `normalizeArgs` in `src/tools.js` applies the default server-side, so a parameter documented
+  as optional is now actually optional. Fixed in `0.1.1`.
+- `test/tool-matrix.js` calls every advertised tool with only its schema-required arguments,
+  and fails if any tool is broken when called the way its own schema permits. It also fails if
+  a tool is advertised but untested, so the gap that hid this cannot silently return. Running
+  it found that only `executeCode` had the problem: `listFiles` with no `directoryPath` and the
+  rest were all fine.
+
+Verification lesson worth keeping: the follow-up test asked the agent for
+`sha256("oap-code-interpreter-verification-2026")` and compared it to a locally computed
+digest. It matched exactly, which a model cannot fake. Famous numbers like Fibonacci and prime
+sums are exactly the wrong probe, because the model already knows them.
 
 ## Relationship to browser-mcp
 

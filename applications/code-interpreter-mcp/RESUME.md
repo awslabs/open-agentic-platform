@@ -9,7 +9,7 @@ state and remaining work. Issue #51 tracks the overall task.
   at commit `ae55c35`. It needs that branch's `mcp-server` work (selector-based gateway targets
   with session affinity, optional `replicas`), so do not rebase onto `main` until #49 merges.
 - **No PR yet.**
-- **Not deployed.** Everything below is verified locally or by dry-run, not on-cluster.
+- **Deployed and verified on `peeks-hub`.** ArgoCD tracks this branch (set via `config.local.yaml`).
 
 ### Done
 
@@ -18,11 +18,15 @@ state and remaining work. Issue #51 tracks the overall task.
 | Server | `src/` | E2E PASS and TASK EVICTION PASS against the live service |
 | Tests | `test/` | `e2e-multisession.js`, `task-eviction.js`, `concurrency-cost.js` |
 | Dockerfile | `Dockerfile` | builds; 170MB; PID 1 is `node`, no tini, no children |
-| Published image | `public.ecr.aws/z0a4o2j5/code-interpreter-mcp:0.1.0` | OCI index, `linux/amd64` `sha256:3cc38c69ade2b46c402f2d43616297156fb11abbf1e41eabd6d45f0cab7c8e29`, `linux/arm64` `sha256:4bfd16cb2762c3bb764c1aedb34f0d43dde865cd49f748b5a4848f03d5da1cd2`; pulled fresh and served `/readyz` with 9 tools |
+| Published image | `public.ecr.aws/z0a4o2j5/code-interpreter-mcp:0.1.1` | OCI index, `linux/amd64` `sha256:be1d5f2a697056b55f93bf1c6fff3bc32dee7b1897ab3ac8bdfd38089b41c2ac`, `linux/arm64` `sha256:bc7522a1fd94f801a8c9ade1546a0a77e424d68a3290ca3e4324cd5732888901` (0.1.1); pulled fresh and served `/readyz` with 9 tools |
 | OAM component | `platform/oam/definitions/components/agentcore-code-interpreter.cue` | `generate.sh` produced only the intended file; rendered with `--set global.awsRegion=eu-west-1 --set global.awsAccountId=111122223333` and both flowed with no leftover placeholders; `kubectl apply --dry-run=server` accepted it |
 | IAM policy | in that CUE | four granted actions `allowed`, three negative controls `implicitDeny` |
 | Example app | `platform/oam/examples/example-code-interpreter-mcp.yaml` | resource sizing derived from measurement |
 | Measurements | `DESIGN.md` | per-session memory below noise floor; 8 simultaneous activations at 1.3 to 1.4s, zero failures |
+| On-cluster deploy | `peeks-hub` | interpreter provisioned, `dependsOn` gated, 13 IAM AccessDenied cycles ridden out with 0 restarts |
+| Gateway path | `test/gateway.js` | GATEWAY PASS with a real JWT |
+| All 9 tools | `test/tool-matrix.js` | TOOL MATRIX PASS; found and fixed the `executeCode` language defect (0.1.1) |
+| Real agent | `code-agent` app | returned a sha256 digest matching a locally computed one |
 
 The ECR Public repository `code-interpreter-mcp` did not exist and was created as part of
 publishing, matching the existing `browser-mcp` repository.
@@ -46,56 +50,26 @@ BASE_URL=http://localhost:8032 IDLE=15 node test/task-eviction.js    # expect TA
 BASE_URL=http://localhost:8033 N=8 PARALLEL=1 HOLD_SECONDS=60 node test/concurrency-cost.js
 ```
 
-## Remaining work, in order
+## Remaining work
 
-### 1. Agent example
+1. **PR**, referencing #51. Base it on `feature/agentcore-browser-mcp`, or `main` once #49
+   merges. Everything in DESIGN.md is verified, including on-cluster, so no hedging is needed.
+2. Optional cleanup: the example apps `code-tools` and `code-agent` are still deployed on
+   `peeks-hub`, and `config.local.yaml` still points ArgoCD at this branch. Both were
+   deliberate for verification.
 
-An agent app consuming this through the gateway, modelled on
-`platform/oam/examples/example-agent-with-browser.yaml`: `mcpServers: [{name: code-interpreter-mcp}]`
-plus the `gateway-identity` trait, and nothing else. No image change is needed on the agent
-side.
+Everything else is done. On-cluster verification is recorded in DESIGN.md: provisioning,
+`dependsOn` gating, the retry loop riding out 65s of IAM propagation with 0 restarts, the
+enforced IAM policy read back from AWS, gateway registration, E2E PASS, GATEWAY PASS, TOOL
+MATRIX PASS, and a real agent executing code whose output could not be guessed.
 
-### 2. On-cluster verification
+### Follow-ups worth filing separately
 
-ArgoCD currently reconciles `feature/agentcore-browser-mcp`, so **this branch does not deploy
-on its own**. `config.local.yaml` (gitignored) is set to `main` but was deliberately not
-re-bootstrapped, because `main` lacks #49's definitions. Either merge #49, rebase this branch
-onto `main` and point ArgoCD here, or point ArgoCD at this branch now and accept that it also
-carries #49.
-
-Then, in order:
-
-1. definition arrives (ArgoCD reconcile took ~180s in practice)
-2. apply the example; expect the interpreter to provision and the pod to reach Ready. On a
-   first deploy the IAM policy is new, so expect several minutes of `AccessDenied` while it
-   propagates and confirm the init loop rides it out instead of giving up
-3. confirm the enforced policy with `aws iam get-policy-version` on
-   `code-tools-sandbox-iam-policy`, checking for `code-interpreter-custom/agents_code_sandbox-*`
-4. `test/e2e-multisession.js` through a port-forward to `svc/code-interpreter-mcp-stable`
-5. a gateway test: adapt `.local/browser-mcp-gw-tests/gw-test.js`, changing the path to
-   `/mcp/code-interpreter-mcp` and the tool calls to `executeCode`. Note that script asserts
-   backend counters through a port-forward that reaches only one pod, so it reports a false
-   FAIL at more than one replica
-6. drive it through a real agent and confirm the model actually calls the tools
-
-**KubeVela does not re-render an existing Application when only a definition changes.** To
-pick up a definition change, delete and re-apply the app.
-
-Two things worth watching specifically, because they are the parts that only on-cluster
-testing can exercise: whether `dependsOn: [sandbox]` correctly gates on
-`codeInterpreterId != ""`, and whether the measured flat memory profile holds under a real
-agent's payload sizes rather than the tiny `print(i)` calls the harness makes.
-
-### 3. README
-
-Configuration table, the nine tools, and how to run the tests. `DESIGN.md` already holds the
-reasoning, so the README should be short and operational rather than repeating it.
-
-### 4. PR
-
-Based on `feature/agentcore-browser-mcp`, or `main` once #49 merges, referencing #51. Every
-claim verified before it is written. Do not include caveats about not having verified something
-because of branch or tooling logistics; if verification is blocked, ask.
+- The AWS SDK warns that versions published after early January 2027 will require node >= 22,
+  and both this image and browser-mcp are on `node:20-alpine`. A base image bump is a shared
+  change, not specific to this server.
+- `test/tool-matrix.js` should ideally run in CI, since it is the guard against advertising a
+  tool that fails when called the way its schema permits.
 
 ## Correction to an earlier note in this file
 

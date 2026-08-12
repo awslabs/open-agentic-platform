@@ -15,7 +15,7 @@
 import { config } from './config.js';
 import { log } from './log.js';
 import { startSession, stopSession, invokeTool } from './agentcore.js';
-import { TASK_STARTING_TOOL, TASK_POLLING_TOOLS } from './tools.js';
+import { TASK_STARTING_TOOL, TASK_POLLING_TOOLS, normalizeArgs } from './tools.js';
 
 /** Terminal states reported by getTask; anything else means the task is still live. */
 const TERMINAL_TASK_STATES = new Set(['completed', 'canceled', 'failed']);
@@ -129,8 +129,10 @@ export class InterpreterSession {
   }
 
   /** Forward a tool call, starting the interpreter session on first use. */
-  async callTool(name, args) {
+  async callTool(name, rawArgs) {
     await this.#ensureActive();
+    // Apply schema-promised defaults before the service sees the call.
+    const args = normalizeArgs(name, rawArgs);
     try {
       const result = await invokeTool(
         this.deps.dataPlane,
