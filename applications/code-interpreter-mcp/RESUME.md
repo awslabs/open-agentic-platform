@@ -5,10 +5,9 @@ state and remaining work. Issue #51 tracks the overall task.
 
 ## State
 
-- **Branch:** `feature/agentcore-code-interpreter`, created off `feature/agentcore-browser-mcp`
-  at commit `ae55c35`. It needs that branch's `mcp-server` work (selector-based gateway targets
-  with session affinity, optional `replicas`), so do not rebase onto `main` until #49 merges.
-- **No PR yet.**
+- **Branch:** `feature/agentcore-code-interpreter`, rebased onto `main` after #49 merged, so
+  it is now a clean fast-forward from `main` carrying only this work.
+- **PR #54** is open against `main`.
 - **Deployed and verified on `peeks-hub`.** ArgoCD tracks this branch (set via `config.local.yaml`).
 
 ### Done
@@ -52,8 +51,7 @@ BASE_URL=http://localhost:8033 N=8 PARALLEL=1 HOLD_SECONDS=60 node test/concurre
 
 ## Remaining work
 
-1. **PR**, referencing #51. Base it on `feature/agentcore-browser-mcp`, or `main` once #49
-   merges. Everything in DESIGN.md is verified, including on-cluster, so no hedging is needed.
+1. Review feedback on PR #54.
 2. Optional cleanup: the example apps `code-tools` and `code-agent` are still deployed on
    `peeks-hub`, and `config.local.yaml` still points ArgoCD at this branch. Both were
    deliberate for verification.
