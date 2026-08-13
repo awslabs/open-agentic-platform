@@ -45,7 +45,11 @@ template: {
 			}
 		}
 		spec: {
-			replicas: parameter.replicas
+			// Only set replicas when asked, so an hpa/cpuscaler trait can own the count
+			// without KubeVela reconciling it back and flapping.
+			if parameter.replicas != _|_ {
+				replicas: parameter.replicas
+			}
 			strategy: blueGreen: {
 				activeService:        context.name + "-stable"
 				previewService:       context.name + "-preview"
@@ -69,6 +73,14 @@ template: {
 					containers: [{
 						name:  context.name
 						image: parameter.image
+						// Auto-instrument for tracing. This lived only in the generated YAML,
+						// so every regeneration silently deleted it and broke tracing
+						// (issue #50). It belongs in the image via AGENT_OBSERVABILITY_ENABLED
+						// rather than a hardcoded Python command, but until then it lives here,
+						// where regeneration preserves it.
+						if parameter.observability.mode == "decentralized" {
+							command: ["opentelemetry-instrument", "python", "-m", "app.main"]
+						}
 						ports: [{
 							name:          "a2a"
 							containerPort: 8083
@@ -268,7 +280,19 @@ template: {
 		image: *"public.ecr.aws/z0a4o2j5/strands-agent:latest" | string
 
 		// Optional fields with defaults
-		replicas: *3 | int
+		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
+		// autoscaler own the count.
+		//
+		// IMPORTANT: more than one replica is only safe when conversation state lives
+		// outside the pod. Agents cache one Agent object per session in memory
+		// (app/agent.py `_agents`), and there is no A2A session affinity available in
+		// this stack, so a follow-up request that lands on another pod starts from
+		// nothing. Verified: same contextId, one pod answered "Teal" and another said it
+		// had no such information. Set a memory provider first (the agentcore-memory
+		// trait, MEMORY_PROVIDER=agentcore), which attaches a session manager that
+		// rehydrates state on any pod. The previous default of 3 was unsafe for exactly
+		// this reason.
+		replicas?: int
 
 		// Blue-green deployment settings
 		autoPromotionEnabled:  *true | bool

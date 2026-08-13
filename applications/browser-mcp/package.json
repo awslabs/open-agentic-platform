@@ -1,0 +1,26 @@
+{
+  "name": "browser-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fronts Amazon Bedrock AgentCore Browser as a session-multiplexing MCP server",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "parity": "node test/signing-parity.js",
+    "e2e": "node test/e2e-multisession.js"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "5.2.0",
+    "@aws-sdk/client-bedrock-agentcore": "3.1105.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "3.1105.0",
+    "@aws-sdk/credential-providers": "3.1105.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@smithy/protocol-http": "^5.5.16",
+    "@smithy/signature-v4": "^5.6.12",
+    "express": "5.1.0"
+  }
+}

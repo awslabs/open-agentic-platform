@@ -1,3 +1,9 @@
+# Example: standalone MCP server registered with AgentGateway.
+#
+# The mcp-server component owns its ServiceAccount and container (both named
+# after the component), deploys into the Application's namespace, and registers
+# an HTTPRoute at /mcp/<component-name>. Attach aws-service-identity or
+# gateway-identity traits to grant identities with no extra wiring.
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
@@ -5,24 +11,12 @@ metadata:
   namespace: default
 spec:
   components:
-    - name: mcp-time-ns
-      type: k8s-objects
-      properties:
-        objects:
-          - apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: mcp-time-server
     - name: mcp-time
       type: mcp-server
-      dependsOn:
-        - mcp-time-ns
       properties:
-        name: mcp-time
-        namespace: mcp-time-server
         description: "MCP server that provides current time tools"
         image: "public.ecr.aws/z0a4o2j5/mcp-time-server:latest"
-        containerPort: 8000
+        port: 8000
         replicas: 1
         env:
           - name: LOCAL_TIMEZONE

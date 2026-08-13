@@ -27,11 +27,19 @@ spec:
         }
 
         // Self-injected creds URI + token mount (the EKS webhook skips injection when
-        // AWS_CONTAINER_CREDENTIALS_FULL_URI is already present). No region needed —
-        // STS resolves without it, and apps set their own region via env if required.
+        // AWS_CONTAINER_CREDENTIALS_FULL_URI is already present).
+        //
+        // AWS_REGION / AWS_DEFAULT_REGION come from the chart's global.awsRegion, which
+        // the addon ApplicationSet sources per-cluster from the cluster secret's
+        // aws_region annotation. Region is therefore ENVIRONMENT config supplied by the
+        // platform, and must never appear in a developer's OAM: the same Application
+        // deploys unchanged to any region. Both names are set because SDKs differ in
+        // which one they read.
         _credsEnv: [
         	{name: "AWS_CONTAINER_CREDENTIALS_FULL_URI", value: "http://169.254.170.23/v1/credentials"},
         	{name: "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", value: "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"},
+        	{name: "AWS_REGION", value: "{{ .Values.global.awsRegion }}"},
+        	{name: "AWS_DEFAULT_REGION", value: "{{ .Values.global.awsRegion }}"},
         ]
         _tokenMount: {
         	name:      "eks-pod-identity-token"

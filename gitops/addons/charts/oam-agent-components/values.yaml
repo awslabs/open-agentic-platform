@@ -1,6 +1,10 @@
 global:
   awsRegion: us-west-2
   clusterName: ""
+  # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
+  # the platform has not supplied it; the addon wiring passes the real value from
+  # the cluster secret's aws_account_id annotation.
+  awsAccountId: "*"
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using
