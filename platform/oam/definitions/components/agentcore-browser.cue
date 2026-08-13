@@ -1,5 +1,3 @@
-import "strings"
-
 "agentcore-browser": {
 	alias: ""
 	annotations: {}
@@ -19,7 +17,21 @@ import "strings"
 }
 
 template: {
-	let _autoName = strings.Replace(context.namespace + "_" + context.name, "-", "_", -1)
+	// There is deliberately NO generated default for the browser name.
+	//
+	// The name is referenced from a second place, the MCP server's AGENTCORE_BROWSER_NAME,
+	// and the two must match or the server never resolves a browser and its pod never
+	// becomes ready. A generated default cannot be referenced: it is computed inside this
+	// template and is not addressable from another component or from the application YAML,
+	// so a developer relying on it would have to reproduce the formula by hand. Requiring
+	// the name means the value a developer types here is the value they type there.
+	//
+	// The name must also be unique per AWS ACCOUNT, and a collision is not self-healing: the
+	// provider retries the rejected create indefinitely and the resource stays Synced=False
+	// with an empty atProvider.
+	//
+	// Automatic wiring, which would remove the need for a developer to name this at all, is
+	// tracked in issue #55.
 
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
@@ -109,8 +121,16 @@ template: {
 	}
 
 	parameter: {
-		// +usage=Browser name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]*$). Defaults to <namespace>_<componentName>
-		browserName: *_autoName | string
+		// +usage=REQUIRED. Browser name in AWS, and the value to repeat in the MCP server's AGENTCORE_BROWSER_NAME. Letters, digits and underscores, starting with a letter, 48 characters maximum. No hyphens. Must be unique within the AWS account.
+		//
+		// The pattern below is AWS's own, confirmed against the live service, which rejects a
+		// violation with:
+		//   ValidationException: Value 'invalid-browser-name' at 'name' failed to satisfy
+		//   constraint: Member must satisfy regular expression pattern:
+		//   [a-zA-Z][a-zA-Z0-9_]{0,47}
+		// Validating here turns that into a render-time error naming the offending value,
+		// instead of a managed resource that sits Synced=False until someone reads its events.
+		browserName: string & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
 		// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
 		// is portable across regions; override only for a cross-region browser.
 		region: *"{{ .Values.global.awsRegion }}" | string

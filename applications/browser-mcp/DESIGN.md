@@ -697,9 +697,9 @@ design below is IMPLEMENTED and verified.
   gets its cluster's region ambiently; and align `agentcore-browser` to source
   region from `global.awsRegion` (drop its region param).
 
-- **Browser name is application config**, user-provided, passed explicitly to
-  both the `agentcore-browser` component (`browserName`, must match
-  `[a-zA-Z][a-zA-Z0-9_]*`, no hyphens) and the browser-mcp server env
+- **Browser name is application config**, user-provided and required, passed
+  explicitly to both the `agentcore-browser` component (`browserName`, must match
+  `[a-zA-Z][a-zA-Z0-9_]{0,47}`, no hyphens) and the browser-mcp server env
   (`AGENTCORE_BROWSER_NAME`). Duplicating it in the app is acceptable and makes
   switching to a different provisioned browser trivial. The broker resolves
   name→browserId at runtime via `ListBrowsers` (or uses a built-in id like

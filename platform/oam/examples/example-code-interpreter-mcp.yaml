@@ -19,14 +19,17 @@ spec:
     # The AgentCore Code Interpreter itself (Crossplane). Shared and long-lived; the
     # sessions against it are ephemeral and are managed by code-interpreter-mcp.
     #
-    # The name must be unique in the ACCOUNT, and a collision does not self-heal: the
-    # provider retries CreateCodeInterpreter forever against a taken name and the resource
-    # stays Synced=False with an empty status. Omit interpreterName to get the
-    # <namespace>_<component> default, which is unique per namespace.
+    # interpreterName is REQUIRED and has no default, because the MCP server below has to
+    # name the same interpreter. A generated name would not be knowable here.
+    #
+    # It must be unique in the ACCOUNT, and a collision does not self-heal: the provider
+    # retries CreateCodeInterpreter forever against a taken name and the resource stays
+    # Synced=False with an empty status. Automatic wiring is tracked in issue #55.
     - name: sandbox
       type: agentcore-code-interpreter
       properties:
-        # Must match [a-zA-Z][a-zA-Z0-9_]* : underscores, not hyphens.
+        # Letters, digits and underscores, starting with a letter, 48 chars max.
+        # No hyphens. This exact string is repeated in the server's env below.
         interpreterName: agents_code_sandbox
         networkMode: PUBLIC
         description: Shared code sandbox for agent tool use

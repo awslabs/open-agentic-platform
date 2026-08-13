@@ -25,6 +25,12 @@ BASE_URL=http://localhost:8000 node test/e2e-multisession.js
 To use a provisioned interpreter instead, set `AGENTCORE_CODE_INTERPRETER_NAME` to its name.
 The server resolves the name to an id at startup, retrying until it appears.
 
+That name is chosen by whoever provisions the interpreter. The `agentcore-code-interpreter`
+component requires it explicitly (no generated default) precisely because this server has to
+name the same interpreter, and both must agree. It must match AWS's pattern,
+`^[a-zA-Z][a-zA-Z0-9_]{0,47}$`: letters, digits and underscores, starting with a letter, 48
+characters maximum, no hyphens. The component validates it at render time.
+
 ## Deploying on the platform
 
 Two OAM components: one provisions the interpreter, one runs this server.

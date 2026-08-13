@@ -1,5 +1,3 @@
-import "strings"
-
 "agentcore-code-interpreter": {
 	alias: ""
 	annotations: {}
@@ -24,18 +22,26 @@ import "strings"
 }
 
 template: {
-	// Default name is <namespace>_<component> with hyphens replaced, because AgentCore
-	// requires ^[a-zA-Z][a-zA-Z0-9_]*$ and Kubernetes names are usually hyphenated.
+	// There is deliberately NO generated default for the interpreter name.
 	//
-	// The default is namespaced for a reason beyond tidiness: the name must be unique per
-	// ACCOUNT, and a collision is not self-healing. A second create against a taken name
-	// fails with
+	// The name is referenced from a second place, the MCP server's
+	// AGENTCORE_CODE_INTERPRETER_NAME, and the two must match or the server never resolves
+	// an interpreter and its pod never becomes ready. A generated default cannot be
+	// referenced: it is computed inside this template and is not addressable from another
+	// component or from the application YAML, so a developer relying on it would have to
+	// reproduce the formula by hand. Requiring the name means the value a developer types
+	// here is the value they type there.
+	//
+	// The name must also be unique per AWS ACCOUNT, and a collision is not self-healing. A
+	// create against a taken name fails with
 	//   ConflictException: CodeInterpreter with name '<name>' already exists in this account
 	// and the provider then retries that same create forever, leaving the resource
 	// permanently Synced=False with an empty atProvider. That is the live state of the
 	// interpreter provisioned by the crossplane-agentcore chart on this hub, stuck since
 	// 2026-05-27, even though the interpreter itself exists in AWS and is READY.
-	let _autoName = strings.Replace(context.namespace + "_" + context.name, "-", "_", -1)
+	//
+	// Automatic wiring, which would remove the need for a developer to name this at all, is
+	// tracked in issue #55.
 
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
@@ -130,8 +136,16 @@ template: {
 	}
 
 	parameter: {
-		// +usage=Code interpreter name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]*$). Must be unique in the account. Defaults to <namespace>_<componentName>
-		interpreterName: *_autoName | string
+		// +usage=REQUIRED. Code interpreter name in AWS, and the value to repeat in the MCP server's AGENTCORE_CODE_INTERPRETER_NAME. Letters, digits and underscores, starting with a letter, 48 characters maximum. No hyphens. Must be unique within the AWS account.
+		//
+		// The pattern below is AWS's own, taken from the CreateCodeInterpreter API reference
+		// and confirmed against the live service, which rejects a violation with:
+		//   ValidationException: Value 'invalid-name-with-hyphens' at 'name' failed to
+		//   satisfy constraint: Member must satisfy regular expression pattern:
+		//   [a-zA-Z][a-zA-Z0-9_]{0,47}
+		// Validating here turns that into a render-time error naming the offending value,
+		// instead of a managed resource that sits Synced=False until someone reads its events.
+		interpreterName: string & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
 		// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
 		// is portable across regions; override only for a cross-region interpreter.
 		region: *"{{ .Values.global.awsRegion }}" | string

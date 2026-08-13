@@ -156,9 +156,15 @@ and reports `status: READY`. A sibling resource on the same chart shows the clea
 annotation`, which is the signature of a create whose result was lost between the AWS call and
 the state write. Once that happens the name is taken and the resource can never converge.
 
-Two consequences. The default name is `<namespace>_<component>`, unique per namespace rather
-than per cluster. And retry-forever initialisation is what makes a late-arriving interpreter
-recoverable without a pod restart.
+Two consequences. `interpreterName` is required and has no generated default: the MCP server
+has to name the same interpreter, and a generated name is computed inside the component's CUE
+where nothing else can read it, so relying on one would mean reproducing the formula by hand.
+The parameter is validated against AWS's own pattern, `^[a-zA-Z][a-zA-Z0-9_]{0,47}$`, so a bad
+name fails at render with the offending value named instead of leaving a managed resource
+stuck. Removing the need to name it at all requires automatic wiring, tracked in issue #55.
+
+And retry-forever initialisation is what makes a late-arriving interpreter recoverable without
+a pod restart.
 
 ## IAM
 
