@@ -1,110 +1,110 @@
 {
-  "_comment": "Hidden holdout scenarios for elamaran11/dark-factory-sandbox. NEVER mounted into the coder sandbox (it has no k8s API access and only clones the target repo). Each scenario pairs a plain-English BDD statement (for the LLM judge) with a self-contained executable test run via `node -e` against the built code (the hard, un-gameable signal). IMPORTANT: appliesWhen is a regex tested against the PR DIFF, not merely index.js existence \u2014 scope each scenario to ITS OWN function name so a PR that adds function X is graded ONLY by X's scenarios (unrelated scenarios SKIP, not fail). This app/index.js is a growing math module (add/subtract/multiply/fibonacci/power/gcd/factorial/isPrime); add a scoped scenario block per new function here as the repo grows.",
+  "_comment": "Hidden holdout scenarios for punkwalker/dark-factory-sandbox. NEVER mounted into the coder sandbox (it has no k8s API access and only clones the target repo). Each scenario pairs a plain-English BDD statement (for the LLM judge) with a self-contained executable test run via `node -e` against the built code (the hard, un-gameable signal). IMPORTANT: appliesWhen is a regex tested against the PR DIFF, not merely index.js existence \u2014 scope each scenario to ITS OWN function name so a PR that adds function X is graded ONLY by X's scenarios (unrelated scenarios SKIP, not fail). This index.js is a growing math module (add/subtract/multiply/fibonacci/power/gcd/factorial/isPrime); add a scoped scenario block per new function here as the repo grows.",
   "scenarios": [
     {
       "id": "subtract-basic",
       "feature": "subtract(a, b) returns the arithmetic difference",
       "scenario": "Given the module exports subtract, When I call subtract(5, 3), Then it returns 2; and subtract(10, 4) returns 6.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); const a=m.subtract(5,3), b=m.subtract(10,4); if(a!==2||b!==6){console.error('expected 2,6 got',a,b);process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); const a=m.subtract(5,3), b=m.subtract(10,4); if(a!==2||b!==6){console.error('expected 2,6 got',a,b);process.exit(1)} console.log('ok')",
       "appliesWhen": "/subtract/.test(diff)"
     },
     {
       "id": "subtract-negative",
       "feature": "subtract handles negatives and order",
       "scenario": "Given subtract, When I call subtract(3, 5), Then it returns -2; and subtract(-2, -8) returns 6. This defeats a stub that only handles the two example inputs.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); const a=m.subtract(3,5), b=m.subtract(-2,-8); if(a!==-2||b!==6){console.error('expected -2,6 got',a,b);process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); const a=m.subtract(3,5), b=m.subtract(-2,-8); if(a!==-2||b!==6){console.error('expected -2,6 got',a,b);process.exit(1)} console.log('ok')",
       "appliesWhen": "/subtract/.test(diff)"
     },
     {
       "id": "subtract-not-hardcoded",
       "feature": "subtract computes, it is not a lookup table",
       "scenario": "Given subtract, When I call it with a fixed pair the coder could not have hard-coded (subtract(123, 45)), Then it returns 78; and subtract(0, 0) returns 0.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); const a=m.subtract(123,45), b=m.subtract(0,0); if(a!==78||b!==0){console.error('expected 78,0 got',a,b);process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); const a=m.subtract(123,45), b=m.subtract(0,0); if(a!==78||b!==0){console.error('expected 78,0 got',a,b);process.exit(1)} console.log('ok')",
       "appliesWhen": "/subtract/.test(diff)"
     },
     {
       "id": "multiply-basic",
       "feature": "multiply(a, b) returns the arithmetic product",
       "scenario": "Given multiply, When I call multiply(3, 4), Then it returns 12; and multiply(-2, 5) returns -10; and multiply(7, 0) returns 0.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.multiply(3,4)!==12||m.multiply(-2,5)!==-10||m.multiply(7,0)!==0){console.error('multiply wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.multiply(3,4)!==12||m.multiply(-2,5)!==-10||m.multiply(7,0)!==0){console.error('multiply wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/multiply/.test(diff)"
     },
     {
       "id": "fibonacci-sequence",
       "feature": "fibonacci(n) returns the nth Fibonacci number (0-indexed)",
       "scenario": "Given fibonacci, When I call it, Then fibonacci(0)=0, fibonacci(1)=1, fibonacci(10)=55, fibonacci(15)=610. The 10th/15th values defeat a stub that only hard-codes the first two.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.fibonacci(0)!==0||m.fibonacci(1)!==1||m.fibonacci(10)!==55||m.fibonacci(15)!==610){console.error('fibonacci wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.fibonacci(0)!==0||m.fibonacci(1)!==1||m.fibonacci(10)!==55||m.fibonacci(15)!==610){console.error('fibonacci wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/fibonacci/.test(diff)"
     },
     {
       "id": "power-basic",
       "feature": "power(base, exponent) returns base raised to exponent",
       "scenario": "Given power, When I call it, Then power(2,3)=8, power(5,0)=1, power(3,2)=9, power(2,10)=1024. The 2^10 case defeats a stub that only handles the small examples.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.power(2,3)!==8||m.power(5,0)!==1||m.power(3,2)!==9||m.power(2,10)!==1024){console.error('power wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.power(2,3)!==8||m.power(5,0)!==1||m.power(3,2)!==9||m.power(2,10)!==1024){console.error('power wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/power/.test(diff)"
     },
     {
       "id": "gcd-basic",
       "feature": "gcd(a, b) returns the greatest common divisor",
       "scenario": "Given gcd, When I call it, Then gcd(12,8)=4, gcd(17,5)=1 (coprime), gcd(100,10)=10, gcd(48,36)=12. The coprime + larger cases defeat a stub keyed to one example.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.gcd(12,8)!==4||m.gcd(17,5)!==1||m.gcd(100,10)!==10||m.gcd(48,36)!==12){console.error('gcd wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.gcd(12,8)!==4||m.gcd(17,5)!==1||m.gcd(100,10)!==10||m.gcd(48,36)!==12){console.error('gcd wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/gcd/.test(diff)"
     },
     {
       "id": "factorial-basic",
       "feature": "factorial(n) returns n! for non-negative integers",
       "scenario": "Given factorial, When I call it, Then factorial(0)=1, factorial(1)=1, factorial(5)=120, factorial(10)=3628800. The 10! case defeats a stub keyed to the small examples. (Negative-input behaviour is intentionally left to the implementer and not graded here.)",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.factorial(0)!==1||m.factorial(1)!==1||m.factorial(5)!==120||m.factorial(10)!==3628800){console.error('factorial wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.factorial(0)!==1||m.factorial(1)!==1||m.factorial(5)!==120||m.factorial(10)!==3628800){console.error('factorial wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/factorial/.test(diff)"
     },
     {
       "id": "isprime-basic",
       "feature": "isPrime(n) correctly classifies primes and non-primes",
       "scenario": "Given isPrime, When I call it, Then isPrime(2)=true, isPrime(17)=true, isPrime(1)=false, isPrime(15)=false, isPrime(97)=true, isPrime(100)=false. The larger values defeat a stub keyed to the small examples.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.isPrime(2)!==true||m.isPrime(17)!==true||m.isPrime(1)!==false||m.isPrime(15)!==false||m.isPrime(97)!==true||m.isPrime(100)!==false){console.error('isPrime wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.isPrime(2)!==true||m.isPrime(17)!==true||m.isPrime(1)!==false||m.isPrime(15)!==false||m.isPrime(97)!==true||m.isPrime(100)!==false){console.error('isPrime wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/isPrime/.test(diff)"
     },
     {
       "id": "iseven-basic",
       "feature": "isEven(n) correctly identifies even integers",
       "scenario": "Given isEven, When I call it, Then isEven(4)=true, isEven(7)=false, isEven(0)=true, isEven(-2)=true, isEven(-3)=false. The zero + negative cases defeat a stub keyed to one example.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.isEven(4)!==true||m.isEven(7)!==false||m.isEven(0)!==true||m.isEven(-2)!==true||m.isEven(-3)!==false){console.error('isEven wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.isEven(4)!==true||m.isEven(7)!==false||m.isEven(0)!==true||m.isEven(-2)!==true||m.isEven(-3)!==false){console.error('isEven wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/isEven/.test(diff)"
     },
     {
       "id": "isodd-basic",
       "feature": "isOdd(n) is the logical inverse of isEven",
       "scenario": "Given isOdd, When I call it, Then isOdd(7)=true, isOdd(4)=false, isOdd(0)=false, isOdd(-3)=true. isOdd must be the exact inverse of isEven for the same inputs.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.isOdd(7)!==true||m.isOdd(4)!==false||m.isOdd(0)!==false||m.isOdd(-3)!==true){console.error('isOdd wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.isOdd(7)!==true||m.isOdd(4)!==false||m.isOdd(0)!==false||m.isOdd(-3)!==true){console.error('isOdd wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/isOdd/.test(diff)"
     },
     {
       "id": "clamp-basic",
       "feature": "clamp(value, min, max) constrains value to [min, max]",
       "scenario": "Given clamp, When I call it, Then clamp(5,0,10)=5 (in range), clamp(-3,0,10)=0 (below min), clamp(15,0,10)=10 (above max), clamp(10,0,10)=10 (equal to bound), clamp(0,0,10)=0.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.clamp(5,0,10)!==5||m.clamp(-3,0,10)!==0||m.clamp(15,0,10)!==10||m.clamp(10,0,10)!==10||m.clamp(0,0,10)!==0){console.error('clamp wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.clamp(5,0,10)!==5||m.clamp(-3,0,10)!==0||m.clamp(15,0,10)!==10||m.clamp(10,0,10)!==10||m.clamp(0,0,10)!==0){console.error('clamp wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/clamp/.test(diff)"
     },
     {
       "id": "sum-basic",
       "feature": "sum(numbers) totals an array",
       "scenario": "Given sum, When I call it, Then sum([1,2,3])=6, sum([])=0, sum([-1,1])=0, sum([10])=10, sum([5,5,5,5])=20.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); const eq=(a,b)=>a===b; if(!eq(m.sum([1,2,3]),6)||!eq(m.sum([]),0)||!eq(m.sum([-1,1]),0)||!eq(m.sum([10]),10)||!eq(m.sum([5,5,5,5]),20)){console.error('sum wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); const eq=(a,b)=>a===b; if(!eq(m.sum([1,2,3]),6)||!eq(m.sum([]),0)||!eq(m.sum([-1,1]),0)||!eq(m.sum([10]),10)||!eq(m.sum([5,5,5,5]),20)){console.error('sum wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/\\bsum\\b/.test(diff)"
     },
     {
       "id": "average-basic",
       "feature": "average(numbers) returns the arithmetic mean, guarding empty",
       "scenario": "Given average, When I call it, Then average([2,4,6])=4, average([10])=10, average([])=0 (no divide-by-zero), average([1,2,3,4])=2.5.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(m.average([2,4,6])!==4||m.average([10])!==10||m.average([])!==0||m.average([1,2,3,4])!==2.5){console.error('average wrong');process.exit(1)} console.log('ok')",
+      "test": "const m=require(process.env.REPO+'/index.js'); if(m.average([2,4,6])!==4||m.average([10])!==10||m.average([])!==0||m.average([1,2,3,4])!==2.5){console.error('average wrong');process.exit(1)} console.log('ok')",
       "appliesWhen": "/average/.test(diff)"
     },
     {
       "id": "add-regression",
       "feature": "the pre-existing add function is not broken (regression)",
       "scenario": "Given the module still exports add, When I call add(2, 3), Then it returns 5. Any change to index.js must not regress this baseline behaviour.",
-      "test": "const m=require(process.env.REPO+'/app/index.js'); if(typeof m.add!=='function'||m.add(2,3)!==5){console.error('add regressed');process.exit(1)} console.log('ok')",
-      "appliesWhen": "/app\\/index\\.js/.test(diff)"
+      "test": "const m=require(process.env.REPO+'/index.js'); if(typeof m.add!=='function'||m.add(2,3)!==5){console.error('add regressed');process.exit(1)} console.log('ok')",
+      "appliesWhen": "/index\\.js/.test(diff)"
     }
   ]
 }

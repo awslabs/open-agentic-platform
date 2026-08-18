@@ -504,7 +504,7 @@ trigger:
     # gate then grades every run against nothing. Add a holdout/<owner>-<name>/
     # directory whenever you add a repo here.
     repositories:
-      - owner: elamaran11
+      - owner: punkwalker
         names:
           - dark-factory-sandbox
     # Public URL GitHub posts webhooks to (ALB ingress host + endpoint).
