@@ -136,12 +136,22 @@ spec:
           # so the data check above does NOT exclude them. Each such comment would
           # otherwise CREATE a df-iterate workflow (even though iterate.js then no-ops on
           # the marker) — noisy runaway of empty workflows. So we ALSO exclude them HERE,
-          # at the sensor, with an EXPRESSION filter (expr-lang, argo-events >=1.9):
+          # at the sensor, with an EXPRESSION filter (govaluate — see the note below):
           # drop any comment whose body contains a "dark-factory:" marker, so no workflow
           # is even created. iterate.js keeps the marker + bot + identity guards as
           # defense-in-depth (this expr is the primary stop).
         exprs:
-          - expr: 'body_comment_body matches "(?s).*" && !(body_comment_body contains "dark-factory:")'
+          # govaluate syntax — NOT expr-lang. argo-events evaluates `expr` with
+          # Knetic/govaluate (docs/sensors/filters/expr.md), whose regex comparators are
+          # `=~` / `!~`; it has NO `matches` or `contains` keywords. The previous
+          # expr-lang-style expression failed to TOKENIZE, so this dependency was
+          # discarded on EVERY event with
+          #   expr filter error (Cannot transition token types from VARIABLE
+          #   [body_comment_body] to VARIABLE [matches])
+          # i.e. pr-commented could never be satisfied and df-iterate NEVER ran — the
+          # self-trigger guard "worked" only by dropping humans too. `!~` treats the RHS
+          # as a Go regexp, so this is a plain substring exclusion.
+          - expr: 'body_comment_body !~ "dark-factory:"'
             fields:
               - name: body_comment_body
                 path: body.comment.body
