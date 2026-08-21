@@ -1,4 +1,4 @@
-# Holdout rubric — punkwalker/dark-factory-sandbox
+# Holdout rubric — replace-me-owner/replace-me-repo
 
 The judge scores each scenario **PASS/FAIL** against the built code on the coder's `df/issue-N`
 branch. This rubric is for the LLM judge only; the coder never sees it.

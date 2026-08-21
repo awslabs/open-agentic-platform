@@ -18,7 +18,7 @@
 # args), so nothing in Helm, the registry, or the CR can reach inside this ZIP. Whatever
 # this default says is what Lambda pulls. Verified against the live CRD 2026-08-11.
 #
-# It previously named 940019131157 (the AUTHORING account), which no other account can
+# It previously named the chart AUTHOR's account, which no other account can
 # pull from: cross-account ECR needs BOTH an identity grant AND a repository policy on
 # the far side, and we hold no credentials there (confirmed: AccessDeniedException on
 # ecr:DescribeImages, "no resource-based policy allows"). The build role's
@@ -30,7 +30,7 @@
 # drift class. Until then: EDIT THIS LINE when deploying to a new account, and rebuild
 # the base with `docker buildx build --platform linux/arm64` (Lambda MicroVM is
 # ARM_64-only; see the arch note above).
-ARG CODER_IMAGE=259732043995.dkr.ecr.us-west-2.amazonaws.com/dark-factory-coder:v0.2.5-arm64
+ARG CODER_IMAGE=REPLACE_ME_ACCOUNT_ID.dkr.ecr.REPLACE_ME_REGION.amazonaws.com/dark-factory-coder:v0.2.5-arm64
 FROM ${CODER_IMAGE}
 
 WORKDIR /app

@@ -27,6 +27,7 @@ spokes as normal deployments.
 3. [Flow A — Agent Sandbox capability](#3-flow-a--agent-sandbox-capability-permanent-platform-feature)
 4. [Flow B — the Dark Factory pipeline](#4-flow-b--the-dark-factory-pipeline)
    - [Flow D — Lambda MicroVM substrate (alternative to Flow A)](#45-flow-d--lambda-microvm-substrate-alternative-to-flow-a)
+     — enabling it: [`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md)
 5. [The pluggable coding assistant](#5-the-pluggable-coding-assistant)
 6. [Independent verification](#6-independent-verification-the-heart-of-the-pattern)
 7. [Live status in the PR](#7-live-status-in-the-pr)
@@ -276,6 +277,10 @@ UI — the substrate for scaling across many concurrent issues.
 
 > 📊 **See the diagrams:** [`diagrams/flow-d-microvm-sandbox.md`](diagrams/flow-d-microvm-sandbox.md)
 > (substrate architecture + platform/app ownership split + the RuntimeClass-shim bridge).
+>
+> 🔧 **To actually enable it:** [`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md) — the manual,
+> per-account steps (arm64 base image, code-artifact ZIP, bucket ordering, GitHub label/tokens) that
+> GitOps cannot do for you, plus the live known issues.
 
 Flow A's isolation boundary is a **Kata micro-VM pod** on a platform-owned nested-virt node group.
 **Flow D is a second Flow-A substrate**: an **AWS Lambda MicroVM** — a *serverless* micro-VM with no
@@ -359,12 +364,16 @@ Shipped as GitOps in its **own chart** — `gitops/addons/charts/agent-sandbox-l
 the Kata `agent-sandbox` chart), structured as `templates/image/` (KRO RGD + the one platform
 `MicrovmSandbox`) and `templates/shim/` (bridge SandboxTemplate + warm pool + `microvm-lifecycle`
 controller). **Disabled by default** (`microvm.enabled=false`); the hub overlay
-(`clusters/hub/addons/agent-sandbox-lambda/values.yaml`) carries cluster-specific values, and a gated
+(`gitops/overlays/clusters/hub/agent-sandbox-lambda/values.yaml`) carries cluster-specific values, and a gated
 `agent-sandbox-lambda` addon entry deploys it hub-only. The platform-capability enablement (Managed ACK
 + Managed KRO) lands separately in the **appmod-blueprints** platform repo (they're EKS Capabilities,
-like the Managed ArgoCD the hub already runs). This PR delivers the **design + GitOps scaffold**; the
-live end-to-end path (enable capabilities → sync controller → publish the arm64 artifact → run a MicroVM
-coder with suspend/resume) is the follow-up.
+like the Managed ArgoCD the hub already runs). The end-to-end path has since been **run live** (image built from an arm64 base, `RunMicrovm`, coder
+in the VM, PR opened, holdout gate green, suspend + warm resume). Turning it on is **not** a
+GitOps-only change: three artifacts must be produced by hand per AWS account, and two of them cannot
+be templated from cluster annotations. See
+**[`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md)** for the runbook (arm64 base image, the
+non-templatable `ARG` inside the code-artifact ZIP, artifact bucket ordering, GitHub label +
+credentials, fix rounds) and its known-issues table.
 
 ---
 

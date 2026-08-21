@@ -16,7 +16,7 @@ microvm:
   # accountId is INTENTIONALLY NOT SET HERE. It is injected from this cluster's
   # aws_account_id annotation by the registry entry (gitops/addons/registry/sandbox.yaml),
   # whose valuesObject takes precedence over this overlay anyway. It used to hardcode
-  # 940019131157 (the authoring account), which broke the PodIdentityAssociation with
+  # the chart AUTHOR's account, which broke the PodIdentityAssociation with
   # "Cross-account pass role is not allowed" on every other account.
   podIdentity:
     clusterName: hub

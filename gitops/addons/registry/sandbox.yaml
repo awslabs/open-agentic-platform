@@ -382,12 +382,12 @@ dark-factory:
     # 10-rbac.yaml builds the PodIdentityAssociation roleARN as
     #   arn:aws:iam::<accountId>:role/<clusterName>-ack-lambdamicrovms-controller
     # from microvm.podIdentity. The chart default for accountId is now EMPTY behind a
-    # Helm `required` guard (it used to hardcode 940019131157, the author's account) and
+    # Helm `required` guard (it used to hardcode the chart AUTHOR's account) and
     # clusterName defaults to `hub`, so on any other account the ACK eks controller
     # rejected it with:
     #   AccessDeniedException: Cross-account pass role is not allowed
     # and — because ArgoCD health-waits on that CR — the dark-factory app never
-    # reaches Synced. Observed live on account 259732043995: the role DID exist
+    # reaches Synced. Observed live on a non-authoring account: the role DID exist
     # locally (ACK created it), the ARN just named the wrong account.
     #
     # Templating both from annotations makes it correct on every cluster with no

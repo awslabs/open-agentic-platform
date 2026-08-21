@@ -107,14 +107,13 @@ microvm:
   # BUMP THIS KEY TO REBUILD the image — Lambda MicroVM does not rebuild when the same S3
   # key is overwritten (SUBSTRATE-BENCHMARK.md pitfall 8). Publish the arm64 zip to
   # s3://<image.name>-microvm-artifacts-<accountId>/<codeArtifactKey> before enabling.
-  #   r8: Dockerfile ARG CODER_IMAGE repointed from the AUTHORING account (940019131157) to
+  #   r8: Dockerfile ARG CODER_IMAGE repointed from the chart AUTHOR's account to
   #       the deploying account's ECR. The old value was unpullable — cross-account ECR needs
   #       a repository policy on the far side, which we cannot set — so every build failed at
   #       base-image pull even once the S3 artifact fetch was fixed. That ARG CANNOT be
   #       templated (the MicrovmImage CRD's codeArtifact has only `uri`; no build-args field),
-  #       so it is edited in the Dockerfile and baked into the ZIP. Base image
-  #       dark-factory-coder:v0.2.5-arm64 was built for linux/arm64 and pushed to this
-  #       account on 2026-08-11 (digest sha256:61f06d22f936be2f…).
+  #       so it is edited in the Dockerfile and baked into the ZIP. Build the arm64 base
+  #       and publish it to YOUR account's ECR first — see docs/dark-factory/FLOW-D-ENABLEMENT.md.
   #   r7: hook-server /run guard keyed on a per-invocation run-id (issue+note hash) instead
   #       of a one-shot boolean, so a RESUMED VM (fix round) accepts a fresh /run and re-runs
   #       the coder — the resume path was a no-op because the snapshot froze coderStarted=true.
