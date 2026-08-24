@@ -58,7 +58,17 @@ spec:
 ---
 {{- $agentHost := .Values.ingress.agentHost | default (printf "agents.%s" .Values.ingress.host) }}
 # Dedicated agent hostname: routes all paths to agentgateway-proxy.
-# Covered by the wildcard ACM cert. ExternalDNS creates the Route53 record.
+#
+# In real-domain mode this uses a dedicated `agents.<host>` name covered by the
+# wildcard ACM cert (HTTPS:443, ExternalDNS creates the Route53 record).
+#
+# In insecure/CloudFront mode there is no ACM cert and no wildcard DNS, so a
+# `agents.<cloudfront-domain>` host has no certificate — which would fail the
+# whole shared `platform` ALB group model build ("no certificate found for host")
+# and block every other ingress in the group. Match the sibling `agentgateway`
+# ingress: listen HTTP:80 with no cert (CloudFront terminates TLS) and drop the
+# dedicated host so agent paths are served host-less on the shared CloudFront host.
+{{- $insecure := contains "cloudfront.net" .Values.ingress.host }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -66,15 +76,23 @@ metadata:
   namespace: agentgateway-system
   annotations:
     alb.ingress.kubernetes.io/target-type: ip
+    {{- if $insecure }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    {{- else }}
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
+    {{- end }}
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
     argocd.argoproj.io/sync-wave: "10"
 spec:
   ingressClassName: {{ .Values.ingress.className | default "platform" }}
   rules:
+{{- if $insecure }}
+    - http:
+{{- else }}
     - host: {{ $agentHost }}
       http:
+{{- end }}
         paths:
           - path: /
             pathType: Prefix
