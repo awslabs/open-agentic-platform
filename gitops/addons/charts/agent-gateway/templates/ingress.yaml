@@ -56,19 +56,22 @@ spec:
                 port:
                   number: 8080
 ---
+{{- /*
+  Dedicated agent hostname: routes ALL paths to agentgateway-proxy on a
+  separate `agents.<host>` name covered by the wildcard ACM cert (HTTPS:443,
+  ExternalDNS creates the Route53 record).
+
+  This is ONLY rendered in real-domain mode. In insecure/CloudFront mode there
+  is no ACM cert and no wildcard DNS, so `agents.<cloudfront-domain>` has no
+  certificate. Rendering it host-less (a `/*` rule with no host condition) is
+  NOT a fix either: on the shared `platform` ALB group it becomes a catch-all
+  that shadows every other service exposed at `/` on the CloudFront host
+  (e.g. langfuse), returning that service's "route not found". The primary
+  `agentgateway` ingress above already serves /sse and OAuth discovery on the
+  shared CloudFront host, so agents are reachable without this second ingress.
+*/}}
+{{- if not (contains "cloudfront.net" .Values.ingress.host) }}
 {{- $agentHost := .Values.ingress.agentHost | default (printf "agents.%s" .Values.ingress.host) }}
-# Dedicated agent hostname: routes all paths to agentgateway-proxy.
-#
-# In real-domain mode this uses a dedicated `agents.<host>` name covered by the
-# wildcard ACM cert (HTTPS:443, ExternalDNS creates the Route53 record).
-#
-# In insecure/CloudFront mode there is no ACM cert and no wildcard DNS, so a
-# `agents.<cloudfront-domain>` host has no certificate — which would fail the
-# whole shared `platform` ALB group model build ("no certificate found for host")
-# and block every other ingress in the group. Match the sibling `agentgateway`
-# ingress: listen HTTP:80 with no cert (CloudFront terminates TLS) and drop the
-# dedicated host so agent paths are served host-less on the shared CloudFront host.
-{{- $insecure := contains "cloudfront.net" .Values.ingress.host }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -76,23 +79,15 @@ metadata:
   namespace: agentgateway-system
   annotations:
     alb.ingress.kubernetes.io/target-type: ip
-    {{- if $insecure }}
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
-    {{- else }}
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    {{- end }}
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
     argocd.argoproj.io/sync-wave: "10"
 spec:
   ingressClassName: {{ .Values.ingress.className | default "platform" }}
   rules:
-{{- if $insecure }}
-    - http:
-{{- else }}
     - host: {{ $agentHost }}
       http:
-{{- end }}
         paths:
           - path: /
             pathType: Prefix
@@ -101,4 +96,5 @@ spec:
                 name: agentgateway-ingress
                 port:
                   number: 8080
+{{- end }}
 {{- end }}
