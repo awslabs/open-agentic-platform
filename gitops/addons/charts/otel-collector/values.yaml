@@ -1,3 +1,6 @@
+# Bump to force a collector rollout on config.yaml-only changes (see collector.yaml checksum/config)
+configRevision: "2"
+
 global:
   awsRegion: us-west-2
 

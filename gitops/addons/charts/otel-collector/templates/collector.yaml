@@ -59,7 +59,7 @@ data:
           max_interval: 30s
           max_elapsed_time: 5m
         headers:
-          Authorization: "Basic ${LANGFUSE_OTEL_AUTH}"
+          Authorization: "Basic ${env:LANGFUSE_OTEL_AUTH}"
           x-langfuse-ingestion-version: "4"
       {{- end }}
       {{- if .Values.bifrost.enabled }}
@@ -119,7 +119,12 @@ spec:
       labels:
         app: otel-collector
       annotations:
-        checksum/config: {{ printf "%s-%s-%s-%s" (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
+        # Roll the collector pods when the config changes. Include a config
+        # revision string alongside the key values so a config.yaml-only change
+        # (e.g. the exporter auth header) triggers a restart — the collector
+        # reads its config only at startup. Bump configRevision when editing
+        # config.yaml without a values change.
+        checksum/config: {{ printf "%s-%s-%s-%s-%s" (.Values.configRevision | default "1" | toString) (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
         checksum/langfuse-auth: {{ .Values.langfuse.secretManagerKey | default "none" | sha256sum | trunc 8 }}
     spec:
       serviceAccountName: otel-collector
