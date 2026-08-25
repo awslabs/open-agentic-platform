@@ -52,3 +52,9 @@ oam-agent-components:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      # Scopes the generated bedrock-agentcore IAM Resource ARNs (browser-custom /
+      # code-interpreter-custom) to THIS account. The chart defaults it to "*", so
+      # omitting it silently re-widens the policy that main's 845e88fa narrowed.
+      # Ported from gitops/addons/bootstrap/default/addons.yaml, which this registry
+      # layer replaced — that file's edit on main has nowhere else to land.
+      awsAccountId: '{{.metadata.annotations.aws_account_id}}'
