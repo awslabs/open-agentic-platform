@@ -42,6 +42,16 @@ elif os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     except ImportError:
         pass
 
+# ── HTTP client instrumentation (W3C traceparent propagation) ────────────
+# Instruments httpx so outbound calls to Bifrost carry the traceparent header.
+# Bifrost reads traceparent and creates child spans under the same trace ID,
+# producing a unified trace tree: Agent → Bifrost LLM call.
+try:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    HTTPXClientInstrumentor().instrument()
+except ImportError:
+    pass
+
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -55,13 +65,14 @@ async def lifespan(app):
     shutdown_mcp()
 
 
-# A2A server needs an agent for the agent card / default executor.
-# Per-session routing for A2A would require a custom executor; for now
-# the default A2A executor uses this shared agent (no memory).
-_default_agent = create_agent()
-
+# A2AServer builds one Agent per A2A context via agent_factory (context_id ->
+# Agent), so each caller/session gets its own AgentCore-backed session_manager
+# instead of all A2A callers sharing a single memory-less agent. create_agent's
+# signature (session_id, actor_id="user") matches (context_id) -> Agent when
+# called positionally. The factory is invoked once up front (with a placeholder
+# context id) purely to derive agent-card metadata.
 a2a_server = A2AServer(
-    agent=_default_agent,
+    agent_factory=create_agent,
     host=config.HOST,
     port=config.PORT,
     version="1.0.0",

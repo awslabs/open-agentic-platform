@@ -163,3 +163,99 @@ CEL expressions use OR logic — any matching expression grants access.
 ### Route Path Convention
 
 Each MCP server is exposed at `/mcp/<name>`. Agents connect via `http://<gateway-address>/mcp/<name>`.
+
+## Autoscaling mcp-server components
+
+`replicas` on `mcp-server` is optional by design. Set it and KubeVela owns the count;
+omit it and an `hpa` or `cpuscaler` trait can own it. Rendering it unconditionally
+made the two controllers fight, because an HPA writes `spec.replicas` through the
+Rollout's `/scale` subresource while KubeVela reconciles it back to the declared value.
+Measured before the fix: `spec.replicas` went 2, then 1 (killing a pod), then 2. After:
+held at 2 for five minutes with zero reverts.
+
+KubeVela's `hpa` trait does drive an Argo Rollout, even though it declares
+`appliesToWorkloads: ['deployments.apps','statefulsets.apps']`, which is not enforced
+on this path. Point it at the Rollout explicitly:
+
+```yaml
+traits:
+  - type: hpa
+    properties:
+      min: 1
+      max: 5
+      targetAPIVersion: argoproj.io/v1alpha1
+      targetKind: Rollout
+      cpu:
+        value: 70          # note: `value`, not `usage`
+```
+
+Two prerequisites, both easy to get wrong:
+
+- **CPU requests must be set.** HPA utilization is a percentage of requests, so a
+  container with no requests cannot be autoscaled on CPU.
+- **The workload must tolerate more than one replica.** Any server holding session
+  state in memory needs gateway session affinity first. `browser-mcp` demonstrates the
+  failure: with 2 replicas, connect succeeds and the next call returns
+  `Bad Request: no valid session ID provided`, because the follow-up POST lands on a
+  pod that never saw the session.
+
+`cpu.usage` is not a parameter. Passing it is silently ignored and the target renders
+as the default 50%.
+
+## Session affinity
+
+MCP sessions are stateful by specification: the server returns an `Mcp-Session-Id` on
+initialize and the client presents it on every later request. If the server keeps
+per-session state in memory, follow-up requests must reach the same pod.
+
+### mcp-server: on by default, and it works
+
+`mcp-server` registers a **selector-based** `AgentgatewayBackend` target and sets
+`sessionRouting` from a `sessionAffinity` parameter that defaults to `true`. The target
+type is the crux. Upstream is explicit that stateful session routing and session
+affinity require non-static, selector-based targets, and that a `static` target with
+`sessionRouting: Stateful` carries no routing guarantee.
+
+The component previously used a static host pointing at the stable Service, which meant
+the gateway spoke to a ClusterIP and kube-proxy chose a pod per connection. Measured at
+2 replicas: connect succeeded, then the next call failed with
+`Bad Request: no valid session ID provided`. After the change, at 2 replicas, the same
+test passed and per-pod `/readyz` showed the session pinned to exactly one pod
+(`mcpSessions=1, liveBrowserSessions=1` on one, `0/0` on the other).
+
+The selector matches an `agentgateway.dev/target` label placed only on the **stable**
+Service. Both the stable and preview Services carry `app.kubernetes.io/name`, so
+selecting on that would have routed live sessions into preview pods mid-rollout.
+
+Set `sessionAffinity: false` only for a server that genuinely carries full context per
+request; that selects `sessionRouting: Stateless` and lets requests spread over all
+pods.
+
+### agent: no affinity available, so state must move out of the pod
+
+Agents cannot use the same mechanism. They register with the gateway through an
+`HTTPRoute` pointing at a Service, not an `AgentgatewayBackend`, and the backend CRD has
+no `a2a` section. Nothing else in the installed stack can pin an A2A session either:
+`BackendConfigPolicy` (kgateway) and `BackendLBPolicy` (Gateway API) are both absent,
+the installed Gateway API is v1.5.0 **standard** channel with no `sessionPersistence`,
+and `AgentgatewayPolicy` has no load-balancing or hash fields.
+
+This matters because agents cache one `Agent` per session in memory
+(`app/agent.py` `_agents`). Demonstrated with the same `contextId` against two pods of
+the same agent: the first answered `Teal`, the second replied that it had no
+information about the preference. The default was `replicas: 3`, so roughly two of every
+three follow-ups lost the conversation.
+
+`replicas` is now optional on `agent`, which means one pod unless asked. The durable fix
+for scaling agents is not affinity but **external conversation state**: with a memory
+provider configured (the `agentcore-memory` trait, `MEMORY_PROVIDER=agentcore`), a
+session manager rehydrates state on whichever pod receives the request, and replicas
+become free. Set memory first, then scale.
+
+### The deleted kgateway example
+
+`platform/oam/examples/kgateway-session-affinity.yaml` was removed rather than fixed. It
+configured `BackendConfigPolicy` from `gateway.kgateway.dev/v1` with RING_HASH and
+`X-Context-ID` hash policies, and that CRD is not installed on this platform, so the
+file could never be applied. Affinity for MCP now lives in the component definition
+where it is on by default, and the agent gap is described above.

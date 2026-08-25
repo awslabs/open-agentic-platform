@@ -21,7 +21,7 @@ enabledAddons:
   argo_events: true      # Dark Factory (Flow B) trigger: GitHub-webhook EventSource + Sensor → df-run
   argo_rollouts: true
   argo_workflows: true
-  kargo: false
+  kargo: true
   flux: false
   # Security
   keycloak: true

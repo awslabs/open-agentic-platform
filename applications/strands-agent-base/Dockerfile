@@ -1,5 +1,5 @@
 # Use uv's Python base image for fast dependency installation
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY pyproject.toml ./
 RUN uv pip install --system --no-cache --prerelease=allow .
 
 # Final stage
-FROM python:3.13-slim-bookworm
+FROM python:3.13-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
 
 # Patch CVEs in base image system packages
 RUN apt-get update && \

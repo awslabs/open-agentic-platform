@@ -95,6 +95,15 @@ bifrost:
         enabled: true
       logging:
         enabled: true
+      otel:
+        enabled: true
+        version: 1
+        config:
+          service_name: "bifrost"
+          collector_url: "otel-collector.otel.svc.cluster.local:4317"
+          trace_type: "genai_extension"
+          protocol: "grpc"
+          insecure: true
 
     governance:
       budgets:

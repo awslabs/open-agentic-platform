@@ -1,0 +1,67 @@
+# An agent that uses the code interpreter through agentgateway.
+#
+#   agent --(JWT)--> agentgateway --> code-interpreter-mcp --> AgentCore Code Interpreter
+#
+# The point of this example: the agent needs NO custom image and no AWS credentials of its
+# own. It gets code execution purely from configuration. The AWS SDK calls, the interpreter
+# session lifecycle and the IAM permissions all live in the MCP server, behind the gateway.
+#
+# Deploy example-code-interpreter-mcp.yaml first, since this consumes it by name.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: code-agent
+  namespace: default
+spec:
+  components:
+    - name: code-assistant
+      type: agent
+      properties:
+        description: "Agent that can run code in an AgentCore Code Interpreter sandbox"
+
+        # One replica. Conversation state is cached in the pod, and there is no A2A
+        # session affinity in this stack, so a second replica would answer follow-ups
+        # from a pod that has never seen the conversation. Scaling requires a memory
+        # provider first (the agentcore-memory trait).
+        replicas: 1
+
+        systemMessage: |
+          You are a data and code assistant with a stateful Python sandbox available
+          through your tools.
+
+          Use it whenever a question is better answered by computing than by reasoning
+          in prose: arithmetic, parsing, data transformation, or checking a hypothesis
+          against real numbers.
+
+          The sandbox keeps state between calls, so variables and files you create
+          persist within a conversation. Prefer executeCode for computation. Use
+          executeCommand for shell work, and only reach for startCommandExecution when
+          something will genuinely run for minutes.
+
+          Show the code you ran and the output you actually received. Never present a
+          computed result you did not get back from the sandbox.
+
+        modelConfig:
+          modelId: claude-sonnet
+
+        # This is the whole integration. The gateway resolves the name to the MCP server
+        # registered by the mcp-server component, and MCP_SERVER_NAMES becomes
+        # <gateway>/mcp/code-interpreter-mcp.
+        mcpServers:
+          - name: code-interpreter-mcp
+
+        registerWithGateway: true
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+
+      traits:
+        # Mounts a projected ServiceAccount token and points the agent at the gateway.
+        # This is what authenticates the agent to the MCP server; the agent never holds
+        # AWS credentials of its own.
+        - type: gateway-identity

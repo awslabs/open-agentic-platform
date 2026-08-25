@@ -37,6 +37,15 @@ spec:
       properties:
         description: "Assistant agent with persistent memory"
         systemMessage: "You are a helpful assistant."
+        # CPU request guarantees a fair cgroup CPU share + drives scheduler spread,
+        # so the CPU-heavy startup isn't starved on a contended node (which caused
+        # liveness-kill crashloops). No CPU limit on purpose (avoids startup throttling).
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            memory: "1Gi"
         memory:
           provider: agentcore
           config:

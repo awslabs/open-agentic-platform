@@ -1,0 +1,120 @@
+# AgentCore Browser exposed to agents as an MCP tool through agentgateway.
+#
+#   agent --(JWT via agentgateway)--> [browser-mcp] --(SigV4 / CDP wss)--> AgentCore Browser
+#
+# Portable by design: no region, account or cluster appears anywhere below, so this
+# same file deploys unchanged to any region or environment. The region is injected
+# by the platform via the aws-service-identity trait; credentials come from EKS Pod
+# Identity.
+#
+# The browser NAME is application config and appears twice on purpose: once to
+# provision the browser, once to tell the MCP server which browser to use. That
+# makes switching to a different provisioned browser a one-line change.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: browser-tools
+  namespace: default
+spec:
+  components:
+    # The AgentCore Browser resource itself (Crossplane). Shared, long-lived.
+    # Sessions against it are ephemeral and are managed by browser-mcp.
+    - name: web-browser
+      type: agentcore-browser
+      properties:
+        # REQUIRED, no default. Letters, digits and underscores, starting with a
+        # letter, 48 chars max. No hyphens. This exact string is repeated in the
+        # server's env below.
+        browserName: agents_web_browser
+        networkMode: PUBLIC
+        description: Shared web browser for agent tool use
+
+    # The MCP server that fronts it. One pod serves MANY concurrent browser
+    # sessions (it holds no browser itself, it signs and routes), so raising
+    # replicas is about pod capacity and redundancy, not about getting more
+    # sessions.
+    #
+    # Scaling past one replica is safe now: the component registers a
+    # selector-based gateway target with sessionRouting Stateful, so the gateway
+    # pins each MCP session to the pod that owns it. Verified at 2 replicas, where
+    # exactly one pod held the session. Omit replicas and attach an hpa trait to
+    # autoscale.
+    - name: browser-mcp
+      type: mcp-server
+      dependsOn:
+        - web-browser
+      properties:
+        image: public.ecr.aws/z0a4o2j5/browser-mcp:0.1.4
+        port: 8000
+        # Liveness on /healthz: up as soon as the process serves HTTP.
+        # Readiness on /readyz: 503 until the browser is resolved and the tool
+        # catalog is known. Keeping these separate is what stops the liveness
+        # probe from killing the pod during a slow first start, e.g. while a
+        # freshly attached IAM policy is still propagating.
+        healthPath: /healthz
+        readinessPath: /readyz
+        replicas: 1
+        env:
+          # Which provisioned browser to use. Resolved to a browser id at runtime.
+          - name: AGENTCORE_BROWSER_NAME
+            value: agents_web_browser
+
+          # ---- Per-team tuning. All optional; the image ships sane defaults. ----
+          # Override any of these per application without rebuilding the image.
+
+          # TTL requested when minting a browser session. Enforced by AWS, so it is
+          # the only bound on a leak if this pod dies hard. Default 900.
+          - name: SESSION_TIMEOUT_SECONDS
+            value: "900"
+
+          # Release an idle session's browser; the next call transparently re-mints.
+          # Raise it if your flows depend on cookies/login surviving longer gaps,
+          # since a re-mint starts from a clean browser. Default 300.
+          - name: SESSION_IDLE_SECONDS
+            value: "300"
+
+          # Cap on concurrent live browser sessions for this pod. Keep it under the
+          # account's AgentCore browser session quota, and keep it consistent with
+          # the memory limit below: each live session costs ~80Mi in this pod (a
+          # chrome-devtools-mcp child plus its telemetry watchdog), measured. So
+          #   memory limit >= ~64Mi baseline + 80Mi * MAX_BROWSER_SESSIONS
+          # Raising this without raising the limit turns a full pod into an OOMKill.
+          - name: MAX_BROWSER_SESSIONS
+            value: "10"
+
+          # Optional: narrow what agents even see. Omit to advertise all 29 tools.
+          # Use the authPolicy below for enforcement; use this to save agent context.
+          # - name: TOOLS_ALLOW
+          #   value: "navigate_page,new_page,list_pages,take_snapshot,click,fill,wait_for"
+
+        # Sized from measurement, not guesswork: idle is ~50Mi and each live session
+        # adds ~80Mi, so 10 sessions is ~850Mi and 1Gi leaves headroom.
+        #
+        # Deliberately no CPU limit. Activation is bursty (spawning a Node child,
+        # then waiting on a CDP attach) while steady state is nearly idle: 1m at
+        # rest, 26m across five concurrent activations. A CPU limit would throttle
+        # exactly the spike that matters and lengthen an attach that already risks
+        # the MCP client's 60s default timeout. The memory limit is the real
+        # guardrail, because memory is what actually runs away here.
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+
+        # Optional: let agentgateway enforce which tools callers may invoke.
+        # Enforcement lives at the gateway, so it applies regardless of what the
+        # server advertises.
+        # authPolicy:
+        #   action: Allow
+        #   matchExpressions:
+        #     - 'mcp.tool.name in ["navigate_page", "take_snapshot", "click", "fill"]'
+
+      traits:
+        # Grants this workload AWS access (Pod Identity) to the browser component,
+        # and supplies the region so it never has to appear in this file.
+        - type: aws-service-identity
+          properties:
+            accessFor:
+              - web-browser

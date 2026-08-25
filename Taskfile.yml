@@ -69,6 +69,7 @@ tasks:
       - task: ingress:post-install
       - task: spokes:install
       - task: agentic:install
+      - task: agentic:seed-observability
 
   upgrade:
     desc: Upgrade the platform, spokes, and agentic components
@@ -149,12 +150,14 @@ tasks:
           printf '✓ No spokes configured (hub-only).\n'
           exit 0
         fi
+        # PlatformCluster CRD lives on the kind-crossplane bootstrap cluster
+        CTX="kind-{{.HUB_CLUSTER_NAME}}-bootstrap"
         for SPOKE in $(yq -r '.spokes | keys | .[]' {{.CONFIG_FILE}}); do
           REGION=$(yq -r ".spokes.${SPOKE}.region // \"{{.AWS_REGION}}\"" {{.CONFIG_FILE}})
           K8S_VER=$(yq -r ".spokes.${SPOKE}.kubernetesVersion // \"1.35\"" {{.CONFIG_FILE}})
           VPC_CIDR=$(yq -r ".spokes.${SPOKE}.vpcCidr // \"10.1.0.0/16\"" {{.CONFIG_FILE}})
           AUTO_MODE=$(yq -r ".spokes.${SPOKE}.autoMode // true" {{.CONFIG_FILE}})
-          kubectl apply -f - <<EOF
+          kubectl --context "$CTX" apply -f - <<EOF
         apiVersion: platform.gitops.io/v1alpha1
         kind: PlatformCluster
         metadata:
@@ -279,6 +282,57 @@ tasks:
       - task: agentic:hub-oidc-annotation
       - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
       - printf '\n✓ Agentic platform bootstrap applied. ArgoCD will sync components to clusters with enable_agent_platform=true label (set via fleet overlays).\n'
+
+  agentic:seed-observability:
+    desc: Wait for AMG/AMP and seed aws_grafana_url into hub/config (required for Keycloak SAML)
+    deps: [agentic:ensure-kubeconfig]
+    cmds:
+      - |
+        set -e
+        printf '▸ Waiting for AMG workspace to become ACTIVE...\n'
+        AMG_ENDPOINT=""
+        for i in $(seq 1 60); do
+          AMG_ENDPOINT=$(aws grafana list-workspaces --region {{.AWS_REGION}} \
+            --query "workspaces[?name=='{{.RESOURCE_PREFIX}}-observability' && status=='ACTIVE'].endpoint | [0]" \
+            --output text 2>/dev/null || echo "")
+          if [ -n "$AMG_ENDPOINT" ] && [ "$AMG_ENDPOINT" != "None" ] && [ "$AMG_ENDPOINT" != "null" ]; then
+            break
+          fi
+          printf '  [%d/60] AMG not ready yet...\n' "$i"
+          sleep 30
+        done
+        if [ -z "$AMG_ENDPOINT" ] || [ "$AMG_ENDPOINT" = "None" ] || [ "$AMG_ENDPOINT" = "null" ]; then
+          printf '⚠ AMG workspace not found after 30 min. Run "task agentic:seed-observability" later.\n'
+          exit 0
+        fi
+        printf '✓ AMG endpoint: %s\n' "$AMG_ENDPOINT"
+
+        # Update hub/config metadata with aws_grafana_url
+        CONFIG_KEY="{{.HUB_CLUSTER_NAME}}/config"
+        CONFIG_EXISTING=$(aws secretsmanager get-secret-value --secret-id "$CONFIG_KEY" \
+          --region {{.AWS_REGION}} --query "SecretString" --output text)
+        CONFIG_UPDATED=$(echo "$CONFIG_EXISTING" | python3 -c "
+        import sys,json
+        d = json.loads(sys.stdin.read())
+        m = json.loads(d['metadata'])
+        m['aws_grafana_url'] = '$AMG_ENDPOINT'
+        d['metadata'] = json.dumps(m)
+        print(json.dumps(d))
+        ")
+        aws secretsmanager put-secret-value \
+          --secret-id "$CONFIG_KEY" \
+          --secret-string "$CONFIG_UPDATED" \
+          --region {{.AWS_REGION}}
+        printf '✓ Updated hub/config with aws_grafana_url=%s\n' "$AMG_ENDPOINT"
+
+        # Force fleet-secret ExternalSecret refresh so annotation propagates
+        kubectl --context {{.HUB_CLUSTER_NAME}} annotate externalsecret fleet-secret-hub -n argocd \
+          force-sync=$(date +%s) --overwrite
+        printf '✓ Fleet secret refresh triggered\n'
+      # Run the platform's full observability seeding (AMP creds, Grafana API key,
+      # Keycloak SAML update, spoke scraper data). This populates hub/secrets with
+      # the fields that grafana-admin-credentials and grafana-amp-creds ExternalSecrets need.
+      - cd {{.PLATFORM_DIR}} && task kind-crossplane:secrets-manager:seed-observability
 
   # ─── Ingress / Domain Post-Install ───────────────────────────────────────────
 

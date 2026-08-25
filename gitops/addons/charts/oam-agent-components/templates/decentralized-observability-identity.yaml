@@ -58,3 +58,49 @@ spec:
       name: {{ .Values.decentralizedObservability.roleName }}
     serviceAccount: {{ .Values.decentralizedObservability.serviceAccount }}
 {{- end }}
+---
+# TraitDefinition: attaches the shared CW observability IAM role to the
+# agent's own ServiceAccount via a per-agent PodIdentityAssociation.
+apiVersion: core.oam.dev/v1beta1
+kind: TraitDefinition
+metadata:
+  annotations:
+    definition.oam.dev/alias: ""
+    definition.oam.dev/description: Grant a workload CloudWatch/X-Ray write access for decentralized observability via EKS Pod Identity
+  name: decentralized-observability-identity
+spec:
+  appliesToWorkloads:
+    - deployments.apps
+    - rollouts.argoproj.io
+  conflictsWith: []
+  podDisruptive: false
+  schematic:
+    cue:
+      template: |
+        parameter: {
+        	// +usage=IAM role name for CW/X-Ray write access (shared across all decentralized agents)
+        	roleName: *"{{ .Values.decentralizedObservability.roleName }}" | string
+        	// +usage=AWS region for the PodIdentityAssociation
+        	region: *"{{ .Values.global.awsRegion }}" | string
+        	// +usage=EKS cluster name
+        	clusterName: *"{{ .Values.global.clusterName }}" | string
+        }
+        outputs: {
+        	"\(context.name)-cw-pod-identity": {
+        		apiVersion: "eks.aws.upbound.io/v1beta1"
+        		kind:       "PodIdentityAssociation"
+        		metadata: {
+        			name: "\(context.name)-cw-observability"
+        			annotations: {
+        				"argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"
+        			}
+        		}
+        		spec: forProvider: {
+        			clusterName:    parameter.clusterName
+        			namespace:      context.namespace
+        			region:         parameter.region
+        			roleArnRef: name: parameter.roleName
+        			serviceAccount: context.name
+        		}
+        	}
+        }
