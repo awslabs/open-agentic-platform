@@ -113,9 +113,6 @@ github:
 # coder, and call the GitHub API. alpine/k8s bundles kubectl; curl/jq added at start.
 stepImage: alpine/k8s:1.31.0
 
-# Concurrency: cap total in-flight df-run workflows against the kata pool size.
-maxConcurrentRuns: 3
-
 # Safety-net TTL on a SandboxClaim (reaper backstop if teardown never runs).
 claimTtlSeconds: 10800
 

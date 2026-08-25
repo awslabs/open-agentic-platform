@@ -62,7 +62,6 @@ image. To process a real issue:
 | `warmPool.name` | `coder-warmpool` | Flow A pool to claim from |
 | `coder.profile` | `claude-code` | `claude-code` \| `kiro` |
 | `coder.runTimeoutMinutes` | `30` | `await-coder` deadline |
-| `maxConcurrentRuns` | `3` | cap in-flight runs vs kata pool |
 | `claimTtlSeconds` | `10800` | reaper backstop on the claim |
 | `github.tokenSecret` | `dark-factory-github-orchestrator` | PR + status + merge (hub, `argo` ns) |
 | `trigger.argoEvents.githubSecret` | `dark-factory-github-events` | webhook HMAC + repo read (hub, `argo-events` ns) |

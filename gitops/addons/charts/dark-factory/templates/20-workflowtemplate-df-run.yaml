@@ -26,8 +26,11 @@ metadata:
     {{- include "dark-factory.labels" . | nindent 4 }}
 spec:
   serviceAccountName: dark-factory-workflow
-  # Serialize per issue (no double-claim for the same issue) and cap total
-  # concurrent runs against the kata pool size.
+  # Serialize per issue: repeated events for the SAME issue queue behind each other
+  # (no double-claim). This does NOT bound concurrent runs across DISTINCT issues — a
+  # mutex is one lock per name, not a counting semaphore. Cross-issue backpressure
+  # would need an Argo `semaphore` (ConfigMap-backed); none is wired, so do not
+  # document a cap here.
   synchronization:
     mutex:
       name: "df-issue-{{`{{workflow.parameters.issue-id}}`}}"
