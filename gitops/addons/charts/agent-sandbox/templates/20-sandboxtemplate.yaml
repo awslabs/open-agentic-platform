@@ -30,12 +30,16 @@ spec:
         {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
         agent-sandbox.io/role: coder
     spec:
-      runtimeClassName: {{ .Values.kata.defaultRuntimeClass }}
+      {{- /* Warm-pool VMM selected by kata.vmm (a key of kata.runtimeClasses).
+             runtimeClassName + matching node scheduling both come from that one
+             entry, so flipping kata.vmm moves the pool onto the right pool. */ -}}
+      {{- $rc := index .Values.kata.runtimeClasses .Values.kata.vmm | required (printf "kata.vmm=%q has no matching entry in kata.runtimeClasses" .Values.kata.vmm) }}
+      runtimeClassName: {{ $rc.name }}
       automountServiceAccountToken: false
       nodeSelector:
-        {{- toYaml .Values.kata.nodeSelector | nindent 8 }}
+        {{- toYaml $rc.nodeSelector | nindent 8 }}
       tolerations:
-        {{- toYaml .Values.kata.tolerations | nindent 8 }}
+        {{- toYaml $rc.tolerations | nindent 8 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -45,7 +49,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: coder
-          image: {{ .Values.coderTemplate.image }}
+          image: {{ .Values.coderTemplate.image | required "coderTemplate.image is required — set it in a per-cluster overlay (see values.yaml)" }}
           # Warm pods start BEFORE a claim injects env, so the coder can't run at
           # boot. This command idles until the SandboxClaim injects DF_ISSUE_NUMBER
           # (Flow B), then execs the baked-in coder entrypoint. When the image has

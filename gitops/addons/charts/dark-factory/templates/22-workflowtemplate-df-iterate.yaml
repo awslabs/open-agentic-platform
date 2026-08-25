@@ -52,7 +52,7 @@ spec:
           configMap:
             name: df-review
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [bash]
         env:
           - name: GH_TOKEN

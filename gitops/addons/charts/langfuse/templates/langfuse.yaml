@@ -238,7 +238,9 @@ spec:
           resources:
             {{- toYaml .Values.postgres.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: postgres-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -308,7 +310,9 @@ spec:
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: clickhouse-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -419,7 +423,9 @@ spec:
           resources:
             {{- toYaml .Values.minio.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: minio-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -488,6 +494,10 @@ spec:
       remoteRef:
         key: {{ .Values.keycloak.secretManagerKey }}
         property: LANGFUSE_CLIENT_SECRET
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
 
 ---
 # ─── Ingress is defined in templates/ingress.yaml ─────────────────────────

@@ -232,6 +232,33 @@ The Dark Factory turns a **GitHub issue into a reviewed, merged PR, autonomously
   <img src="docs/architecture/diagrams/img/dark-factory-flow.svg" alt="Dark Factory — issue to merged PR flow" width="100%">
 </p>
 
+> ### ⚠️ Prerequisite: "the agent never self-merges" requires branch protection
+>
+> The coder runs with its **own** low-privilege GitHub credential, separate from the
+> orchestrator's (three scoped credentials — see
+> [§10a](docs/dark-factory/README.md#10a-github-credentials-secrets-manager-setup)). That split is
+> real, but it does **not** by itself make merging impossible:
+>
+> - The coder needs `Contents: write` to push its branch, and GitHub gates
+>   `PUT /repos/{o}/{r}/pulls/{n}/merge` on **Contents** for fine-grained tokens — so the coder's own
+>   token can call the merge endpoint.
+> - It also needs `Pull requests: write` and `Commit statuses: write`, because it opens its own PR
+>   from inside the VM and self-reports `dark-factory/implementation`.
+>
+> **A protected default branch requiring the `dark-factory/*` checks is what actually enforces the
+> human gate.** Without it, "the agent never self-merges" holds only because the agent's code chooses
+> not to — not because it is prevented. Configure it before running the factory on anything you care
+> about, and verify it is in force rather than assuming:
+>
+> ```bash
+> gh api repos/<owner>/<repo>/branches/main/protection --jq '.required_status_checks.contexts'
+> ```
+>
+> **Branch protection and rulesets are unavailable on private repositories on the GitHub Free plan** —
+> both APIs return `403 Upgrade to GitHub Pro or make this repository public`. On such a repo the
+> merge gate cannot be enforced at all: make the target repo public, upgrade the plan, or accept that
+> the pipeline could merge its own work.
+
 It is the platform's proof that you can run untrusted, code-writing agents safely alongside a control
 plane. See [`docs/dark-factory/`](docs/dark-factory/) and [`examples/dark-factory/`](examples/dark-factory/).
 

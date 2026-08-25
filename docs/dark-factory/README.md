@@ -27,12 +27,14 @@ spokes as normal deployments.
 3. [Flow A — Agent Sandbox capability](#3-flow-a--agent-sandbox-capability-permanent-platform-feature)
 4. [Flow B — the Dark Factory pipeline](#4-flow-b--the-dark-factory-pipeline)
    - [Flow D — Lambda MicroVM substrate (alternative to Flow A)](#45-flow-d--lambda-microvm-substrate-alternative-to-flow-a)
+     — enabling it: [`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md)
 5. [The pluggable coding assistant](#5-the-pluggable-coding-assistant)
 6. [Independent verification](#6-independent-verification-the-heart-of-the-pattern)
 7. [Live status in the PR](#7-live-status-in-the-pr)
 8. [Human-in-the-loop & the comment loop](#8-human-in-the-loop--the-iterative-comment-loop)
 9. [Lifecycle, teardown & cost](#9-lifecycle-teardown--cost)
 10. [Security model](#10-security-model)
+10a. [GitHub credentials: Secrets Manager setup](#10a-github-credentials-secrets-manager-setup)
 11. [Industry alignment & anti-patterns](#11-industry-alignment--anti-patterns-what-the-world-agrees-on)
 12. [Phased delivery](#12-phased-delivery)
 13. [Open questions / future work](#13-open-questions--future-work)
@@ -137,13 +139,13 @@ alwaysSelector:
 
 | Piece | Source in this repo | Role |
 |---|---|---|
-| **Sandbox operator + CRDs** (`agents.x-k8s.io` + `extensions.agents.x-k8s.io/v1beta1`) | `gitops/addons/charts/agent-sandbox/upstream/` (vendored v0.5.1, sync-wave 0) | Materializes one Kata-VM pod per `Sandbox`; serves `SandboxClaim`/`SandboxTemplate`/`SandboxWarmPool` + the conversion webhook |
+| **Sandbox operator + CRDs** (`agents.x-k8s.io` + `extensions.agents.x-k8s.io/v1beta1`) | `gitops/addons/charts/agent-sandbox-operator/` (upstream `helm/` chart vendored at tag v0.5.1, sync-wave 0) | Materializes one Kata-VM pod per `Sandbox`; serves `SandboxClaim`/`SandboxTemplate`/`SandboxWarmPool` + the conversion webhook. Also owns the `agent-sandbox-system` **Namespace** (wave 0 ⇒ exists with PSS labels before wave-2 workloads). Needs `controller.extensions: true` — the `extensions.*` types are off by default |
 | **Kata runtime (Cloud Hypervisor default)** | `kata-deploy` OCI chart (sync-wave 1) | Installs the containerd handlers on the tainted kata nodes |
-| **RuntimeClasses** `kata-clh` · `kata-qemu` | `agent-sandbox/templates/10-runtimeclasses.yaml` (sync-wave 2) | Workload picks its VMM via `runtimeClassName` |
+| **RuntimeClasses** `kata-clh` · `kata-qemu` · `kata-fc` | `agent-sandbox/templates/10-runtimeclasses.yaml` (sync-wave 2) | Workload picks its VMM via `runtimeClassName`; the class force-merges `nodeSelector` **and tolerations** onto the pod, so selecting it is enough to land on the tainted kata pool. Owned here rather than by `kata-deploy` (whose chart emits no tolerations and would misname `kata-fc`) — its `runtimeClasses.enabled` is set `false` |
 | **`SandboxTemplate` `coder-sandbox`** | `agent-sandbox/templates/20-sandboxtemplate.yaml` | The coder pod spec the warm pool clones (isolation invariants baked in) |
 | **`SandboxWarmPool` `coder-warmpool`** | `agent-sandbox/templates/40-sandboxwarmpool.yaml` | Native operator primitive — keeps N idle sandboxes pre-warmed; refills on claim |
 | **NetworkPolicy** (egress lockdown) | `agent-sandbox/templates/30-networkpolicy.yaml` | Default-deny egress; allow only DNS + Bifrost + HTTPS — **plus, on the hub, deny the control-plane services** (see [§10](#10-security-model)) |
-| **kata-readiness DaemonSet** | `agent-sandbox/templates/15-kata-readiness.yaml` | Removes the `runtime-not-ready` startup taint once kata-deploy is healthy |
+| ~~kata-readiness DaemonSet~~ | *removed* | kata-deploy **4.0.0** (PR kata-containers#13284) removes the `runtime-not-ready` startup taint itself as its final install step, so the external DaemonSet is gone — see `startupTaints` on the kata-deploy registry entry |
 
 ### Hub prerequisites (Auto Mode can't host Kata)
 
@@ -153,9 +155,9 @@ self-managed nested-virt Managed Node Group** alongside Auto Mode:
 
 | Requirement | Detail |
 |---|---|
-| **Nested-virt MNG** | `c8i`/`m8i` instances with `cpu_options.nested_virtualization=enabled`, `/dev/kvm` present, `min=0` scale-to-zero. Artifacts in `gitops/addons/charts/agent-sandbox/nodepool/` (`kata-mng.tf` / eksctl / nodeadm userData). |
+| **Nested-virt nodes** | `c8i`/`m8i` instances with nested virtualization enabled, `/dev/kvm` present, scale-to-zero. Provisioned by the [`kata-nodepool`](../../gitops/addons/charts/kata-nodepool/README.md) chart (Karpenter `EC2NodeClass` + `NodePool`). The earlier self-managed-MNG artifacts under `agent-sandbox/nodepool/` are removed — see that directory's README for the superseded design. |
 | **Auto-Mode addon prereqs** | Self-managed nodes get neither CNI nor kube-proxy from Auto Mode — the `vpc-cni` **and** `kube-proxy` EKS addons must be installed or the kata node stays `NotReady` / kata-deploy crashloops. |
-| **Tainted + labelled** | Node registers `kata=true:NoSchedule` (workload taint) + `katacontainers.io/runtime-not-ready` (startup taint, removed by kata-readiness), labelled `kata-enabled=true` — so **coder VMs never co-schedule with hub control-plane pods**. |
+| **Tainted + labelled** | Node registers `kata=true:NoSchedule` (workload taint) + `katacontainers.io/runtime-not-ready` (startup taint, removed by kata-deploy 4.0.0 itself), labelled `kata-enabled=true` — so **coder VMs never co-schedule with hub control-plane pods**. |
 
 > These are hard requirements: without the nested-virt MNG the warm pool has nowhere to run; without
 > the taint + label + egress lockdown, an untrusted coder VM could land next to — or reach — the hub's
@@ -208,10 +210,15 @@ End to end:
 3. **Code** — the issue is written into the sandbox as `/workspace/SPEC.md`. The **pluggable
    coder** (Claude Code headless by default; Kiro headless as a profile) implements on branch
    `df/issue-<n>` and **builds + runs unit tests until green** inside the Kata VM, then pushes the
-   branch. The coder holds only `contents:write` — it does *not* open the PR.
-4. **PR opens (after green)** — the workflow reads the coder's result locally (completed pod +
-   `/workspace/artifacts/result.json`) and **the workflow opens the PR** once tests are green. Before
-   this point, status lives on the **issue**; from here on the canonical status board is the **PR**.
+   branch.
+4. **PR opens (after green)** — **the coder opens the PR itself**, from inside the VM, once its
+   tests are green (`entrypoint.js` → `POST /repos/{repo}/pulls`), then self-reports
+   `dark-factory/implementation` on the head SHA. The workflow's `await-coder` step **polls GitHub**
+   for that PR + status — GitHub is the completion bus, since the VM has no cluster API access.
+   Before this point, status lives on the **issue**; from here on the canonical status board is the
+   **PR**. *(The coder therefore needs `Pull requests: write` and `Commit statuses: write` on top of
+   `Contents: write` — see [§10a](#10a-github-credentials-secrets-manager-setup). It still cannot
+   merge: that is a human approval plus the `df-merge-teardown` green-check gate.)*
 5. **Independent verification** — *parallel* DAG steps, driven by the workflow, **never by the coder**
    (see [§6](#6-independent-verification-the-heart-of-the-pattern) and
    [diagram B.4](diagrams/flow-b-dark-factory.md#b4--the-df-run-dag-as-built--how-step-gating-works)).
@@ -270,6 +277,10 @@ UI — the substrate for scaling across many concurrent issues.
 
 > 📊 **See the diagrams:** [`diagrams/flow-d-microvm-sandbox.md`](diagrams/flow-d-microvm-sandbox.md)
 > (substrate architecture + platform/app ownership split + the RuntimeClass-shim bridge).
+>
+> 🔧 **To actually enable it:** [`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md) — the manual,
+> per-account steps (arm64 base image, code-artifact ZIP, bucket ordering, GitHub label/tokens) that
+> GitOps cannot do for you, plus the live known issues.
 
 Flow A's isolation boundary is a **Kata micro-VM pod** on a platform-owned nested-virt node group.
 **Flow D is a second Flow-A substrate**: an **AWS Lambda MicroVM** — a *serverless* micro-VM with no
@@ -353,12 +364,16 @@ Shipped as GitOps in its **own chart** — `gitops/addons/charts/agent-sandbox-l
 the Kata `agent-sandbox` chart), structured as `templates/image/` (KRO RGD + the one platform
 `MicrovmSandbox`) and `templates/shim/` (bridge SandboxTemplate + warm pool + `microvm-lifecycle`
 controller). **Disabled by default** (`microvm.enabled=false`); the hub overlay
-(`clusters/hub/addons/agent-sandbox-lambda/values.yaml`) carries cluster-specific values, and a gated
+(`gitops/overlays/clusters/hub/agent-sandbox-lambda/values.yaml`) carries cluster-specific values, and a gated
 `agent-sandbox-lambda` addon entry deploys it hub-only. The platform-capability enablement (Managed ACK
 + Managed KRO) lands separately in the **appmod-blueprints** platform repo (they're EKS Capabilities,
-like the Managed ArgoCD the hub already runs). This PR delivers the **design + GitOps scaffold**; the
-live end-to-end path (enable capabilities → sync controller → publish the arm64 artifact → run a MicroVM
-coder with suspend/resume) is the follow-up.
+like the Managed ArgoCD the hub already runs). The end-to-end path has since been **run live** (image built from an arm64 base, `RunMicrovm`, coder
+in the VM, PR opened, holdout gate green, suspend + warm resume). Turning it on is **not** a
+GitOps-only change: three artifacts must be produced by hand per AWS account, and two of them cannot
+be templated from cluster annotations. See
+**[`FLOW-D-ENABLEMENT.md`](FLOW-D-ENABLEMENT.md)** for the runbook (arm64 base image, the
+non-templatable `ARG` inside the code-artifact ZIP, artifact bucket ordering, GitHub label +
+credentials, fix rounds) and its known-issues table.
 
 ---
 
@@ -644,9 +659,17 @@ Untrusted, LLM-generated code + issue text from anyone = treat the whole sandbox
   container. The isolation boundary is the VM — it travels with the workload regardless of host
   cluster.
 - **No cloud credentials in the sandbox:** the coder holds only a **Bifrost API key** and a
-  **short-TTL GitHub token (`contents:write` only)** via **projected tmpfs (mode 0400)** — read then
-  unset, never in env. All AWS IAM lives with the **Argo workflow orchestrator, outside the VM**. The
-  coder pushes a branch; the *workflow* opens the PR and does the merge.
+  **scoped GitHub token** via **projected tmpfs (mode 0400)** — read then unset, never in env. All
+  AWS IAM lives with the **Argo workflow orchestrator, outside the VM**. The coder pushes its branch
+  and opens the PR; the *workflow* does the **merge**, and only on human approval.
+  > ⚠️ The coder token is **not** `contents:write`-only — it also needs `pull requests: write` and
+  > `commit statuses: write` (it opens its own PR and self-reports). Fine-grained PATs gate
+  > `PUT /pulls/{n}/merge` on **Contents**, so a coder token with `contents: write` *can* call the
+  > merge endpoint. **Branch protection (or a ruleset) requiring the `dark-factory/*` checks on the
+  > default branch is what actually prevents self-merge** — without it this boundary is advisory.
+  > Note branch protection and rulesets are **unavailable on private repos on the GitHub free plan**
+  > (both APIs return `403 Upgrade to GitHub Pro or make this repository public`), so a free-plan
+  > private test repo cannot enforce the merge gate at all.
 - **Egress lockdown:** a **NetworkPolicy** default-denies egress and allows only **DNS + Bifrost:8080
   + GitHub/HTTPS**. `automountServiceAccountToken: false`, runAsNonRoot, seccomp `RuntimeDefault`,
   drop `ALL` caps.
@@ -696,6 +719,143 @@ Plus the always-on basics:
   (demonstrated against GitHub-issue-driven agents in the wild). The mitigations above exist
   specifically to break that trifecta: keep credentials out of the issue-ingesting context, deny
   egress (including the hub's own control plane), and treat all issue/repo content as hostile input.
+
+---
+
+## 10a. GitHub credentials: Secrets Manager setup
+
+The factory needs **three separate GitHub credentials**, not one. This is the fix for the
+review finding that the coder VM was handed the orchestrator's full-power token: the coder runs
+model-written code whose prompt is attacker-controllable issue text, so it must not hold a
+credential that can merge to `main` or administer webhooks.
+
+Each is a `ClusterSecretStore`-backed `ExternalSecret` reading AWS Secrets Manager. Nothing is
+created by hand in-cluster.
+
+### The three credentials
+
+| Credential | Cluster / namespace | SM key | k8s keys | GitHub permission |
+|---|---|---|---|---|
+| `dark-factory-github-events` | hub / `argo-events` | `<cluster>/dark-factory/github/events` | `token`, `webhook-secret` | Metadata **read**, Contents **read**, Webhooks **write** |
+| `dark-factory-github-orchestrator` | hub / `argo` | `<cluster>/dark-factory/github/orchestrator` | `token` | Metadata **read**, Contents **write**, Pull requests **write**, Commit statuses **write**, Issues **write** |
+| `dark-factory-github-coder` | *sandbox cluster* / `agent-sandbox-system` | `<cluster>/dark-factory/github/coder` | `gh-token` | Metadata **read**, Contents **write**, Pull requests **write**, Commit statuses **write**, Issues **read** |
+
+Each permission above is load-bearing — these are the minimum sets the code actually
+exercises, not aspirational ones. Under-scoping fails **mid-run**, after a sandbox has
+been claimed and the model has already burned tokens:
+
+| Permission | Who | Why it is required |
+|---|---|---|
+| Issues **read** | coder | `GET /repos/{repo}/issues/{n}` — the coder fetches the issue to build `SPEC.md` |
+| Pull requests **write** | coder | `POST /repos/{repo}/pulls` — **the coder opens its own PR**, from inside the VM |
+| Commit statuses **write** | coder | `POST /repos/{repo}/statuses/{sha}` — self-reports `dark-factory/implementation`, which is what `df-run` polls |
+| Contents **write** | orchestrator | `PUT /pulls/{n}/merge` and `DELETE /git/refs/heads/…` — the merge endpoint and the post-merge branch delete both need it |
+| Issues **write** | orchestrator | `review/comment.js` creates/updates the sticky status comment (PR comments are issue comments) |
+
+Notes that matter:
+
+- **The orchestrator secret lives in `argo`, not the release namespace.** The `df-run` /
+  `df-iterate` / `df-merge-teardown` WorkflowTemplates are created in `.Values.argo.namespace`,
+  and a Workflow pod resolves `secretKeyRef` in *its own* namespace. Secrets are namespace-scoped,
+  so putting it anywhere else leaves the workflows unable to read it.
+- **Events needs Webhooks:write** because `trigger.argoEvents.active: true` makes Argo Events
+  self-register the repo webhook. A strictly read-only token *will* fail registration. To make it
+  read-only instead, set `active: false` and register the webhook yourself.
+- **`webhook-secret` is not a GitHub credential** — it is an arbitrary strong random string used to
+  validate GitHub's `X-Hub-Signature-256`. It only has to be consistent.
+- **The coder's SM key is on whichever cluster runs the warm pool** — **today the hub**, since
+  `df-run` claims a sandbox with no cross-cluster mechanism. The `<cluster>/` prefix resolves from
+  that cluster's `aws_cluster_name` annotation, so it follows the pool automatically.
+- **The coder token *can* merge — branch protection is the only thing stopping it.** GitHub
+  documents `PUT /pulls/{n}/merge` as requiring **Contents** (write) for fine-grained tokens, and the
+  coder holds `Contents: write` (to push) plus `Pull requests: write` (to open its PR). So the C1
+  split does **not** by itself prevent self-merge; a protected default branch requiring the
+  `dark-factory/*` checks is **required** for this boundary to mean anything. That is the same
+  protection [§9](#9-lifecycle-teardown--cost)'s merge gate depends on.
+  > **Not available on private repos on the GitHub free plan** — both
+  > `PUT /repos/{o}/{r}/branches/{b}/protection` and `POST /repos/{o}/{r}/rulesets` return
+  > `403 Upgrade to GitHub Pro or make this repository public`. On such a repo the merge gate is
+  > unenforceable: make the test repo **public**, upgrade the account, or run knowing the agent
+  > could merge its own work.
+
+### Why the keys are cluster-scoped
+
+The SM paths are prefixed `<cluster>/` (injected from the `aws_cluster_name` cluster-secret
+annotation via the addon registry, the same pattern as `keycloak-clients`). That lets each
+cluster's external-secrets IRSA be scoped to `<cluster>/*` — so the sandbox cluster **cannot read
+the hub's orchestrator token** even if something asks it to. A flat shared prefix would re-merge at
+the IAM layer exactly what the three-way split separates.
+
+### Creating the secrets
+
+Mint the three GitHub credentials first (a GitHub App installation is preferable to PATs — see the
+follow-up below), then:
+
+```bash
+REGION=us-west-2
+HUB=hub                 # cluster running argo + argo-events
+SANDBOX=hub             # cluster running the warm pool — see note below
+WEBHOOK_SECRET="$(openssl rand -hex 20)"
+
+# 1. events (hub) — read + webhook admin, plus the HMAC
+aws secretsmanager create-secret --region "$REGION" \
+  --name "${HUB}/dark-factory/github/events" \
+  --secret-string "$(jq -n --arg t "$EVENTS_TOKEN" --arg w "$WEBHOOK_SECRET" \
+      '{token:$t, "webhook-secret":$w}')"
+
+# 2. orchestrator (hub) — merge + PRs + commit statuses + sticky comment
+aws secretsmanager create-secret --region "$REGION" \
+  --name "${HUB}/dark-factory/github/orchestrator" \
+  --secret-string "$(jq -n --arg t "$ORCHESTRATOR_TOKEN" '{token:$t}')"
+
+# 3. coder (cluster running the warm pool) — push + open PR + self-report status
+aws secretsmanager create-secret --region "$REGION" \
+  --name "${SANDBOX}/dark-factory/github/coder" \
+  --secret-string "$(jq -n --arg t "$CODER_TOKEN" '{token:$t}')"
+```
+
+> **`SANDBOX` is the cluster running the warm pool, which is now the hub.** `df-run`'s claim step
+> creates a `SandboxClaim` with no cross-cluster mechanism, so the pool must sit on the same cluster
+> as Argo — `agent_sandbox: true` lives in `overlays/environments/control-plane/enabled-addons.yaml`
+> and is `false` for `dev`. All three secrets therefore land under `hub/` today. The `<cluster>/`
+> prefix resolves from each cluster's own `aws_cluster_name` annotation, so if you move the pool back
+> to a spoke, only this variable changes.
+
+Pass tokens via environment variables as above rather than inline, so they do not land in shell
+history. To rotate, use `put-secret-value` with the same `--name`; ESO picks the change up within
+`refreshInterval` (1h by default).
+
+### Verifying
+
+```bash
+# ExternalSecrets should report SecretSynced
+kubectl --context "$HUB"     get externalsecret -A | grep dark-factory-github
+kubectl --context "$SANDBOX" get externalsecret -n agent-sandbox-system | grep dark-factory-github
+
+# and the resulting Secrets should carry the expected keys
+kubectl --context "$HUB" get secret dark-factory-github-events -n argo-events \
+  -o jsonpath='{range $k,$v := .data}{$k}{"\n"}{end}'
+```
+
+If an `ExternalSecret` reports `SecretSyncedError`, check in this order: the SM secret exists in the
+right region; its JSON contains the property names above; and **the cluster's external-secrets IRSA
+policy covers the `<cluster>/dark-factory/github/*` prefix** — if that policy enumerates specific
+secret ARNs rather than a prefix, new paths fail with `AccessDenied` and no amount of chart
+configuration fixes it.
+
+Symptom when a credential is missing: the consuming pods sit in `ContainerCreating` with
+`MountVolume.SetUp failed … secret "dark-factory-github-*" not found`, indefinitely. Nothing
+crashes and nothing retries visibly — the mount just never satisfies.
+
+### Follow-up: per-run minted tokens
+
+All three are **standing** credentials. The stronger design, and what [§10](#10-security-model)
+describes as the coder's "short-TTL token", mints a GitHub App installation token **per run**
+scoped to the target repo, injected via the `SandboxClaim`, so the VM never holds anything
+reusable. external-secrets ships a `GithubAccessToken` generator that can do this and can
+down-scope permissions per token, so one App can serve all three roles. Keep the App **private
+key** on the hub only: anything holding it can mint any permission the App has, so placing it on
+the sandbox cluster would undo the split.
 
 ---
 

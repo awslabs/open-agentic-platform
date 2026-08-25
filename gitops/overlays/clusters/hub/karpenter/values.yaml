@@ -1,0 +1,35 @@
+# Hub (control-plane) overlay for the PLATFORM `karpenter` addon.
+#
+# WHY THIS FILE IS HERE AND NOT IN THE PLATFORM REPO
+# The karpenter chart + registry entry live in appmod-blueprints, so the
+# appset-chart's in-repo overlay layers (3 and 4) resolve $defaults to THAT repo
+# — a karpenter/values.yaml placed in this repo would normally be ignored
+# (ignoreMissingValueFiles: true makes that failure silent).
+# This file works because the hub cluster secret now carries overlay_repo_url
+# pointing at THIS repo (see gitops/fleet/hub/values.yaml), which activates the
+# appset-chart's "layer 5" and appends
+#   $overlay/gitops/overlays/clusters/hub/karpenter/values.yaml
+# AFTER the platform layers — so what we set here wins.
+#
+# WHAT IT DOES
+# Enables the vpc-cni + kube-proxy EKS addons that a SELF-MANAGED Karpenter node
+# requires. EKS Auto Mode's built-in networking applies only to its own
+# Bottlerocket nodes, so without these a self-managed AL2023 kata node comes up
+# NotReady ("cni plugin not initialized") and kata-deploy crashloops.
+#
+# The platform chart keeps manageAddons=false by default (EKS addons are
+# per-cluster singletons — on a managed-node-group cluster the platform-cluster
+# Composition already owns them, and a second owner would fight it via
+# resolveConflictsOnUpdate=OVERWRITE). Hub is a PURE Auto Mode cluster with no
+# existing owner (only eks-pod-identity-agent is installed), which is exactly
+# the case the chart documents as safe to enable.
+node:
+  manageAddons: true
+  addons:
+    vpcCni:
+      # Kata sandbox pods are untrusted, and on the hub they are co-located with
+      # control-plane services (ArgoCD, Keycloak, external-secrets, Argo), so the
+      # agent-sandbox NetworkPolicies are load-bearing rather than advisory.
+      # VPC-CNI does not enforce NetworkPolicy unless this is on, so leaving it
+      # unset would silently render those policies inert.
+      enableNetworkPolicy: "true"

@@ -18,6 +18,8 @@ and [`docs/dark-factory/README.md`](../../docs/dark-factory/README.md) §4).
 |---|---|---|
 | `coder/entrypoint.js` | The in-VM coder. Auto-runs on VM start; reads the `DF_*` env the `SandboxClaim` injects, fetches the issue as `SPEC.md`, checks out `df/issue-<n>`, runs Claude Code headless via Bifrost, builds + tests, pushes the branch, opens the PR, and sets the `dark-factory/implementation` commit status. | **untrusted** (Kata VM, no cloud creds, no k8s API) |
 | `coder/Dockerfile` | Lean `node:20-alpine` + git/bash/python3/go + the Claude Code CLI. Carries **no** credentials. | — |
+| `deploy-test/Dockerfile` | kubectl + terraform + node/git/curl for the hub-side `deploy-test` step. The **only** step holding K8s access. | trusted (hub) |
+| `setup-secrets.sh` | Writes the three GitHub credentials to Secrets Manager. Run once before the first factory run — see [Credentials](#credentials) below. | trusted (hub) |
 
 ## How the coder is driven (single-cluster on the hub)
 
@@ -90,16 +92,49 @@ call can't mark a good run failed.
 
 ## Build & deploy
 
-The image is built + pushed to ECR and pinned on the Flow A `SandboxTemplate` via GitOps
-(`gitops/addons/charts/agent-sandbox/values.yaml` → `coderTemplate.image`). ArgoCD syncs the template;
-the pool-manager recycles warm pods onto the new tag.
+The image is built + pushed to ECR and pinned on the Flow A `SandboxTemplate` via GitOps. **No
+per-cluster overlay is needed:** the addon registry
+([`gitops/addons/registry/sandbox.yaml`](../../gitops/addons/registry/sandbox.yaml)) builds each image
+URI from the target cluster's own `aws_account_id` + `aws_region` annotations, so the same commit
+resolves to whatever account it is deployed into and no account ID is committed to this repo.
 
 ```bash
 # amd64 (hub nodes are amd64); podman/docker both work.
-podman build --platform linux/amd64 -t <ecr>/dark-factory-coder:<tag> examples/dark-factory/coder
-podman push <ecr>/dark-factory-coder:<tag>
-# → bump coderTemplate.image in the agent-sandbox chart values, commit, let ArgoCD sync.
+aws ecr create-repository --repository-name dark-factory-coder --region <region>   # first time only
+podman build --platform linux/amd64 -t <acct>.dkr.ecr.<region>.amazonaws.com/dark-factory-coder:<tag> \
+  examples/dark-factory/coder
+podman push <acct>.dkr.ecr.<region>.amazonaws.com/dark-factory-coder:<tag>
+# → bump the tag in the registry entry (valuesObject), commit, let ArgoCD sync.
 ```
+
+Templating the registry **does not build the image** — each deployment must build it into its own ECR
+at the pinned tag, or the warm pods report `ImagePullBackOff`. If your ECR repo uses **immutable
+tags**, bump the tag rather than re-pushing one.
+
+Three values in the registry reuse this same coder image (`coderTemplate.image` on `agent-sandbox`;
+`reviewImage` and `holdout.evalImage` on `dark-factory`) — repoint them together. `deployTest.image`
+is a **separate** build (`deploy-test/`): it needs kubectl + terraform, which the coder image does not
+carry, and it is wrapped in a Helm `required` guard, so the app fails to render if it is unset.
+
+## Credentials
+
+The factory needs **three separate GitHub credentials** so the untrusted coder VM never holds a
+token that can administer webhooks. They come from AWS Secrets Manager via external-secrets; nothing
+is created by hand in-cluster.
+
+```bash
+export EVENTS_TOKEN='github_pat_...' ORCHESTRATOR_TOKEN='github_pat_...' CODER_TOKEN='github_pat_...'
+bash examples/dark-factory/setup-secrets.sh
+```
+
+Minting the PATs is **manual** — GitHub ships no PAT-creation API, so this cannot be scripted. The
+exact per-token permission sets are in the script's header comment, and the rationale (plus which
+API call each permission is needed for) is in
+[`docs/dark-factory/README.md` §10a](../../docs/dark-factory/README.md#10a-github-credentials-secrets-manager-setup).
+
+Symptom when they are missing: the warm pods sit in `ContainerCreating` indefinitely with
+`MountVolume.SetUp failed … secret "dark-factory-github-coder" not found`. Nothing crashes and
+nothing retries visibly — the mount just never satisfies.
 
 ## Roadmap
 

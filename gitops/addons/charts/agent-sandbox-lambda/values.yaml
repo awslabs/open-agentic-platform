@@ -48,8 +48,14 @@ microvm:
   apiServerEndpointCidrs:
     - "10.0.0.0/16"
 
-  # AWS account id — used to construct the controller role ARN for the ACK
-  # PodIdentityAssociation (which takes an ARN, not a role-ref). Overlay per cluster.
+  # AWS account id. TWO consumers, both of which break cross-account without it:
+  #   1. the controller role ARN for the ACK PodIdentityAssociation (takes an ARN,
+  #      not a role-ref) — templates/shim/10-rbac.yaml;
+  #   2. the GLOBALLY-UNIQUE suffix on the MicroVM artifact S3 bucket
+  #      (<image.name>-microvm-artifacts-<accountId>) — templates/image/10-rgd-and-image.yaml.
+  # Leave EMPTY here: it is injected from the deploying cluster's aws_account_id
+  # annotation in gitops/addons/registry/sandbox.yaml, so no per-cluster overlay is
+  # needed. The RGD instance `require`s it when microvm.enabled=true.
   accountId: ""
 
   # Controller bootstrap IAM (ALL-ACK: iam.services.k8s.aws Role + eks.services.k8s.aws
@@ -79,14 +85,42 @@ microvm:
 
   # The ONE platform image built by KRO/ACK (10-rgd-microvm-image.yaml). Built ONCE
   # per cluster; the shim reads its status (imageARN + executionRoleARN) to RunMicrovm
-  # per session. Lambda MicroVM is ARM_64-ONLY. codeArtifactUri is an S3 URI
-  # (s3://bucket/key) of a zip containing the coder app + a Dockerfile — NOT an ECR
+  # per session. Lambda MicroVM is ARM_64-ONLY. The artifact is a zip containing the
+  # coder app + a Dockerfile — Lambda MicroVM's codeArtifact.uri is S3-ONLY, NOT an ECR
   # image ref (the Dockerfile inside MAY pull private ECR base layers; the build role
   # keeps ecr:Get*/BatchGetImage). Publish the arm64 coder artifact before enabling.
   #   baseImageARN:    arn:aws:lambda:<region>:aws:microvm-image:al2023-1
-  #   codeArtifactUri: s3://<bucket>/dark-factory-coder-<tag>-arm64.zip
   baseImageARN: ""
-  codeArtifactUri: ""
+
+  # codeArtifactKey is the OBJECT KEY ONLY — deliberately NOT a full s3:// URI. The bucket
+  # half is composed inside the RGD from the bucket resource it actually creates:
+  #   uri: s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+  # ONE source of truth. A full URI value (as this held before) restated the
+  # `<image.name>-microvm-artifacts-<accountId>` bucket name a SECOND time — once in the
+  # Bucket resource, once in the URI — and the two drifted twice already: the un-suffixed
+  # bucket gave 409 BucketAlreadyExists + "Access denied when fetching artifact from S3"
+  # (CREATE_FAILED), and any change to image.name would have pointed the build at a bucket
+  # nothing creates. With a bare key, image.name and accountId can change freely and the
+  # URI follows the bucket automatically — nothing to keep in sync, in any overlay or in the
+  # registry (which CANNOT compose it anyway: its Go template only sees cluster
+  # metadata/annotations, never another Helm value).
+  # BUMP THIS KEY TO REBUILD the image — Lambda MicroVM does not rebuild when the same S3
+  # key is overwritten (SUBSTRATE-BENCHMARK.md pitfall 8). Publish the arm64 zip to
+  # s3://<image.name>-microvm-artifacts-<accountId>/<codeArtifactKey> before enabling.
+  #   r8: Dockerfile ARG CODER_IMAGE repointed from the chart AUTHOR's account to
+  #       the deploying account's ECR. The old value was unpullable — cross-account ECR needs
+  #       a repository policy on the far side, which we cannot set — so every build failed at
+  #       base-image pull even once the S3 artifact fetch was fixed. That ARG CANNOT be
+  #       templated (the MicrovmImage CRD's codeArtifact has only `uri`; no build-args field),
+  #       so it is edited in the Dockerfile and baked into the ZIP. Build the arm64 base
+  #       and publish it to YOUR account's ECR first — see docs/dark-factory/FLOW-D-ENABLEMENT.md.
+  #   r7: hook-server /run guard keyed on a per-invocation run-id (issue+note hash) instead
+  #       of a one-shot boolean, so a RESUMED VM (fix round) accepts a fresh /run and re-runs
+  #       the coder — the resume path was a no-op because the snapshot froze coderStarted=true.
+  #       Also truncates /tmp/coder.log per run so the bridge's "PR pushed" grep can't match
+  #       the previous round's line.
+  #   r6: fix-round iterate note forwarded (bridge payload -> hook-server -> coder env).
+  codeArtifactKey: "coder-v0.2.5-arm64-r8.zip"
   image:
     # Render the single committed MicrovmSandbox instance that triggers the build.
     enabled: true

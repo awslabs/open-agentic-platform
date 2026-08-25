@@ -22,6 +22,57 @@ FENCE='```'
 REPORT=/tmp/report.md
 : > "$REPORT"
 
+# Pod Security + quota for the ephemeral test namespace (review: HIGH).
+PSS_MODE="${PSS_MODE:-restricted}"
+QUOTA_PODS="${QUOTA_PODS:-20}"
+QUOTA_CPU="${QUOTA_CPU:-4}"
+QUOTA_MEMORY="${QUOTA_MEMORY:-8Gi}"
+
+# Create the ephemeral namespace WITH Pod Security enforcement and a quota in ONE
+# apply, before any coder-written manifest can land in it.
+#
+# Why atomic: `kubectl create namespace` then `kubectl label` leaves a window where
+# the namespace exists UNLABELLED, and PodSecurity is evaluated at pod ADMISSION —
+# anything applied in that window is never checked. These manifests are written by
+# the model, so a privileged pod with a hostPath mount would mean root on the node.
+#
+# TRADEOFF: enforce=restricted also rejects ordinary images that run as root or omit
+# seccomp/capabilities — a plain nginx manifest WILL be refused and reported as a
+# failure. That is the fail-secure default; set deployTest.podSecurityStandard to
+# `baseline` to keep blocking privileged/hostPath/host-namespaces while allowing
+# root containers.
+create_test_ns() {
+  kubectl apply -f - >/dev/null 2>&1 <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NS}
+  labels:
+    dark-factory.io/ephemeral: "true"
+    dark-factory.io/issue-number: "${ISSUE_NUMBER}"
+    pod-security.kubernetes.io/enforce: "${PSS_MODE}"
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: "${PSS_MODE}"
+    pod-security.kubernetes.io/warn: "${PSS_MODE}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: df-test-quota
+  namespace: ${NS}
+spec:
+  hard:
+    pods: "${QUOTA_PODS}"
+    requests.cpu: "${QUOTA_CPU}"
+    requests.memory: "${QUOTA_MEMORY}"
+    limits.cpu: "${QUOTA_CPU}"
+    limits.memory: "${QUOTA_MEMORY}"
+    persistentvolumeclaims: "0"
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+EOF
+}
+
 case "$KIND" in
   terraform)
     cd "$TF_PATH"
@@ -49,8 +100,8 @@ case "$KIND" in
       echo "[deploy-test] no manifests at '$MANIFEST_PATH' (advisory)"
       DESC="no manifests at $MANIFEST_PATH"
       echo "No manifests found at \`$MANIFEST_PATH\`." >> "$REPORT"
-    elif kubectl create namespace "$NS" >/dev/null 2>&1 \
-         && kubectl label namespace "$NS" dark-factory.io/ephemeral=true dark-factory.io/issue-number="$ISSUE_NUMBER" --overwrite >/dev/null 2>&1 \
+    elif create_test_ns \
+         && echo "[deploy-test] namespace $NS ready (PodSecurity enforce=${PSS_MODE}, quota ${QUOTA_PODS} pods / ${QUOTA_CPU} cpu / ${QUOTA_MEMORY})" \
          && kubectl apply -n "$NS" -f "$MANIFEST_PATH" >/tmp/apply.log 2>&1; then
       cat /tmp/apply.log
       echo "[deploy-test] waiting up to ${READY_TIMEOUT}s for workloads Available..."
@@ -68,8 +119,17 @@ case "$KIND" in
       fi
     else
       cat /tmp/apply.log 2>/dev/null || true
-      STATE=failure; DESC="kubectl apply failed"; RC=1
-      { echo "\`kubectl apply\` failed:"; echo "$FENCE"; tail -20 /tmp/apply.log 2>/dev/null; echo "$FENCE"; } >> "$REPORT"
+      RC=1; STATE=failure
+      if grep -qi "violates PodSecurity" /tmp/apply.log 2>/dev/null; then
+        # A real finding, not harness noise: the manifest wants privileges an
+        # ephemeral test namespace refuses (privileged, hostPath, host namespaces,
+        # or running as root under `restricted`).
+        DESC="deploy-test: manifest rejected by PodSecurity (enforce=${PSS_MODE})"
+        { echo "Manifest **rejected by PodSecurity** (\`enforce=${PSS_MODE}\`) — it requests privileges an ephemeral test namespace does not grant:"; echo "$FENCE"; tail -20 /tmp/apply.log 2>/dev/null; echo "$FENCE"; } >> "$REPORT"
+      else
+        DESC="kubectl apply failed"
+        { echo "\`kubectl apply\` failed:"; echo "$FENCE"; tail -20 /tmp/apply.log 2>/dev/null; echo "$FENCE"; } >> "$REPORT"
+      fi
     fi
     ;;
 

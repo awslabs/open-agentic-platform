@@ -1,0 +1,91 @@
+# kata-nodepool — Karpenter EC2NodeClass + NodePool(s) for Kata nodes.
+# Four pools mirror elamaran11/eks-platform-openclaw, on two axes:
+#   VMM      : kata (clh/qemu) │ fc (firecracker)
+#   node type: nested-virt 8i  │ bare metal
+# clusterName is injected per-cluster by the registry entry (sandbox.yaml) from
+# the cluster-secret aws_cluster_name annotation; everything else has a default.
+aws:
+  clusterName: ""
+
+# ── Discovery (no hardcoded IDs — the GitOps requirement) ────────────────────
+# openclaw selects subnets/SG by a `karpenter.sh/discovery: <cluster>` tag, but
+# THIS platform's VPC composition does NOT apply that tag. Instead every subnet
+# carries `platform.gitops.io/cluster: <cluster>` (+ the private ones the
+# internal-elb role tag) and the EKS cluster SG carries `aws:eks:cluster-name`.
+# We select on those, so no subnet-/sg- IDs are baked in and the chart is
+# portable across spokes.
+discovery:
+  subnetClusterTagKey: platform.gitops.io/cluster
+  subnetPrivateTag:
+    key: kubernetes.io/role/internal-elb
+    value: "1"
+  securityGroupClusterTagKey: aws:eks:cluster-name
+
+# ── Shared EC2NodeClass defaults (all pools) ─────────────────────────────────
+defaults:
+  amiAlias: al2023@latest
+  # Node IAM role created by the `karpenter` controller addon. Override to point
+  # at a differently-named role.
+  roleName: ""              # default: KarpenterNodeRole-<clusterName>
+  volumeSizeGi: 100
+  volumeType: gp3
+  # Firecracker devmapper thin-pool (fc pools only — fc needs a block snapshotter,
+  # not overlayfs; kata-deploy can't create it, so node userData does).
+  devmapper:
+    dataSizeGi: 100
+    metaSizeGi: 10
+    baseImageSize: 10GB
+
+# ── Shared NodePool requirements ─────────────────────────────────────────────
+common:
+  arch: amd64
+  expireAfter: 720h
+
+# NOTE on capacityTypes: the ported `karpenter` controller runs WITHOUT an SQS
+# interruption queue (interruptionQueue: ""), so a reclaimed spot node would not
+# be drained gracefully. All pools default to on-demand; only add "spot" after
+# wiring an interruption queue on the controller.
+
+# ── kata-nested: clh/qemu on nested-virt 8i (the DEFAULT pool) ────────────────
+# VERIFIED live on spoke-dev (2026-07-23): real kata VM, guest kernel 6.18.35.
+kataNested:
+  enabled: true
+  instanceFamilies: ["c8i", "m8i"]   # 8i-gen exposes VT-x for nested KVM
+  minVcpu: "4"                       # Gt → 2xlarge (8 vCPU) and up
+  capacityTypes: ["on-demand"]
+  cpuLimit: "100"
+  consolidateAfter: 5m
+  weight: 20                         # higher than metal → preferred
+
+# ── kata-metal: clh/qemu on BARE METAL (fallback for kata-nested) ─────────────
+# Same runtime (kata-deploy) + taint/label as kata-nested; native VT-x so no
+# cpuOptions. Opt-in — enable when nested capacity is a concern.
+kataMetal:
+  enabled: false
+  instanceTypes: ["c5.metal", "m5.metal", "i3.metal"]
+  capacityTypes: ["on-demand"]       # spot unreliable for metal
+  cpuLimit: "200"
+  consolidateAfter: 10m
+  weight: 10                         # lower → only when nested unavailable
+
+# ── kata-fc: Firecracker on nested-virt 8i ────────────────────────────────────
+# UNVERIFIED on this platform — ported from openclaw. Requires the kata-deploy-fc
+# runtime app (enable_agent_sandbox_kata_fc) + devmapper userData below. Opt-in.
+kataFc:
+  enabled: false
+  instanceFamilies: ["c8i", "m8i"]
+  minVcpu: "4"
+  capacityTypes: ["on-demand"]
+  cpuLimit: "100"
+  consolidateAfter: 5m
+  weight: 20
+
+# ── kata-fc-metal: Firecracker on BARE METAL (fallback for kata-fc) ───────────
+# UNVERIFIED on this platform — ported from openclaw. Opt-in.
+kataFcMetal:
+  enabled: false
+  instanceTypes: ["c5.metal", "m5.metal", "i3.metal"]
+  capacityTypes: ["on-demand"]
+  cpuLimit: "200"
+  consolidateAfter: 10m
+  weight: 10

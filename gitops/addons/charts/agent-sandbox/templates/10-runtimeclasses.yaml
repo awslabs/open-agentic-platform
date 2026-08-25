@@ -1,22 +1,47 @@
 {{- /*
 Kata RuntimeClasses. A workload selects a VMM with `runtimeClassName: kata-clh`
-(or kata-qemu). The RuntimeClass admission controller force-merges the
-scheduling.nodeSelector + tolerations below onto the pod, steering it onto the
-matching Karpenter kata pool. The runtime binaries themselves are installed on
-the node by kata-deploy (a prerequisite provided by the base platform).
+(or kata-qemu / kata-fc). The RuntimeClass admission controller force-merges the
+scheduling.nodeSelector + tolerations below onto every pod that selects the
+class, so a workload only needs runtimeClassName to reach the right node pool.
+
+OWNERSHIP: this chart owns these objects, and kata-deploy's own RuntimeClass
+rendering is DISABLED (runtimeClasses.enabled=false on its registry entry) so the
+two apps don't fight over the same names — they did, and it left both Apps
+permanently OutOfSync. This chart owns them because kata-deploy's chart emits
+scheduling.nodeSelector but has NO toleration support at all, while the
+kata-nodepool taints its nodes (kata / kata-fc =true:NoSchedule): a pod selecting
+only runtimeClassName would get the nodeSelector and then sit Pending on the
+taint. kata-deploy also cannot name the Firecracker class `kata-fc` — its
+multiInstallSuffix renames it kata-fc-fc.
+
+overhead.podFixed is COPIED from kata-deploy 4.0.0's built-in per-shim table so
+the kubelet still reserves memory for the VMM process itself; without it the
+scheduler overcommits the kata node and the VMM becomes an OOM-kill candidate on
+memory-limited pods. These numbers are HAND-MAINTAINED here — re-check them
+against the upstream table when bumping the kata-deploy version. (kata-deploy
+also stamps a katacontainers.io/kata-version annotation on the classes it owns;
+that is not reproduced here, since this chart cannot know what the node has.)
+
+The runtime binaries and containerd handlers are installed on the node by
+kata-deploy (wave 1); this chart only declares the classes that select them.
 */ -}}
-{{- range .Values.kata.runtimeClasses }}
+{{- range $vmm, $rc := .Values.kata.runtimeClasses }}
 ---
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
-  name: {{ .name }}
+  name: {{ $rc.name }}
   labels:
     {{- include "agent-sandbox.labels" $ | nindent 4 }}
-handler: {{ .handler }}
+handler: {{ $rc.handler }}
+{{- with $rc.overhead }}
+overhead:
+  podFixed:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
 scheduling:
   nodeSelector:
-    {{- toYaml $.Values.kata.nodeSelector | nindent 4 }}
+    {{- toYaml $rc.nodeSelector | nindent 4 }}
   tolerations:
-    {{- toYaml $.Values.kata.tolerations | nindent 4 }}
+    {{- toYaml $rc.tolerations | nindent 4 }}
 {{- end }}

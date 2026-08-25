@@ -1,0 +1,9 @@
+# Default (base) fleet cluster provisioning values.
+# Layered UNDER the per-tenant crossplane-clusters/values.yaml by the
+# `clusters` ApplicationSet. Real cluster entries live in the tenant files;
+# this base stays empty.
+#
+# Path renamed to match the platform `clusters` ApplicationSet generator glob
+# (fleet/spoke-values/tenants/*/crossplane-clusters/values.yaml) — previously
+# fleet/kro-values/.../kro-clusters, which no longer matches.
+clusters: {}

@@ -5,6 +5,49 @@ podIdentity:
   namespace: bifrost
   serviceAccountName: bifrost
 
+# ── Pinned-ClusterIP Service (templates/static-service.yaml) ─────────────────
+# A SECOND Service pointing at the same pods, at a fixed address, for clients
+# that cannot use cluster DNS — today that is the Kata sandbox coder, which the
+# agent-sandbox operator gives `dnsPolicy: None` + public resolvers, and which
+# runs on a self-managed Karpenter node where this Auto Mode cluster provides no
+# kube-dns Service at all.
+#
+# The main Service is NOT modified: it comes from the vendored subchart (no
+# clusterIP knob) and spec.clusterIP is immutable, so pinning it in place would
+# mean deleting and recreating it — an outage for every other Bifrost client.
+# DNS-capable clients should keep using bifrost.bifrost.svc.cluster.local.
+staticService:
+  enabled: true
+  # Distinct name so it cannot collide with the subchart's Service.
+  name: bifrost-static
+  # Fixed address, deliberately inside the STATIC subrange (172.20.0.0/24 of the
+  # 172.20.0.0/16 service CIDR) that Kubernetes never allocates dynamically — so
+  # it cannot be handed to another Service before this one is created. `.100`
+  # echoes CoreDNS's conventional `.10`, so it is recognisable on sight.
+  #
+  # ⚠️ NOT .10 — Auto Mode's node-local DNS answers on 172.20.0.10 with no
+  # Service object owning it, so the allocator thinks it is free.
+  #
+  # ⚠️ Immutable after creation. To change it, delete the bifrost-static Service
+  # and let ArgoCD recreate it.
+  #
+  # ⚠️ COUPLED to two values in the agent-sandbox chart that must be changed
+  # together — coderTemplate.bifrostUrl and networkPolicy.bifrostClusterIp
+  # (the NetworkPolicy needs it as an ipBlock because VPC-CNI matches egress on
+  # the ClusterIP *before* kube-proxy DNAT). Grep 172.20.0.100 before editing.
+  clusterIP: 172.20.0.100
+  port: 8080
+  # Named port on the Bifrost container — tracks the subchart's own containerPort
+  # rather than duplicating a number.
+  targetPort: http
+  # MUST match the subchart's Service selector or this Service resolves to zero
+  # endpoints and sandbox requests fail with connection refused. Verified against
+  # the live Service (bifrost-2.1.16) — re-check when bumping the subchart.
+  selector:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/instance: bifrost
+    app.kubernetes.io/component: server
+
 bifrost:
   image:
     tag: "v1.5.0"

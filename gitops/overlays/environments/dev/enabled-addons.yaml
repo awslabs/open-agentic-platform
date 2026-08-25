@@ -5,6 +5,7 @@ enabledAddons:
   ingress_class_alb: true
   aws_load_balancer_controller: true
   default_storage_class: true
+  cert_manager: true
   external_secrets: true
   external_dns: true
   # Security
@@ -15,21 +16,66 @@ enabledAddons:
   prometheus_node_exporter: true
   aws_for_fluentbit: true
   # Platform
+  platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
   crossplane: true
   crossplane_aws: true
   kubevela: true
   argo_rollouts: true
+  # Self-managed Karpenter (platform-repo addon), running ALONGSIDE Auto Mode to
+  # host the Kata nested-virt sandbox nodes Auto Mode's Bottlerocket nodes can't.
+  # Brings up ONLY the controller + its IAM (pod-identity + node role); the
+  # EC2NodeClass/NodePool come from the kata_nodepool addon below. The two
+  # Karpenter controllers coexist by nodeClassRef.group partition (Auto Mode =
+  # eks.amazonaws.com, self-managed = karpenter.k8s.aws). See platform
+  # registry/core.yaml `karpenter`.
+  karpenter: true
   # Agentic Platform
   agent_platform: true
   bifrost: true
+  otel_collector: true
+  monitoring: true
+  agent_core: true
+  agent_gateway: true
+  oam_components: true
   # Agent Sandbox capability — Kata micro-VM sandboxes + warm pool.
   # Enabled on DEV (where the Dark Factory runs). ArgoCD manages the IN-CLUSTER
   # pieces (operator, CRDs, RuntimeClasses, SandboxTemplate, pool-manager).
-  # The kata-capable node layer is NOT GitOps-managed — it requires a
-  # self-managed nested-virt MNG + the vpc-cni & kube-proxy addons provisioned
-  # out-of-band (AWS infra ArgoCD can't create). See
-  # gitops/addons/charts/agent-sandbox/nodepool/README.md for the proven recipe
-  # (validated live on spoke-dev 2026-07-10: real kata VM, guest kernel 6.18.35).
-  agent_sandbox: true
-  # kata-deploy installs the runtime on the kata MNG nodes (separate app).
-  agent_sandbox_kata: true
+  # The kata-capable node layer is now GitOps-managed too, via `karpenter` +
+  # `kata_nodepool` below (self-managed Karpenter provisions nested-virt nodes;
+  # the vpc-cni/kube-proxy those nodes need are covered by the karpenter addon's
+  # manageAddons gate or already present). Superseded the out-of-band MNG recipe
+  # in gitops/addons/charts/agent-sandbox/nodepool/README.md (validated live on
+  # spoke-dev 2026-07-10: real kata VM, guest kernel 6.18.35).
+  #
+  # MOVED TO THE HUB (2026-07-30). df-run's claim step creates a SandboxClaim with
+  # no cross-cluster mechanism (no --context, no remote kubeconfig), so a pool on
+  # the spoke could never be claimed by the hub-side orchestrator — Flow B could
+  # not complete. The capability now runs on the control-plane cluster alongside
+  # argo + argo-events. See overlays/environments/control-plane/enabled-addons.yaml.
+  #
+  # Disabling prunes the operator, its CRDs, the RuntimeClasses/SandboxTemplate and
+  # the warm pool from this cluster (preserveResourcesOnDeletion is false), which is
+  # the intent of a move. The three stuck coder-warmpool pods here go with them.
+  agent_sandbox: false
+  # kata-deploy installs the clh/qemu runtime on the kata nodes (separate app).
+  # Off with the capability above — nothing on this cluster needs the runtime now.
+  agent_sandbox_kata: false
+  # kata-deploy-fc — the Firecracker runtime (second kata-deploy release) for the
+  # kata-fc nodes. OFF: the fc path (devmapper + fc pools) is unverified on this
+  # platform. To use Firecracker: enable this, set kataFc.enabled=true on the
+  # kata-nodepool addon, and set kata.vmm=fc on agent-sandbox.
+  agent_sandbox_kata_fc: false
+  # kata_nodepool — the self-managed Karpenter EC2NodeClass + NodePool that
+  # provision the nested-virt kata nodes (consuming layer over the `karpenter`
+  # controller above). Replaces the out-of-band MNG the nodepool/README describes:
+  # subnets/SG/role are discovered from cluster tags, so no infra is created
+  # out-of-band. Requires `karpenter: true` (controller) + enable_agent_sandbox_kata
+  # (runtime). See gitops/addons/charts/kata-nodepool.
+  #
+  # Off with the sandbox move: with no warm pool on this cluster there is no pending
+  # kata pod, so the pool would sit at 0 nodes forever. Disabling prunes the
+  # kata-nested EC2NodeClass + NodePool, and the kata node they provisioned is
+  # deprovisioned with them (consolidationPolicy WhenEmptyOrUnderutilized). This
+  # touches only karpenter.k8s.aws-group CRs — Auto Mode's own nodepools
+  # (group eks.amazonaws.com) are a separate partition and are unaffected.
+  kata_nodepool: false

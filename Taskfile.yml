@@ -17,6 +17,20 @@ vars:
     sh: yq -r '.aws.accountId' {{.CONFIG_FILE}}
   AWS_PROFILE:
     sh: yq -r '.aws.profile // "default"' {{.CONFIG_FILE}}
+  # On EC2 the profile name (e.g. "default") has no entry in ~/.aws/config, so the
+  # --profile flags below and the kubectl exec plugin (aws eks get-token) would
+  # dead-end. Generate a config whose profile resolves to the instance role via
+  # the credential provider chain (IMDS) and return its path. Off-instance, fall
+  # back to the user's existing AWS_CONFIG_FILE or ~/.aws/config (zero regression).
+  AWS_CONFIG_FILE:
+    sh: |
+      if curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" >/dev/null 2>&1; then
+        mkdir -p "{{.ROOT_DIR}}/.platform/private"
+        printf '[default]\ncredential_source = Ec2InstanceMetadata\n' > "{{.ROOT_DIR}}/.platform/private/aws-config"
+        echo "{{.ROOT_DIR}}/.platform/private/aws-config"
+      else
+        echo "${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+      fi
   HUB_CLUSTER_NAME:
     sh: yq -r '.hub.clusterName' {{.CONFIG_FILE}}
   DOMAIN:
@@ -39,6 +53,13 @@ vars:
     sh: yq -r '.agenticRepo.revision' {{.CONFIG_FILE}}
   AGENTIC_REPO_BASEPATH:
     sh: yq -r '.agenticRepo.basepath' {{.CONFIG_FILE}}
+
+# Exported to every task's command environment. AWS_CONFIG_FILE must be a real
+# env var (not just a template var) so the aws CLI and the kubectl exec plugin
+# (aws eks get-token) resolve --profile against the EC2-aware config resolved above.
+env:
+  AWS_PAGER: ""
+  AWS_CONFIG_FILE: "{{.AWS_CONFIG_FILE}}"
 
 tasks:
   install:
@@ -249,9 +270,14 @@ tasks:
       REVISION: "{{.AGENTIC_REPO_REVISION}}"
       BASEPATH: "{{.AGENTIC_REPO_BASEPATH}}"
       HUB_CLUSTER_NAME: "{{.HUB_CLUSTER_NAME}}"
+      # Reference model: the appset-chart generator is sourced from the platform
+      # repo (appmod-blueprints), not vendored here. These feed the bootstrap
+      # Application's source B.
+      PLATFORM_REPO_URL: "{{.PLATFORM_REPO}}"
+      PLATFORM_REPO_REVISION: "{{.PLATFORM_REF}}"
     cmds:
       - task: agentic:hub-oidc-annotation
-      - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME}' < gitops/fleet/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
+      - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
       - printf '\n✓ Agentic platform bootstrap applied. ArgoCD will sync components to clusters with enable_agent_platform=true label (set via fleet overlays).\n'
 
   # ─── Ingress / Domain Post-Install ───────────────────────────────────────────

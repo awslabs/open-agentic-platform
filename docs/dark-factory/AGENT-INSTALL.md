@@ -14,7 +14,7 @@ their verdicts back onto the PR. This page is the end-to-end setup — follow it
 
 > **Prerequisites:** an AWS account with the DevOps Agent + Security Agent enabled, admin access to
 > that account, and **owner/admin** rights on the GitHub org or user that owns your repo (needed to
-> install a GitHub App). The examples use account `940019131157`, region `us-west-2`, repo
+> install a GitHub App). The examples use account `<ACCOUNT_ID>`, region `us-west-2`, repo
 > `elamaran11/dark-factory-sandbox` — substitute your own.
 
 ---

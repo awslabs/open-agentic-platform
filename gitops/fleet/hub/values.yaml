@@ -3,3 +3,40 @@ externalSecret:
   labels:
     environment: control-plane
     tenant: control-plane
+
+# External overlay repo ("layer 5") — points the PLATFORM appset at THIS repo so we
+# can override values for platform-owned addons (chart + registry live in
+# appmod-blueprints) without editing that repo.
+#
+# This is what makes gitops/overlays/clusters/hub/karpenter/values.yaml take
+# effect: bootstrap/addons.yaml reads these annotations into the appset-chart's
+# overlayRepoURLGit*, which appends a $overlay source plus, per addon,
+#   $overlay/<basepath>configs/<addon>/values.yaml
+#   $overlay/<basepath>overlays/environments/<env>/<addon>/values.yaml
+#   $overlay/<basepath>overlays/clusters/<cluster>/<addon>/values.yaml
+# AFTER the platform's own layers, so our file wins. All are
+# ignoreMissingValueFiles, so paths we don't populate are silent no-ops.
+#
+# SCOPE: only the PLATFORM appset consumes these. The agentic appset
+# (gitops/bootstrap/agent-platform-app.yaml) never sets overlayRepoURLGit,
+# so agentic addons keep resolving overlays via layer 4 exactly as before — no
+# double-read of files like overlays/clusters/hub/agent-gateway/values.yaml.
+#
+# SIDE EFFECT: this also repoints the appset-level $overlay/...overrides.yaml
+# files from the platform repo to this one. Verified safe — the platform's
+# control-plane/overrides.yaml is comments-only and its clusters/hub/overrides.yaml
+# does not exist, so nothing of substance is lost.
+#
+# Safe to enable: $overlay becomes a REAL ArgoCD source, and this repo is public
+# and already read by ArgoCD (fleet-secret-hub and clusters-default already carry
+# a `ref: overlay` source pointing at this same URL).
+overlay:
+  repoURL: https://github.com/aws-samples/sample-open-agentic-platform.git
+  # MUST be a revision that actually CONTAINS the overlay files above. Kept in step
+  # with this cluster secret's fleetRepoRevision — update BOTH when this work
+  # merges (fix/parity-with-peeks -> main), otherwise $overlay resolves to a branch
+  # without overlays/clusters/hub/karpenter/values.yaml and manageAddons silently
+  # stays false.
+  revision: fix/parity-with-peeks
+  # Repo-relative root holding configs/ + overlays/. Matches addonsRepoBasepath.
+  basepath: gitops/

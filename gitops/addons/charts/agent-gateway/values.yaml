@@ -64,7 +64,7 @@ jwtAuth:
 # Activation is derived from `issuer`: when empty (the default) the workload
 # provider and its backend are omitted entirely (humans-only). Per-cluster
 # values are wired from the agent-gateway addon valuesObject in
-# gitops/addons/bootstrap/default/addons.yaml.
+# gitops/addons/registry/gateway.yaml.
 workloadIdentity:
   # Cluster OIDC issuer, e.g. https://oidc.eks.us-west-2.amazonaws.com/id/<ID>.
   # Empty = workload identity disabled.

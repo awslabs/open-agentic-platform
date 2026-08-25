@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agent-platform-addons
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    # Source A — THIS repo (the addon repo): provides the registry value files
+    # (referenced below via $values) plus the charts/, configs/ and overlays/ that
+    # ArgoCD resolves at sync time from the paths inside those registry entries.
+    - ref: values
+      repoURL: "${REPO_URL}"
+      targetRevision: "${REVISION}"
+    # Source B — the PLATFORM repo (appmod-blueprints): the generator chart itself.
+    # Reference model — the appset-chart is NOT vendored into this repo; it is
+    # pulled from the platform repo at a pinned revision. Other addon repos reuse
+    # this exact pattern by pointing source B at the same chart and supplying their
+    # own registry files as $values.
+    - repoURL: "${PLATFORM_REPO_URL}"
+      path: "platform-charts/appset-chart"
+      targetRevision: "${PLATFORM_REPO_REVISION}"
+      helm:
+        releaseName: agent-platform-addons
+        ignoreMissingValueFiles: true
+        # Layered low→high precedence. _defaults.yaml supplies syncPolicy,
+        # useSelectors:true, repoURLGitBasePath (gitops/addons/configs) and
+        # overlayBasePath; the domain files supply the addon entries. valuesObject
+        # (highest) is reserved for env-injected repo coordinates ONLY — it must
+        # not re-set repoURLGitBasePath/useSelectors or it would clobber _defaults.
+        valueFiles:
+          - "$values/${BASEPATH}registry/_defaults.yaml"
+          - "$values/${BASEPATH}registry/gateway.yaml"
+          - "$values/${BASEPATH}registry/observability.yaml"
+          - "$values/${BASEPATH}registry/agentcore.yaml"
+          - "$values/${BASEPATH}registry/sandbox.yaml"
+        valuesObject:
+          # Umbrella gate: whole agentic bundle is off unless the cluster carries
+          # enable_agent_platform. Per-addon enable_<addon> selectors (useSelectors
+          # from _defaults) gate placement within the bundle.
+          globalSelectors:
+            enable_agent_platform: "true"
+          repoURLGit: "${REPO_URL}"
+          repoURLGitRevision: "${REVISION}"
+  destination:
+    namespace: argocd
+    name: ${HUB_CLUSTER_NAME}
+  syncPolicy:
+    automated:
+      selfHeal: true
+      allowEmpty: true
+      prune: true
+    retry:
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

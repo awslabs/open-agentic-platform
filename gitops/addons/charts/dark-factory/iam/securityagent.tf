@@ -5,7 +5,7 @@
 #   -> start-code-review-job -> list-findings. No GitHub App, no OAuth.
 #
 # This file codifies the three IAM/infra pieces that path needs (all validated
-# live 2026-07-16). Applied standalone like nodepool/kata-mng.tf — the repo keeps
+# live 2026-07-16). Applied standalone, not by ArgoCD — the repo keeps
 # addon IAM as committed Terraform, and the agent SPACE/APPLICATION (which have no
 # Terraform/ACK provider yet) are reconciled separately by the chart's PreSync Job.
 #

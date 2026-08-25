@@ -1,5 +1,23 @@
 # Kata node pool provisioning
 
+> ## ⚠️ SUPERSEDED — historical reference only
+>
+> **Nothing described below is rendered any more.** The Crossplane MNG path ("Route A")
+> was removed: templates `15-kata-readiness`, `16-kata-launch-template`,
+> `17-kata-nodegroup` and `18-kata-eks-addons`, the chart's `nodepool` values block,
+> and the `kataUserData` helper are all deleted, and the per-cluster overlay this doc
+> tells you to edit no longer exists either.
+>
+> **The current path is the [`kata-nodepool`](../../kata-nodepool/README.md) chart** —
+> a Karpenter `EC2NodeClass` + `NodePool` over the platform `karpenter` addon, which
+> discovers subnets, the cluster security group and the node IAM role from cluster
+> tags instead of hardcoding them per cluster. Enable it with `kata_nodepool: true`.
+>
+> Kept because the coexistence findings below (Auto Mode + self-managed nodes,
+> `/dev/kvm`, nested-virt instance families) still hold and are referenced from
+> `kata-nodepool/README.md` and `docs/dark-factory` §12a. The `.tf` / `eksctl` /
+> nodeadm artifacts it mentions were removed too.
+
 The `agent-sandbox` chart installs the Sandbox operator, RuntimeClasses, coder
 template, and pool-manager — but Kata needs **hardware-virtualization nodes** to
 actually run micro-VMs. On an **EKS Auto Mode** cluster (like the spokes), Auto

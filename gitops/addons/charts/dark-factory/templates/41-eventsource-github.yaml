@@ -45,8 +45,13 @@ spec:
       apiToken:
         name: {{ .Values.trigger.argoEvents.githubSecret }}
         key: token
-      # Let Argo Events auto-register the webhook on the repo.
-      active: true
+      # Auto-register the webhook on the repo. Requires Webhooks:write
+      # (admin:repo_hook) on the apiToken above. Set false only if you register
+      # the webhook yourself, which then allows a read-only apiToken.
+      # NB: `| default true` would be wrong here — Helm treats false as empty,
+      # so an explicit active=false would collapse back to true. hasKey keeps
+      # the explicit value while defaulting absence to true (prior behaviour).
+      active: {{ if hasKey .Values.trigger.argoEvents "active" }}{{ .Values.trigger.argoEvents.active }}{{ else }}true{{ end }}
       contentType: json
       insecure: false
 {{- end }}

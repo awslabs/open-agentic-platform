@@ -63,7 +63,7 @@ spec:
           configMap:
             name: df-review
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [bash]
         env:
           - name: GH_TOKEN
@@ -75,6 +75,30 @@ spec:
             value: "{{`{{workflow.parameters.repo}}`}}"
           - name: PR
             value: "{{`{{workflow.parameters.pr-number}}`}}"
+          # A MISSING status is now a REFUSAL, not a skip (review C3). That makes the
+          # required set load-bearing: a gate that is switched off never posts, so
+          # demanding it would block every merge. Pass the enabled set explicitly —
+          # merge.js defaults both to TRUE (fail-secure), so omitting them would
+          # demand statuses a disabled gate never produces.
+          #
+          # deploy-test is deliberately NOT required: unlike these, it is gated at
+          # RUNTIME (`when: kind != none`), so on a diff that touches no deployable
+          # artifact the step is skipped and no status is ever posted. Requiring it
+          # from a static chart flag would refuse every non-deployable PR.
+{{- if .Values.holdout.enabled }}
+          - name: REQUIRE_HOLDOUT
+            value: "true"
+{{- else }}
+          - name: REQUIRE_HOLDOUT
+            value: "false"
+{{- end }}
+{{- if .Values.review.enabled }}
+          - name: REQUIRE_REVIEW
+            value: "true"
+{{- else }}
+          - name: REQUIRE_REVIEW
+            value: "false"
+{{- end }}
 {{- if .Values.devopsAgent.enabled }}
           # Require the REAL AWS DevOps Agent check-run (Checks API) green before
           # merge — merge.js reads both commit statuses and check-runs.

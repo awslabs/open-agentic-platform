@@ -12,7 +12,7 @@ enabledAddons:
   ingress_class_alb: true
   aws_load_balancer_controller: true
   default_storage_class: true
-  cert_manager: false
+  cert_manager: true
   external_secrets: true
   external_dns: true
   aws_efs_csi_driver: false
@@ -44,11 +44,42 @@ enabledAddons:
   kro_manifests: false
   kro_manifests_hub: false
   multi_acct: false
-  platform_manifests: false
+  platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
+  platform_manifests: false            # wave 6: Ray-only IAMRoleSelector — inert here (Ray disabled)
   backstage: false
   kubevela: true
   devlake: false
   gitlab: false
+  # Self-managed Karpenter + the Kata node layer, running ALONGSIDE EKS Auto Mode.
+  #
+  # STEP 1 of moving the sandbox onto the hub. The Dark Factory orchestrator runs
+  # here (argo + argo-events), and its claim step creates a SandboxClaim with no
+  # cross-cluster mechanism — so the warm pool has to live on the same cluster.
+  # That requires kata-capable nodes, which Auto Mode's Bottlerocket nodes are not.
+  #
+  #   karpenter      controller + Crossplane IAM (platform addon). Coexists with
+  #                  Auto Mode by nodeClassRef.group partition: Auto Mode owns
+  #                  eks.amazonaws.com, self-managed owns karpenter.k8s.aws.
+  #   kata_nodepool  the consuming layer (EC2NodeClass + NodePool). Subnets, cluster
+  #                  SG and node role are discovered from cluster tags — verified
+  #                  present on hub — so no infra is created out-of-band.
+  #
+  # A self-managed node also needs the vpc-cni + kube-proxy EKS addons (Auto Mode's
+  # built-in networking covers only its OWN nodes). Hub is a pure Auto Mode cluster
+  # with no existing owner for those addons, so node.manageAddons is turned on in
+  # gitops/overlays/clusters/hub/karpenter/values.yaml — which reaches the
+  # platform-owned karpenter chart via the external-overlay-repo ("layer 5")
+  # wiring in gitops/fleet/hub/values.yaml.
+  #
+  # Step 1 gate VERIFIED live on hub before step 2 was enabled below:
+  #   hub-karpenter-vpc-cni / -kube-proxy Addon MRs  SYNCED=True READY=True
+  #   hub live EKS addons                            vpc-cni, kube-proxy present
+  #   ec2nodeclass/kata-nested, nodepool/kata-nested READY=True, 0 nodes
+  # 0 nodes is correct: Karpenter is demand-driven, so the pool stays empty until
+  # a pending pod matches the kata taint + label. The warm pool below IS that
+  # demand — which is why "wait for a kata node" could never have been the gate.
+  karpenter: true
+  kata_nodepool: true
   # ACK controllers
   ack_iam: false
   ack_eks: false
@@ -72,3 +103,28 @@ enabledAddons:
   agent_platform: true
   bifrost: true
   langfuse: true
+  otel_collector: true
+  monitoring: true
+  agent_core: true
+  agent_gateway: true
+  oam_components: true
+  # Agent Sandbox capability — Kata micro-VM sandboxes + warm pool (STEP 2 of the
+  # move off the spoke; disabled on the dev overlay in the same change).
+  #
+  # It lives HERE because the Dark Factory orchestrator runs here: df-run's claim
+  # step creates a SandboxClaim with no cross-cluster mechanism (no --context, no
+  # remote kubeconfig), and hub had no sandbox CRDs at all — so with the pool on
+  # the spoke, Flow B could not complete. Co-locating removes the problem rather
+  # than bridging it.
+  #
+  # enable_agent_sandbox gates BOTH the upstream operator (which installs the
+  # sandbox CRDs) and the capability chart (RuntimeClasses, SandboxTemplate, warm
+  # pool). coderTemplate.image is supplied by the agent-sandbox registry entry
+  # (gitops/addons/registry/sandbox.yaml), which templates the ECR registry from
+  # this cluster's aws_account_id + aws_region annotations — so NO per-cluster
+  # overlay is needed. The image itself still has to be built into that account's
+  # ECR at the pinned tag, or the warm pods report ImagePullBackOff.
+  agent_sandbox: true
+  # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
+  # Required, or the warm pool's runtimeClassName has no handler on the node.
+  agent_sandbox_kata: true

@@ -9,8 +9,12 @@ echo ""
 # Defaults
 CLUSTER_NAME="${EKS_CLUSTER_NAME:-dev}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
-REPO_URL="${REPO_URL:-https://github.com/your-org/sample-open-agentic-platform}"
+REPO_URL="${REPO_URL:-https://github.com/aws-samples/sample-open-agentic-platform}"
 REPO_REVISION="${REPO_REVISION:-main}"
+# Reference model: the appset-chart generator is pulled from the platform repo
+# (appmod-blueprints), not vendored in this repo.
+PLATFORM_REPO_URL="${PLATFORM_REPO_URL:-https://github.com/aws-samples/appmod-blueprints}"
+PLATFORM_REPO_REVISION="${PLATFORM_REPO_REVISION:-feature/agent-platform}"
 PROJECT_NAME="${PROJECT_NAME:-agent-core}"
 TOFU_ROLE_ARN="${TOFU_CONTROLLER_ROLE_ARN:-}"
 MCP_IMAGE="${AGENT_CORE_MCP_IMAGE:-}"
@@ -23,6 +27,7 @@ echo "  Cluster:        $CLUSTER_NAME"
 echo "  Region:         $AWS_REGION"
 echo "  Repo URL:       $REPO_URL"
 echo "  Revision:       $REPO_REVISION"
+echo "  Platform Repo:  $PLATFORM_REPO_URL@$PLATFORM_REPO_REVISION"
 echo "  Project:        $PROJECT_NAME"
 echo "  Environment:    $ENVIRONMENT"
 echo "  Terraform Repo: $TF_REPO_URL"
@@ -98,16 +103,15 @@ metadata:
     fleet_member: control-plane
     environment: ${ENVIRONMENT}
     tenant: default
-    enable_flux: "true"
-    enable_tofu_controller: "true"
-    enable_agent_core: "true"
-    enable_litellm: "true"
+    enable_agent_platform: "true"
+    enable_bifrost: "true"
     enable_langfuse: "true"
-    enable_jaeger: "true"
+    enable_otel_collector: "true"
+    enable_monitoring: "true"
+    enable_agent_core: "true"
+    enable_agent_gateway: "true"
+    enable_oam_components: "true"
   annotations:
-    addons_repo_url: "${REPO_URL}"
-    addons_repo_revision: "${REPO_REVISION}"
-    addons_repo_basepath: "gitops/addons/"
     aws_region: "${AWS_REGION}"
     aws_account_id: "${AWS_ACCOUNT_ID}"
     aws_cluster_name: "${CLUSTER_NAME}"
@@ -133,10 +137,19 @@ EOF
 echo "✅ Cluster secret configured"
 echo ""
 
-# Step 5: Deploy the fleet bootstrap ApplicationSet
-echo "Step 5: Deploying fleet bootstrap..."
-kubectl apply -f gitops/fleet/bootstrap/addons.yaml
-echo "✅ Fleet bootstrap deployed"
+# Step 5: Deploy the agent-platform bootstrap Application
+echo "Step 5: Deploying agent-platform bootstrap..."
+# The appset-chart generator is sourced from the PLATFORM repo (reference model);
+# this repo supplies the registry/ value files. Repo coordinates are injected as
+# literals via envsubst. HUB_CLUSTER_NAME must be the ArgoCD-registered cluster
+# name — "in-cluster" in this standalone flow (see the secret above), not the EKS
+# name — so the Application's destination matches.
+REPO_URL="$REPO_URL" REVISION="$REPO_REVISION" BASEPATH="gitops/addons/" \
+  HUB_CLUSTER_NAME="in-cluster" \
+  PLATFORM_REPO_URL="$PLATFORM_REPO_URL" PLATFORM_REPO_REVISION="$PLATFORM_REPO_REVISION" \
+  envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION}' \
+  < gitops/bootstrap/agent-platform-app.yaml | kubectl apply -f -
+echo "✅ Agent-platform bootstrap deployed"
 echo ""
 
 echo "=========================================="

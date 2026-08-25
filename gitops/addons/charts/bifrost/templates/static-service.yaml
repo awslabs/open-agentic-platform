@@ -1,0 +1,75 @@
+{{- /*
+Bifrost at a PINNED ClusterIP, for clients that cannot use cluster DNS.
+
+WHY THIS EXISTS
+Kata sandbox pods (agent-sandbox) run with `dnsPolicy: None` + public resolvers
+(8.8.8.8/1.1.1.1) — injected by the agent-sandbox OPERATOR when it materializes a
+Sandbox, not by our chart, so we cannot switch them to cluster DNS. Consequently
+`bifrost.bifrost.svc.cluster.local` is UNRESOLVABLE from inside a sandbox VM
+(verified: getaddrinfo fails, and zero requests reached Bifrost during a run).
+
+Compounding it, this is an EKS AUTO MODE cluster: Auto Mode runs CoreDNS as a
+node-level system service rather than a Deployment, so there is NO kube-dns
+Service to point at — nothing owns 172.20.0.10 even though Auto Mode nodes
+resolve against it. Self-managed Karpenter nodes (which is what the kata pool is)
+get no such service, so cluster DNS is not an option for these pods at all.
+
+WHY A SEPARATE SERVICE AND NOT `clusterIP` ON THE MAIN ONE
+Two hard blockers:
+  1. The main Service comes from the VENDORED subchart (bifrost-2.1.16.tgz),
+     whose `service:` block exposes only type/port/annotations — no clusterIP.
+     Setting one would mean forking the subchart.
+  2. `spec.clusterIP` is IMMUTABLE. The live Service already holds a dynamically
+     assigned IP, so pinning it in place would require DELETING and recreating
+     it — an outage for every Bifrost client, not just the sandboxes.
+This sibling Service sidesteps both: it is purely additive, targets the same pods
+via the same selector, and leaves the DNS-addressable Service untouched. Clients
+that can resolve DNS should keep using `bifrost.bifrost.svc.cluster.local`.
+
+ON HARDCODING AN IP
+A pinned ClusterIP is the lesser evil versus hardcoding whatever EKS happened to
+assign: it is declared here, survives Service recreation, and is asserted in one
+place instead of being copied into both the coder URL and the NetworkPolicy
+ipBlock. Chosen from the STATIC subrange (172.20.0.0/24 of the 172.20.0.0/16
+service CIDR) that Kubernetes reserves for explicit assignment and never hands
+out dynamically, so it cannot collide with an auto-allocated IP.
+`.100` mirrors CoreDNS's conventional `.10` — recognisable on sight in a
+NetworkPolicy or a log line.
+
+⚠️ 172.20.0.10 must NOT be reused: Auto Mode's node-local DNS answers there with
+no Service object owning it, so the allocator believes it is free.
+*/ -}}
+{{- if .Values.staticService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.staticService.name }}
+  namespace: {{ .Values.podIdentity.namespace | default "bifrost" }}
+  labels:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/component: static-endpoint
+    app.kubernetes.io/managed-by: agent-platform
+  annotations:
+    # Creating this with an in-use clusterIP fails admission; ArgoCD's dry-run on
+    # a missing resource would report that as a sync error rather than a clear
+    # conflict, so skip it and let the real apply surface the reason.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  type: ClusterIP
+  # THE POINT OF THIS FILE. Immutable once created: to change it, delete this
+  # Service and let ArgoCD recreate it (safe — the DNS-addressable Service is a
+  # separate object and keeps serving throughout).
+  clusterIP: {{ .Values.staticService.clusterIP | required "staticService.clusterIP is required — pick a free address in the service CIDR's static subrange" }}
+  # Must match the subchart's Service selector, or this resolves to no endpoints
+  # and every sandbox request fails with connection refused. Verified against the
+  # live Service; re-check when bumping the vendored subchart.
+  selector:
+    {{- toYaml .Values.staticService.selector | nindent 4 }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.staticService.port }}
+      # Named port on the pod — resolved by the pod spec, so it tracks the
+      # subchart's container port even if that changes.
+      targetPort: {{ .Values.staticService.targetPort }}
+{{- end }}

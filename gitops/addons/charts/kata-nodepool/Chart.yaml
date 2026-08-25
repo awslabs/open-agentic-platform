@@ -1,0 +1,28 @@
+apiVersion: v2
+name: kata-nodepool
+description: >-
+  The consuming layer over the self-managed `karpenter` controller addon: a
+  Karpenter EC2NodeClass + NodePool that provision the nested-virt (Kata
+  micro-VM) nodes EKS Auto Mode's Bottlerocket nodes cannot host. Subnets, the
+  cluster security group and the node IAM role are DISCOVERED from cluster tags
+  (no hardcoded IDs), so the node layer needs no out-of-band AWS infra — it
+  replaces the self-managed MNG the old agent-sandbox/nodepool/README describes.
+  The NodePool is tainted + labelled so only kata sandbox workloads land on it;
+  everything else stays on Auto Mode (the two controllers coexist by
+  nodeClassRef.group partition). Gated by enable_kata_nodepool; requires the
+  `karpenter` controller addon (CRDs + IAM) and enable_agent_sandbox_kata (the
+  runtime) on the same cluster.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kata
+  - karpenter
+  - nested-virtualization
+  - nodepool
+  - sandbox
+sources:
+  - https://github.com/aws-samples/sample-open-agentic-platform
+  - https://github.com/elamaran11/eks-platform-openclaw
+maintainers:
+  - name: Open Agent Platform

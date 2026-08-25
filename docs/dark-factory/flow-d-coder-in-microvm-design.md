@@ -66,7 +66,7 @@ teardown: suspend/resume/terminate hooks best-effort flush; bridge TerminateMicr
 1. **HTTP wrapper + artifact** (`coder-microvm/`): a small server (`server.js`) exposing
    `ready`, `run`, `suspend`, `resume`, `terminate` on :8080; `run` materializes the payload
    into the coder's existing file/env contract and background-spawns `entrypoint.js`. Dockerfile
-   `FROM 940019131157.dkr.ecr.us-west-2.amazonaws.com/dark-factory-coder:<tag>-arm64`. Zip
+   `FROM <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/dark-factory-coder:<tag>-arm64`. Zip
    (Dockerfile + server.js) → S3, per the controller's `ci/package-artifact.sh` format.
    *(Supersedes the placeholder `microvm-entry.js` listener that only existed to get the image
    to CREATED.)*

@@ -114,11 +114,19 @@ spec:
 {{- if .Values.review.enabled }}
           # P3 — REAL AWS Frontier Agents, ordered: DevOps FIRST, then Security.
           #
-          # DevOps Agent (release readiness) runs via the Claude Code plugin INSIDE
-          # the coder step (no headless API), so there is no separate DAG task for
-          # it here — its verdict is reported by the coder and, on a clear verdict,
-          # the coder applies the `needs-security-review` label. This `devops-gate`
-          # step confirms the label is present (DevOps cleared) before Security runs.
+          # DevOps Agent (release readiness): its GitHub App auto-reviews every PR
+          # and posts the `aws-devops-agent/release-readiness-review` CHECK-RUN. This
+          # `devops-gate` step WAITS for that check — it is not a separate reviewer,
+          # it is the wait+mirror for an external bot. That is `devopsAgent.gate:
+          # check`, the DEFAULT.
+          #
+          # (`gate: label` is the alternative: the coder runs the DevOps Agent as a
+          # Claude Code plugin in-VM and applies `needs-security-review` on a clear
+          # verdict, and this step waits for that label instead. The coder is still
+          # handed DF_DEVOPS_AGENT_MODE=claude-plugin, so both paths remain wired —
+          # but with the default `check` mode nothing depends on the in-VM plugin.
+          # An earlier version of this comment described only the label path, which
+          # contradicted docs §6.2.)
           - name: devops-gate
             template: devops-gate
             dependencies: [drive-coder]
@@ -331,6 +339,27 @@ spec:
         parameters:
           - name: pr-number
       activeDeadlineSeconds: 900
+      # ⚠️ THIS STEP EXECUTES MODEL-WRITTEN CODE (review C2). It clones the coder's
+      # branch, runs `npm install --ignore-scripts`, and `require()`s the coder's
+      # module — so the coder's code runs in THIS pod, outside the Kata VM that
+      # exists to contain it. Therefore it must hold no credentials worth stealing:
+      #
+      #   automountServiceAccountToken: false   no K8s API token in the main container
+      #   executor.serviceAccountName            Argo strips the token from the WAIT
+      #                                          container too, so the executor needs
+      #                                          its own identity or the node hangs
+      #                                          unable to write workflowtaskresults.
+      #                                          dark-factory-executor grants exactly
+      #                                          that and nothing else.
+      #
+      # AWS credentials are absent by construction: IRSA now lives on
+      # dark-factory-security (used only by the security-agent step), not on the
+      # shared workflow SA. GH_TOKEN is still injected — the step posts its own
+      # commit status — which is why the evaluator should eventually run sandboxed
+      # rather than merely unprivileged.
+      automountServiceAccountToken: false
+      executor:
+        serviceAccountName: dark-factory-executor
       volumes:
         - name: holdout-eval
           configMap:
@@ -343,7 +372,7 @@ spec:
         {{- end }}
         {{- end }}
       script:
-        image: {{ .Values.holdout.evalImage }}
+        image: {{ .Values.holdout.evalImage | required "holdout.evalImage is required — set it in a per-cluster overlay (see values.yaml)" }}
         command: [bash]
         env:
           - name: GH_TOKEN
@@ -352,7 +381,7 @@ spec:
                 name: {{ .Values.github.tokenSecret }}
                 key: {{ .Values.github.tokenKey }}
           - name: BIFROST_URL
-            value: {{ .Values.holdout.bifrostUrl | quote }}
+            value: {{ .Values.bifrost.url | quote }}
           - name: JUDGE_MODEL
             value: {{ .Values.holdout.judgeModel | quote }}
           - name: JUDGE_RUNS
@@ -400,32 +429,61 @@ spec:
           [ -s /tmp/diff.patch ] || { git fetch --quiet --depth 1 origin "${BASE}" 2>/dev/null || true; git diff "origin/${BASE}...HEAD" > /tmp/diff.patch 2>/dev/null || echo "" > /tmp/diff.patch; }
           echo "[holdout] diff.patch $(wc -l < /tmp/diff.patch) lines (via compare API)"
           # Build/install so executable tests can require the module.
-          if [ -f package.json ]; then npm install --no-audit --no-fund >/dev/null 2>&1 || true; fi
+          #
+          # --ignore-scripts is REQUIRED, not hygiene: this step runs on the trusted
+          # hub, NOT in the Kata VM, and the tree being installed is coder-authored.
+          # Without it, a preinstall/postinstall hook in the coder's package.json
+          # executes here — arbitrary code in a pod that holds GH_TOKEN and a
+          # mounted ServiceAccount token, walking straight around the VM boundary
+          # the sandbox exists to enforce.
+          if [ -f package.json ]; then npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 || true; fi
           SHA="$(git rev-parse HEAD)"
 
+          {{- /* hasKey, NOT `| default true`: Helm's `default` treats the bool false
+                 as empty and would silently flip requireScenarios:false back to
+                 true — fail-closed when the operator asked for advisory. */}}
+          REQ_SCEN={{ if hasKey .Values.holdout "requireScenarios" }}{{ printf "%v" .Values.holdout.requireScenarios }}{{ else }}true{{ end }}
           SCEN="/holdout/${SLUG}/scenarios.json"
           if [ ! -f "${SCEN}" ]; then
-            echo "[holdout] no hidden scenarios for ${SLUG} — skipping gate (advisory)."
-            exit 0
+            # NO FIXTURE = NOT VERIFIED, WHICH IS NOT A PASS (review §3 fail-open).
+            # This used to `exit 0` before posting anything, so the step went green
+            # and the PR showed no holdout status at all — on any repo without a
+            # fixture the headline quality gate silently verified nothing.
+            # Now: synthesize an unverified result and fall through to post a real
+            # verdict, so the PR says so out loud.
+            echo "[holdout] NO HIDDEN SCENARIOS for ${SLUG} — the gate cannot verify this change."
+            echo "[holdout] add holdout/${SLUG}/scenarios.json, or set holdout.requireScenarios=false to accept unverified changes."
+            printf '{"passed":0,"total":0,"skipped":0,"verified":false,"green":false,"ratio":0}\n' > /tmp/holdout-result.json
+            # Respect requireScenarios here too, so "no fixture" and "fixture with
+            # zero applicable scenarios" behave identically rather than one failing
+            # and the other passing.
+            if [ "${REQ_SCEN}" = "true" ]; then GATE=1; else GATE=0; fi
+          else
+            echo "[holdout] evaluating against hidden scenarios..."
+            set +e
+            REQUIRE_SCENARIOS="${REQ_SCEN}" \
+            REPO_DIR="${WORK}/repo" DIFF=/tmp/diff.patch SCENARIOS="${SCEN}" \
+              OUT=/tmp/holdout-result.json node /holdout/evaluate.js
+            GATE=$?
+            set -e
           fi
-
-          echo "[holdout] evaluating against hidden scenarios..."
-          set +e
-          REPO_DIR="${WORK}/repo" DIFF=/tmp/diff.patch SCENARIOS="${SCEN}" \
-            OUT=/tmp/holdout-result.json node /holdout/evaluate.js
-          GATE=$?
-          set -e
 
           RATIO="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(Math.round(r.ratio*100))' 2>/dev/null || echo 0)"
           PASSED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.passed+"/"+r.total)' 2>/dev/null || echo '?/?')"
           TOTAL="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.total)' 2>/dev/null || echo 0)"
           SKIPPED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.skipped||0)' 2>/dev/null || echo 0)"
-          # Distinguish the three outcomes so the PR reads honestly:
-          #   total=0  → no hidden scenario matched this change (e.g. a Terraform PR
-          #              vs JS-only scenarios) → NOT APPLICABLE, green as n/a.
-          #   gate ok  → passed. gate fail → below threshold.
-          if [ "${TOTAL}" = "0" ]; then
-            STATE=success; DESC="not applicable — no hidden scenarios match this change (${SKIPPED} skipped)"
+          VERIFIED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.verified===false?"false":"true")' 2>/dev/null || echo false)"
+          # Distinguish the outcomes so the PR reads honestly:
+          #   verified=false → NO scenario matched (or no fixture at all). The gate
+          #                    checked NOTHING, so it is NOT a pass — it reports
+          #                    failure unless holdout.requireScenarios=false. This
+          #                    used to report success "as n/a", which on the PR was
+          #                    indistinguishable from a real pass (review §3).
+          #   gate ok        → passed. gate fail → below threshold.
+          if [ "${VERIFIED}" = "false" ] && [ "${GATE}" -ne 0 ]; then
+            STATE=failure; DESC="NOT VERIFIED — no hidden scenario matched this change (${SKIPPED} skipped); add scenarios for this repo"
+          elif [ "${VERIFIED}" = "false" ]; then
+            STATE=success; DESC="not applicable — no scenarios matched; accepted because requireScenarios=false (${SKIPPED} skipped)"
           elif [ "${GATE}" -eq 0 ]; then
             STATE=success; DESC="holdout ${PASSED} (${RATIO}%) — gate passed"
           else
@@ -490,7 +548,7 @@ spec:
           configMap:
             name: df-review
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [bash]
         env:
           - name: GH_TOKEN
@@ -589,12 +647,24 @@ spec:
     # waits for the real bot before posting its verdict. Node-only → runs on reviewImage.
     - name: security-agent
       activeDeadlineSeconds: {{ add .Values.securityAgent.pollTimeoutSeconds 300 }}
+{{- if .Values.securityAgent.enabled }}
+      # The ONLY step that runs with AWS credentials (review C2). IRSA moved off the
+      # shared dark-factory-workflow SA — which holdout-gate also uses to execute
+      # coder code — onto this dedicated SA. This step never touches the coder's
+      # repo: it stages a diff in S3 and polls the Security Agent API.
+      #
+      # Conditional because dark-factory-security is only created when
+      # securityAgent.enabled; the step itself always renders (it degrades to a
+      # non-fatal pending status), so referencing a missing SA would break pod
+      # creation on the disabled path.
+      serviceAccountName: dark-factory-security
+{{- end }}
       volumes:
         - name: review-script
           configMap:
             name: df-review
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [node]
         env:
           - name: GH_TOKEN
@@ -629,7 +699,7 @@ spec:
     # `origin/BASE...HEAD` yields nothing (observed: empty file list → false).
     - name: detect-deployable
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [bash]
         env:
           - name: GH_TOKEN
@@ -687,7 +757,7 @@ spec:
           configMap:
             name: df-review
       script:
-        image: {{ .Values.deployTest.image }}
+        image: {{ .Values.deployTest.image | required "deployTest.image is required — set it in a per-cluster overlay (see values.yaml)" }}
         command: [bash]
         volumeMounts:
           - name: review-script
@@ -720,6 +790,17 @@ spec:
             value: {{ .Values.deployTest.readyTimeoutSeconds | quote }}
           - name: BLOCKING
             value: {{ .Values.deployTest.blocking | quote }}
+          # Pod Security + quota for the ephemeral namespace (review: HIGH). Applied
+          # at namespace-create time by deploy-test.sh, since PodSecurity is checked
+          # at pod admission and labelling after create leaves an unchecked window.
+          - name: PSS_MODE
+            value: {{ .Values.deployTest.podSecurityStandard | default "restricted" | quote }}
+          - name: QUOTA_PODS
+            value: {{ (.Values.deployTest.quota).pods | default 20 | quote }}
+          - name: QUOTA_CPU
+            value: {{ (.Values.deployTest.quota).cpu | default 4 | quote }}
+          - name: QUOTA_MEMORY
+            value: {{ (.Values.deployTest.quota).memory | default "8Gi" | quote }}
         source: |
           set -eu
           # All logic lives in review/deploy-test.sh (ConfigMap file) — keeping it out
@@ -745,7 +826,7 @@ spec:
           configMap:
             name: df-review
       script:
-        image: {{ .Values.reviewImage }}
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
         command: [bash]
         env:
           - name: GH_TOKEN

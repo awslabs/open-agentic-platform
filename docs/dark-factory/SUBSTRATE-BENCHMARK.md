@@ -149,7 +149,7 @@ snapshot/hook execution model**:
 | 5 | Ingress: `ALL_INGRESS` blocks auth-token minting | use **`HTTP_INGRESS`** |
 | 6 | aws-cli image lacks `lambda-microvms`; no node | step image = `aws-cli:latest` (has the verbs) + python3 for JSON + fetch kubectl at start |
 | 7 | `runHookPayload` is a `SecretKeyReference`; imperative `run-microvm --run-hook-payload` doesn't fire `/run` | deliver via the **declarative `Microvm` CR** |
-| 8 | Image rebuild: overwriting the same S3 key doesn't rebuild | use versioned artifact keys; bump `codeArtifactUri` |
+| 8 | Image rebuild: overwriting the same S3 key doesn't rebuild | use versioned artifact keys; bump `codeArtifactKey` (the bucket half is composed by the RGD from the bucket it creates, so only the key is settable) |
 | 9 | **VM would not stay SUSPENDED** (console showed RUNNING) | `idlePolicy.autoResumeEnabled=false` **and** never hit the VM endpoint after `/run` — any request auto-resumes it |
 | 10 | **VM auto-terminated before the fix round** (resume hit "already terminated") | `suspendedDurationSeconds=28800` (Lambda's 8h max) so it survives the review→human window; 5 min was far too short |
 | 11 | **Fix round re-ran but committed nothing** (coder "done" on old sha) | the review note must ride on the **runHookPayload** (MicroVM has no claim env); hook-server keys its `/run` guard on a **per-invocation run-id** so a resumed VM accepts a fresh run |

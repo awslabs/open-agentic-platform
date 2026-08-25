@@ -41,7 +41,25 @@ coder:
   runTimeoutMinutes: 30
 
 bifrost:
-  url: http://172.20.181.17:8080  # ClusterIP (Kata VM guest DNS cannot resolve svc names)
+  # LLM gateway URL used by BOTH the in-VM coder and the hub-side holdout/review
+  # steps. Injected per-cluster from the `bifrost_url` cluster-secret annotation
+  # by the dark-factory registry entry (registry/sandbox.yaml).
+  #
+  # ⚠️ THIS is the value the CODER ends up using: df-run's claim step injects
+  # BIFROST_URL into the sandbox container (20-workflowtemplate-df-run.yaml), and
+  # that OVERRIDES the SandboxTemplate's own coderTemplate.bifrostUrl. Repointing
+  # the agent-sandbox chart alone therefore does NOT fix the coder — verified the
+  # hard way: warm pods carried the right URL while the claimed pod still failed
+  # with `API Error: 502 getaddrinfo ENOTFOUND bifrost.bifrost.svc.cluster.local`.
+  #
+  # Default is svc DNS, which is correct for a generic cluster and for the
+  # hub-side steps. But a Kata sandbox CANNOT resolve it: the agent-sandbox
+  # operator gives every Sandbox pod `dnsPolicy: None` + public resolvers, and on
+  # EKS Auto Mode there is no kube-dns Service for the self-managed kata nodes
+  # (CoreDNS runs as a node-local system service instead). So on any cluster whose
+  # warm pool is Kata-based, the registry entry must point this at a ClusterIP —
+  # which it does by default (172.20.0.100 = bifrost staticService.clusterIP).
+  url: http://bifrost.bifrost.svc.cluster.local:8080
 
 # ── Observability: LLM tracing → Langfuse (provided by Bifrost) ──────────────
 # LLM traces/cost/tokens are exported to Langfuse by BIFROST's telemetry plugin
@@ -49,19 +67,46 @@ bifrost:
 # per-claim wiring needed — deliberately not duplicated here. See docs §7a.
 
 github:
-  # Secret (in .namespace) holding the GitHub App / token the workflow uses to
-  # open the PR + maintain the sticky status comment. Key: token.
-  tokenSecret: dark-factory-github
+  # ORCHESTRATOR credential. The df-run / df-iterate / df-merge workflows use it
+  # to open the PR, maintain the sticky status comment, and perform the merge.
+  # Lives on the HUB in argo.namespace (below) — NOT the release namespace: the
+  # Workflow pods resolve secretKeyRef in their own namespace, and the
+  # WorkflowTemplates are created in argo.namespace.
+  #
+  # Scope (fine-grained PAT / App installation, target repo only) — verified
+  # against review/merge.js + review/comment.js + the df-run templates:
+  #   Metadata        read    (implied)
+  #   Contents        write   PUT /pulls/{n}/merge AND DELETE /git/refs/heads/…
+  #                           (the merge endpoint is gated on Contents, and the
+  #                            post-merge branch delete needs it too)
+  #   Pull requests   write   the merge itself
+  #   Commit statuses write   holdout / security / devops / deploy-test verdicts
+  #   Issues          write   comment.js sticky status comment (PR comments ARE
+  #                           issue comments)
+  #
+  # ⚠️ Contents:write + Issues:write were MISSING from the docs table; without
+  # them the merge step fails at the very end of an otherwise-successful run.
+  #
+  # This is deliberately NOT the credential the coder VM receives (review C1) —
+  # the coder gets its own token, see the agent-sandbox chart's
+  # coderTemplate.secretsMount. Note the split is narrower than it looks: the
+  # coder also needs PRs:write + statuses:write, so the real distinction is that
+  # the coder has NO Issues:write and never runs the merge step.
+  tokenSecret: dark-factory-github-orchestrator
   tokenKey: token
-  # Sync the token from AWS Secrets Manager via ExternalSecret (same mechanism as
-  # the rest of the platform) instead of a manual kubectl-created secret — so it's
-  # GitOps-managed, reproducible on rebuild, and auto-rotated. The SM secret is a
-  # JSON blob with keys: token, webhook-secret. Creates dark-factory-github in the
-  # argo / argo-events / agent-sandbox-system namespaces (see 05-externalsecret).
+  # Provision tokenSecret from AWS Secrets Manager via external-secrets. The SM
+  # secret must hold the token under the `property` key below. Set enabled=false
+  # to manage the k8s Secret out-of-band instead.
   externalSecret:
     enabled: true
     clusterSecretStore: aws-secrets-manager
-    secretsManagerKey: dark-factory/github
+    # Set dynamically: <cluster>/dark-factory/github/orchestrator — injected from
+    # the aws_cluster_name annotation via the registry valuesObject (same pattern
+    # as langfuse/keycloak). Cluster-scoped so each cluster's ESO IRSA can be
+    # limited to its OWN prefix: the spoke then cannot read this hub token.
+    # Empty default keeps the ExternalSecret inert until injected.
+    secretManagerKey: ""
+    property: token
     refreshInterval: 1h
 
 # Step-container image: needs kubectl + curl + jq to drive claims, poll the
@@ -88,6 +133,19 @@ holdout:
   enabled: true
   # Fraction of scenarios that must pass for the gate to be green.
   threshold: 0.90
+  # FAIL CLOSED when the gate cannot verify anything (review §3 fail-open).
+  #
+  # Two cases used to report SUCCESS having checked nothing, indistinguishable on
+  # the PR from a real pass:
+  #   - no holdout/<owner>-<repo>/ fixture at all → the step exited 0 and posted
+  #     no status whatsoever;
+  #   - a fixture present but ZERO scenarios applicable → ratio computed as 1.
+  # Both now report `NOT VERIFIED` as a failure.
+  #
+  # Set false to accept unverified changes — correct only on a repo where partial
+  # scenario coverage is expected and understood. Read as a real bool (hasKey, not
+  # Helm `default`, which treats false as empty and would flip it back to true).
+  requireScenarios: true
   # 2-of-3 majority per scenario smooths judge non-determinism.
   judgeRuns: 3
   judgeQuorum: 2
@@ -95,13 +153,19 @@ holdout:
   # Bifrost passes Bedrock model IDs through directly (models: ["*"]); verified
   # us.amazon.nova-pro-v1:0 → 200 on /anthropic.
   judgeModel: us.amazon.nova-pro-v1:0
-  # Bifrost gateway the judge reaches (ClusterIP — same reason as the coder).
-  bifrostUrl: http://172.20.181.17:8080
+  # Bifrost gateway the judge reaches — this is a HUB-SIDE step (not in the Kata
+  # VM), so it uses the shared bifrost.url above (svc DNS resolves here).
   # v1: report-only (advisory). Set true to make a failed gate fail the workflow.
   blocking: false
   # Node image for the eval step: needs git + node + the languages the executable
   # tests run in. Reuse the coder image (has git/node/python/go + is already in ECR).
-  evalImage: 940019131157.dkr.ecr.us-west-2.amazonaws.com/dark-factory-coder:v0.2.5
+  # REQUIRED, intentionally EMPTY: an ECR URI is account-specific and must not ship
+  # as a public chart default (review §1). The dark-factory registry entry
+  # (gitops/addons/registry/sandbox.yaml) supplies it, templating the registry from
+  # the cluster's aws_account_id + aws_region annotations — so no per-cluster overlay
+  # is needed. Wrapped in `required` at the point of use: unset fails at RENDER with
+  # a named error rather than emitting `image:` empty and failing at pod creation.
+  evalImage: ""
 
 # ── P3: Reviews via the REAL AWS Frontier Agents ─────────────────────────────
 # Two independent reviewers, run OUTSIDE the coder VM (the coder never grades
@@ -150,18 +214,36 @@ postVerdictReview: true
 # which writes their IDs into `secretName`. IAM (IRSA role, service role, S3
 # bucket, OIDC provider) is committed Terraform in iam/securityagent.tf. The
 # per-run review step (scripts/security-agent.sh) reads the Secret. All values
-# below are the live, validated resources (account 940019131157, us-west-2).
+# below are OUTPUTS of that Terraform — account-specific, so they ship EMPTY.
 securityAgent:
-  enabled: true
+  # OPT-IN (was default true). Two reasons, both learned the hard way:
+  #
+  #  1. Every value below is ACCOUNT-SPECIFIC and must not ship as a chart default
+  #     in a public repo (review §1).
+  #  2. templates/06-securityagent-bootstrap.yaml is an ArgoCD **PreSync hook**. On
+  #     any cluster that cannot assume the role it dies with
+  #     `InvalidIdentityToken ... AssumeRoleWithWebIdentity` — and a failed PreSync
+  #     hook ABORTS THE WHOLE APP SYNC. Observed live: dark-factory-hub pinned at
+  #     OutOfSync/Missing through 20+ retries, so the cluster received none of the
+  #     chart's other changes. Defaulting true made the app undeployable for
+  #     everyone except the account that owns these ARNs.
+  #
+  # To enable: run iam/securityagent.tf in YOUR account, then set enabled + the four
+  # ARNs/bucket below per cluster (a per-cluster overlay or the registry entry).
+  enabled: false
   region: us-west-2
-  # Agent space name the bootstrap Job finds-or-creates (adopts as-0fa9566... ).
+  # Agent space name the bootstrap Job finds-or-creates.
   spaceName: dark-factory
-  # Committed IAM (iam/securityagent.tf) outputs — the chart consumes, never mints.
-  irsaRoleArn: arn:aws:iam::940019131157:role/df-securityagent-irsa
-  serviceRoleArn: arn:aws:iam::940019131157:role/service-role/df-securityagent-service-role
-  diffBucket: dark-factory-secagent-940019131157-us-west-2
+  # Committed IAM (iam/securityagent.tf) OUTPUTS — the chart consumes, never mints.
+  # Intentionally EMPTY: account-specific. irsaRoleArn is wrapped in `required` at
+  # the point of use, so enabling without setting it fails at render with a named
+  # error instead of minting a broken ServiceAccount.
+  irsaRoleArn: ""
+  serviceRoleArn: ""
+  # S3 bucket the diff is staged in (name embeds the account ID — set per cluster).
+  diffBucket: ""
   # IAM Identity Center instance (create-application → console renders the space).
-  idcInstanceArn: arn:aws:sso:::instance/ssoins-7907c8a7931ceef3
+  idcInstanceArn: ""
   # Secret (argo ns) the bootstrap Job writes + the review step reads.
   secretName: dark-factory-securityagent
   # Bootstrap Job image — MUST have a current aws-cli v2 (the securityagent
@@ -245,7 +327,7 @@ devopsAgent:
 
 # Image for hub-side agent steps: needs aws-cli + kubectl + node + git + zip.
 # Reuse the coder image (has node/git/zip); the bootstrap Job adds aws-cli.
-reviewImage: 940019131157.dkr.ecr.us-west-2.amazonaws.com/dark-factory-coder:v0.2.5
+reviewImage: ""
 
 # ── P3b: Iterate on PR comment ───────────────────────────────────────────────
 # A human comment on a Dark Factory PR routes back to the coder as a revision
@@ -282,7 +364,19 @@ microvm:
   # additive; no existing role policy changes). ACK eks PodIdentityAssociation.
   podIdentity:
     clusterName: hub
-    accountId: "940019131157"
+    # accountId is EMPTY on purpose — 10-rbac.yaml builds the PodIdentityAssociation as
+    #   arn:aws:iam::<accountId>:role/<clusterName>-ack-lambdamicrovms-controller
+    # so a committed account id is a cross-account landmine: this default used to be
+    # the chart AUTHOR's account, and on every other account the ACK eks
+    # controller rejected the association with
+    #   AccessDeniedException: Cross-account pass role is not allowed
+    # while the role itself existed locally — only the ARN named the wrong account. Because
+    # ArgoCD health-waits on that CR, the dark-factory app then never reached Synced
+    # (observed live on a different account). It is injected from the deploying cluster's
+    # aws_account_id annotation in gitops/addons/registry/sandbox.yaml, and the template
+    # `require`s it when microvm.enabled=true so a missing annotation fails the render
+    # loudly instead of emitting `arn:aws:iam:::role/...` and failing deep in ACK.
+    accountId: ""
     # role: <clusterName>-ack-lambdamicrovms-controller
   workflowServiceAccount: dark-factory-workflow
 
@@ -314,6 +408,27 @@ deployTest:
   enabled: true
   # Regex (grep -E) of changed files that mark each artifact kind. k8s takes
   # precedence when a PR touches both.
+  # Pod Security Standard ENFORCED on the ephemeral test namespace, applied at
+  # namespace-create time — before any coder-written manifest lands in it (review:
+  # HIGH). The namespace used to carry only dark-factory.io/* labels, so a manifest
+  # the model wrote could run a privileged pod with a hostPath mount = root on the
+  # node. PodSecurity is evaluated at pod ADMISSION, so labelling after create leaves
+  # an unchecked window; deploy-test.sh now creates namespace + labels + quota in one
+  # apply.
+  #
+  # restricted (default, fail-secure) rejects privileged, hostPath, host namespaces,
+  # AND root/non-seccomp containers — note that refuses ordinary images too (a plain
+  # nginx manifest fails, reported as a deploy-test failure with the PodSecurity
+  # reason surfaced). Use `baseline` to keep blocking privileged/hostPath/host-ns
+  # while allowing root containers.
+  podSecurityStandard: restricted
+  # Blast-radius cap on the same namespace. PVCs and LB/NodePort Services are
+  # forbidden outright (0) — an ephemeral probe has no need for them and they
+  # provision real infrastructure.
+  quota:
+    pods: 20
+    cpu: 4
+    memory: 8Gi
   k8sPatterns: "(Chart\\.yaml|/templates/|k8s/|deployment\\.ya?ml|Dockerfile)"
   terraformPatterns: "\\.tf$"
   # Where each kind's files live in the repo (dir or file). If absent, the step
@@ -322,7 +437,16 @@ deployTest:
   terraformPath: "infra"      # terraform working dir (repo uses infra/ + app/ layout)
   # Purpose-built image with kubectl + terraform + node + git + curl (content-aware
   # deploy-test needs both toolchains). Built from examples/dark-factory/deploy-test.
-  image: 940019131157.dkr.ecr.us-west-2.amazonaws.com/dark-factory-deploy-test:v0.1.0
+  # A DIFFERENT image from the coder — the coder carries neither kubectl nor
+  # terraform, so it cannot stand in here.
+  #
+  # REQUIRED, empty by design (an account-specific URI must not ship as a public
+  # chart default). Supplied by the dark-factory registry entry
+  # (gitops/addons/registry/sandbox.yaml), which templates the registry from the
+  # cluster's aws_account_id + aws_region annotations — so no per-cluster overlay
+  # is needed. Leaving it unset anywhere fails the whole app at RENDER time via the
+  # `required` guard, which is the intended loud failure.
+  image: ""
   # Overall step deadline and the per-workload readiness wait (k8s only).
   timeoutSeconds: 600
   readyTimeoutSeconds: 120
@@ -370,18 +494,59 @@ trigger:
     # jetstream.versions list (verified live: 'latest' → nats:2.10.10).
     jetstreamVersion: latest
     # GitHub repos whose issues fire the factory.
+    # EXAMPLE VALUE — the openclaw author's demo repo, which is also the repo the
+    # shipped holdout fixture targets. Override with YOUR own owner/repo(s).
+    #
+    # This value is load-bearing beyond the webhook: 50-holdout-configmap.yaml
+    # derives the fixture path from it (holdout/<owner>-<name>/), so a repo listed
+    # here with no matching fixture directory renders a ConfigMap with EMPTY
+    # scenarios.json + rubric.md rather than failing at render — and the holdout
+    # gate then grades every run against nothing. Add a holdout/<owner>-<name>/
+    # directory whenever you add a repo here.
     repositories:
-      - owner: elamaran11
+      - owner: replace-me-owner
         names:
-          - dark-factory-sandbox
+          - replace-me-repo
     # Public URL GitHub posts webhooks to (ALB ingress host + endpoint).
-    webhookUrl: https://idp.elamaras.people.aws.dev
+    # Left empty; supplied at deploy time from the ingress_domain_name
+    # cluster-secret annotation via the dark-factory registry valuesObject.
+    webhookUrl: ""
     webhookEndpoint: /dark-factory
     webhookPort: 12000
-    # Secret (in argo-events ns) with keys: token (GitHub API), webhook-secret (HMAC).
-    githubSecret: dark-factory-github
+    # EVENTS credential (hub, argo-events ns) with keys: token (GitHub API),
+    # webhook-secret (HMAC for X-Hub-Signature-256). Separate from the
+    # orchestrator + coder credentials (review C1).
+    #
+    # Scope (with active=true below): Metadata:read + Contents:read +
+    # Webhooks:write (admin:repo_hook). The hook-admin permission is REQUIRED
+    # because Argo Events self-registers the repo webhook — a strictly
+    # read-only token will fail registration.
+    #
+    # This token intentionally has NO Pull requests:write and NO merge rights,
+    # so it cannot approve, merge, or push. It also lives in the trusted hub
+    # (argo-events ns), never inside the untrusted coder VM — which is the
+    # boundary review C1 is about.
+    #
+    # To make it strictly read-only instead, set active=false and register the
+    # webhook yourself (repo settings / IaC).
+    githubSecret: dark-factory-github-events
+    # Auto-register the webhook on each repo (requires Webhooks:write above).
+    active: true
+    # Provision githubSecret from AWS Secrets Manager via external-secrets. The
+    # SM secret must hold BOTH properties below.
+    externalSecret:
+      enabled: true
+      clusterSecretStore: aws-secrets-manager
+      # Set dynamically: <cluster>/dark-factory/github/events — see the
+      # orchestrator externalSecret above for why this is cluster-scoped.
+      secretManagerKey: ""
+      tokenProperty: token
+      webhookSecretProperty: webhook-secret
+      refreshInterval: 1h
     # Expose the EventSource via the platform ALB ingress for GitHub to reach it.
     ingress:
       enabled: true
-      host: idp.elamaras.people.aws.dev
+      # Left empty; supplied at deploy time from the ingress_domain_name
+      # cluster-secret annotation via the dark-factory registry valuesObject.
+      host: ""
       path: /dark-factory

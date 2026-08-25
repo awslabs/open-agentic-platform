@@ -1,0 +1,54 @@
+# AgentCore domain — Crossplane compositions for AgentCore and the OAM
+# (KubeVela) ComponentDefinitions for agentic workloads.
+
+crossplane-agentcore:
+  namespace: crossplane-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/crossplane-agentcore'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '4'
+  selector:
+    matchExpressions:
+      - key: enable_agent_core
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+      eksClusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      projectName: '{{default "agent-core" (index .metadata.annotations "agent_core_project_name")}}'
+      networkMode: '{{default "PUBLIC" (index .metadata.annotations "agent_core_network_mode")}}'
+  ignoreDifferences:
+    - group: apiextensions.crossplane.io
+      kind: Composition
+      jsonPointers:
+        - /spec/mode
+        - /spec/publishConnectionDetailsWithStoreConfigRef
+      jqPathExpressions:
+        - .spec.resources[].readinessChecks
+        - .spec.resources[].patches[].type
+    - group: apiextensions.crossplane.io
+      kind: CompositeResourceDefinition
+      jsonPointers:
+        - /metadata/annotations
+
+# OAM Agent Components — KubeVela ComponentDefinitions for agentic workloads
+# (agent, mcp-server, agentcore-memory). Requires KubeVela to be running
+# (provisioned by the platform via appmod-blueprints' kubevela addon at
+# sync-wave 3). Sync-wave 5 here ensures KubeVela CRDs and webhooks are
+# established before these CRs are applied.
+oam-agent-components:
+  namespace: vela-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/oam-agent-components'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '5'  # after kubevela (wave 3 on platform side)
+  selector:
+    matchExpressions:
+      - key: enable_oam_components
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'

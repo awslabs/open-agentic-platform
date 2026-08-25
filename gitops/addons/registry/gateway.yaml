@@ -1,0 +1,135 @@
+# Gateway domain — LLM gateways (litellm, bifrost) and the agent/MCP auth
+# gateway stack (Gateway API CRDs, agentgateway CRDs + controller, agent-gateway).
+
+litellm:
+  namespace: litellm
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/litellm'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '3'
+  selector:
+    matchExpressions:
+      - key: enable_litellm
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+
+bifrost:
+  namespace: bifrost
+  defaultVersion: '0.1.0'
+  # Local umbrella chart: wraps upstream maximhq/bifrost and adds the Crossplane
+  # Pod Identity (Bedrock access) + ExternalSecret in the same Application.
+  path: 'gitops/addons/charts/bifrost'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '5'
+  selector:
+    matchExpressions:
+      - key: enable_bifrost
+        operator: In
+        values: ['true']
+  valuesObject:
+    podIdentity:
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      region: '{{.metadata.annotations.aws_region}}'
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+
+gateway-api-crds:
+  namespace: agentgateway-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/gateway-api-crds'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '7'
+  selector:
+    matchExpressions:
+      - key: enable_agent_gateway
+        operator: In
+        values: ['true']
+  valuesObject:
+    gatewayApiVersion: "1.5.0"
+
+agentgateway-crds:
+  namespace: agentgateway-system
+  chartName: agentgateway-crds
+  defaultVersion: 'v1.1.0'
+  chartRepository: 'cr.agentgateway.dev'
+  chartNamespace: charts
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '7'
+  selector:
+    matchExpressions:
+      - key: enable_agent_gateway
+        operator: In
+        values: ['true']
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /metadata/annotations
+
+agentgateway:
+  namespace: agentgateway-system
+  chartName: agentgateway
+  defaultVersion: 'v1.1.0'
+  chartRepository: 'cr.agentgateway.dev'
+  chartNamespace: charts
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '8'
+  selector:
+    matchExpressions:
+      - key: enable_agent_gateway
+        operator: In
+        values: ['true']
+  valuesObject:
+    controller:
+      extraEnv:
+        KGW_ENABLE_GATEWAY_API_EXPERIMENTAL_FEATURES: "true"
+
+agent-gateway:
+  namespace: agent-core-infra
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/agent-gateway'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '9'
+  selector:
+    matchExpressions:
+      - key: enable_agent_gateway
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      keycloak:
+        issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "keycloak_issuer_url")}}'
+        serviceName: '{{default "keycloak" (index .metadata.annotations "keycloak_service_name")}}'
+        namespace: '{{default "keycloak" (index .metadata.annotations "keycloak_namespace")}}'
+    ingress:
+      enabled: true
+      host: '{{index .metadata.annotations "ingress_domain_name"}}'
+      # Agents get a dedicated hostname that is a SIBLING of the main ingress host
+      # (same parent domain), so a single wildcard ACM cert covers both. For host
+      # "idp.elamaras.people.aws.dev" the agents host is "agents.elamaras.people.aws.dev"
+      # — both matched by "*.elamaras.people.aws.dev". (The old "agents.<full-host>"
+      # default produced "agents.idp.elamaras..." which a single-level wildcard does
+      # NOT cover, so the ALB never provisioned: "no certificate found for host".)
+      # If the domain has no parent (bare apex), fall back to "agents.<host>".
+      # The agent_gateway_host annotation, when set, overrides this entirely.
+      agentHost: '{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ $parent := splitList "." $d | rest | join "." }}{{ $auto := ternary (printf "agents.%s" $parent) (printf "agents.%s" $d) (gt (len (splitList "." $d)) 2) }}{{ default $auto (index .metadata.annotations "agent_gateway_host") }}'
+    mcpAuth:
+      resourceMetadata:
+        resource: '{{default "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/sse" (index .metadata.annotations "agent_gateway_resource_url")}}'
+    # Secretless workload identity (Shape A): trust the cluster's own EKS OIDC
+    # issuer as a second JWT provider so agent ServiceAccount tokens authenticate
+    # without a secret. Sourced from the eks_oidc_provider cluster-secret
+    # annotation (set automatically by the platform cluster composition for
+    # spokes; set manually on the hub — see gitops/DEPLOYMENT.md). When the
+    # annotation is absent the value is empty and the workload provider is
+    # omitted (humans-only via Keycloak).
+    workloadIdentity:
+      issuer: '{{ index .metadata.annotations "eks_oidc_provider" }}'
+      jwksHost: '{{ with (index .metadata.annotations "eks_oidc_provider") }}oidc.eks.{{ index $.metadata.annotations "aws_region" }}.amazonaws.com{{ end }}'
+      jwksPath: '{{ with (index .metadata.annotations "eks_oidc_provider") }}{{ printf "%s/keys" (trimPrefix (printf "https://oidc.eks.%s.amazonaws.com" (index $.metadata.annotations "aws_region")) .) }}{{ end }}'

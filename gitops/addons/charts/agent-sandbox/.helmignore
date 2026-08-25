@@ -1,0 +1,22 @@
+# Patterns excluded when this chart is loaded/packaged.
+#
+# nodepool/ is documentation only — the out-of-band Kata MNG recipe it described is
+# superseded by the kata-nodepool addon (self-managed Karpenter EC2NodeClass +
+# NodePool). Its README is kept in git because kata-nodepool/README.md links to it,
+# but it is not part of this chart's output. The dead kata-mng.tf / eksctl / .mime
+# files were removed outright.
+nodepool/
+#
+# NOTE: upstream/ used to live here — the vendored operator manifests, deployed as a
+# separate Application from gitops/addons/charts/agent-sandbox/upstream. It is now a
+# top-level sibling chart, gitops/addons/charts/agent-sandbox-operator (upstream's own
+# helm/ chart vendored at a tag), so the nesting — and the confusion about which
+# directory was which app — is gone.
+.git/
+.gitignore
+.DS_Store
+*.swp
+*.bak
+*.orig
+*~
+*.tgz

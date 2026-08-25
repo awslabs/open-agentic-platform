@@ -30,10 +30,26 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # DNS resolution — port 53 only, to the cluster DNS service. Kept broad by
-    # namespace (not pinned to a k8s-app=kube-dns pod label) because EKS Auto
-    # Mode runs CoreDNS without that label; :53 is harmless and control-plane
-    # isolation is enforced by the :443 + private-CIDR rule below, not here.
+    # DNS resolution — port 53 only. TWO rules, because a coder sandbox does not
+    # use cluster DNS at all:
+    #
+    # (a) In-cluster resolvers, by namespace. Kept broad (not pinned to a
+    #     k8s-app=kube-dns pod label) because EKS Auto Mode runs CoreDNS without
+    #     that label. Retained so this policy still works on a cluster where the
+    #     sandbox DOES inherit cluster DNS.
+    #
+    # (b) PUBLIC resolvers, by ipBlock. REQUIRED on this platform: the
+    #     agent-sandbox operator materializes every Sandbox pod with
+    #     `dnsPolicy: None` + public nameservers (8.8.8.8 / 1.1.1.1) — that is
+    #     injected by the operator, not by this chart, so we cannot switch it to
+    #     cluster DNS. An external resolver is NOT matched by any
+    #     namespaceSelector, so rule (a) alone drops every lookup: verified by a
+    #     live run dying with `getaddrinfo EAI_AGAIN api.github.com` after the
+    #     first few seconds (VPC-CNI programs policy shortly AFTER pod start, so
+    #     the earliest queries slip through and it looks intermittent).
+    #
+    # Egress to :53 does not weaken control-plane isolation — that is enforced by
+    # the :443 private-CIDR rule below.
     - to:
         - namespaceSelector: {}
       ports:
@@ -61,6 +77,14 @@ spec:
     {{- end }}
     # Bifrost LLM gateway (in-cluster) — the ONLY control-plane-side service the
     # coder may reach, and only on :8080.
+    #
+    # Also TWO rules, for a subtler reason. On EKS VPC-CNI, egress policy is
+    # evaluated against the ORIGINAL destination — the Service ClusterIP — BEFORE
+    # kube-proxy DNAT rewrites it to a pod IP. A namespaceSelector matches pod
+    # IPs, so it does NOT reliably match ClusterIP-addressed traffic (the same
+    # limitation documented for clusteripFirewall in values.yaml). The sandbox
+    # reaches Bifrost by ClusterIP precisely because it cannot resolve DNS, so
+    # the ipBlock below is the rule that actually admits it.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -68,6 +92,16 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    {{- with .Values.networkPolicy.bifrostClusterIp }}
+    - to:
+        - ipBlock:
+            # /32 — this ONE address, not the service CIDR. Everything else in
+            # 172.20.0.0/16 stays denied (the :443 rule excludes it wholesale).
+            cidr: {{ printf "%s/32" . | quote }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- end }}
     # HTTPS egress for git / gh / package registries — PUBLIC internet only.
     # Private/link-local ranges are excluded so the coder cannot reach the hub's
     # control-plane services, the node, the API server, or peer pods over :443.

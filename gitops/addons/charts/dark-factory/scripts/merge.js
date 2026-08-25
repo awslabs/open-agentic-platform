@@ -24,6 +24,11 @@ const https = require("https");
 const { GH_TOKEN, REPO, PR } = process.env;
 const DEVOPS_CHECK = process.env.DEVOPS_CHECK || "";
 const REQUIRE_DEVOPS = (process.env.REQUIRE_DEVOPS || "true").toLowerCase() !== "false";
+// Default TRUE (fail-secure): if the workflow forgets to pass these, we demand the
+// gate rather than silently dropping it. Set "false" only where the chart flag that
+// produces the status is itself off, or the merge would block on a status nothing posts.
+const REQUIRE_HOLDOUT = (process.env.REQUIRE_HOLDOUT || "true").toLowerCase() !== "false";
+const REQUIRE_REVIEW = (process.env.REQUIRE_REVIEW || "true").toLowerCase() !== "false";
 const SECURITY_CHECK = process.env.SECURITY_CHECK || "";
 const REQUIRE_SECURITY = (process.env.REQUIRE_SECURITY || "false").toLowerCase() === "true";
 const H = { "User-Agent": "dark-factory-merge", Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json" };
@@ -48,7 +53,18 @@ function api(method, path, body) {
 // DEVOPS_CHECK. We read BOTH surfaces and require each listed check to be success.
 // holdout/security are advisory in v1 (post success unless blocking on), but we
 // still require them to be *success*, not failure/error.
-const REQUIRED = ["dark-factory/implementation", "dark-factory/holdout", "dark-factory/security"];
+// ABSENT IS NOT A PASS. A crashed step, a timeout, a Bifrost outage, or statuses
+// left behind on a pre-force-push commit all yield "no status at head" — exactly
+// the case where we know LEAST about the change. Refusing is the only safe reading
+// of an unverified gate (review C3: a missing check used to be logged and merged).
+//
+// Which means REQUIRED must list only checks that are actually ENABLED — a gate
+// that is switched off never posts, and demanding it would block every merge.
+// The workflow passes the enabled set via REQUIRE_* env (rendered from the chart's
+// holdout.enabled / review.enabled / deployTest.enabled flags).
+const REQUIRED = ["dark-factory/implementation"];   // always: posted by the coder, not gated
+if (REQUIRE_HOLDOUT) REQUIRED.push("dark-factory/holdout");
+if (REQUIRE_REVIEW) REQUIRED.push("dark-factory/security");
 if (REQUIRE_DEVOPS) REQUIRED.push(DEVOPS_CHECK || "dark-factory/devops");
 // The real AWS Security Agent GitHub App posts its own check — require it green
 // too (when enabled) so a Security BLOCK can't be merged past. This is in ADDITION
@@ -77,8 +93,23 @@ async function main() {
   } catch (e) { console.log(`[df-merge] check-runs read skipped: ${e.message}`); }
   const notGreen = REQUIRED.filter((c) => by[c] && by[c] !== "success");
   const missing = REQUIRED.filter((c) => !by[c]);
-  if (notGreen.length) { console.error(`[df-merge] refusing to merge — not green: ${notGreen.map((c) => `${c}=${by[c]}`).join(", ")}`); process.exit(1); }
-  if (missing.length) console.log(`[df-merge] note: checks not present (treated as skipped): ${missing.join(", ")}`);
+  const pending = REQUIRED.filter((c) => by[c] === "pending");
+  if (notGreen.length || missing.length) {
+    if (notGreen.length) console.error(`[df-merge] refusing to merge — not green: ${notGreen.map((c) => `${c}=${by[c]}`).join(", ")}`);
+    // A MISSING status is a refusal, not a skip (review C3). This is also what
+    // closes the force-push hole: statuses are read at pr.head.sha ONLY, so after a
+    // df-iterate force-push the checks that ran on the superseded commit do not
+    // count — head has no status, and we now stop instead of merging unverified
+    // code. Deliberately NOT "scan every PR commit like status.js does": that is
+    // right for a human-readable board, but for a GATE it would let a green status
+    // from a pre-force-push commit authorize a merge of code nothing checked.
+    if (missing.length) console.error(`[df-merge] refusing to merge — no status at head ${sha.slice(0, 7)} for: ${missing.join(", ")}`);
+    if (pending.length) console.error(`[df-merge] (still pending: ${pending.join(", ")})`);
+    console.error(`[df-merge] required: ${REQUIRED.join(", ")}`);
+    console.error(`[df-merge] present at head: ${Object.keys(by).length ? Object.entries(by).map(([c, s]) => `${c}=${s}`).join(", ") : "(none)"}`);
+    console.error("[df-merge] a missing status means the gate did not report — re-run it, or if the branch was force-pushed re-run the checks against the new head.");
+    process.exit(1);
+  }
 
   // SOURCE-OF-TRUTH GATE: the REAL AWS agent bots review the PR directly and can
   // catch findings the headless dark-factory/* scan misses (observed: a wildcard-ARN

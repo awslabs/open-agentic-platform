@@ -1,0 +1,109 @@
+# Bifrost AI Gateway — addon value overrides.
+# Per-cluster values (podIdentity.clusterName/region) are injected by the
+# ApplicationSet valuesObject in gitops/addons/registry/gateway.yaml.
+
+# ── Pod Identity (Bedrock access) — umbrella chart ──────────────────────────
+podIdentity:
+  enabled: true
+  namespace: bifrost
+  serviceAccountName: bifrost
+
+# ── Upstream maximhq/bifrost subchart ───────────────────────────────────────
+bifrost:
+  image:
+    tag: "v1.5.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  serviceAccount:
+    create: true
+    name: bifrost
+
+  # Embedded PostgreSQL — Bifrost deploys as a Deployment (not StatefulSet),
+  # making config changes seamless for GitOps. The Postgres StatefulSet spec
+  # is stable and rarely changes after initial deploy.
+  # TODO: migrate to RDS via Crossplane for production (passwordCommand with
+  # aws rds generate-db-auth-token supports Pod Identity — no static password).
+  storage:
+    mode: postgres
+
+  postgresql:
+    enabled: true
+    auth:
+      username: bifrost
+      password: "bifrost-internal"   # cluster-internal only; not exposed outside
+      database: bifrost
+    primary:
+      persistence:
+        enabled: true
+        size: 10Gi
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+
+  # Wait for Postgres to accept connections before starting Bifrost.
+  initContainers:
+    - name: wait-for-postgres
+      image: busybox:1.36
+      command: ['sh', '-c', 'until nc -z bifrost-postgresql 5432; do sleep 2; done']
+
+  bifrost:
+    client:
+      initialPoolSize: 100
+      # TODO(llm-as-a-service): re-enable with VK enforcement once per-workload
+      # VK minting is implemented. See DESIGN.md.
+      enforceAuthOnInference: false
+
+    providers:
+      bedrock:
+        keys:
+          - name: bedrock-default
+            models: ["*"]
+            weight: 1
+            aliases:
+              claude-sonnet: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+            bedrock_key_config:
+              region: us-west-2
+
+    mcp:
+      enabled: true
+      toolManagerConfig:
+        toolExecutionTimeout: "30s"
+        maxAgentDepth: 10
+
+    plugins:
+      # TODO(llm-as-a-service): Re-enable governance with per-workload VK minting.
+      # See gitops/addons/charts/bifrost/DESIGN.md for the target architecture.
+      # is_vk_mandatory is disabled until per-workload VK minting is implemented.
+      governance:
+        enabled: true
+        config:
+          is_vk_mandatory: false
+      telemetry:
+        enabled: true
+      logging:
+        enabled: true
+
+    governance:
+      budgets:
+        - id: budget-platform
+          max_limit: 500
+          reset_duration: "1M"
+      rateLimits:
+        - id: rate-limit-standard
+          token_max_limit: 500000
+          token_reset_duration: "1h"
+          request_max_limit: 5000
+          request_reset_duration: "1h"

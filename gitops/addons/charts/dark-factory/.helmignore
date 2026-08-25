@@ -1,3 +1,21 @@
+# Patterns excluded when this chart is loaded/packaged.
+#
+# DELIBERATELY MINIMAL. holdout/ and scripts/ are NOT listed: they are read at
+# render time by .Files.Get (templates/50-holdout-configmap.yaml and
+# templates/51-scripts-configmap.yaml) to build the evaluate.js / merge.js /
+# iterate.js / status.js / comment.js ConfigMaps. Ignoring either would make those
+# ConfigMaps render EMPTY — the holdout gate and the merge step would then fail at
+# runtime with no render-time error. Only add patterns here after checking them
+# against `grep -rn 'Files.Get' templates/`.
+.git/
+.gitignore
+.DS_Store
+*.swp
+*.bak
+*.orig
+*~
+*.tgz
+
 # Terraform working files — iam/securityagent.tf is committed as code, but the
 # provider plugins, state, and lock are NOT chart content (and state may hold secrets).
 iam/.terraform

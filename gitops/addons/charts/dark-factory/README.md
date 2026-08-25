@@ -46,10 +46,12 @@ image. To process a real issue:
 1. **Build + push the coder image** (`examples/dark-factory/coder`, `entrypoint.js`)
    to ECR, then set `agent-sandbox` chart `coderTemplate.image` to it. Until then
    the warm pods idle on the busybox placeholder (claim mechanics still work).
-2. **Provide a GitHub token** — create secret `dark-factory-github` (key `token`)
-   in the `argo` namespace with a short-TTL token that can open PRs + set commit
-   statuses on the target repo (the `await-coder` step reads it; the coder gets
-   its own via tmpfs).
+2. **Provide the GitHub credentials** — three separate, differently-scoped
+   credentials, provisioned from AWS Secrets Manager by ExternalSecrets (there is
+   no longer a single shared `dark-factory-github` secret). See
+   [docs/dark-factory §10a](../../../../docs/dark-factory/README.md#10a-github-credentials-secrets-manager-setup)
+   for the SM keys, the exact GitHub permissions, and the `aws secretsmanager`
+   commands.
 3. **Wire the trigger** — set repo/org var `DARK_FACTORY_ARGO_SERVER` and secret
    `DARK_FACTORY_ARGO_TOKEN`, then label an issue `dark-factory`.
 
@@ -62,4 +64,5 @@ image. To process a real issue:
 | `coder.runTimeoutMinutes` | `30` | `await-coder` deadline |
 | `maxConcurrentRuns` | `3` | cap in-flight runs vs kata pool |
 | `claimTtlSeconds` | `10800` | reaper backstop on the claim |
-| `github.tokenSecret` | `dark-factory-github` | token for PR + status polling |
+| `github.tokenSecret` | `dark-factory-github-orchestrator` | PR + status + merge (hub, `argo` ns) |
+| `trigger.argoEvents.githubSecret` | `dark-factory-github-events` | webhook HMAC + repo read (hub, `argo-events` ns) |

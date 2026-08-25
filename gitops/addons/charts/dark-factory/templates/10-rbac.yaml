@@ -15,14 +15,92 @@ metadata:
   namespace: {{ .Values.argo.namespace }}
   labels:
     {{- include "dark-factory.labels" . | nindent 4 }}
+# NOTE (review C2): the IRSA annotation deliberately does NOT live here. This SA is
+# used by EVERY df-run step, including holdout-gate, which executes model-written
+# code (npm install + require of the coder's module). Annotating it would hand AWS
+# credentials to that step. IRSA now sits on dark-factory-security below, used only
+# by the security-agent step.
+---
 {{- if .Values.securityAgent.enabled }}
+# ── security-agent step SA — the ONLY identity carrying AWS credentials ──────
+# Separated from dark-factory-workflow so the AWS role is not reachable from any
+# step that runs coder output. This step never touches the coder's repo: it stages
+# a diff in S3 and polls the Security Agent API.
+#
+# ⚠️ The role's trust policy names service accounts EXPLICITLY
+# (iam/securityagent.tf → workflow_service_accounts), so adding this SA to the chart
+# is not sufficient — `terraform apply` must be re-run for the new SA to be able to
+# assume the role. Until then the security-agent step cannot authenticate; it fails
+# non-fatally (posts a pending status), so the pipeline still completes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-security
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
   annotations:
-    # IRSA: the df-run security-agent step assumes this role to call the AWS
-    # Security Agent API + stage diffs in S3. Role + trust are committed Terraform
-    # (iam/securityagent.tf); the chart only consumes the ARN. The role's trust
-    # policy names this exact SA (workflow_service_accounts).
-    eks.amazonaws.com/role-arn: {{ .Values.securityAgent.irsaRoleArn | quote }}
+    eks.amazonaws.com/role-arn: {{ .Values.securityAgent.irsaRoleArn | required "securityAgent.irsaRoleArn is required when securityAgent.enabled — set it per cluster (the role is account-specific; see iam/securityagent.tf)" | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-security
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-security
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  # Same in-namespace Role: it only grants the executor's workflowtaskresults
+  # writes + pod reads, which every step needs to report status.
+  name: dark-factory-workflow
+---
 {{- end }}
+# ── Executor SA for steps that run with automountServiceAccountToken: false ───
+# Argo strips the token from the WAIT container too, so a step that opts out still
+# needs an identity able to write workflowtaskresults or it cannot report status
+# and the node hangs. This SA has exactly that and nothing else: no IRSA, no
+# SandboxClaim rights, no cluster scope.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults", "workflowtasksets"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-executor
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-executor
 ---
 # In the ARGO namespace: the Argo executor needs to write its task results.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -135,7 +213,7 @@ spec:
   clusterName: {{ .Values.microvm.podIdentity.clusterName }}
   namespace: {{ .Values.argo.namespace }}
   serviceAccount: {{ .Values.microvm.workflowServiceAccount | default "dark-factory-workflow" }}
-  roleARN: "arn:aws:iam::{{ .Values.microvm.podIdentity.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+  roleARN: "arn:aws:iam::{{ required "microvm.podIdentity.accountId is required when microvm.enabled=true (injected from the cluster's aws_account_id annotation in gitops/addons/registry/sandbox.yaml)" .Values.microvm.podIdentity.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
 {{- end }}
 {{- if .Values.deployTest.enabled }}
 ---

@@ -1,0 +1,21 @@
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+    {{- /*
+      ⚠️ LOCAL DEVIATION from upstream — PRESERVE ON RE-VENDOR (4 lines below).
+      Upstream renders only the chart labels here, with no extension point, so
+      there is no way to put Pod Security Standards labels on the namespace via
+      values. This addon owns the namespace (sync-wave 0) precisely so it exists
+      WITH PSS enforcement before agent-sandbox (wave 2) places workloads in it;
+      without this hook the namespace lands unlabelled and enforcement is off.
+      See namespace.labels in values.yaml. Candidate for upstreaming — if that
+      lands, drop this block and use the upstream knob.
+    */}}
+    {{- with .Values.namespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

@@ -9,9 +9,7 @@ workload (notably the Dark Factory coding pipeline) can claim on demand.
 
 | Template | Resource | Purpose |
 |---|---|---|
-| `00-namespace.yaml` | Namespace (PSS `restricted`) | Runs the capability; enforces restricted Pod Security |
-| `05-operator.yaml` | SA + ClusterRole + StatefulSet + Service | The `agents.x-k8s.io` controller (materializes a Kata-VM pod per Sandbox) |
-| `10-runtimeclasses.yaml` | RuntimeClass ×N | `kata-clh` (default), `kata-qemu` — steer pods onto kata Karpenter pools |
+| `10-runtimeclasses.yaml` | RuntimeClass ×N | `kata-clh` (default), `kata-qemu`, `kata-fc` — carry the nodeSelector **and tolerations** that steer a selecting pod onto the matching kata Karpenter pool, plus the per-VMM `overhead`. Owned here, not by `kata-deploy` (no toleration support there) |
 | `20-sandboxtemplate.yaml` | SandboxTemplate | The coder pod spec the warm pool clones (isolation invariants baked in) |
 | `30-networkpolicy.yaml` | NetworkPolicy | Default-deny egress → DNS + Bifrost + HTTPS only (breaks the lethal trifecta) |
 | `40-poolmanager-rbac.yaml` | SA + Role + RoleBinding | Narrowly-scoped RBAC for the pool-manager |
@@ -33,7 +31,7 @@ only *runs* on spoke-dev (prod pool stays dormant).
 
 | Value | Default | Purpose |
 |---|---|---|
-| `kata.defaultRuntimeClass` | `kata-clh` | VMM for coder sandboxes |
+| `kata.vmm` | `clh` | VMM the warm pool runs on — flip to `qemu` (same kata pool) or `fc` (Firecracker; needs the kata-fc pool + kata-deploy-fc). Selects a key of `kata.runtimeClasses`. |
 | `warmPool.targetIdle` | `3` | Idle sandboxes kept ready |
 | `warmPool.idleScaleToZeroSeconds` | `900` | Idle → `replicas:0` (PVC kept) |
 | `warmPool.reapAfterSeconds` | `3600` | Reap abandoned claimed sandboxes |
