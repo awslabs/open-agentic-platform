@@ -1,0 +1,111 @@
+{{- /*
+Reaper CronJob (P4) — the crash-net. Argo onExit + claim TTL handle the normal
+teardown paths; this sweeps what slips through:
+  - ephemeral deploy-test namespaces (dark-factory.io/ephemeral=true) older than
+    the reap window (a deploy-test that died before its trap ran), and
+  - SandboxClaims managed by df-run that are older than the reap window with no
+    live df-run workflow (abandoned/crashed runs).
+Runs as a dedicated SA scoped to exactly those deletes. Belt-and-suspenders to
+the per-run onExit teardown and the claim's own ttlSecondsAfterFinished.
+*/ -}}
+{{- if .Values.reaper.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-reaper
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dark-factory-reaper
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dark-factory-reaper
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-reaper
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dark-factory-reaper
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dark-factory-reaper
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.reaper.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            {{- include "dark-factory.labels" . | nindent 12 }}
+        spec:
+          serviceAccountName: dark-factory-reaper
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+          containers:
+            - name: reaper
+              image: {{ .Values.reaper.image }}
+              command: [bash, -c]
+              env:
+                - name: REAP_AFTER_SECONDS
+                  value: {{ .Values.reaper.reapAfterSeconds | quote }}
+                - name: CLAIM_NS
+                  value: {{ .Values.warmPool.namespace }}
+                - name: ARGO_NS
+                  value: {{ .Values.argo.namespace }}
+              args:
+                - |
+                  set -eu
+                  NOW=$(date +%s)
+                  CUTOFF=$((NOW - REAP_AFTER_SECONDS))
+                  echo "[reaper] cutoff=$(date -d @${CUTOFF} 2>/dev/null || echo ${CUTOFF}) — reaping older than ${REAP_AFTER_SECONDS}s"
+
+                  # 1) Stale ephemeral deploy-test namespaces.
+                  for ns in $(kubectl get ns -l dark-factory.io/ephemeral=true -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null); do
+                    name="${ns%%=*}"; ts="${ns##*=}"
+                    created=$(date -d "$ts" +%s 2>/dev/null || echo "$NOW")
+                    if [ "$created" -lt "$CUTOFF" ]; then echo "[reaper] deleting stale ns $name (age $(( (NOW-created)/60 ))m)"; kubectl delete ns "$name" --wait=false >/dev/null 2>&1 || true; fi
+                  done
+
+                  # 2) Abandoned df-run SandboxClaims with no live df-run workflow.
+                  LIVE=$(kubectl -n "$ARGO_NS" get workflows -l workflows.argoproj.io/phase=Running -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || echo "")
+                  for c in $(kubectl -n "$CLAIM_NS" get sandboxclaims -l dark-factory.io/managed-by=df-run -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null); do
+                    name="${c%%=*}"; ts="${c##*=}"
+                    created=$(date -d "$ts" +%s 2>/dev/null || echo "$NOW")
+                    if [ "$created" -lt "$CUTOFF" ]; then echo "[reaper] deleting abandoned claim $name (age $(( (NOW-created)/60 ))m)"; kubectl -n "$CLAIM_NS" delete sandboxclaim "$name" --wait=false >/dev/null 2>&1 || true; fi
+                  done
+                  echo "[reaper] done"
+{{- end }}

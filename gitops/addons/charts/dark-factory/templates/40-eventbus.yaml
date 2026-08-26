@@ -1,0 +1,23 @@
+{{- if .Values.trigger.argoEvents.enabled }}
+{{- /*
+EventBus — the NATS JetStream backbone the EventSource + Sensor communicate over.
+The appmod-blueprints argo-events addon installs the controller + CRDs but no
+EventBus instance, so Flow B provides its own (namespaced to argo-events, the
+default bus name every EventSource/Sensor uses unless overridden).
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+  namespace: {{ .Values.trigger.argoEvents.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  jetstream:
+    # version MUST match an entry in the argo-events controller-config
+    # jetstream.versions list (verified live: 'latest' → nats:2.10.10). Without
+    # it the controller rejects the EventBus: "a version for jetstream needs to
+    # be specified".
+    version: {{ .Values.trigger.argoEvents.jetstreamVersion | default "latest" | quote }}
+    replicas: {{ .Values.trigger.argoEvents.eventbusReplicas | default 3 }}
+{{- end }}

@@ -1,0 +1,156 @@
+{{- if .Values.securityAgent.enabled }}
+{{- /*
+AWS Security Agent bootstrap — reconciles the Agent Space + Application ONCE
+(idempotent) and publishes their IDs into a Secret the df-run security step
+reads. Runs as an ArgoCD PreSync hook Job so it completes before the workflow
+templates that depend on the Secret are used.
+
+WHY a Job: the Security Agent space/application are preview resources with no
+Terraform/ACK provider, so a find-or-create reconcile Job is the GitOps-native
+way to manage them (same pattern as langfuse-minio-init). The agent space is
+created ONCE and reused across all runs; only the per-PR code-review + job are
+created per df-run. IAM (IRSA role, service role, S3 bucket, OIDC provider) is
+committed as Terraform in iam/securityagent.tf — NOT minted here.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-bootstrap
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    # IRSA: assume the committed df-securityagent-irsa role (securityagent
+    # lifecycle + S3). The role's trust policy allows this exact SA (see
+    # iam/securityagent.tf workflow_service_accounts).
+    eks.amazonaws.com/role-arn: {{ .Values.securityAgent.irsaRoleArn | quote }}
+    # This SA + its RBAC + the script CM are PreSync hooks at an EARLIER wave than
+    # the Job (-1 vs 0) so they exist when the hook Job's pod is created. Regular
+    # (non-hook) resources sync AFTER PreSync hooks, so the SA can't be a plain
+    # resource — the Job would fail "serviceaccount not found".
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+---
+# The bootstrap Job writes the result Secret in the argo namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-bootstrap
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-bootstrap
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-bootstrap
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-bootstrap
+---
+# The bootstrap script as its OWN hooked ConfigMap (wave -1) — the Job can't rely
+# on the regular df-review ConfigMap (that syncs after PreSync hooks).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dark-factory-bootstrap-script
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  bootstrap-agentspace.sh: |
+{{ .Files.Get "scripts/bootstrap-agentspace.sh" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dark-factory-securityagent-bootstrap
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    # Reconcile before the sync so the Secret exists when df-run first fires.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "dark-factory.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: dark-factory-bootstrap
+      restartPolicy: Never
+      volumes:
+        - name: scripts
+          configMap:
+            name: dark-factory-bootstrap-script
+            defaultMode: 0555
+      containers:
+        - name: bootstrap
+          # Needs a CURRENT aws-cli v2 (the `securityagent` service is brand-new;
+          # older/musl aws-cli lacks it) PLUS kubectl (to write the result Secret).
+          # amazon/aws-cli is glibc + always-current v2 → guaranteed securityagent
+          # verbs. kubectl is a static binary we fetch at start (works on glibc).
+          image: {{ .Values.securityAgent.bootstrapImage | default "public.ecr.aws/aws-cli/aws-cli:latest" }}
+          # amazon/aws-cli's ENTRYPOINT is `aws`; override to a shell.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "[bootstrap] aws version: $(aws --version 2>&1 | head -1)"
+              aws securityagent help >/dev/null 2>&1 || { echo "[bootstrap] ERROR: aws-cli lacks 'securityagent' — cannot reconcile"; exit 1; }
+              # Fetch a static kubectl (to write the Secret) if not present.
+              if ! command -v kubectl >/dev/null 2>&1; then
+                echo "[bootstrap] fetching kubectl..."
+                ARCH="$(uname -m)"; case "$ARCH" in aarch64|arm64) A=arm64;; *) A=amd64;; esac
+                KV="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+                curl -fsSL "https://dl.k8s.io/release/${KV}/bin/linux/${A}/kubectl" -o /tmp/kubectl
+                chmod +x /tmp/kubectl; export PATH="/tmp:$PATH"
+              fi
+              bash /scripts/bootstrap-agentspace.sh
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.securityAgent.region | quote }}
+            - name: SPACE_NAME
+              value: {{ .Values.securityAgent.spaceName | quote }}
+            - name: SERVICE_ROLE_ARN
+              value: {{ .Values.securityAgent.serviceRoleArn | quote }}
+            - name: DIFF_BUCKET
+              value: {{ .Values.securityAgent.diffBucket | quote }}
+            - name: IDC_INSTANCE_ARN
+              value: {{ .Values.securityAgent.idcInstanceArn | quote }}
+            - name: SECRET_NAME
+              value: {{ .Values.securityAgent.secretName | quote }}
+            - name: SECRET_NAMESPACE
+              value: {{ .Values.argo.namespace | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+{{- end }}

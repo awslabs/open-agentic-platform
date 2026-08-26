@@ -1,0 +1,164 @@
+{{- if .Values.networkPolicy.clusteripFirewall.enabled }}
+{{- /*
+clusterip-egress-firewall — closes the EKS VPC-CNI ClusterIP egress gap.
+
+WHY: VPC-CNI NetworkPolicy/ClusterNetworkPolicy egress is evaluated against the
+Service ClusterIP, but kube-proxy DNATs ClusterIP→podIP before that eval, so
+traffic to control-plane Services (172.20.x) slips through even though backend
+pod IPs are blocked (verified live: external-secrets/webhook was reachable by
+ClusterIP). Standard/Admin policy tiers cannot close this on pure VPC-CNI.
+
+HOW: a host-network, privileged DaemonSet on the kata node installs iptables
+rules in the FORWARD chain (pod-routed traffic only — the node's own kubelet→API
+traffic goes through OUTPUT and is untouched) matching conntrack --ctorigdst, i.e.
+the ORIGINAL ClusterIP destination BEFORE kube-proxy's DNAT. It ALLOWs the
+coder's legitimate ClusterIPs (Bifrost) and DROPs the rest of the service CIDR.
+Reconciles every interval so it survives kube-proxy flushes and is idempotent.
+
+This runs ONLY on the tainted kata node, so it governs only coder-sandbox egress.
+
+NOTE: deployed in kube-system (not agent-sandbox-system) because it needs
+hostNetwork + NET_ADMIN, which the agent-sandbox namespace's `baseline`
+PodSecurity forbids. kube-system is the standard home for privileged node
+infra DaemonSets (aws-node, kube-proxy) and has no PSS restriction.
+*/ -}}
+{{- $fwNs := .Values.networkPolicy.clusteripFirewall.namespace | default "kube-system" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clusterip-egress-firewall
+  namespace: {{ $fwNs }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clusterip-egress-firewall
+  namespace: {{ $fwNs }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+rules:
+  # Discover the Bifrost ClusterIP to allow-list (read-only, cross-namespace via
+  # a dedicated Role in the bifrost namespace below).
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+# Read the Bifrost Service ClusterIP from its namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clusterip-egress-firewall-bifrost
+  namespace: {{ .Values.networkPolicy.clusteripFirewall.bifrostNamespace | default "bifrost" }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clusterip-egress-firewall
+  namespace: {{ $fwNs }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: clusterip-egress-firewall
+    namespace: {{ $fwNs }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: clusterip-egress-firewall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clusterip-egress-firewall-bifrost
+  namespace: {{ .Values.networkPolicy.clusteripFirewall.bifrostNamespace | default "bifrost" }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: clusterip-egress-firewall
+    namespace: {{ $fwNs }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: clusterip-egress-firewall-bifrost
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: clusterip-egress-firewall
+  namespace: {{ $fwNs }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: clusterip-egress-firewall
+  template:
+    metadata:
+      labels:
+        app: clusterip-egress-firewall
+        {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: clusterip-egress-firewall
+      # Host netns + PID so iptables acts on the node's FORWARD chain.
+      hostNetwork: true
+      # Runs only on the tainted kata node; tolerate its taints.
+      nodeSelector:
+        kata-enabled: "true"
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: firewall
+          image: {{ .Values.networkPolicy.clusteripFirewall.image | default "alpine/k8s:1.31.0" }}
+          # NET_ADMIN to manage iptables; privileged not required with hostNetwork
+          # + NET_ADMIN, but the host iptables binary needs raw socket access.
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          env:
+            - name: SERVICE_CIDR
+              value: {{ .Values.networkPolicy.clusteripFirewall.serviceCidr | quote }}
+            - name: BIFROST_NAMESPACE
+              value: {{ .Values.networkPolicy.clusteripFirewall.bifrostNamespace | default "bifrost" | quote }}
+            - name: BIFROST_SVC
+              value: {{ .Values.networkPolicy.clusteripFirewall.bifrostService | default "bifrost" | quote }}
+            - name: BIFROST_PORT
+              value: {{ .Values.networkPolicy.clusteripFirewall.bifrostPort | default 8080 | quote }}
+            - name: RECONCILE_SECONDS
+              value: {{ .Values.networkPolicy.clusteripFirewall.reconcileSeconds | default 30 | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              CHAIN=AGENT_SANDBOX_EGRESS
+              echo "[clusterip-fw] service_cidr=${SERVICE_CIDR} bifrost=${BIFROST_NAMESPACE}/${BIFROST_SVC}:${BIFROST_PORT}"
+              # The alpine/k8s image ships kubectl but not iptables — install it once.
+              command -v iptables >/dev/null 2>&1 || apk add --no-cache iptables >/dev/null 2>&1
+              while true; do
+                BIP="$(kubectl get svc "${BIFROST_SVC}" -n "${BIFROST_NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+                # Build/refresh a dedicated chain, hooked from FORWARD, matched on
+                # the pre-DNAT original destination (conntrack --ctorigdst).
+                iptables -N "${CHAIN}" 2>/dev/null || iptables -F "${CHAIN}"
+                if [ -n "${BIP}" ]; then
+                  iptables -A "${CHAIN}" -m conntrack --ctorigdst "${BIP}" --ctorigdstport "${BIFROST_PORT}" -j RETURN
+                fi
+                # Everything else to the service CIDR (control-plane ClusterIPs) is dropped.
+                iptables -A "${CHAIN}" -m conntrack --ctorigdst "${SERVICE_CIDR}" -j DROP
+                # Hook the chain at the top of FORWARD (idempotent).
+                iptables -C FORWARD -j "${CHAIN}" 2>/dev/null || iptables -I FORWARD 1 -j "${CHAIN}"
+                sleep "${RECONCILE_SECONDS}"
+              done
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+{{- end }}

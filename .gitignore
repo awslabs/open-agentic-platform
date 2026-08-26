@@ -2,3 +2,10 @@
 config.local.yaml
 private/
 .local/
+
+# Dark Factory IAM terraform working files (committed: iam/*.tf; ignored: state/plugins)
+gitops/addons/charts/dark-factory/iam/.terraform/
+gitops/addons/charts/dark-factory/iam/.terraform.lock.hcl
+gitops/addons/charts/dark-factory/iam/terraform.tfstate
+gitops/addons/charts/dark-factory/iam/terraform.tfstate.backup
+gitops/addons/charts/dark-factory/iam/_provider.tf

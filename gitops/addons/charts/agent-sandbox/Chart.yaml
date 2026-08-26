@@ -1,0 +1,26 @@
+apiVersion: v2
+name: agent-sandbox
+description: >-
+  Agent Sandbox capability for the Open Agent Platform — hardware-isolated
+  Kata micro-VM sandboxes (agents.x-k8s.io Sandbox CRD) with a pre-warmed pool
+  kept ready by a pool-manager controller. The reusable isolation substrate any
+  agent workload (e.g. the Dark Factory coding pipeline) can claim on demand.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kata
+  - sandbox
+  - isolation
+  - micro-vm
+  - dark-factory
+sources:
+  - https://github.com/aws-samples/sample-open-agentic-platform
+  - https://github.com/elamaran11/eks-platform-openclaw
+maintainers:
+  - name: Open Agent Platform
+# NOTE: kata-deploy (the Kata runtime installer) is NOT bundled as a subchart
+# dependency — an OCI subchart dep would block this chart from rendering when
+# unbuilt and is fragile under ArgoCD. Instead it is delivered as a separate,
+# gated ArgoCD Application (enable_agent_sandbox_kata) that pulls the upstream
+# OCI chart directly. See the addon catalog + docs/dark-factory §12a.

@@ -108,24 +108,32 @@ spec:
                   optional: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
+          # but /api/public/health checks Postgres + ClickHouse and can exceed 1s
+          # under load — with the 1s default the livenessProbe timed out, failed 3x,
+          # and the pod was SIGKILLed (exitCode 137) mid-boot, crash-looping and
+          # leaving the Service with no endpoints (UI 502). 5s gives real headroom.
           startupProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
-            periodSeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
 ---
 apiVersion: v1
@@ -230,7 +238,9 @@ spec:
           resources:
             {{- toYaml .Values.postgres.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: postgres-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -300,7 +310,9 @@ spec:
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: clickhouse-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -411,7 +423,9 @@ spec:
           resources:
             {{- toYaml .Values.minio.resources | nindent 12 }}
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: minio-data
       spec:
         accessModes: ["ReadWriteOnce"]
@@ -480,6 +494,10 @@ spec:
       remoteRef:
         key: {{ .Values.keycloak.secretManagerKey }}
         property: LANGFUSE_CLIENT_SECRET
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
 
 ---
 # ─── Ingress is defined in templates/ingress.yaml ─────────────────────────

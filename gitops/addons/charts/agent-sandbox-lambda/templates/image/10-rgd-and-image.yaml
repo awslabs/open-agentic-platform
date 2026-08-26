@@ -1,0 +1,251 @@
+{{- if and .Values.microvm .Values.microvm.enabled }}
+{{- /*
+Flow D — MicrovmSandbox ResourceGraphDefinition (KRO).
+
+ONE composite CRD (kro.run) that ties together ALL the Lambda MicroVM primitives so
+a consumer (the lambda-microvm SandboxTemplate bridge, or any agent) creates a single
+`MicrovmSandbox` and gets the whole substrate:
+
+  MicrovmSandbox  ->  S3 Bucket        (s3.services.k8s.aws)         image codeArtifact store
+                      IAM Role (build) (iam.services.k8s.aws)        MicrovmImage.buildRoleARN
+                      IAM Role (exec)  (iam.services.k8s.aws)        Microvm.executionRoleARN
+                      MicrovmImage     (lambdamicrovms.services.k8s.aws)  platform-owned image
+                      Microvm          (lambdamicrovms.services.k8s.aws)  app-owned instance
+
+OWNERSHIP SPLIT is expressed IN THE SCHEMA:
+  spec.image.*  — PLATFORM-owned (base image, code artifact) — set once per image
+  spec.run.*    — APP-owned (per-claim instance: idle policy)
+
+NETWORK: Lambda MicroVMs have PUBLIC internet egress by DEFAULT, so no network
+connectors are attached here (the coder only needs outbound git/gh/registry, like
+Flow A). Ingress connectors (AWS-managed, inbound HTTPS) and VPC egress connectors
+(created out-of-band via `aws lambda-core create-network-connector`) are optional
+add-ons a future variant can wire in; they are intentionally omitted from v1.
+
+CONTROLLER SPLIT: the s3/iam resources are reconciled by MANAGED ACK (GA controllers);
+MicrovmImage/Microvm by the SELF-MANAGED lambdamicrovms controller (pre-GA). The RGD is
+identical regardless of who runs the controllers — when lambdamicrovms goes GA and
+Managed ACK adopts it, THIS FILE DOES NOT CHANGE.
+
+Gated behind microvm.enabled so Flow D stays dormant until a cluster opts in. Requires
+the Managed KRO capability (kro.run) + the ACK controllers to be present on the cluster.
+*/ -}}
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: microvm-sandbox
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # Apply the RGD FIRST so KRO generates the MicrovmSandbox CRD before the instance
+    # (below) is synced — otherwise the instance fails dry-run ("CRD not found") and
+    # blocks the whole app.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: MicrovmSandbox
+    group: {{ .Values.microvm.apiGroup | default "kro.run" | quote }}
+    # SCOPE: this RGD builds ONLY the platform IMAGE + the slow-changing infra it
+    # needs (S3 artifact bucket, build role, execution role). It deliberately does
+    # NOT create a `Microvm` — a MicroVM instance is a per-SESSION, request-time
+    # resource whose create/suspend/resume/terminate are IMPERATIVE SDK ops that the
+    # ACK controller does not reconcile (confirmed in the lambdamicrovms-controller
+    # reference: run/suspend/resume/terminate are SDK calls, not desired state, and
+    # the 06-kro example likewise leaves the running Microvm out of the graph). The
+    # shim (SandboxTemplate bridge + microvm-lifecycle controller, templates 51/52)
+    # owns that lifecycle. So a `MicrovmSandbox` = "an image is built + ready + its
+    # exec identity", and its status is the HANDOFF the shim consumes to RunMicrovm.
+    spec:
+      # ── PLATFORM-owned: the image / substrate (set once per image) ──────────
+      # ARN of the AWS-published base MicroVM image to build from, e.g.
+      # arn:aws:lambda:<region>:aws:microvm-image:al2023-1 (ARM_64 — the only arch
+      # Lambda MicroVM supports).
+      baseImageARN: string
+      # OBJECT KEY (not a full URI) of the coder code artifact zip (app + Dockerfile).
+      # The bucket half is NOT passed in — resource 4 composes the URI as
+      #   s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+      # from the bucket THIS graph creates, so the artifact location and the bucket can
+      # never name different things. Taking a full s3:// URI here (the previous shape)
+      # meant the caller had to restate `<name>-microvm-artifacts-<accountId>` by hand,
+      # and it drifted twice — see the accountId comment below.
+      # Lambda MicroVM's codeArtifact.uri is S3-ONLY — it is NOT an ECR image reference
+      # (the Dockerfile inside the zip MAY pull private ECR base layers, which is why
+      # buildRole keeps ecr:Get*/BatchGetImage). The artifact must be published to the
+      # bucket before the first build runs.
+      codeArtifactKey: string
+      # AWS region + a name stem for the created resources.
+      region: string | default="{{ .Values.microvm.region }}"
+      name: string
+      # AWS account id of the DEPLOYING cluster — suffixed onto the artifact bucket
+      # name to make it globally unique. S3 bucket names share ONE global namespace
+      # across all AWS accounts, so the un-suffixed `<name>-microvm-artifacts` is
+      # first-come-first-served: on this account CreateBucket returned
+      #   409 BucketAlreadyExists: the bucket namespace is shared by all users
+      # because another account already held `coder-microvm-artifacts`. The Bucket CR
+      # then never got an ARN, the build role's S3 grant pointed at a bucket this
+      # account cannot read, and the MicrovmImage build failed with
+      #   "Access denied when fetching artifact from S3" → CREATE_FAILED.
+      # Injected from the cluster's aws_account_id annotation (see the registry
+      # entry), the same portability pattern as the pod-identity role ARN.
+      accountId: string
+    status:
+      # The HANDOFF the shim reads to RunMicrovm (imperatively) per session:
+      #   imageARN         → Microvm.imageIdentifier
+      #   executionRoleARN → Microvm.executionRoleARN
+      # Plus imageState so the shim only launches once the build is CREATED/UPDATED.
+      imageARN: ${image.status.ackResourceMetadata.arn}
+      imageState: ${image.status.state}
+      imageVersion: ${image.status.latestActiveImageVersion}
+      executionRoleARN: ${execRole.status.ackResourceMetadata.arn}
+  resources:
+    # 1) S3 bucket that stores the MicroVM code artifact (GA — Managed ACK).
+    - id: bucket
+      template:
+        apiVersion: s3.services.k8s.aws/v1alpha1
+        kind: Bucket
+        metadata:
+          # metadata.name stays account-free: the CR name only has to be unique in the
+          # namespace, and keeping it stable avoids orphaning the existing Bucket CR.
+          name: ${schema.spec.name}-microvm-artifacts
+        spec:
+          # spec.name IS the real S3 bucket name → must be GLOBALLY unique, hence the
+          # account suffix (see schema.spec.accountId above). buildRole's inline S3
+          # policy references ${bucket.spec.name}, so it follows this automatically.
+          name: ${schema.spec.name}-microvm-artifacts-${schema.spec.accountId}
+    # 2) IAM role the image BUILD assumes (GA — Managed ACK). Platform-owned.
+    #    Lambda assumes this during create-microvm-image to pull the code artifact
+    #    (ECR/S3) + write build logs. Trust = lambda.amazonaws.com (verified in the
+    #    Lambda MicroVM getting-started docs), with inline ECR-read + S3-read + logs.
+    - id: buildRole
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.name}-microvm-build
+        spec:
+          name: ${schema.spec.name}-microvm-build
+          assumeRolePolicyDocument: |
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}
+          inlinePolicies:
+            microvm-build: |
+              {"Version":"2012-10-17","Statement":[
+                {"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"],"Resource":"*"},
+                {"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::${bucket.spec.name}","arn:aws:s3:::${bucket.spec.name}/*"]},
+                {"Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:*:*:log-group:/aws/lambda/microvms/*"}
+              ]}
+    # 3) IAM role the RUNNING MicroVM assumes (GA — Managed ACK). App-owned exec identity.
+    #    trust = lambda.amazonaws.com. Grants bedrock:InvokeModel so the coder calls
+    #    Bedrock DIRECTLY (Flow D is Bedrock-direct: a MicroVM runs outside the cluster
+    #    and can't reach Bifrost's ClusterIP, so it uses this role's creds over public
+    #    egress instead — see flow-d-coder-in-microvm-design.md). git/gh over public :443.
+    - id: execRole
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.name}-microvm-exec
+        spec:
+          name: ${schema.spec.name}-microvm-exec
+          assumeRolePolicyDocument: |
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}
+          inlinePolicies:
+            bedrock-invoke: |
+              {"Version":"2012-10-17","Statement":[
+                {"Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream","bedrock:Converse","bedrock:ConverseStream"],"Resource":["arn:aws:bedrock:*::foundation-model/*","arn:aws:bedrock:*:*:inference-profile/*"]}
+              ]}
+    # 4) MicrovmImage (pre-GA — SELF-MANAGED lambdamicrovms controller). Platform-owned.
+    #    readyWhen gates the Microvm (resource 5) on a genuinely SUCCESSFUL build —
+    #    state CREATED/UPDATED — so the instance never launches from a half-built or
+    #    failed image (KRO holds the Microvm until this predicate is true).
+    - id: image
+      readyWhen:
+        - ${image.status.state == "CREATED" || image.status.state == "UPDATED"}
+      template:
+        apiVersion: lambdamicrovms.services.k8s.aws/v1alpha1
+        kind: MicrovmImage
+        metadata:
+          name: ${schema.spec.name}-image
+        spec:
+          name: ${schema.spec.name}-image
+          baseImageARN: ${schema.spec.baseImageARN}
+          buildRoleARN: ${buildRole.status.ackResourceMetadata.arn}
+          codeArtifact:
+            # Composed from the BUCKET THIS GRAPH CREATES (resource 1) + the object key —
+            # never from a caller-supplied full URI. ${bucket.spec.name} already carries the
+            # `-${accountId}` suffix, so the build always reads from the exact bucket that
+            # was provisioned and that buildRole's S3 grant (also ${bucket.spec.name}) allows.
+            # Restating the bucket name in a second place is what drifted twice before.
+            uri: s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+          # Lambda MicroVM is ARM_64-ONLY — the sole supported architecture. The
+          # code artifact + any bundled binaries must be arm64 (dark-factory-coder
+          # is built for arm64 for exactly this substrate).
+          cpuConfigurations:
+            - architecture: ARM_64
+          # Lifecycle hooks — the lambda-coder (hook-server.js) serves these on :8080.
+          #   ready    : build waits for the server to be up before snapshotting a
+          #              clean, waiting coder (else the snapshot is taken too early).
+          #   run      : per-session start; delivers runHookPayload (issue context +
+          #              GitHub token) as the request body → hook-server background-
+          #              spawns the coder. WITHOUT run:ENABLED the payload is silently
+          #              never delivered.
+          #   suspend/resume/terminate : lifecycle acks (coder holds no external state).
+          hooks:
+            port: 8080
+            microvmImageHooks:
+              ready: ENABLED
+              readyTimeoutInSeconds: 120
+            microvmHooks:
+              run: ENABLED
+              runTimeoutInSeconds: 30
+              suspend: ENABLED
+              suspendTimeoutInSeconds: 30
+              resume: ENABLED
+              resumeTimeoutInSeconds: 30
+              terminate: ENABLED
+              terminateTimeoutInSeconds: 30
+          # CloudWatch build/runtime logs. On a CREATE_FAILED the controller can't
+          # see the build output — this is where it lands:
+          #   aws logs tail /aws/lambda/microvms/${schema.spec.name}-image
+          logging:
+            cloudWatch:
+              logGroup: /aws/lambda/microvms/${schema.spec.name}-image
+    # NOTE: there is deliberately NO `Microvm` resource here. The running MicroVM is
+    # a per-session, request-time resource — the shim (microvm-lifecycle controller,
+    # template 52) creates it with RunMicrovm and drives suspend/resume/terminate as
+    # imperative SDK ops (the ACK controller does not reconcile those). This RGD stops
+    # at "image built + exec role ready", handed off via status above.
+{{- if .Values.microvm.image.enabled | default true }}
+---
+# The ONE platform MicrovmSandbox INSTANCE — applied by GitOps, reconciled by KRO
+# ONCE to build the coder image + its build/exec roles + artifact bucket. This is
+# slow-changing platform infra (one image per cluster), NOT per-session — so it lives
+# here in the chart, not in the per-claim shim. The shim reads THIS object's status
+# (imageARN + executionRoleARN) to RunMicrovm per session. Rebuild the image by
+# bumping microvm.codeArtifactKey (a new artifact) and re-syncing.
+apiVersion: {{ .Values.microvm.apiGroup | default "kro.run" }}/v1alpha1
+kind: MicrovmSandbox
+metadata:
+  name: {{ .Values.microvm.image.name | default "coder" }}
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # Sync AFTER the RGD (wave -1) so its generated CRD exists. SkipDryRunOnMissingResource
+    # lets the first sync proceed even if KRO hasn't registered the CRD in the same pass —
+    # ArgoCD retries + selfHeal converge once the CRD appears (no whole-app block).
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  name: {{ .Values.microvm.image.name | default "coder" }}
+  region: {{ .Values.microvm.region | quote }}
+  baseImageARN: {{ .Values.microvm.baseImageARN | quote }}
+  # Object key only — the RGD prefixes s3://${bucket.spec.name}/ (see resource 4), so the
+  # bucket is never named twice and cannot drift from the one the graph creates.
+  codeArtifactKey: {{ required "microvm.codeArtifactKey is required when microvm.enabled=true (object key of the arm64 coder zip inside the RGD-created <image.name>-microvm-artifacts-<accountId> bucket)" .Values.microvm.codeArtifactKey | quote }}
+  # Hard-fail the render rather than emit `<name>-microvm-artifacts-` (a trailing-hyphen,
+  # invalid bucket name) if the account id never got injected. microvm.enabled=true
+  # cannot work without it, so a loud template error beats a silently broken bucket.
+  accountId: {{ required "microvm.accountId is required when microvm.enabled=true (injected from the cluster's aws_account_id annotation in gitops/addons/registry/sandbox.yaml)" .Values.microvm.accountId | quote }}
+{{- end }}
+{{- end }}

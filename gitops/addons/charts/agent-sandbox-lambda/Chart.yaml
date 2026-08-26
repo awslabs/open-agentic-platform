@@ -1,0 +1,14 @@
+apiVersion: v2
+name: agent-sandbox-lambda
+description: >-
+  Flow D — Lambda MicroVM substrate for the Agent Sandbox capability. A second,
+  opt-in execution substrate alongside the Kata micro-VM chart (agent-sandbox):
+  the coder runs in an AWS Lambda MicroVM (Firecracker) instead of a Kata node.
+  KRO builds the platform image ONCE (MicrovmImage + build/exec IAM + S3 artifact
+  + CloudWatch logs, via ACK GA controllers); a lightweight shim (bridge pod +
+  lifecycle controller) drives the per-session VM (RunMicrovm / suspend / resume /
+  TerminateMicrovm) imperatively via the AWS SDK. Same dark-factory-coder (arm64)
+  image + same Agent Sandbox UX as Flow A. Disabled by default (microvm.enabled).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

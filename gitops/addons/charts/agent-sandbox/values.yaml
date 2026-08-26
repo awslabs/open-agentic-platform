@@ -1,0 +1,376 @@
+# Agent Sandbox capability — default values
+#
+# This chart installs the Sandbox control plane (operator + CRDs), the Kata
+# RuntimeClasses that workloads select via runtimeClassName, a SandboxTemplate
+# the Dark Factory (and other consumers) claim against, and a pool-manager that
+# keeps a warm buffer of idle sandboxes ready.
+
+# Namespace the sandbox capability runs in (operator, pool-manager, warm pool).
+#
+# This chart PLACES resources here but no longer CREATES the namespace — the
+# agent-sandbox-operator addon owns the Namespace object (sync-wave 0, so it
+# exists WITH its PSS labels before this chart's wave-2 workloads land in it).
+# Both charts used to define it, which left the two apps permanently OutOfSync
+# fighting over one resource.
+#
+# Changing this value therefore only moves THIS chart's CRs. To move the whole
+# capability, also set namespace.name on the agent-sandbox-operator entry in
+# gitops/addons/registry/sandbox.yaml — otherwise this chart's CRs land in a
+# namespace created implicitly by the CreateNamespace=true syncOption, which is
+# UNLABELLED and therefore has no Pod Security enforcement.
+namespace: agent-sandbox-system
+
+# ── Sandbox operator (agents.x-k8s.io) ───────────────────────────────────────
+# The operator (controller + CRDs) is a SEPARATE addon — it is not configured
+# from here. This chart has never rendered an operator Deployment (no template
+# consumed the old `operator:` block that sat here, so its image/replicas/
+# installCRDs keys were silently dead; editing them changed nothing).
+#
+# Real knobs live on the agent-sandbox-operator entry in
+# gitops/addons/registry/sandbox.yaml → valuesObject:
+#   image.tag             the controller image tag (upstream registry.k8s.io)
+#   controller.extensions MUST stay true — serves SandboxTemplate/Claim/WarmPool
+#   namespace.*           that app owns agent-sandbox-system + its PSS labels
+
+# NOTE: The Kata *runtime installer* (kata-deploy) is delivered as a SEPARATE
+# gated ArgoCD app (enable_agent_sandbox_kata), not from this chart — see the
+# addon catalog and docs/dark-factory §12a. That app installs the runtime on the
+# node but its own RuntimeClass rendering is DISABLED (runtimeClasses.enabled=false
+# on its registry entry): this chart owns the RuntimeClasses, template, network
+# policy, and pool-manager.
+
+# ── Kata micro-VM runtime ────────────────────────────────────────────────────
+kata:
+  # VMM the WARM POOL (SandboxTemplate) runs on — a key of runtimeClasses below.
+  # Flip this one value to swap the VMM for every warm/claimed sandbox:
+  #   clh  → Cloud Hypervisor (default; boots fast, nested-virt kata-nested pool)
+  #   qemu → QEMU            (same kata pool as clh — same kata-deploy runtime)
+  #   fc   → Firecracker     (SEPARATE kata-fc pool + kata-deploy-fc + devmapper;
+  #                           requires kata_nodepool kataFc + kata-deploy-fc enabled)
+  # `vmm` only steers the warm pool. Changing it recreates the SandboxTemplate →
+  # the pool refills onto the new VMM's nodes.
+  vmm: clh
+  # RuntimeClasses to render (10-runtimeclasses.yaml), keyed by VMM. THIS CHART IS
+  # THE SINGLE OWNER of these objects — kata-deploy's own rendering is turned off
+  # (runtimeClasses.enabled=false on its registry entry). Both used to render
+  # kata-clh/kata-qemu, which left the two Apps permanently OutOfSync.
+  #
+  # This chart owns them because kata-deploy's chart has NO toleration support:
+  # it emits scheduling.nodeSelector only, while kata-nodepool taints its nodes
+  # (kata / kata-fc =true:NoSchedule), so a pod selecting only runtimeClassName
+  # would get the selector and then sit Pending on the taint. kata-deploy also
+  # can't name the Firecracker class `kata-fc` (its multiInstallSuffix makes it
+  # kata-fc-fc).
+  #
+  # EACH entry carries the nodeSelector + tolerations that steer a pod onto the
+  # MATCHING Karpenter pool — clh/qemu share the kata pool (taint `kata`, label
+  # katacontainers.io/kata-runtime), fc uses the firecracker pool (taint `kata-fc`,
+  # label katacontainers.io/kata-runtime-fc). The RuntimeClass admission controller
+  # force-merges that scheduling onto every pod selecting the class, so a workload
+  # only needs runtimeClassName.
+  #
+  # These values are DOUBLY load-bearing: 20-sandboxtemplate.yaml also reads the
+  # entry `vmm` selects to stamp runtimeClassName + nodeSelector + tolerations
+  # directly onto the warm-pool pod spec.
+  #
+  # `handler` must match a containerd handler kata-deploy actually installed (it is
+  # driven by that chart's `shims`); a class whose handler has no runtime on the
+  # node will fail at pod creation, not at render.
+  #
+  # `overhead` is copied from kata-deploy 4.0.0's built-in per-shim table so the
+  # kubelet reserves memory for the VMM process — HAND-MAINTAINED, so re-check it
+  # when bumping the kata-deploy version.
+  #
+  # All classes are RENDERED regardless of `vmm` (an ad-hoc pod may select any).
+  runtimeClasses:
+    clh:
+      name: kata-clh
+      handler: kata-clh
+      # kata-deploy 4.0.0 built-in overhead for the clh shim.
+      overhead:
+        memory: 130Mi
+        cpu: 250m
+      nodeSelector:
+        katacontainers.io/kata-runtime: "true"
+      tolerations:
+        - key: kata
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+    qemu:
+      name: kata-qemu
+      handler: kata-qemu
+      # kata-deploy 4.0.0 built-in overhead for the qemu shims — deliberately
+      # HIGHER than clh: QEMU's own anon RSS is ~160Mi+ before any guest RAM, and
+      # with sandbox_cgroup_only the VMM runs inside the pod cgroup, so a smaller
+      # overhead lets the VMM be OOM-killed on memory-limited pods.
+      overhead:
+        memory: 320Mi
+        cpu: 250m
+      nodeSelector:
+        katacontainers.io/kata-runtime: "true"
+      tolerations:
+        - key: kata
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+    fc:
+      name: kata-fc
+      handler: kata-fc
+      # kata-deploy 4.0.0 built-in overhead for the fc shim.
+      #
+      # NOTE: this class is rendered unconditionally, but it only WORKS on a
+      # cluster that also has the fc runtime installed + fc nodes — i.e.
+      # enable_agent_sandbox_kata_fc plus kata_nodepool kataFc. Elsewhere it is an
+      # inert declaration (selecting it leaves the pod Pending, since no node
+      # carries katacontainers.io/kata-runtime-fc).
+      overhead:
+        memory: 130Mi
+        cpu: 250m
+      nodeSelector:
+        katacontainers.io/kata-runtime-fc: "true"
+      tolerations:
+        - key: kata-fc
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+# ── NetworkPolicy (egress lockdown) ──────────────────────────────────────────
+networkPolicy:
+  # Private/link-local CIDRs carved OUT of the coder's :443 public-internet
+  # allow. On the hub the capability sits next to the fleet control plane
+  # (Keycloak/ArgoCD/external-secrets/Argo) reachable via ClusterIPs + pod IPs
+  # in the VPC private range; denying RFC-1918 + link-local blocks every path to
+  # the control plane, the node, the API server, and peer pods while still
+  # permitting public git/gh/registry egress. Covers hub VPC 10.0.0.0/16, pods
+  # (in-VPC), and service CIDR 172.20.0.0/16.
+  # NOTE (EKS VPC-CNI): NetworkPolicy egress ipBlock is matched on the Service
+  # ClusterIP *before* kube-proxy DNAT, so the service CIDR must be listed
+  # EXPLICITLY as its own except entry — the 172.16/12 supernet alone does NOT
+  # reliably catch 172.20.0.0/16 ClusterIP traffic (verified on this cluster:
+  # /12 let control-plane ClusterIPs through; the explicit /16 blocks them).
+  privateCidrsDenied:
+    - 172.20.0.0/16       # EKS service CIDR (control-plane ClusterIPs) — MUST be explicit
+    - 10.0.0.0/8          # RFC-1918 (hub VPC + pod IPs)
+    - 172.16.0.0/12       # RFC-1918
+    - 192.168.0.0/16      # RFC-1918
+    - 169.254.0.0/16      # link-local (blocks IMDS 169.254.169.254)
+  # Public DNS resolvers the coder Kata VM uses (its pod dnsConfig.nameservers).
+  # A Kata guest VM can't use in-cluster CoreDNS (and EKS Auto Mode doesn't run a
+  # kube-dns Service here), so the coder resolves via PUBLIC DNS. The egress policy
+  # must therefore allow :53 to these resolver IPs — the in-cluster :53 rule alone
+  # does NOT (public resolver IPs aren't in-cluster), which silently broke name
+  # resolution (coder crashed with EAI_AGAIN api.github.com though :443 worked).
+  # Scoped to the exact resolver /32s — tighter than the :443 public allow. Keep in
+  # sync with the SandboxTemplate podTemplate dnsConfig.nameservers.
+  dnsResolvers:
+    - 8.8.8.8/32          # Google Public DNS
+    - 1.1.1.1/32          # Cloudflare DNS
+
+  # PUBLIC DNS resolvers the coder is allowed to reach on :53 (30-networkpolicy).
+  #
+  # REQUIRED on this platform, not optional hardening. The agent-sandbox OPERATOR
+  # materializes every Sandbox pod with `dnsPolicy: None` + these nameservers —
+  # our chart does not set that and cannot unset it. An external resolver matches
+  # no namespaceSelector, so without these ipBlocks every lookup is dropped and
+  # the coder dies with `getaddrinfo EAI_AGAIN api.github.com` (observed live).
+  #
+  # Why public resolvers at all: this is an EKS AUTO MODE cluster, where CoreDNS
+  # runs as a node-level system service instead of a Deployment — there is no
+  # kube-dns Service to point at (nothing owns 172.20.0.10), and the kata pool
+  # runs on SELF-MANAGED Karpenter nodes that Auto Mode's node-local DNS does not
+  # serve. So cluster DNS is unavailable to these pods by construction.
+  #
+  # Keep these as /32s. Widening to 0.0.0.0/0 on :53 would let the coder use DNS
+  # to any host, which is an exfiltration channel (DNS tunnelling) that the :443
+  # private-CIDR rule cannot see. MUST match the resolvers the operator injects.
+  dnsResolvers:
+    - 8.8.8.8/32
+    - 1.1.1.1/32
+
+  # Bifrost's PINNED ClusterIP, allowed on :8080 as an explicit ipBlock.
+  #
+  # Needed IN ADDITION to the namespaceSelector rule because EKS VPC-CNI matches
+  # egress on the ORIGINAL destination (the ClusterIP) BEFORE kube-proxy DNAT,
+  # while a namespaceSelector matches pod IPs. The sandbox addresses Bifrost by
+  # ClusterIP precisely because it cannot resolve DNS, so this is the rule that
+  # actually admits its traffic. (Same VPC-CNI limitation documented for
+  # clusteripFirewall below.)
+  #
+  # ⚠️ MUST equal staticService.clusterIP in the bifrost chart AND the host in
+  # coderTemplate.bifrostUrl. Three places, one address — grep 172.20.0.100.
+  # Set empty to drop this rule (correct only where the sandbox has real DNS).
+  bifrostClusterIp: 172.20.0.100
+
+  # Admin-tier ClusterNetworkPolicy (31-clusternetworkpolicy.yaml) — control-plane
+  # isolation that applies regardless of pod ownership (the standard NetworkPolicy
+  # above only applies to Deployment-owned pods; coder pods are Sandbox-CR-owned).
+  #
+  # EKS VPC-CNI limitation (verified): neither standard NetworkPolicy nor Admin
+  # ClusterNetworkPolicy egress applies to Service ClusterIP (172.20.x) traffic —
+  # DNAT'd before policy eval. Pod-to-pod (backend pod IPs 10.0.x) IS blocked by
+  # both tiers. The ClusterIP gap is now CLOSED at the node layer by the
+  # clusteripFirewall DaemonSet below (conntrack --ctorigdst FORWARD rules).
+  # Full defense-in-depth: Kata VM + no creds (no SA token, no IAM) + pod-IP deny
+  # (both policy tiers) + ClusterIP deny (node firewall) + service auth.
+  adminDenyControlPlane: true
+  adminPriority: 10
+  # Namespaces the untrusted coder must NEVER reach on the hub build plane.
+  # NOTE: kube-system is deliberately NOT listed — CoreDNS lives there and the
+  # coder needs :53 for git/gh resolution; an Admin-tier Deny is all-ports and
+  # would break DNS. kube-system carries no exfil-worthy secrets the coder can
+  # use (it has no SA token), and IMDS/API access is already blocked by the
+  # standard policy's CIDR denies.
+  controlPlaneNamespaces:
+    - argocd
+    - argo
+    - keycloak
+    - external-secrets
+    - crossplane-system
+    - langfuse
+
+  # ClusterIP egress firewall (32-clusterip-egress-firewall.yaml) — the DEFINITIVE
+  # fix for the VPC-CNI ClusterIP-DNAT gap documented above. A host-network,
+  # NET_ADMIN DaemonSet on the kata node installs FORWARD iptables rules matching
+  # conntrack --ctorigdst (the ORIGINAL ClusterIP before kube-proxy DNAT), allowing
+  # only the Bifrost ClusterIP and DROPping the rest of the service CIDR. Verified
+  # live: closes the external-secrets/kube-api ClusterIP socket while keeping
+  # Bifrost + public egress + DNS working. Only runs on the tainted kata node.
+  clusteripFirewall:
+    # DISABLED: superseded by NetworkPolicy 30 (privateCidrsDenied lists the EKS
+    # service CIDR 172.20.0.0/16 explicitly, which blocks control-plane ClusterIPs
+    # on VPC-CNI without raw iptables) + Admin ClusterNetworkPolicy 31. Verified on
+    # spoke-dev: NP alone blocks the API-server ClusterIP and allows Bifrost. The
+    # iptables DaemonSet also over-broadly hooked the whole node FORWARD chain,
+    # blocking non-hostNetwork infra pods (e.g. kata-deploy) from the API server.
+    enabled: false
+    # Runs in kube-system (privileged node infra home) — agent-sandbox-system
+    # enforces `baseline` PodSecurity which forbids hostNetwork + NET_ADMIN.
+    namespace: kube-system
+    image: alpine/k8s:1.31.0     # needs kubectl + iptables
+    serviceCidr: 172.20.0.0/16   # EKS service CIDR (hub)
+    bifrostNamespace: bifrost
+    bifrostService: bifrost
+    bifrostPort: 8080
+    reconcileSeconds: 30
+
+# NOTE: kata-readiness removed — kata-deploy 4.0.0 (PR kata-containers#13284)
+# removes the runtime-not-ready startup taint itself as its final install step
+# (see startupTaints in the kata-deploy registry entry, sandbox.yaml).
+
+# ── Warm pool ────────────────────────────────────────────────────────────────
+warmPool:
+  enabled: true
+  # Number of idle sandboxes to keep ready. Claim one → pool-manager refills;
+  # release one → pool-manager shrinks back to this target.
+  # 1, not 3: each idle sandbox is a real Kata micro-VM holding EC2 capacity, and a
+  # demonstrator/workshop cluster claims one at a time — three idle VMs is standing
+  # cost with nothing to show for it. Raise it where concurrent claims are expected
+  # (the pool refills after each claim, so 1 only costs a cold-start on claim #2).
+  targetIdle: 1
+  # Idle sandboxes scale to replicas:0 after this TTL (PVC retained); resume on
+  # demand. Set 0 to keep idle sandboxes running (higher cost, instant claim).
+  idleScaleToZeroSeconds: 900
+  # Hard TTL — a claimed sandbox with no activity past this is reaped (safety
+  # net for crashed/abandoned consumers).
+  reapAfterSeconds: 3600
+  # The SandboxTemplate that idle/claimed sandboxes are cloned from.
+  templateName: coder-sandbox
+
+# ── Pool-manager controller ──────────────────────────────────────────────────
+poolManager:
+  # Image for the reconcile loop — MUST have both kubectl AND jq (the script
+  # exits early if kubectl is missing). aws-cli image has neither; use an
+  # alpine/k8s image that bundles kubectl + jq + helm.
+  image: alpine/k8s:1.31.0
+  # How often the reconcile/reaper loop runs.
+  intervalSeconds: 60
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+# ── Coder SandboxTemplate (podTemplate the warm pool clones) ─────────────────
+coderTemplate:
+  # Allow Flow B to inject per-claim env (SPEC/repo/branch/profile) via SandboxClaim.
+  envVarsInjectionPolicy: Overrides
+  # Mount a k8s Secret at /etc/secrets (mode 0400) so the coder can read its
+  # GitHub token. This is the CODER credential — a separate, lower-privilege
+  # credential from the hub-side orchestrator/events tokens (review C1), because
+  # the coder runs model-written code whose prompt is attacker-controllable
+  # issue text.
+  #
+  # Scope (fine-grained PAT / App installation, target repo only) — this is the
+  # MINIMUM the coder code actually exercises, verified against
+  # examples/dark-factory/coder/entrypoint.js:
+  #   Metadata        read    (implied by all of the below)
+  #   Issues          read    GET /issues/{n} — builds /workspace/SPEC.md
+  #   Contents        write   git push of df/issue-<n>
+  #   Pull requests   write   POST /pulls — the coder OPENS ITS OWN PR
+  #   Commit statuses write   POST /statuses/{sha} — dark-factory/implementation,
+  #                           which is the completion signal df-run polls for
+  # It must NOT have Webhooks:write (that is the events credential's job).
+  #
+  # ⚠️ This is NOT "Contents:write and nothing else" — the docs said that, and the
+  # code disagreed; under-scoping fails MID-RUN, after a sandbox is claimed and
+  # model tokens are spent.
+  #
+  # ⚠️ Fine-grained PATs gate PUT /pulls/{n}/merge on CONTENTS, so this token can
+  # technically merge its own PR. BRANCH PROTECTION (or a ruleset) requiring the
+  # dark-factory/* checks on the default branch is the only thing that actually
+  # prevents self-merge — and it is UNAVAILABLE on private repos on the GitHub
+  # free plan (both APIs 403). On a free-plan private repo this boundary does not
+  # hold; make the repo public, upgrade, or accept the risk knowingly.
+  secretsMount:
+    enabled: true
+    secretName: dark-factory-github-coder
+    # Filename the coder reads under /etc/secrets.
+    key: gh-token
+    # Provision secretName from AWS Secrets Manager via external-secrets.
+    # NOTE: this is a standing credential. The stronger design (review C1 as
+    # written) mints a short-TTL GitHub App installation token per run and
+    # injects it via the SandboxClaim, so the VM never holds a reusable secret.
+    externalSecret:
+      enabled: true
+      clusterSecretStore: aws-secrets-manager
+      # Set dynamically: <cluster>/dark-factory/github/coder — injected from the
+      # aws_cluster_name annotation via the registry valuesObject. Cluster-scoped
+      # so this cluster's ESO IRSA can be limited to <cluster>/* and therefore
+      # CANNOT read the hub's orchestrator/events tokens. Empty default keeps the
+      # ExternalSecret inert until injected.
+      secretManagerKey: ""
+      property: token
+      refreshInterval: 1h
+  # Sandbox coder image — built from examples/dark-factory/coder (entrypoint.js).
+  #
+  # REQUIRED, intentionally EMPTY: an ECR URI is account-specific and must not ship
+  # as a public chart default (review §1). The agent-sandbox registry entry
+  # (gitops/addons/registry/sandbox.yaml) supplies it, templating the registry from
+  # the cluster's aws_account_id + aws_region annotations — so no per-cluster overlay
+  # is needed. Already wrapped in `required` by 20-sandboxtemplate.yaml.
+  image: ""
+  # Warm pods idle until a SandboxClaim injects DF_ISSUE_NUMBER, then exec the
+  # baked-in coder entrypoint (node /app/entrypoint.js). If the image has no such
+  # entrypoint (placeholder busybox), the poll loop just idles forever — safe.
+  command:
+    - /bin/sh
+    - -c
+    - |
+      echo "[sandbox] idle — waiting for a SandboxClaim to inject DF_ISSUE_NUMBER..."
+      while [ -z "${DF_ISSUE_NUMBER:-}" ]; do sleep 5; done
+      echo "[sandbox] claim injected issue #${DF_ISSUE_NUMBER} — starting coder"
+      if [ -f /app/entrypoint.js ]; then exec node /app/entrypoint.js; fi
+      echo "[sandbox] no coder entrypoint in this image (placeholder) — idling"; sleep infinity
+  workspaceSizeGi: 5
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits: { cpu: "2", memory: 4Gi }
+  # LLM gateway the coder reaches (this platform uses Bifrost, not LiteLLM).
+  # In-cluster service DNS. The registry entry injects this per-cluster from the
+  # `bifrost_url` cluster-secret annotation (registry/sandbox.yaml), so this is the
+  # fallback when that annotation is absent.
+  #
+  # Was previously a hardcoded ClusterIP, which shipped one cluster's ephemeral
+  # address as the chart default. If a Kata VM guest cannot resolve cluster svc
+  # names (a known P2 — fix the VM dnsConfig), set the `bifrost_url` annotation on
+  # that cluster to a reachable ClusterIP rather than editing this default.
+  bifrostUrl: http://bifrost.bifrost.svc.cluster.local:8080

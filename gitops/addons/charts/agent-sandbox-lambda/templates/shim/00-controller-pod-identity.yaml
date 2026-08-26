@@ -1,0 +1,150 @@
+{{/*
+  Self-managed ACK lambdamicrovms controller → AWS access via EKS Pod Identity,
+  declared ALL-ACK (same mechanism as the RGD's build/exec roles): an ACK
+  iam.services.k8s.aws Role (trusted by the EKS Pod Identity service principal) +
+  an ACK eks.services.k8s.aws PodIdentityAssociation binding it to the controller's
+  ServiceAccount (ack-lambdamicrovms-controller in ack-system, created by the ACK
+  chart). No Crossplane, no Terraform, no CLI.
+
+  This is the ONE bootstrap IAM the KRO RGD can't self-create (the controller needs
+  creds before it can create anything). It's reconciled by the Managed-ACK iam + eks
+  controllers (both live on the hub). Everything DOWNSTREAM — the S3 bucket, the build
+  role, the exec role, the MicrovmImage — is created by the KRO RGD via ACK too (see
+  templates/image/). So the entire IAM surface is ACK/KRO/GitOps.
+
+  Earlier sync-wave so the role + association exist before the controller pod needs
+  them; Pod Identity creds are vended on demand + ArgoCD selfHeal converges with no
+  manual steps. Gated by microvm.enabled.
+*/}}
+{{- if and .Values.microvm .Values.microvm.enabled }}
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+metadata:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller
+  # Trust the EKS Pod Identity service principal (not IRSA/OIDC).
+  assumeRolePolicyDocument: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"Service": "pods.eks.amazonaws.com"},
+        "Action": ["sts:AssumeRole", "sts:TagSession"]
+      }]
+    }
+  inlinePolicies:
+    lambdamicrovms: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "LambdaMicrovms",
+            "Effect": "Allow",
+            "Action": [
+              "lambda:CreateMicrovmImage","lambda:UpdateMicrovmImage","lambda:DeleteMicrovmImage",
+              "lambda:GetMicrovmImage","lambda:GetMicrovmImageVersion","lambda:ListMicrovmImages",
+              "lambda:RunMicrovm","lambda:GetMicrovm","lambda:TerminateMicrovm","lambda:ListMicrovms",
+              "lambda:SuspendMicrovm","lambda:ResumeMicrovm",
+              "lambda:CreateMicrovmAuthToken","lambda:CreateMicrovmShellAuthToken",
+              "lambda:TagResource","lambda:UntagResource","lambda:ListTagsForResource",
+              "lambda:ListNetworkConnectors","lambda:GetNetworkConnector"
+            ],
+            "Resource": "*"
+          },
+          {{- /*
+            CreateMicrovmImage/RunMicrovm attach a network connector to the MicroVM.
+            With no explicit connectors in the RGD, the service uses the AWS-managed
+            default INTERNET_EGRESS connector, and passing it needs
+            lambda:PassNetworkConnector (verified: image build denied
+            'lambda:PassNetworkConnector on .../network-connector:aws-network-connector:
+            INTERNET_EGRESS'). Scope to the AWS-managed connector ARNs in-region.
+          */ -}}
+          {
+            "Sid": "PassNetworkConnectors",
+            "Effect": "Allow",
+            "Action": "lambda:PassNetworkConnector",
+            "Resource": [
+              "arn:aws:lambda:{{ .Values.microvm.region }}:aws:network-connector:*",
+              "arn:aws:lambda:{{ .Values.microvm.region }}:{{ .Values.microvm.accountId }}:network-connector:*"
+            ]
+          },
+          {{- /*
+            Scope PassRole by the TARGET role ARN (the build/exec roles KRO creates),
+            NOT by an iam:PassedToService condition. CreateMicrovmImage/RunMicrovm pass
+            the role to the Lambda MicroVM sub-service whose principal is NOT plain
+            lambda.amazonaws.com — a StringEquals on lambda.amazonaws.com fails closed,
+            so the controller got AccessDenied on iam:PassRole for coder-microvm-build
+            (verified: sim ALLOWED for lambda.amazonaws.com yet the live API DENIED, i.e.
+            the real passed-to principal differs; microvms/microvm.lambda.amazonaws.com
+            also implicitDeny). ARN-scoping to *-microvm-build/-exec is net-TIGHTER than
+            the previous Resource:* — only these two purpose-built roles can be passed —
+            and is principal-agnostic so it survives whatever sub-service MicroVM uses.
+          */ -}}
+          {
+            "Sid": "PassBuildExecRoles",
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": [
+              "arn:aws:iam::{{ .Values.microvm.accountId }}:role/*-microvm-build",
+              "arn:aws:iam::{{ .Values.microvm.accountId }}:role/*-microvm-exec"
+            ]
+          }
+        ]
+      }
+---
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  clusterName: {{ .Values.microvm.podIdentity.clusterName }}
+  namespace: {{ .Values.microvm.podIdentity.controllerNamespace | default "ack-system" }}
+  serviceAccount: {{ .Values.microvm.podIdentity.controllerServiceAccount | default "ack-lambdamicrovms-controller" }}
+  # ACK PodIdentityAssociation takes the role ARN (no role-ref selector). The ACK
+  # Role above has a deterministic name, so the ARN is constructed from the account id.
+  roleARN: "arn:aws:iam::{{ .Values.microvm.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+---
+# The BRIDGE SA (agent-sandbox-system) calls RunMicrovm/GetMicrovm/TerminateMicrovm —
+# reuse the same lambda-microvms role via its own PodIdentityAssociation.
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-microvm-bridge
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  clusterName: {{ .Values.microvm.podIdentity.clusterName }}
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  serviceAccount: microvm-bridge
+  roleARN: "arn:aws:iam::{{ .Values.microvm.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+---
+# The LIFECYCLE controller SA calls suspend-microvm/resume-microvm — same role.
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-microvm-lifecycle
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  clusterName: {{ .Values.microvm.podIdentity.clusterName }}
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  serviceAccount: microvm-lifecycle
+  roleARN: "arn:aws:iam::{{ .Values.microvm.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+{{- end }}

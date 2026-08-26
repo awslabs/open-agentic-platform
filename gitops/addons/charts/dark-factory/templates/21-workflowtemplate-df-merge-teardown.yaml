@@ -1,0 +1,172 @@
+{{- /*
+df-merge-teardown — fired by the Sensor when a HUMAN approves the PR review
+(pull_request_review, state=approved) on a df/issue-N PR. This is the ONLY path
+that merges: the agent never self-merges (anti-pattern #5) — merge strictly
+follows an explicit human approval event.
+
+Steps: verify the PR is green (all dark-factory/* checks succeeded) → merge →
+delete the SandboxClaim (frees the warm pool). Guarded so a stray approval on a
+non-green PR can't merge. Deterministic name df-merge-<issue-id> for dedup.
+
+Parameters (from the Sensor): issue-number (parsed from the PR branch df/issue-N),
+repo, pr-number. The PR-review payload carries no issue id, so this keys on the
+issue NUMBER and reaps the claim by label selector.
+*/ -}}
+{{- if .Values.trigger.argoEvents.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: df-merge-teardown
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  serviceAccountName: dark-factory-workflow
+  synchronization:
+    mutex:
+      name: "df-issue-num-{{`{{workflow.parameters.issue-number}}`}}"
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: issue-number
+      - name: repo
+      - name: pr-number
+  ttlStrategy:
+    secondsAfterCompletion: {{ .Values.argo.workflowTtlSecondsAfterCompletion | default 604800 }}
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: merge
+            template: merge-pr
+{{- if .Values.microvm.enabled }}
+          # Flow D: this is the FINAL exit — TERMINATE the Lambda MicroVM that df-run-lambda
+          # kept SUSPENDED across the review→fix loop. Deletes the Microvm CR (stable name
+          # mvm-<issue-number>) → the controller TerminateMicrovm's the VM. No-op for Kata
+          # (there is no such CR). Advisory — never fails the merge.
+          - name: microvm-terminate
+            template: microvm-terminate
+            dependencies: [merge]
+{{- end }}
+          - name: teardown
+            template: teardown-claim
+{{- if .Values.microvm.enabled }}
+            dependencies: [microvm-terminate]
+{{- else }}
+            dependencies: [merge]
+{{- end }}
+
+    # ---- Merge the PR — only if every dark-factory/* check is green ----
+    - name: merge-pr
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: PR
+            value: "{{`{{workflow.parameters.pr-number}}`}}"
+          # A MISSING status is now a REFUSAL, not a skip (review C3). That makes the
+          # required set load-bearing: a gate that is switched off never posts, so
+          # demanding it would block every merge. Pass the enabled set explicitly —
+          # merge.js defaults both to TRUE (fail-secure), so omitting them would
+          # demand statuses a disabled gate never produces.
+          #
+          # deploy-test is deliberately NOT required: unlike these, it is gated at
+          # RUNTIME (`when: kind != none`), so on a diff that touches no deployable
+          # artifact the step is skipped and no status is ever posted. Requiring it
+          # from a static chart flag would refuse every non-deployable PR.
+{{- if .Values.holdout.enabled }}
+          - name: REQUIRE_HOLDOUT
+            value: "true"
+{{- else }}
+          - name: REQUIRE_HOLDOUT
+            value: "false"
+{{- end }}
+{{- if .Values.review.enabled }}
+          - name: REQUIRE_REVIEW
+            value: "true"
+{{- else }}
+          - name: REQUIRE_REVIEW
+            value: "false"
+{{- end }}
+{{- if .Values.devopsAgent.enabled }}
+          # Require the REAL AWS DevOps Agent check-run (Checks API) green before
+          # merge — merge.js reads both commit statuses and check-runs.
+          - name: DEVOPS_CHECK
+            value: {{ .Values.devopsAgent.checkRunName | quote }}
+          - name: REQUIRE_DEVOPS
+            value: "true"
+{{- else }}
+          - name: REQUIRE_DEVOPS
+            value: "false"
+{{- end }}
+{{- if and .Values.securityAgent.app .Values.securityAgent.app.enabled }}
+          # Require the REAL AWS Security Agent GitHub App check green before merge
+          # so a Security BLOCK can't be merged past (in addition to the advisory
+          # dark-factory/security from the headless path — both run).
+          - name: SECURITY_CHECK
+            value: {{ .Values.securityAgent.app.checkRunName | quote }}
+          - name: REQUIRE_SECURITY
+            value: "true"
+{{- end }}
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/merge.js
+            subPath: merge.js
+        source: |
+          set -eu
+          echo "[df-merge] human-approved PR #${PR} in ${REPO} — verifying + merging"
+          node /scripts/merge.js
+
+{{- if .Values.microvm.enabled }}
+    # ---- Flow D: terminate the Lambda MicroVM (final exit) ----
+    # df-run-lambda kept the VM SUSPENDED (CR mvm-<issue-number>) across the review→fix
+    # loop. At merge we DELETE that CR → the controller TerminateMicrovm's the VM. Stable
+    # name, so no Sandbox/annotation lookup needed. No-op for Kata (no such CR). Advisory.
+    - name: microvm-terminate
+      script:
+        image: {{ .Values.microvm.stepImage | default "public.ecr.aws/aws-cli/aws-cli:latest" }}
+        command: [sh]
+        source: |
+          set -eu
+          NS="{{ .Values.microvm.namespace | default "agent-sandbox-system" }}"
+          MVM="mvm-{{`{{workflow.parameters.issue-number}}`}}"
+          if ! command -v kubectl >/dev/null 2>&1; then
+            KV="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+            curl -fsSL "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            chmod +x /tmp/kubectl; export PATH="/tmp:$PATH"
+          fi
+          if kubectl get microvm "${MVM}" -n "${NS}" >/dev/null 2>&1; then
+            echo "[microvm-terminate] deleting Microvm/${MVM} → controller TerminateMicrovm (final exit)"
+            kubectl delete microvm "${MVM}" -n "${NS}" --wait=false 2>&1 || echo "[microvm-terminate] delete failed (advisory)"
+            kubectl delete secret "${MVM}-payload" -n "${NS}" --ignore-not-found >/dev/null 2>&1 || true
+          else
+            echo "[microvm-terminate] no Microvm/${MVM} — nothing to terminate (Kata or already gone)"
+          fi
+{{- end }}
+
+    # ---- Teardown the claim (operator refills the pool) ----
+    # Delete by the issue-number label (the PR-review event has no issue id). For Lambda
+    # this also removes the (idle) bridge pod; the VM is already terminated above.
+    - name: teardown-claim
+      resource:
+        action: delete
+        flags:
+          - "--ignore-not-found"
+          - "--selector=dark-factory.io/issue-number={{`{{workflow.parameters.issue-number}}`}}"
+        manifest: |
+          apiVersion: extensions.agents.x-k8s.io/v1beta1
+          kind: SandboxClaim
+          metadata:
+            namespace: {{ .Values.warmPool.namespace }}
+{{- end }}

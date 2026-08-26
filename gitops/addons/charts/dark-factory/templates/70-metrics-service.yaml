@@ -1,0 +1,102 @@
+{{- /*
+Argo workflow-controller metrics → AMP (observability).
+
+The platform's AWS Managed Prometheus scraper (peeks-scraper-hub) discovers Services
+annotated prometheus.io/scrape via its kubernetes-service-endpoints job. BUT the Argo
+workflow-controller serves :9090/metrics over HTTPS with a SELF-SIGNED cert, and that
+scrape job has no tls_config/insecure_skip_verify — so it can't scrape the controller
+directly (verified: https verify → TLS error 000; insecure → 200). We can't edit the
+platform scraper.
+
+Fix we own: a tiny proxy that scrapes the controller over HTTPS-insecure and re-serves
+the same metrics over PLAIN HTTP. The annotated Service points at the proxy (scheme
+http), so the scraper works exactly like every other http target. Exposes
+argo_workflows_* incl. argo_workflows_df_runs_total / _df_run_duration_seconds.
+*/ -}}
+{{- if .Values.metrics.enabled }}
+# Stable upstream Service the proxy dials (selects the controller pod; NOT scraped).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dark-factory-controller-upstream
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: workflow-controller
+  ports:
+    - name: https-metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dark-factory-metrics-proxy
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+    app: dark-factory-metrics-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dark-factory-metrics-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "dark-factory.labels" . | nindent 8 }}
+        app: dark-factory-metrics-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: proxy
+          image: {{ .Values.metrics.proxyImage }}
+          # socat: accept plain HTTP on :9091, forward to the controller's HTTPS
+          # :9090 (verify disabled — self-signed). One-shot per connection is fine
+          # for a 30s scrape. Uses OPENSSL to strip TLS on the upstream side.
+          command: [sh, -c]
+          args:
+            - |
+              exec socat -d TCP-LISTEN:9091,fork,reuseaddr \
+                OPENSSL:dark-factory-controller-upstream.{{ .Values.argo.namespace }}.svc:9090,verify=0
+          ports:
+            - name: http-metrics
+              containerPort: 9091
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dark-factory-workflow-metrics
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    # Scraped by the platform AMP scraper over PLAIN HTTP (the proxy already
+    # terminated the controller's self-signed TLS upstream).
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9091"
+    prometheus.io/path: /metrics
+    prometheus.io/scheme: http
+spec:
+  type: ClusterIP
+  selector:
+    app: dark-factory-metrics-proxy
+  ports:
+    - name: http-metrics
+      port: 9091
+      targetPort: 9091
+      protocol: TCP
+{{- end }}

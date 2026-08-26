@@ -1,0 +1,60 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="OAP — Layered Architecture" id="oaplayered">
+    <mxGraphModel dx="1700" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Open Agentic Platform — Layered Architecture" style="text;html=1;align=left;verticalAlign=middle;fontSize=30;fontStyle=1;fontFamily=Helvetica;fontColor=#16232E;" vertex="1" parent="1">
+          <mxGeometry x="60" y="30" width="1000" height="44" as="geometry" />
+        </mxCell>
+
+        <!-- AGENT WORKLOADS -->
+        <mxCell id="wl" value="AGENT WORKLOADS&#10;Financial Advisor  |  K8s Ops Agent  |  Multi-Tool Agent  |  Custom Agents (BYOA)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#6B3FA0;strokeColor=#4A2B70;fontColor=#FFFFFF;fontSize=15;fontStyle=1;verticalAlign=middle;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="95" width="1420" height="66" as="geometry" />
+        </mxCell>
+
+        <!-- APC container -->
+        <mxCell id="apc" value="AGENT PLATFORM CAPABILITIES (OAP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDF0E3;strokeColor=#EC7211;fontColor=#C85D0E;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="178" width="1420" height="228" as="geometry" />
+        </mxCell>
+        <mxCell id="c1" value="Model as a&#10;Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="112" y="214" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c2" value="Agent&#10;Identities" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="336" y="214" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c3" value="Agent&#10;Gateway" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="560" y="214" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c4" value="Agent&#10;Isolation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="784" y="214" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c5" value="Agent&#10;Runtime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1008" y="214" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c6" value="Agent&#10;Lifecycle" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1232" y="214" width="256" height="76" as="geometry" /></mxCell>
+        <mxCell id="c7" value="Agent&#10;Memory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="224" y="304" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c8" value="Agent&#10;Browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="448" y="304" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c9" value="Agent Code&#10;Interpreter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="672" y="304" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c10" value="Agent&#10;Observability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="896" y="304" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="c11" value="Agent&#10;Evaluation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EC7211;strokeColor=#C85D0E;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1120" y="304" width="210" height="76" as="geometry" /></mxCell>
+
+        <!-- PLATFORM ENGINEERING container -->
+        <mxCell id="pe" value="PLATFORM ENGINEERING" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF1F5;strokeColor=#232F3E;fontColor=#232F3E;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="422" width="1420" height="228" as="geometry" />
+        </mxCell>
+        <mxCell id="p1" value="Developer&#10;Portal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="112" y="458" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p2" value="Identity&#10;&amp; Access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="336" y="458" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p3" value="Infra as&#10;Code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="560" y="458" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p4" value="Continuous&#10;Delivery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="784" y="458" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p5" value="Workflow&#10;Orchestration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1008" y="458" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p6" value="Service&#10;Discovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#0F1B2A;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1232" y="458" width="256" height="76" as="geometry" /></mxCell>
+        <mxCell id="p7" value="Packaging /&#10;Templating" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2570B8;strokeColor=#1A4D80;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="224" y="548" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p8" value="Code&#10;Repository" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2570B8;strokeColor=#1A4D80;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="448" y="548" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p9" value="Config&#10;Repository" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2570B8;strokeColor=#1A4D80;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="672" y="548" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p10" value="Artifact&#10;Registries" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2570B8;strokeColor=#1A4D80;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="896" y="548" width="210" height="76" as="geometry" /></mxCell>
+        <mxCell id="p11" value="Secret&#10;Repository" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2570B8;strokeColor=#1A4D80;fontColor=#FFFFFF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1120" y="548" width="210" height="76" as="geometry" /></mxCell>
+
+        <!-- Cross-cutting -->
+        <mxCell id="x1" value="Observability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A7FC4;strokeColor=#255A94;fontColor=#FFFFFF;fontSize=15;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="90" y="666" width="460" height="54" as="geometry" /></mxCell>
+        <mxCell id="x2" value="Security &amp; Governance" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A7FC4;strokeColor=#255A94;fontColor=#FFFFFF;fontSize=15;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="570" y="666" width="460" height="54" as="geometry" /></mxCell>
+        <mxCell id="x3" value="Signing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A7FC4;strokeColor=#255A94;fontColor=#FFFFFF;fontSize=15;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1050" y="666" width="460" height="54" as="geometry" /></mxCell>
+
+        <!-- Compute + Cloud -->
+        <mxCell id="eks" value="COMPUTE PLATFORM — Amazon EKS Auto Mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F1B2A;strokeColor=#000000;fontColor=#FFFFFF;fontSize=18;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="90" y="732" width="1420" height="60" as="geometry" /></mxCell>
+        <mxCell id="cloud" value="AWS Cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6EBF2;strokeColor=#B7C2D0;fontColor=#43536A;fontSize=15;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="90" y="804" width="1420" height="46" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

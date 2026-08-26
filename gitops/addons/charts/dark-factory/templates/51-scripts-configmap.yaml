@@ -1,0 +1,34 @@
+{{- /*
+Hub-side scripts for df-run, in a ConfigMap in the argo namespace, mounted into
+the workflow steps (never the Kata VM):
+  - security-wait.js        — WAITS FOR + mirrors the real aws-security-agent[bot]
+                              verdict into dark-factory/security (no 2nd scan).
+  - bootstrap-agentspace.sh — idempotent agent-space/application reconcile (PreSync).
+  - status.js               — sticky-status updater (rewrites the PR body).
+  - comment.js / merge.js / iterate.js / deploy-test.sh — lifecycle helpers.
+Always rendered: the sticky-status step always runs and needs status.js.
+NOTE: the old review.js (linters+Nova stub) was REMOVED — reviews are now the
+real AWS DevOps + Security Agents (docs §6.2), never a cooked-up reviewer.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: df-review
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+data:
+  status.js: |
+{{ .Files.Get "scripts/status.js" | indent 4 }}
+  merge.js: |
+{{ .Files.Get "scripts/merge.js" | indent 4 }}
+  iterate.js: |
+{{ .Files.Get "scripts/iterate.js" | indent 4 }}
+  comment.js: |
+{{ .Files.Get "scripts/comment.js" | indent 4 }}
+  deploy-test.sh: |
+{{ .Files.Get "scripts/deploy-test.sh" | indent 4 }}
+  bootstrap-agentspace.sh: |
+{{ .Files.Get "scripts/bootstrap-agentspace.sh" | indent 4 }}
+  security-wait.js: |
+{{ .Files.Get "scripts/security-wait.js" | indent 4 }}

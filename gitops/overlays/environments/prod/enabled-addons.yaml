@@ -16,6 +16,7 @@ enabledAddons:
   prometheus_node_exporter: true
   aws_for_fluentbit: true
   # Platform
+  platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
   crossplane: true
   crossplane_aws: true
   kubevela: true
@@ -23,3 +24,13 @@ enabledAddons:
   # Agentic Platform
   agent_platform: true
   bifrost: true
+  otel_collector: true
+  monitoring: true
+  agent_core: true
+  agent_gateway: true
+  oam_components: true
+  # Agent Sandbox capability — DISABLED for now (same reason as dev): EKS Auto
+  # Mode + Bottlerocket cannot host Kata. Re-enable once Auto Mode integration
+  # is designed. When on, prod holds the capability but the pool stays dormant
+  # (the Dark Factory only runs on spoke-dev — production-safety).
+  # agent_sandbox: true

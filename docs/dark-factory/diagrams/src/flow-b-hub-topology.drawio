@@ -1,0 +1,98 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="Flow B — Hub topology &amp; isolation" id="hubtopo">
+    <mxGraphModel dx="1700" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1720" pageHeight="1080" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Hub topology  ·  three-layer control-plane isolation" style="text;html=1;align=left;verticalAlign=middle;fontSize=28;fontStyle=1;fontFamily=Helvetica;fontColor=#16232E;" vertex="1" parent="1">
+          <mxGeometry x="70" y="34" width="1200" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="The Dark Factory runs on the hub, next to the fleet control plane. Untrusted coder VMs are fenced off by three independent, verified layers — they reach only DNS, Bifrost, and public GitHub." style="text;html=1;align=left;verticalAlign=middle;fontSize=14;fontFamily=Helvetica;fontColor=#6B7885;" vertex="1" parent="1">
+          <mxGeometry x="72" y="74" width="1550" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- ===== ROW 1: Control plane (fenced off, pink) ===== -->
+        <mxCell id="cpFrame" value="Control plane  ·  fenced off from the sandbox" style="rounded=1;arcSize=3;html=1;fillColor=#FFF5F7;strokeColor=#E5677E;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#C23A54;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=18;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="150" width="1580" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="kc" value="Keycloak" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#EFAAB8;strokeWidth=1.5;fontColor=#8A2540;fontSize=15;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="120" y="196" width="320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="acd" value="ArgoCD" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#EFAAB8;strokeWidth=1.5;fontColor=#8A2540;fontSize=15;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="196" width="320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="eso" value="external-secrets" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#EFAAB8;strokeWidth=1.5;fontColor=#8A2540;fontSize=15;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="196" width="330" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="argo" value="Argo / crossplane / langfuse" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#EFAAB8;strokeWidth=1.5;fontColor=#8A2540;fontSize=15;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="196" width="360" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== ROW 2: Dark Factory lane (orchestration) ===== -->
+        <mxCell id="dfFrame" value="Dark Factory lane  ·  orchestration (trusted · holds AWS IAM + GitHub App)" style="rounded=1;arcSize=3;html=1;fillColor=#FFFDF7;strokeColor=#FBA919;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#C77F0A;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=18;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="360" width="1580" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="events" value="&lt;b&gt;Argo Events&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;GitHub webhook Sensor&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="120" y="406" width="380" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="wf" value="&lt;b&gt;Argo Workflows&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;df-run · df-iterate · df-merge-teardown&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FF9900;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="620" y="406" width="470" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="oper" value="&lt;b&gt;agent-sandbox operator&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;+ SandboxWarmPool&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="406" width="390" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- ===== ROW 3: Kata node (data plane) ===== -->
+        <mxCell id="kataFrame" value="Tainted nested-virt node  ·  c8i  ·  kata=true:NoSchedule" style="rounded=1;arcSize=3;html=1;fillColor=#FFFBF3;strokeColor=#F0B24A;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#B07A1E;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=18;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="580" width="1580" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="pool" value="&lt;b&gt;Warm pool&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;coder-warmpool · 3 idle&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FBA919;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="120" y="628" width="340" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="coder" value="&lt;b&gt;Coder VM&lt;/b&gt;  ·  kata-clh&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;no SA token · no cloud creds&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="560" y="628" width="360" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="eval" value="&lt;b&gt;Holdout eval Job&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;isolated · reads diff&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="628" width="320" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="bifrost" value="&lt;b&gt;Bifrost&lt;/b&gt; → Bedrock" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#12C88B;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="628" width="180" height="76" as="geometry" />
+        </mxCell>
+
+        <!-- ===== ROW 4: The three isolation layers ===== -->
+        <mxCell id="isoFrame" value="Three-layer egress isolation  ·  verified — coder reaches only DNS + Bifrost + public GitHub" style="rounded=1;arcSize=3;html=1;fillColor=#F3FBF8;strokeColor=#12C88B;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#0E9A6C;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=18;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="810" width="1580" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="l1" value="&lt;b&gt;1 · NetworkPolicy&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;pod-IP egress deny&lt;br&gt;(Deployment-owned pods)&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#9FE3C9;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="120" y="856" width="470" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="l2" value="&lt;b&gt;2 · Admin ClusterNetworkPolicy&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;Deny — applies to Sandbox-CR pods&lt;br&gt;(evaluated first, wins)&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#9FE3C9;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="620" y="856" width="470" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="l3" value="&lt;b&gt;3 · ClusterIP node-firewall&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;conntrack ctorigdst&lt;br&gt;closes VPC-CNI DNAT gap&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#9FE3C9;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="856" width="480" height="86" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: orchestration flow (straight, vertical between rows) -->
+        <mxCell id="t1" value="submit" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=12;fontFamily=Helvetica;labelBackgroundColor=#FFFDF7;" edge="1" parent="1" source="events" target="wf"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="t2" value="SandboxClaim" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=12;fontFamily=Helvetica;" edge="1" parent="1" source="wf" target="oper"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="t3" value="warms pool" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontColor=#6B7885;fontSize=12;fontFamily=Helvetica;labelBackgroundColor=#FFFBF3;" edge="1" parent="1" source="oper" target="pool">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="1405" y="545" /><mxPoint x="290" y="545" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t4" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="pool" target="coder"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="t5" value="only :8080" style="html=1;rounded=0;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#0E9A6C;fontSize=12;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="coder" target="eval"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="t6" style="html=1;rounded=0;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="eval" target="bifrost"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Blocked path: coder → control plane (red, crossed) -->
+        <mxCell id="blocked" value="✕  blocked by all 3 layers" style="html=1;rounded=0;strokeColor=#E5677E;strokeWidth=2.5;dashed=1;dashPattern=6 5;endArrow=cross;endFill=0;exitX=0;exitY=0.5;entryX=0.5;entryY=1;fontColor=#C23A54;fontSize=12;fontStyle=1;fontFamily=Helvetica;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="coder" target="kc">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="40" y="666" /><mxPoint x="40" y="300" /><mxPoint x="280" y="300" /></Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

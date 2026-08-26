@@ -1,0 +1,64 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="Flow B — Event-driven lifecycle" id="events">
+    <mxGraphModel dx="1700" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1720" pageHeight="760" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Event-driven lifecycle  ·  one short workflow per GitHub event" style="text;html=1;align=left;verticalAlign=middle;fontSize=28;fontStyle=1;fontFamily=Helvetica;fontColor=#16232E;" vertex="1" parent="1">
+          <mxGeometry x="70" y="34" width="1300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="No long-running orchestrator. An Argo Events Sensor turns each GitHub webhook into a short-lived, issue-keyed workflow — durable state lives in the retained PVC + GitHub, not a parked process." style="text;html=1;align=left;verticalAlign=middle;fontSize=14;fontFamily=Helvetica;fontColor=#6B7885;" vertex="1" parent="1">
+          <mxGeometry x="72" y="74" width="1580" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Left: GitHub events column -->
+        <mxCell id="ghFrame" value="GitHub events" style="rounded=1;arcSize=3;html=1;fillColor=#F6F8FA;strokeColor=#C3CDD7;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#5B6875;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=16;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="150" width="340" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="ev1" value="issue labeled&#10;dark-factory" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FF9900;strokeColor=none;fontColor=#FFFFFF;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="110" y="200" width="260" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="ev2" value="PR comment&#10;(changes requested)" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="110" y="330" width="260" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="ev3" value="review approved" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#12C88B;strokeColor=none;fontColor=#FFFFFF;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="110" y="460" width="260" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="ev4" value="PR closed" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="110" y="590" width="260" height="56" as="geometry" />
+        </mxCell>
+
+        <!-- Middle: Sensor -->
+        <mxCell id="sensor" value="&lt;b&gt;Argo Events&lt;/b&gt;&lt;br&gt;&lt;b&gt;Sensor&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;filter → submit&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FF9900;strokeColor=none;fontColor=#FFFFFF;fontSize=16;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="560" y="356" width="200" height="108" as="geometry" />
+        </mxCell>
+
+        <!-- Right: three workflows -->
+        <mxCell id="wfFrame" value="Short-lived workflows  ·  keyed on issue-id  ·  GC'd on completion" style="rounded=1;arcSize=3;html=1;fillColor=#FFFDF7;strokeColor=#FBA919;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#C77F0A;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=16;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="920" y="150" width="740" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="dfrun" value="&lt;b&gt;df-run&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;claim → code → verify → open PR → await approval&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="960" y="200" width="660" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="dfiter" value="&lt;b&gt;df-iterate&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;re-bind retained PVC → apply change → push (bounded N)&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="960" y="360" width="660" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="dfmerge" value="&lt;b&gt;df-merge-teardown&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px&quot;&gt;merge PR → onExit: delete sandbox · PVC · eval&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#12C88B;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="960" y="520" width="660" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Events → Sensor (all converge) -->
+        <mxCell id="c1" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ev1" target="sensor"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c2" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ev2" target="sensor"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c3" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ev3" target="sensor"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c4" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ev4" target="sensor"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Sensor → workflows -->
+        <mxCell id="d1" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sensor" target="dfrun"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d2" style="html=1;rounded=1;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sensor" target="dfiter"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d3" style="html=1;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sensor" target="dfmerge"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

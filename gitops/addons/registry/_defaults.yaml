@@ -1,0 +1,46 @@
+# Shared defaults merged before all domain files.
+# These values are inherited by every addon entry unless overridden.
+
+syncPolicy:
+  automated:
+    selfHeal: true
+    allowEmpty: true
+    prune: true
+  retry:
+    limit: -1
+    backoff:
+      duration: 5s
+      factor: 2
+      maxDuration: 10m
+  syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+
+syncPolicyAppSet:
+  preserveResourcesOnDeletion: false
+
+useSelectors: true
+
+repoURLGit: '{{default "https://github.com/aws-samples/sample-open-agentic-platform.git" .metadata.annotations.addons_repo_url}}'
+repoURLGitRevision: '{{default "main" .metadata.annotations.addons_repo_revision}}'
+# Registry `path:` fields are literal (gitops/addons/charts/<name>), so this
+# basePath ONLY governs per-addon config value-file resolution:
+#   $values/{repoURLGitBasePath}/<addon>/values.yaml  →  gitops/addons/configs/<addon>/values.yaml
+# It is a FIXED LITERAL, deliberately NOT read from the addons_repo_basepath
+# annotation: that annotation is "gitops/addons/" (used by the bootstrap
+# ApplicationSet's valueFiles to locate registry/*.yaml). Deriving this from it
+# would resolve to "gitops/addons//<addon>/values.yaml" and silently drop every
+# config layer. Helper inserts the separating slash, so no trailing slash here.
+repoURLGitBasePath: 'gitops/addons/configs'
+
+# Drives the environment + cluster overlay value-file layers (helper adds the slash):
+#   $values/{overlayBasePath}/clusters/<cluster>/<addon>/values.yaml
+#   $values/{overlayBasePath}/environments/<env>/<addon>/values.yaml
+# Without this, overlay value files (e.g. overlays/clusters/hub/agent-gateway)
+# are never referenced by the generator.
+overlayBasePath: 'gitops/overlays'
+
+valueFiles:
+  - values.yaml
+
+useValuesFilePrefix: false

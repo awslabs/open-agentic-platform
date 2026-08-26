@@ -1,4 +1,0 @@
-# Default values for fleet cluster provisioning.
-# Tenant-specific files override these.
-
-clusters: {}

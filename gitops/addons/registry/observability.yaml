@@ -1,0 +1,107 @@
+# Observability domain — tracing, metrics, and monitoring CRDs
+# (langfuse, jaeger, otel-collector, prometheus-operator-crds).
+
+langfuse:
+  namespace: langfuse
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/langfuse'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '5'
+  selectorMatchLabels:
+    enable_langfuse: "true"
+  selector:
+    matchExpressions:
+      - key: enable_langfuse
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+    clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+    ingress:
+      enabled: true
+      host: '{{.metadata.annotations.ingress_domain_name}}'
+    keycloak:
+      issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" .metadata.annotations.ingress_domain_name) (index .metadata.annotations "keycloak_issuer_url")}}'
+      secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/keycloak-clients'
+  ignoreDifferences:
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jsonPointers:
+        - /spec/dataFrom
+
+jaeger:
+  namespace: jaeger
+  chartName: jaeger
+  defaultVersion: '3.4.1'
+  chartRepository: 'https://jaegertracing.github.io/helm-charts'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '5'
+  selector:
+    matchExpressions:
+      - key: enable_jaeger
+        operator: In
+        values: ['true']
+  valuesObject:
+    provisionDataStore:
+      cassandra: false
+    allInOne:
+      enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    storage:
+      type: memory
+    agent:
+      enabled: false
+    collector:
+      enabled: false
+    query:
+      enabled: false
+
+otel-collector:
+  namespace: otel
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/otel-collector'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '6'
+  selector:
+    matchExpressions:
+      - key: enable_otel_collector
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+    langfuse:
+      enabled: true
+      endpoint: 'https://{{.metadata.annotations.ingress_domain_name}}/api/public/otel'
+      secretManagerKey: 'hub/langfuse-otel'
+    bifrost:
+      enabled: true
+      scrapeEndpoint: 'bifrost.bifrost.svc.cluster.local:8080'
+    amp:
+      enabled: true
+      remoteWriteEndpoint: '{{with (index .metadata.annotations "amp_endpoint_url")}}{{.}}{{end}}'
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+
+prometheus-operator-crds:
+  namespace: monitoring
+  chartName: prometheus-operator-crds
+  defaultVersion: '28.0.1'
+  chartRepository: 'https://prometheus-community.github.io/helm-charts'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '5'
+  selector:
+    matchExpressions:
+      - key: enable_monitoring
+        operator: In
+        values: ['true']
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /metadata/annotations

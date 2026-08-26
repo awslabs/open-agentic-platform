@@ -1,0 +1,158 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="Flow B — df-run DAG (as built)" id="flowbdag">
+    <mxGraphModel dx="1800" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3040" pageHeight="820" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="Dark Factory  ·  the df-run DAG (as built: P1–P4)" style="text;html=1;align=left;verticalAlign=middle;fontSize=28;fontStyle=1;fontFamily=Helvetica;fontColor=#16232E;" vertex="1" parent="1">
+          <mxGeometry x="70" y="28" width="1300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Argo orchestrates; each step is gated by a when: condition on a prior step's output. The coder is untrusted (Kata VM, no K8s); every grader/reviewer runs OUTSIDE it, in a trusted hub step. Executable tests decide; LLM/agents advise." style="text;html=1;align=left;verticalAlign=middle;fontSize=14;fontFamily=Helvetica;fontColor=#6B7885;" vertex="1" parent="1">
+          <mxGeometry x="72" y="70" width="2000" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Hub trusted frame -->
+        <mxCell id="hubFrame" value="Hub  ·  Argo Workflows (argo ns)  ·  trusted — holds K8s API, AWS IAM, GitHub App" style="rounded=1;arcSize=2;html=1;fillColor=#FFFDF7;strokeColor=#FBA919;strokeWidth=2;dashed=1;dashPattern=8 5;verticalAlign=top;align=left;fontColor=#C77F0A;fontSize=14;fontStyle=1;fontFamily=Helvetica;spacingLeft=18;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="380" y="120" width="2600" height="560" as="geometry" />
+        </mxCell>
+
+        <!-- Untrusted frame around the coder -->
+        <mxCell id="untrustedFrame" value="Untrusted  ·  Kata micro-VM (agent-sandbox-system)  ·  no K8s API · no cloud creds" style="rounded=1;arcSize=6;html=1;fillColor=#FFF5F5;strokeColor=#E8635E;strokeWidth=2;dashed=1;dashPattern=6 4;verticalAlign=top;align=center;fontColor=#C0433E;fontSize=12;fontStyle=1;fontFamily=Helvetica;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="900" y="150" width="230" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Main spine (y-center = 216) ===== -->
+        <mxCell id="issue" value="&lt;b&gt;GitHub Issue&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;the spec · label: dark-factory&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FF9900;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="180" width="170" height="72" as="geometry" />
+        </mxCell>
+
+        <mxCell id="events" value="&lt;b&gt;Argo Events&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Sensor → df-run&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="410" y="180" width="160" height="72" as="geometry" />
+        </mxCell>
+
+        <mxCell id="claim" value="&lt;b&gt;claim&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;SandboxClaim → warm VM&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="650" y="180" width="180" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- Coder (untrusted, inside red frame) -->
+        <mxCell id="coder" value="&lt;b&gt;coder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;implement · build · unit tests&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FBA919;strokeColor=#E8635E;strokeWidth=2;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="915" y="186" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="coderbadge" value="writes code + its OWN tests · pushes df/issue-N · self-reports via GitHub" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#C0433E;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="908" y="256" width="214" height="34" as="geometry" />
+        </mxCell>
+
+        <mxCell id="await" value="&lt;b&gt;drive-coder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;poll GitHub → outputs pr-number&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#D8DFE6;strokeWidth=1.5;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="180" width="210" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Verify fan ===== -->
+        <!-- holdout-gate: BUILT (solid emerald) -->
+        <mxCell id="holdout" value="&lt;b&gt;holdout-gate&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built (P2)&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;hidden tests + Nova judge · ≥90%&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1620" y="150" width="290" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- security: BUILT (solid emerald) -->
+        <mxCell id="security" value="&lt;b&gt;security review&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built (P3)&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;linters + Nova reviewer · advisory&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1620" y="228" width="290" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- devops: BUILT (solid emerald) -->
+        <mxCell id="devops" value="&lt;b&gt;devops review&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built (P3)&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;IaC linters + Nova reviewer · advisory&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1620" y="306" width="290" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- detect-deployable → gates deploy-test (BUILT) -->
+        <mxCell id="detect" value="&lt;b&gt;detect-deployable&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built (P4)&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;GitHub compare — grep deploy files&lt;/font&gt;" style="rounded=1;arcSize=18;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=12;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1470" y="410" width="200" height="58" as="geometry" />
+        </mxCell>
+
+        <!-- deploy-test: BUILT conditional (solid emerald) -->
+        <mxCell id="deploytest" value="&lt;b&gt;deploy-test&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built (P4 · conditional)&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;ephemeral ns → apply → probe → teardown&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot; color=&quot;#C77F0A&quot;&gt;TRUSTED step — holds K8s access&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="404" width="290" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Gate aggregate -->
+        <mxCell id="gate" value="&lt;b&gt;gate&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;aggregate verdicts&lt;/font&gt;" style="rhombus;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2090" y="216" width="150" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- PR -->
+        <mxCell id="pr" value="&lt;b&gt;Pull Request&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;one live sticky status&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#12C88B;strokeColor=none;fontColor=#FFFFFF;fontSize=15;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="2320" y="234" width="190" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- Human -->
+        <mxCell id="human" value="&lt;b&gt;Human&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;approve on results&lt;/font&gt;" style="rhombus;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#FBA919;strokeWidth=2;fontColor=#16232E;fontSize=14;fontFamily=Helvetica;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2590" y="218" width="170" height="104" as="geometry" />
+        </mxCell>
+
+        <!-- Merge + teardown (onExit) -->
+        <mxCell id="done" value="&lt;b&gt;df-merge-teardown&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;green-gated squash-merge · del branch + claim&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#12C88B;strokeColor=none;fontColor=#FFFFFF;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="2820" y="234" width="180" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- df-iterate: comment → bounded revision loop back to the coder -->
+        <mxCell id="iterate" value="&lt;b&gt;df-iterate&lt;/b&gt; &lt;font color=&quot;#0E9A6C&quot;&gt;✓ built&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;PR comment → revise existing branch · ≤3 rounds&lt;/font&gt;" style="rounded=1;arcSize=16;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#12C88B;strokeWidth=2.5;fontColor=#16232E;fontSize=13;fontFamily=Helvetica;shadow=1;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="2470" y="404" width="300" height="60" as="geometry" />
+        </mxCell>
+        <!-- human comment → df-iterate -->
+        <mxCell id="i1" value="comment" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#FBA919;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontColor=#C77F0A;fontSize=11;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="human" target="iterate"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <!-- df-iterate loops back to re-run the coder (df-run with iterate-note) -->
+        <mxCell id="i2" value="re-submit df-run (iterate-note)" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2;dashed=0;endArrow=block;endFill=1;exitX=0;exitY=0.5;entryX=0.5;entryY=1;fontColor=#0E9A6C;fontSize=10;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="iterate" target="await"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ===== Spine edges ===== -->
+        <mxCell id="e1" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="issue" target="events"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" value="webhook" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=11;fontFamily=Helvetica;" edge="1" parent="1" source="events" target="claim"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" value="env DF_*" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=11;fontFamily=Helvetica;" edge="1" parent="1" source="claim" target="coder"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" value="tests green → push" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=11;fontFamily=Helvetica;" edge="1" parent="1" source="coder" target="await"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- await → verify fan (orthogonal) -->
+        <mxCell id="f1" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.35;entryX=0;entryY=0.5;fontColor=#0E9A6C;fontSize=11;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="await" target="holdout"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f2" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="await" target="security"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f3" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.7;entryX=0;entryY=0.5;" edge="1" parent="1" source="await" target="devops"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f4" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.9;entryX=0;entryY=0.5;" edge="1" parent="1" source="await" target="detect"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f5" value="when: deployable == true" style="html=1;rounded=0;strokeColor=#12C88B;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#C77F0A;fontSize=10;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="detect" target="deploytest"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- verify → gate -->
+        <mxCell id="g1" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.2;" edge="1" parent="1" source="holdout" target="gate"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="g2" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.42;" edge="1" parent="1" source="security" target="gate"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="g3" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.6;" edge="1" parent="1" source="devops" target="gate"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="g4" style="html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.85;" edge="1" parent="1" source="deploytest" target="gate"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- gate → pr → human → done -->
+        <mxCell id="h1" value="pass → open PR" style="html=1;rounded=0;strokeColor=#12C88B;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#0E9A6C;fontSize=11;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="gate" target="pr"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="h2" value="review" style="html=1;rounded=0;strokeColor=#B7C0C9;strokeWidth=2.5;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#6B7885;fontSize=11;fontFamily=Helvetica;" edge="1" parent="1" source="pr" target="human"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="h3" value="approve review → Sensor" style="html=1;rounded=0;strokeColor=#12C88B;strokeWidth=3;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontColor=#0E9A6C;fontSize=11;fontStyle=1;fontFamily=Helvetica;" edge="1" parent="1" source="human" target="done"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- when: callout on holdout -->
+        <mxCell id="whenNote" value="when: pr-number != ''&#10;(a PR exists)" style="rounded=1;arcSize=20;html=1;whiteSpace=wrap;fillColor=#FFFBEA;strokeColor=#FBA919;strokeWidth=1;dashed=0;fontColor=#8A5A0A;fontSize=10;fontFamily=Helvetica;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1490" y="150" width="150" height="44" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Legend ===== -->
+        <mxCell id="legendFrame" value="" style="rounded=1;arcSize=6;html=1;fillColor=#F7F9FB;strokeColor=#D8DFE6;strokeWidth=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="560" width="1300" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="legendTitle" value="How gating works — and who is trusted" style="text;html=1;align=left;verticalAlign=middle;fontSize=14;fontStyle=1;fontFamily=Helvetica;fontColor=#16232E;" vertex="1" parent="1">
+          <mxGeometry x="90" y="570" width="600" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legendGate" value="•  Argo decides each step with a &lt;b&gt;when:&lt;/b&gt; expression on a prior step's output parameter. It substitutes the real value at runtime — e.g. &quot;7&quot; != &quot;&quot; → &lt;b&gt;run&lt;/b&gt;; &quot;&quot; != &quot;&quot; → &lt;b&gt;skip&lt;/b&gt; (no pod created). Deterministic, not AI." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontFamily=Helvetica;fontColor=#3A4652;" vertex="1" parent="1">
+          <mxGeometry x="90" y="598" width="1260" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="legendDeploy" value="•  deploy-test runs only when detect-deployable finds deploy files in the diff (Chart.yaml / k8s manifests / Dockerfile). Executable tests = ground truth; the DevOps agent is a second, advisory opinion." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontFamily=Helvetica;fontColor=#3A4652;" vertex="1" parent="1">
+          <mxGeometry x="90" y="622" width="1260" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="legTrust" value="•  Trust: the coder runs UNTRUSTED in a Kata VM with no K8s API and no cloud creds — it can't read the holdout (a hub ConfigMap it can't reach). Every grader/reviewer runs OUTSIDE the coder in a trusted hub step." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontFamily=Helvetica;fontColor=#3A4652;" vertex="1" parent="1">
+          <mxGeometry x="90" y="646" width="1260" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="legKey" value="•  Key:   solid emerald = implemented (P1–P4)      dashed grey = planned (deep-test PlatformCluster tier)      amber+red box = untrusted Kata VM" style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontStyle=0;fontFamily=Helvetica;fontColor=#3A4652;" vertex="1" parent="1">
+          <mxGeometry x="90" y="672" width="1260" height="22" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

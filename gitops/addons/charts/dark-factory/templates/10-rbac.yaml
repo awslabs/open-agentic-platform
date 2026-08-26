@@ -1,0 +1,256 @@
+{{- /*
+RBAC for the Dark Factory (Flow B) Argo workflows.
+
+Argo runs workflow pods in the ARGO namespace, so the workflow ServiceAccount
+lives there. It manages SandboxClaims + reads sandboxes/pods in the
+agent-sandbox namespace (where the warm pool + coder pods live) via a Role
+bound cross-namespace. It deliberately has NO secrets access, no pod/exec, no
+cluster scope — the coder VM is credential-less and the workflow never shells
+into it.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-workflow
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+# NOTE (review C2): the IRSA annotation deliberately does NOT live here. This SA is
+# used by EVERY df-run step, including holdout-gate, which executes model-written
+# code (npm install + require of the coder's module). Annotating it would hand AWS
+# credentials to that step. IRSA now sits on dark-factory-security below, used only
+# by the security-agent step.
+---
+{{- if .Values.securityAgent.enabled }}
+# ── security-agent step SA — the ONLY identity carrying AWS credentials ──────
+# Separated from dark-factory-workflow so the AWS role is not reachable from any
+# step that runs coder output. This step never touches the coder's repo: it stages
+# a diff in S3 and polls the Security Agent API.
+#
+# ⚠️ The role's trust policy names service accounts EXPLICITLY
+# (iam/securityagent.tf → workflow_service_accounts), so adding this SA to the chart
+# is not sufficient — `terraform apply` must be re-run for the new SA to be able to
+# assume the role. Until then the security-agent step cannot authenticate; it fails
+# non-fatally (posts a pending status), so the pipeline still completes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-security
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    eks.amazonaws.com/role-arn: {{ .Values.securityAgent.irsaRoleArn | required "securityAgent.irsaRoleArn is required when securityAgent.enabled — set it per cluster (the role is account-specific; see iam/securityagent.tf)" | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-security
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-security
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  # Same in-namespace Role: it only grants the executor's workflowtaskresults
+  # writes + pod reads, which every step needs to report status.
+  name: dark-factory-workflow
+---
+{{- end }}
+# ── Executor SA for steps that run with automountServiceAccountToken: false ───
+# Argo strips the token from the WAIT container too, so a step that opts out still
+# needs an identity able to write workflowtaskresults or it cannot report status
+# and the node hangs. This SA has exactly that and nothing else: no IRSA, no
+# SandboxClaim rights, no cluster scope.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults", "workflowtasksets"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-executor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-executor
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-executor
+---
+# In the ARGO namespace: the Argo executor needs to write its task results.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-workflow
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults", "workflowtasksets"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # df-iterate (runs as this SA) submits a df-run Workflow via the k8s API to
+  # route a PR comment back to the coder as a bounded revision.
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-workflow
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-workflow
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-workflow
+---
+# In the AGENT-SANDBOX namespace: manage claims + read the bound sandbox/pods +
+# per-issue state ConfigMaps. Bound to the SA that lives in the argo namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-workflow-sandbox
+  namespace: {{ .Values.warmPool.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    # patch: Flow D suspend/resume flips Sandbox.spec.operatingMode from the workflow.
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch"]
+{{- if .Values.microvm.enabled }}
+  # Flow D (df-run-lambda): provision-microvm creates the Microvm CR + its runHookPayload
+  # Secret directly (no SandboxClaim); set-microvm-power reads the CR for the id;
+  # df-merge-teardown deletes the CR at merge. Least-privilege, this namespace only.
+  - apiGroups: ["lambdamicrovms.services.k8s.aws"]
+    resources: ["microvms"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  # Read the platform image handoff (imageARN + execRoleARN) built once by KRO/ACK.
+  - apiGroups: ["kro.run"]
+    resources: ["microvmsandboxes"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-workflow-sandbox
+  namespace: {{ .Values.warmPool.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-workflow
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-workflow-sandbox
+{{- if .Values.microvm.enabled }}
+---
+# Flow D: bind the workflow SA to the lambda-microvms role via EKS Pod Identity, so the
+# df-run-lambda steps (provision/power/terminate) can call aws lambda-microvms
+# (get/suspend/resume/terminate-microvm + create-microvm-auth-token). Reuses the SAME
+# role the bridge/lifecycle controllers already use (user-approved) — additive,
+# no IAM policy change. The ACK eks controller reconciles this into a real EKS association.
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ .Values.microvm.podIdentity.clusterName }}-dark-factory-workflow
+  namespace: {{ .Values.warmPool.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  clusterName: {{ .Values.microvm.podIdentity.clusterName }}
+  namespace: {{ .Values.argo.namespace }}
+  serviceAccount: {{ .Values.microvm.workflowServiceAccount | default "dark-factory-workflow" }}
+  roleARN: "arn:aws:iam::{{ required "microvm.podIdentity.accountId is required when microvm.enabled=true (injected from the cluster's aws_account_id annotation in gitops/addons/registry/sandbox.yaml)" .Values.microvm.podIdentity.accountId }}:role/{{ .Values.microvm.podIdentity.clusterName }}-ack-lambdamicrovms-controller"
+{{- end }}
+{{- if .Values.deployTest.enabled }}
+---
+# P4 deploy-test: the ONLY cluster-scoped grant. Lets the workflow create/delete
+# ephemeral test namespaces and deploy the PR's manifests into them. Scoped to
+# namespaces + the common workload/config kinds — no secrets, no RBAC, no
+# cluster-wide resource mutation. This is deliberately the widest permission in
+# the chart and is confined to deploy-test.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dark-factory-deploy-test
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dark-factory-deploy-test
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-workflow
+    namespace: {{ .Values.argo.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dark-factory-deploy-test
+{{- end }}

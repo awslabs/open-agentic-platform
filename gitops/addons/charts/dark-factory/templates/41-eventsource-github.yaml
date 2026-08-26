@@ -1,0 +1,57 @@
+{{- if .Values.trigger.argoEvents.enabled }}
+{{- /*
+GitHub webhook EventSource — receives GitHub issue/PR webhooks and publishes
+them onto the EventBus for the Sensor to act on. Runs in the argo-events
+namespace. Exposed via the platform ALB ingress so GitHub can reach it; the
+webhook secret validates the X-Hub-Signature-256 HMAC.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: dark-factory-github
+  namespace: {{ .Values.trigger.argoEvents.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  service:
+    ports:
+      - port: {{ .Values.trigger.argoEvents.webhookPort | default 12000 }}
+        targetPort: {{ .Values.trigger.argoEvents.webhookPort | default 12000 }}
+  github:
+    dark-factory:
+      repositories:
+        {{- range .Values.trigger.argoEvents.repositories }}
+        - owner: {{ .owner | quote }}
+          names:
+            {{- range .names }}
+            - {{ . | quote }}
+            {{- end }}
+        {{- end }}
+      webhook:
+        endpoint: {{ .Values.trigger.argoEvents.webhookEndpoint | default "/dark-factory" | quote }}
+        port: {{ .Values.trigger.argoEvents.webhookPort | default 12000 | quote }}
+        method: POST
+        url: {{ .Values.trigger.argoEvents.webhookUrl | quote }}
+      # The events Flow B reacts to (P1 uses issues; iterate/merge come in P2+).
+      events:
+        - issues
+        - pull_request
+        - pull_request_review
+        - issue_comment
+      # Validate GitHub's HMAC signature; secret + API token from a k8s Secret.
+      webhookSecret:
+        name: {{ .Values.trigger.argoEvents.githubSecret }}
+        key: webhook-secret
+      apiToken:
+        name: {{ .Values.trigger.argoEvents.githubSecret }}
+        key: token
+      # Auto-register the webhook on the repo. Requires Webhooks:write
+      # (admin:repo_hook) on the apiToken above. Set false only if you register
+      # the webhook yourself, which then allows a read-only apiToken.
+      # NB: `| default true` would be wrong here — Helm treats false as empty,
+      # so an explicit active=false would collapse back to true. hasKey keeps
+      # the explicit value while defaulting absence to true (prior behaviour).
+      active: {{ if hasKey .Values.trigger.argoEvents "active" }}{{ .Values.trigger.argoEvents.active }}{{ else }}true{{ end }}
+      contentType: json
+      insecure: false
+{{- end }}

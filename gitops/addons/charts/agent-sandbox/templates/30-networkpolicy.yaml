@@ -1,0 +1,117 @@
+{{- /*
+Default-deny egress for coder sandboxes, then allow ONLY what a coder needs:
+  - DNS (kube-dns)
+  - Bifrost LLM gateway (model calls)
+  - HTTPS to the PUBLIC internet for git/gh + package registries the build needs
+
+This breaks the "lethal trifecta": untrusted issue text runs in a pod that
+cannot reach arbitrary internal services or exfiltrate to arbitrary hosts.
+
+⚠️ HUB CONTROL-PLANE ISOLATION: the capability now runs on the hub, next to the
+fleet control plane (Keycloak, ArgoCD, external-secrets, Argo). Those services
+are reachable in-cluster via ClusterIPs / pod IPs inside the cluster + VPC
+private ranges. So the HTTPS-egress rule must allow the PUBLIC internet ONLY —
+it excludes RFC-1918 private ranges (and IMDS/link-local), which denies the
+coder any path to the control plane, the node, the API server, or peer pods.
+`values.privateCidrsDenied` lists the ranges carved out of the public allow.
+Selects coder pods by the label the SandboxTemplate stamps.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: coder-sandbox-egress
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      agent-sandbox.io/role: coder
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution — port 53 only. TWO rules, because a coder sandbox does not
+    # use cluster DNS at all:
+    #
+    # (a) In-cluster resolvers, by namespace. Kept broad (not pinned to a
+    #     k8s-app=kube-dns pod label) because EKS Auto Mode runs CoreDNS without
+    #     that label. Retained so this policy still works on a cluster where the
+    #     sandbox DOES inherit cluster DNS.
+    #
+    # (b) PUBLIC resolvers, by ipBlock. REQUIRED on this platform: the
+    #     agent-sandbox operator materializes every Sandbox pod with
+    #     `dnsPolicy: None` + public nameservers (8.8.8.8 / 1.1.1.1) — that is
+    #     injected by the operator, not by this chart, so we cannot switch it to
+    #     cluster DNS. An external resolver is NOT matched by any
+    #     namespaceSelector, so rule (a) alone drops every lookup: verified by a
+    #     live run dying with `getaddrinfo EAI_AGAIN api.github.com` after the
+    #     first few seconds (VPC-CNI programs policy shortly AFTER pod start, so
+    #     the earliest queries slip through and it looks intermittent).
+    #
+    # Egress to :53 does not weaken control-plane isolation — that is enforced by
+    # the :443 private-CIDR rule below.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # DNS to the PUBLIC resolvers the Kata guest VM actually uses (pod
+    # dnsConfig.nameservers). The in-cluster :53 rule above can't cover these —
+    # they're external IPs — and Auto Mode has no kube-dns Service, so without
+    # this the coder can't resolve ANY name (crashes EAI_AGAIN api.github.com even
+    # though :443 egress works). Scoped to the resolver /32s (from values), so this
+    # opens :53 to nothing but the DNS servers themselves.
+    {{- if .Values.networkPolicy.dnsResolvers }}
+    - to:
+        {{- range .Values.networkPolicy.dnsResolvers }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    # Bifrost LLM gateway (in-cluster) — the ONLY control-plane-side service the
+    # coder may reach, and only on :8080.
+    #
+    # Also TWO rules, for a subtler reason. On EKS VPC-CNI, egress policy is
+    # evaluated against the ORIGINAL destination — the Service ClusterIP — BEFORE
+    # kube-proxy DNAT rewrites it to a pod IP. A namespaceSelector matches pod
+    # IPs, so it does NOT reliably match ClusterIP-addressed traffic (the same
+    # limitation documented for clusteripFirewall in values.yaml). The sandbox
+    # reaches Bifrost by ClusterIP precisely because it cannot resolve DNS, so
+    # the ipBlock below is the rule that actually admits it.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bifrost
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- with .Values.networkPolicy.bifrostClusterIp }}
+    - to:
+        - ipBlock:
+            # /32 — this ONE address, not the service CIDR. Everything else in
+            # 172.20.0.0/16 stays denied (the :443 rule excludes it wholesale).
+            cidr: {{ printf "%s/32" . | quote }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- end }}
+    # HTTPS egress for git / gh / package registries — PUBLIC internet only.
+    # Private/link-local ranges are excluded so the coder cannot reach the hub's
+    # control-plane services, the node, the API server, or peer pods over :443.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.networkPolicy.privateCidrsDenied }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443

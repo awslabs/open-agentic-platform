@@ -1,0 +1,469 @@
+{{- if and .Values.microvm .Values.microvm.enabled }}
+{{- /*
+Flow D — `lambda-microvm` SandboxTemplate + bridge RBAC + bridge script.
+
+The RuntimeClass "shim": Lambda MicroVM is a REMOTE AWS service, not a node-local
+containerd handler, so there is no literal `lambda-microvm` RuntimeClass (that would
+need a virtual-kubelet — out of scope). Instead this SandboxTemplate's pod is a thin
+BRIDGE that preserves the Agent-Sandbox UX:
+
+  1. runs on a NORMAL Auto-Mode node (no kata runtimeClass / nodeSelector / taint)
+  2. reads the ONE platform-built image (the committed MicrovmSandbox in template 50,
+     whose status carries imageARN + executionRoleARN — built ONCE by KRO/ACK, NOT
+     per session) and calls RunMicrovm (imperative AWS SDK) to launch a per-session
+     MicroVM running the SAME dark-factory-coder entrypoint
+  3. records the microvmID on the owning Sandbox (annotation) so the microvm-lifecycle
+     controller (template 52) can suspend/resume it, and holds the pod so the pod
+     lifecycle mirrors the MicroVM; on real teardown it calls TerminateMicrovm
+
+ARCHITECTURE SPLIT (why the bridge no longer creates a MicrovmSandbox per claim):
+image build = slow, declarative, ONE per cluster (KRO/ACK, template 50). Running a VM
+= fast, imperative, per SESSION (RunMicrovm/suspend/resume/terminate are SDK ops the
+ACK controller does NOT reconcile). So the bridge drives the RUN side via the SDK and
+only READS the platform image handoff — it does not re-run KRO per claim.
+
+To Flow B and the user this looks identical to a Flow A claim. The bridge needs a
+ServiceAccount + AWS creds (Pod Identity) to call the Lambda MicroVM SDK.
+
+Gated behind microvm.enabled. Rendered as a SEPARATE SandboxTemplate
+(`<templateName>-microvm`) so both substrates can coexist on one cluster; a consumer
+selects the substrate by which template its SandboxClaim references.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: microvm-bridge
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+---
+{{- /*
+  Bridge API-server egress.
+
+  The bridge pod carries agent-sandbox.io/role=coder (so Flow B's claim contract +
+  the shared coder-sandbox-egress policy apply to it). But that policy denies RFC-1918
+  + the service CIDR on :443 to isolate UNTRUSTED coder code from the control plane —
+  and the K8s API server lives exactly there (kubernetes svc 172.20.0.1 + apiserver
+  endpoints in the VPC 10.0.0.0/8). NetworkPolicies are additive, so this ADDS an
+  egress allow for the API server, selected ONLY on the bridge's distinct
+  agent-sandbox.io/substrate=lambda-microvm label (Kata coders don't have it, so their
+  isolation is untouched). The bridge runs TRUSTED platform code (reads the MicrovmSandbox
+  image handoff + annotates the owning Sandbox with the microvmID) — unlike the Kata coder
+  it MUST reach the API server, or `kubectl get microvmsandbox` hangs and it never
+  RunMicrovm's (verified: in-pod kubectl to 172.20.0.1:443 timed out under coder-egress).
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: microvm-bridge-apiserver-egress
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      agent-sandbox.io/substrate: lambda-microvm
+  policyTypes:
+    - Egress
+  egress:
+    # K8s API server — service ClusterIP + the in-VPC apiserver endpoints, :443 only.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.microvm.apiServerCidr | default "172.20.0.1/32" | quote }}
+        {{- range .Values.microvm.apiServerEndpointCidrs | default (list "10.0.0.0/16") }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    # EKS Pod Identity credential endpoint (link-local 169.254.170.23:80). The bridge
+    # gets its AWS creds — to call lambda-microvms run/suspend/resume/terminate — from
+    # the Pod Identity agent here. The shared coder-egress policy denies 169.254.0.0/16
+    # (to block IMDS for untrusted coder code), which ALSO blocks Pod Identity, so the
+    # bridge's run-microvm failed "retrieving credentials from container-role: connect
+    # timeout http://169.254.170.23/v1/credentials". Allow ONLY the Pod Identity /32 (NOT
+    # IMDS 169.254.169.254, which stays denied) and ONLY for the bridge selector.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.microvm.podIdentityEndpoint | default "169.254.170.23/32" | quote }}
+      ports:
+        - protocol: TCP
+          port: 80
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: microvm-bridge
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+rules:
+  # READS the platform MicrovmSandbox (image handoff: imageARN + executionRoleARN) —
+  # GitOps-owned platform infra (template 50), built once.
+  - apiGroups: [{{ .Values.microvm.apiGroup | default "kro.run" | quote }}]
+    resources: ["microvmsandboxes"]
+    verbs: ["get", "list", "watch"]
+  # Per-session Microvm CR: the bridge CREATES it (declarative path — the only way the
+  # controller fires the /run hook that delivers runHookPayload) and DELETES it on
+  # teardown (controller terminates the VM).
+  - apiGroups: ["lambdamicrovms.services.k8s.aws"]
+    resources: ["microvms"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Per-session payload Secret (runHookPayload SecretKeyReference).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  # Read the owning Sandbox (suspend-vs-teardown in preStop) + patch it to record the
+  # per-session microvmID (annotation) so the microvm-lifecycle controller can
+  # suspend/resume THIS session's VM.
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: microvm-bridge
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: microvm-bridge
+subjects:
+  - kind: ServiceAccount
+    name: microvm-bridge
+    namespace: {{ include "agent-sandbox.namespace" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: microvm-bridge-script
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+data:
+  bridge.sh: |
+    #!/bin/sh
+    # Flow D bridge — claim -> RunMicrovm (SDK) against the pre-built platform image ->
+    # mirror lifecycle. Idles until a SandboxClaim injects DF_ISSUE_NUMBER (Flow B),
+    # exactly like the Kata coder. Needs AWS creds (Pod Identity) for the SDK calls.
+    set -eu
+    # The bridge image is public.ecr.aws/aws-cli/aws-cli:latest — a glibc, always-current
+    # aws-cli v2 that KNOWS the pre-GA `lambda-microvms` service (the alpine/k8s image's
+    # aws-cli 1.34 does NOT: `aws lambda-microvms` printed the service list = unrecognized,
+    # so RunMicrovm never fired). That image has no kubectl, so fetch a static one here
+    # (same pattern as the security-agent bootstrap). Both are then on PATH.
+    if ! command -v kubectl >/dev/null 2>&1; then
+      echo "[microvm-bridge] fetching kubectl..."
+      ARCH="$(uname -m)"; case "$ARCH" in aarch64|arm64) A=arm64;; *) A=amd64;; esac
+      KV="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+      curl -fsSL "https://dl.k8s.io/release/${KV}/bin/linux/${A}/kubectl" -o /tmp/kubectl
+      chmod +x /tmp/kubectl; export PATH="/tmp:$PATH"
+    fi
+    REGION="{{ .Values.microvm.region }}"
+    PLATFORM_IMAGE="{{ .Values.microvm.image.name | default "coder" }}"   # the ONE committed MicrovmSandbox (template 50)
+    NS="{{ include "agent-sandbox.namespace" . }}"
+    echo "[microvm-bridge] idle — waiting for a SandboxClaim to inject DF_ISSUE_NUMBER..."
+    while [ -z "${DF_ISSUE_NUMBER:-}" ]; do sleep 5; done
+    # SANDBOX_NAME (downward API = owning Sandbox CR name) lets the microvm-lifecycle
+    # controller correlate THIS session's MicroVM for suspend/resume.
+    SANDBOX_NAME="${SANDBOX_NAME:-df-${DF_ISSUE_NUMBER}}"
+    echo "[microvm-bridge] claim for issue #${DF_ISSUE_NUMBER} (sandbox=${SANDBOX_NAME})"
+
+    # 1) READ the platform image handoff (built ONCE by KRO/ACK — template 50). Wait
+    #    until its image build is terminal (CREATED/UPDATED) before launching.
+    echo "[microvm-bridge] reading platform image ${PLATFORM_IMAGE} (waiting for build ready)..."
+    i=0; IMAGE_ARN=""; EXEC_ROLE=""
+    while [ "$i" -lt 240 ]; do
+      IST=$(kubectl get microvmsandbox "${PLATFORM_IMAGE}" -n "${NS}" -o jsonpath='{.status.imageState}' 2>/dev/null || echo "")
+      if [ "${IST}" = "CREATED" ] || [ "${IST}" = "UPDATED" ]; then
+        IMAGE_ARN=$(kubectl get microvmsandbox "${PLATFORM_IMAGE}" -n "${NS}" -o jsonpath='{.status.imageARN}' 2>/dev/null || echo "")
+        EXEC_ROLE=$(kubectl get microvmsandbox "${PLATFORM_IMAGE}" -n "${NS}" -o jsonpath='{.status.executionRoleARN}' 2>/dev/null || echo "")
+        [ -n "${IMAGE_ARN}" ] && [ -n "${EXEC_ROLE}" ] && break
+      fi
+      i=$((i+1)); sleep 5
+    done
+    if [ -z "${IMAGE_ARN}" ] || [ -z "${EXEC_ROLE}" ]; then
+      echo "[microvm-bridge] ERROR: platform image not ready (imageState=${IST:-<none>}) — cannot RunMicrovm"; exit 1
+    fi
+    echo "[microvm-bridge] image=${IMAGE_ARN} execRole=${EXEC_ROLE}"
+
+    # 2) Build the runHookPayload — the per-session context the coder needs, delivered
+    #    as the /run hook body (hook-server.js background-spawns the coder from it).
+    #    CRITICAL: runHookPayload is a SecretKeyReference delivered by the DECLARATIVE
+    #    Microvm CR (the controller reads the Secret + drives the /run hook). The
+    #    imperative `run-microvm --run-hook-payload` CLI launches the VM but NEVER fires
+    #    /run (verified: VM RUNNING, hook-server listening, but coder never started). So
+    #    we write a Secret + create a Microvm CR. GitHub token from the mounted secret;
+    #    NO Bifrost key — the coder is Bedrock-direct via the exec role.
+    GH_TOKEN="$(cat /etc/df/gh-token 2>/dev/null || echo "")"
+    [ -z "${GH_TOKEN}" ] && echo "[microvm-bridge] WARN: no gh-token mounted — coder cannot open a PR"
+    # python3 (node is absent in the aws-cli image); json.dumps escapes token/title. One
+    # line so it stays inside the bridge.sh: | YAML block scalar.
+    # FIX ROUND: df-run injects DF_ITERATE_NOTE_B64 (the human change request) into this
+    # `coder` container's env (same claim contract as Kata). The MicroVM coder has no
+    # claim env, so fold the note into the runHookPayload — hook-server maps it back to
+    # the coder's DF_ITERATE_NOTE_B64. Without this a Lambda fix round runs with NO
+    # instructions and reports "done" on the OLD sha (zero commits).
+    [ -n "${DF_ITERATE_NOTE_B64:-}" ] && echo "[microvm-bridge] fix round: forwarding iterate note to coder"
+    PAYLOAD=$(GH="${GH_TOKEN}" REGION="${REGION}" python3 -c 'import json,os; e=os.environ.get; print(json.dumps({"ghToken":e("GH",""),"region":e("REGION","us-west-2"),"issueNumber":e("DF_ISSUE_NUMBER",""),"repo":e("DF_REPO",""),"branch":e("DF_BRANCH",""),"baseBranch":e("DF_BASE_BRANCH","main"),"issueTitle":e("DF_ISSUE_TITLE",""),"iterateNoteB64":e("DF_ITERATE_NOTE_B64",""),"iterateNote":e("DF_ITERATE_NOTE","")}))')
+
+    MVM="mvm-${DF_ISSUE_NUMBER}"          # Microvm CR + payload Secret name for this session
+    # RESUME-ON-FIX-ROUND (the suspend/resume highlight): the CR name is stable
+    # (mvm-<issue>). On a fix round the previous round's VM is still around — SUSPENDED
+    # after the first PR (idlePolicy.autoResumeEnabled=false keeps it down). Rather than
+    # terminate + rebuild a fresh VM, we RESUME the suspended one via the Sandbox CRD:
+    # flip operatingMode=Running → the microvm-lifecycle controller calls resume-microvm →
+    # the SAME VM (memory+disk preserved) comes back, and hook-server accepts a NEW /run
+    # because its guard is keyed on a per-invocation run-id (issue+note hash), not a
+    # one-shot boolean (see coder-microvm/hook-server.js). This is the whole Flow D value
+    # prop: scale-to-zero between rounds, warm-resume for the fix. Fresh VMs are only made
+    # on the FIRST round (no existing CR).
+    RESUME_ROUND=""
+    if kubectl get microvm "${MVM}" -n "${NS}" >/dev/null 2>&1; then
+      echo "[microvm-bridge] fix round: resuming suspended VM ${MVM} via Sandbox.operatingMode=Running"
+      kubectl patch sandbox "${SANDBOX_NAME}" -n "${NS}" --type merge \
+        -p '{"spec":{"operatingMode":"Running"}}' >/dev/null 2>&1 \
+        && echo "[microvm-bridge] operatingMode=Running set — microvm-lifecycle will resume the VM" \
+        || echo "[microvm-bridge] WARN: could not set operatingMode=Running"
+      # Refresh the payload Secret so the controller/hook sees the NEW iterate note.
+      RESUME_ROUND=1
+    fi
+    # Build BOTH manifests as JSON with python3 and pipe to kubectl apply. JSON (not a
+    # heredoc) on purpose: a heredoc's column-0 EOF terminator breaks out of the
+    # bridge.sh: | YAML block scalar. JSON is valid YAML and stays on indented lines.
+    MAXIDLE={{ .Values.microvm.defaults.maxIdleDurationSeconds }}; SUSPDUR={{ .Values.microvm.defaults.suspendedDurationSeconds }}
+    INGRESS="arn:aws:lambda:${REGION}:aws:network-connector:aws-network-connector:ALL_INGRESS"
+    LOGGRP="/aws/lambda/microvms/{{ .Values.microvm.image.name | default "coder" }}-image"
+    echo "[microvm-bridge] writing payload Secret + Microvm CR ${MVM} for issue #${DF_ISSUE_NUMBER}..."
+    MVM="${MVM}" NS="${NS}" PAYLOAD="${PAYLOAD}" python3 -c 'import json,os; e=os.environ; mvm=e["MVM"]; ns=e["NS"]; print(json.dumps({"apiVersion":"v1","kind":"Secret","metadata":{"name":mvm+"-payload","namespace":ns},"type":"Opaque","stringData":{"payload":e["PAYLOAD"]}}))' | kubectl apply -f - >/dev/null 2>&1 || { echo "[microvm-bridge] payload secret apply failed"; exit 1; }
+    # Microvm CR: ingress ALL_INGRESS (so the bridge can reach the endpoint to drive /run),
+    # egress INTERNET_EGRESS (Bedrock + git/gh), runtime logging → CloudWatch (logStream
+    # 'runtime' so the coder's stdout is visible, separate from build logs).
+    MVM="${MVM}" NS="${NS}" IMG="${IMAGE_ARN}" EXECROLE="${EXEC_ROLE}" MAXIDLE="${MAXIDLE}" SUSPDUR="${SUSPDUR}" INGRESS="${INGRESS}" REGION="${REGION}" LOGGRP="${LOGGRP}" python3 -c 'import json,os; e=os.environ; mvm=e["MVM"]; ns=e["NS"]; r=e["REGION"]; print(json.dumps({"apiVersion":"lambdamicrovms.services.k8s.aws/v1alpha1","kind":"Microvm","metadata":{"name":mvm,"namespace":ns},"spec":{"imageIdentifier":e["IMG"],"executionRoleARN":e["EXECROLE"],"ingressNetworkConnectors":[e["INGRESS"]],"egressNetworkConnectors":["arn:aws:lambda:"+r+":aws:network-connector:aws-network-connector:INTERNET_EGRESS"],"runHookPayload":{"name":mvm+"-payload","key":"payload","namespace":ns},"logging":{"cloudWatch":{"logGroup":e["LOGGRP"],"logStream":"runtime-"+mvm}},"idlePolicy":{"autoResumeEnabled":False,"maxIdleDurationSeconds":int(e["MAXIDLE"]),"suspendedDurationSeconds":int(e["SUSPDUR"])}}}))' | kubectl apply -f - >/dev/null 2>&1 || { echo "[microvm-bridge] Microvm CR apply failed"; exit 1; }
+
+    # 4) Wait for the controller to report the running VM's id, record it on the Sandbox
+    #    (lifecycle controller reads this to suspend/resume THIS session's VM).
+    VMID=""; i=0
+    while [ "$i" -lt 60 ]; do
+      VMID=$(kubectl get microvm "${MVM}" -n "${NS}" -o jsonpath='{.status.microvmID}' 2>/dev/null || echo "")
+      [ -n "${VMID}" ] && break
+      i=$((i+1)); sleep 5
+    done
+    echo "[microvm-bridge] Microvm ${MVM} -> ${VMID:-<pending>}"
+    [ -n "${VMID}" ] && kubectl annotate sandbox "${SANDBOX_NAME}" -n "${NS}" \
+      "microvm-lifecycle.agents.x-k8s.io/microvm-id=${VMID}" --overwrite >/dev/null 2>&1 || true
+
+    # 4b) DRIVE the coder: wait for RUNNING + an endpoint, mint an auth token, and POST the
+    #     payload to /run on the endpoint. This is the deterministic invocation (verified by
+    #     probe): the service's internal /run auto-fire wasn't reliably starting the coder, so
+    #     the bridge drives it explicitly like the reference run_session. hook-server's /run
+    #     background-spawns the coder (returns fast); df-run's await-coder polls GitHub for the PR.
+    if [ -n "${VMID}" ]; then
+      EP=""; i=0
+      while [ "$i" -lt 60 ]; do
+        S=$(aws lambda-microvms get-microvm --region "${REGION}" --microvm-identifier "${VMID}" --query 'state' --output text 2>/dev/null || echo "")
+        EP=$(aws lambda-microvms get-microvm --region "${REGION}" --microvm-identifier "${VMID}" --query 'endpoint' --output text 2>/dev/null || echo "")
+        [ "$S" = "RUNNING" ] && [ -n "${EP}" ] && [ "${EP}" != "None" ] && break
+        i=$((i+1)); sleep 5
+      done
+      TOKEN=$(aws lambda-microvms create-microvm-auth-token --region "${REGION}" --microvm-identifier "${VMID}" \
+        --expiration-in-minutes 60 --allowed-ports 'port=8080' 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["authToken"]["X-aws-proxy-auth"])' 2>/dev/null || echo "")
+      if [ -n "${EP}" ] && [ -n "${TOKEN}" ]; then
+        echo "[microvm-bridge] driving coder: POST /run on ${EP}"
+        RC=$(curl -sS -m 30 -o /tmp/run.out -w '%{http_code}' -X POST "https://${EP}/run" \
+          -H "X-aws-proxy-auth: ${TOKEN}" -H 'Content-Type: application/json' -d "${PAYLOAD}" 2>/tmp/run.err || echo "000")
+        echo "[microvm-bridge] /run -> HTTP ${RC} $(cat /tmp/run.out 2>/dev/null | head -c 120)"
+      else
+        echo "[microvm-bridge] WARN: no endpoint/token — cannot drive /run (ep=${EP:-none} token=$([ -n "${TOKEN}" ] && echo yes || echo no))"
+      fi
+    fi
+
+    # 5) Teardown vs suspend — decided by whether the OWNING SANDBOX STILL EXISTS.
+    #    The agent-sandbox operator handles operatingMode=Suspended by DELETING THE POD
+    #    (verified in the operator log: "Deleting Pod because .Spec.OperatingMode is
+    #    Suspended") while KEEPING the Sandbox object alive in state SandboxSuspended. So
+    #    the bridge pod is torn down on EVERY suspend — and its cleanup trap must NOT delete
+    #    the Microvm CR then, or the VM is terminated instead of suspended (exactly the bug
+    #    we hit: Sandbox survived Suspended, but the VM was gone).
+    #      - Sandbox STILL EXISTS  => this is a SUSPEND (or transient pod restart) => KEEP CR.
+    #      - Sandbox GONE          => real teardown (df-merge-teardown deleted the claim) =>
+    #                                 delete CR so the controller TerminateMicrovm's the VM.
+    #    (Checking Sandbox existence is more robust than a preStop /tmp marker, which raced
+    #    the SIGTERM and didn't reliably stick.)
+    cleanup() {
+      if kubectl get sandbox "${SANDBOX_NAME}" -n "${NS}" >/dev/null 2>&1; then
+        M=$(kubectl get sandbox "${SANDBOX_NAME}" -n "${NS}" -o jsonpath='{.spec.operatingMode}' 2>/dev/null || echo "")
+        echo "[microvm-bridge] pod stopping but Sandbox ${SANDBOX_NAME} still exists (operatingMode=${M:-?}) — KEEPING Microvm ${MVM} (suspend, not teardown)"
+        return
+      fi
+      echo "[microvm-bridge] Sandbox ${SANDBOX_NAME} gone — real teardown: deleting Microvm ${MVM} (controller terminates the VM)"
+      kubectl delete microvm "${MVM}" -n "${NS}" --ignore-not-found >/dev/null 2>&1 || true
+      kubectl delete secret "${MVM}-payload" -n "${NS}" --ignore-not-found >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT INT TERM
+
+    # 6) Hold the pod so Sandbox lifecycle == Microvm lifecycle. Poll the in-VM coder /logs
+    #    (OBSERVABILITY — runtime CloudWatch routing is unreliable on this runtime) ONLY
+    #    until the coder pushes its PR. Then suspend and STOP touching the endpoint.
+    #
+    #    SUSPEND-VIA-CRD (the Flow D highlight): suspend/resume is driven declaratively
+    #    through Sandbox.spec.operatingMode, reconciled by the microvm-lifecycle controller
+    #    (template 30) — NOT by an imperative suspend-microvm call here. Two reasons this
+    #    matters and why the old imperative path FAILED to keep the VM suspended:
+    #      (a) The CR is created with idlePolicy.autoResumeEnabled=FALSE, so a suspended VM
+    #          stays suspended. With autoResume=true (the old value) ANY hit to the VM
+    #          endpoint auto-resumes it — and this loop used to curl /logs every 20s
+    #          FOREVER, so the VM bounced back to RUNNING seconds after every suspend
+    #          (observed in the Lambda console: never actually suspended).
+    #      (b) Routing suspend through operatingMode is the whole point — it shows the
+    #          Agent Sandbox CRD driving MicroVM scale-to-zero via the shim controller.
+    #    So: once the coder pushes, set operatingMode=Suspended (controller suspends the
+    #    VM), then switch to a lightweight CR-existence watch that NEVER touches the
+    #    endpoint again. The VM's memory+disk persist; a fix round flips operatingMode
+    #    back to Running (controller resumes) and the pipeline claims a fresh session.
+    echo "[microvm-bridge] Microvm ${MVM} running — pod now mirrors its lifecycle."
+    while true; do
+      # CR gone/terminating => real teardown => exit (cleanup trap handles CR delete).
+      ST=$(kubectl get microvm "${MVM}" -n "${NS}" -o jsonpath='{.status.state}' 2>/dev/null || echo "GONE")
+      case "${ST}" in
+        TERMINATED|TERMINATING|GONE|"") echo "[microvm-bridge] Microvm state=${ST:-gone} — exiting."; break ;;
+      esac
+      if [ -n "${EP:-}" ] && [ -n "${TOKEN:-}" ]; then
+        # Poll /logs for observability + to detect "coder pushed PR".
+        LOG=$(curl -sS -m 10 "https://${EP}/logs" -H "X-aws-proxy-auth: ${TOKEN}" 2>/dev/null \
+          | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("log","")[-800:])' 2>/dev/null || echo "")
+        [ -n "${LOG}" ] && echo "[microvm-bridge] coder-log-tail: $(echo "$LOG" | tail -1)"
+        if echo "${LOG}" | grep -qiE 'PR opened|done — PR|status success'; then
+          # Coder is done → request SUSPEND declaratively. The operator then DELETES this
+          # pod (operatingMode=Suspended), and the microvm-lifecycle controller reconciles
+          # the same intent into suspend-microvm. We EXIT right after setting it: the pod is
+          # about to be killed anyway, and exiting cleanly lets the cleanup trap run while
+          # the Sandbox still exists → it KEEPS the CR (VM suspends, not terminates). We do
+          # NOT keep polling /logs — every endpoint hit would auto-resume the VM.
+          echo "[microvm-bridge] coder pushed PR — requesting SUSPEND via Sandbox.operatingMode (controller reconciles suspend-microvm ${VMID})"
+          kubectl patch sandbox "${SANDBOX_NAME}" -n "${NS}" --type merge \
+            -p '{"spec":{"operatingMode":"Suspended"}}' >/dev/null 2>&1 \
+            && echo "[microvm-bridge] operatingMode=Suspended set — exiting bridge (pod will be removed; CR + VM persist)" \
+            || echo "[microvm-bridge] WARN: could not set operatingMode=Suspended"
+          break
+        fi
+      fi
+      sleep 20
+    done
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ .Values.warmPool.templateName }}-microvm
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+    agent-sandbox.io/substrate: lambda-microvm
+spec:
+  # Same env-injection contract as the Kata template so Flow B is unchanged.
+  envVarsInjectionPolicy: {{ .Values.coderTemplate.envVarsInjectionPolicy | default "Allowed" }}
+  podTemplate:
+    metadata:
+      labels:
+        {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
+        agent-sandbox.io/role: coder
+        agent-sandbox.io/substrate: lambda-microvm
+    spec:
+      # NO kata runtimeClass / nodeSelector / toleration — the bridge is a normal
+      # pod on an Auto-Mode node. The isolation boundary is the remote MicroVM.
+      serviceAccountName: microvm-bridge
+      # The bridge needs a k8s token (read platform image, patch Sandbox) AND AWS creds
+      # (Pod Identity association on this SA) to call the Lambda MicroVM SDK
+      # (RunMicrovm/GetMicrovm/TerminateMicrovm). The Kata coder is credential-less; the
+      # bridge is not, because RUN is imperative.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Named `coder` (NOT `bridge`) on purpose: Flow B's SandboxClaim injects env
+        # (DF_ISSUE_NUMBER, DF_REPO, …) into a container called `coder` — the SAME claim
+        # contract as the Kata substrate. The operator REJECTS the claim
+        # ("target container coder not found") if this name differs, so the substrate
+        # must expose a `coder` container to stay transparent to df-run. This container
+        # is still the bridge (runs bridge.sh → RunMicrovm); only the name matches Kata.
+        - name: coder
+          image: {{ .Values.microvm.bridgeImage }}
+          command: ["/bin/sh", "/scripts/bridge.sh"]
+          # SANDBOX_NAME = this pod's own name via the downward API. agent-sandbox names
+          # the Sandbox CR and its pod identically, so this IS the owning Sandbox name.
+          # Without it bridge.sh fell back to df-<issue> (e.g. df-9999) which does NOT
+          # match the real Sandbox (named after the claim, e.g. df-issue-smoke-d), so the
+          # microvm-id annotation write silently failed → the lifecycle controller couldn't
+          # find the VM to suspend and the pod teardown TERMINATED it instead of suspending.
+          env:
+            - name: SANDBOX_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # NOTE: no preStop suspend marker needed anymore — cleanup() decides suspend-vs-
+          # teardown by whether the owning Sandbox still EXISTS (it survives Suspended,
+          # is gone on real teardown), which is race-free unlike a preStop /tmp marker.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # The bridge runs python3 (JSON), curl, a fetched kubectl, and an aws-cli v2
+            # (glibc) in a poll loop — 128Mi OOMKilled it mid fix-round (bridge died before
+            # the coder's new commit landed → await-coder spun forever). Give it real headroom.
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - name: bridge-script
+              mountPath: /scripts
+            - name: tmp
+              mountPath: /tmp
+            # GitHub token (read-only) the bridge folds into the runHookPayload so the
+            # coder in the MicroVM can push + open the PR. Same secret the Kata coder uses.
+            - name: gh-token
+              mountPath: /etc/df
+              readOnly: true
+      volumes:
+        - name: bridge-script
+          configMap:
+            name: microvm-bridge-script
+            defaultMode: 0555
+        - name: tmp
+          emptyDir: {}
+        - name: gh-token
+          secret:
+            secretName: {{ .Values.microvm.githubSecretName | default "dark-factory-github" }}
+            defaultMode: 0400
+            optional: true
+---
+{{- /*
+Lambda-MicroVM SandboxWarmPool. SandboxClaim.spec.warmPoolRef is REQUIRED (a claim
+can't bind a bare template), so Flow D needs its own pool the df-run claim step
+targets when the darkfactory-lambda label fires. Kept small (bridge pods are tiny);
+each idle member is a bridge waiting to RunMicrovm (from the pre-built platform image)
+on claim.
+*/ -}}
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: {{ .Values.microvm.warmPool.name | default "coder-warmpool-microvm" }}
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+    agent-sandbox.io/substrate: lambda-microvm
+spec:
+  replicas: {{ .Values.microvm.warmPool.targetIdle | default 1 }}
+  sandboxTemplateRef:
+    name: {{ .Values.warmPool.templateName }}-microvm
+{{- end }}

@@ -93,7 +93,9 @@ aws eks create-pod-identity-association \
 
 ### Deploy
 
-The `application-sets` chart generates one ApplicationSet per addon. Deploy it as an ArgoCD Application:
+The `appset-chart` generator (sourced from the platform repo, appmod-blueprints — **not** vendored here) generates one ApplicationSet per addon from this repo's `gitops/addons/registry/` files. Deploy it as a multi-source ArgoCD Application.
+
+> **The canonical, maintained copy is [`gitops/bootstrap/agent-platform-app.yaml`](bootstrap/agent-platform-app.yaml)** — a template whose repo coordinates are injected with `envsubst` by `task agentic:bootstrap` (or `scripts/bootstrap.sh`). Prefer that file over the illustrative YAML below: **add new `registry/*.yaml` entries there**, since a hand-maintained duplicate drifts (this block was missing `registry/sandbox.yaml` until it was spotted, which silently omitted every agent-sandbox addon).
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -107,23 +109,25 @@ spec:
     - ref: values
       repoURL: https://github.com/aws-samples/sample-open-agentic-platform.git
       targetRevision: main
-    - repoURL: https://github.com/aws-samples/sample-open-agentic-platform.git
-      path: gitops/addons/charts/application-sets
-      targetRevision: main
+    # Source B — the generator chart, pulled from the PLATFORM repo (reference model).
+    - repoURL: https://github.com/aws-samples/appmod-blueprints.git
+      path: platform-charts/appset-chart
+      targetRevision: feature/agent-platform
       helm:
         releaseName: agent-platform-addons
         ignoreMissingValueFiles: true
+        # Registry files (from THIS repo via $values) supply _defaults + addon entries.
         valueFiles:
-          - $values/gitops/addons/bootstrap/default/addons.yaml
-          - $values/gitops/addons/environments/control-plane/addons.yaml
+          - $values/gitops/addons/registry/_defaults.yaml
+          - $values/gitops/addons/registry/gateway.yaml
+          - $values/gitops/addons/registry/observability.yaml
+          - $values/gitops/addons/registry/agentcore.yaml
+          - $values/gitops/addons/registry/sandbox.yaml
         valuesObject:
-          useSelectors: false
+          # Umbrella gate only; per-addon enable_<addon> selectors (useSelectors:true
+          # from _defaults) govern placement. Do NOT re-set repoURLGitBasePath here.
           globalSelectors:
             enable_agent_platform: "true"
-          litellm:
-            valuesObject:
-              global:
-                awsRegion: "<REGION>"
   destination:
     namespace: argocd
     name: "<REGISTERED_CLUSTER_NAME>"
@@ -212,7 +216,7 @@ curl -N http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/sse
 | LiteLLM "Unable to locate credentials" | Missing Pod Identity | Create Pod Identity association, restart LiteLLM |
 | LiteLLM "model version has reached end of life" | Outdated model IDs | Update to `us.anthropic.*` inference profiles in litellm chart |
 | ApplicationSet "map has no entry" | Cluster secret missing annotations | Use `useSelectors: false` with `globalSelectors` |
-| langfuse ApplicationSet "map has no entry for key \"hub_cluster_name\"" (blocks all agentic addons — parent `agent-platform-addons` app retries forever and never applies later sync-wave ApplicationSets) | langfuse `secretManagerKey` referenced a non-existent `hub_cluster_name` annotation | Template must use `aws_cluster_name` (the per-cluster annotation set by the fleet-secret chart), not `hub_cluster_name`. Fixed in `gitops/addons/bootstrap/default/addons.yaml`. The `<cluster>/keycloak-clients` Secrets Manager secret must also exist. |
+| langfuse ApplicationSet "map has no entry for key \"hub_cluster_name\"" (blocks all agentic addons — parent `agent-platform-addons` app retries forever and never applies later sync-wave ApplicationSets) | langfuse `secretManagerKey` referenced a non-existent `hub_cluster_name` annotation | Template must use `aws_cluster_name` (the per-cluster annotation set by the fleet-secret chart), not `hub_cluster_name`. Fixed in the langfuse entry of `gitops/addons/registry/observability.yaml`. The `<cluster>/keycloak-clients` Secrets Manager secret must also exist. |
 | Gateway API CRDs Job fails | No outbound internet or image pull issue | Verify NAT gateway, check `bitnami/kubectl:latest` availability |
 | AgentGateway proxy not starting | Missing Gateway API CRDs or JWKS fetch failure | Verify CRDs installed, check KeyCloak reachability |
 | JWT validation fails | Wrong issuer URL | Ensure issuer matches `iss` claim (`https://<domain>/keycloak/realms/platform`) |

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: dark-factory
+description: >-
+  Dark Factory (Flow B) — Argo Workflows that turn a GitHub issue into a PR:
+  claim a warm Kata sandbox, drive the coder, open a PR with a live sticky
+  status, tear down on merge. Consumes the Flow A agent-sandbox warm pool.
+  Runs on the hub (control-plane) only.
+type: application
+version: 0.18.0
+appVersion: "0.18.0"

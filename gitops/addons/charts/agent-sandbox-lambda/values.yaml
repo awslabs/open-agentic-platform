@@ -1,0 +1,159 @@
+# agent-sandbox-lambda — Flow D (Lambda MicroVM substrate) values.
+#
+# Opt-in second substrate for the Agent Sandbox capability. Disabled by default;
+# set microvm.enabled=true (per-cluster overlay) to render it. Runs in the SAME
+# namespace as the Kata agent-sandbox chart and reuses the same operator + CRDs —
+# it only ADDS the Lambda-MicroVM image build (KRO) + the bridge/lifecycle shim.
+
+# Namespace the capability runs in (must match the agent-sandbox chart).
+namespace: agent-sandbox-system
+
+# Warm-pool template name stem (the bridge SandboxTemplate is <templateName>-microvm,
+# matching the Kata chart's convention so df-run's claim step resolves it).
+warmPool:
+  templateName: coder-sandbox
+
+# SandboxTemplate env-injection policy (same contract as the Kata template so Flow B
+# is unchanged).
+coderTemplate:
+  envVarsInjectionPolicy: Allowed
+
+# ── Lambda MicroVM (Flow D) ──────────────────────────────────────────────────
+microvm:
+  # Master gate — Flow D stays dormant until a cluster opts in.
+  enabled: false
+  region: us-west-2
+  # API group the generated MicrovmSandbox CRD is served under (KRO schema.group).
+  # MUST be "kro.run": EKS Managed KRO's controller only watches the kro.run group —
+  # an RGD whose schema.group is anything else (even a *.kro.run subdomain) never leaves
+  # state=Inactive ("cache sync timeout ... Resource=microvmsandboxes"), because the
+  # capability's controller identity (hub-KROCapabilityRole via AmazonEKSKROPolicy) has
+  # no list/watch on other groups. The generated CRD is microvmsandboxes.kro.run; the
+  # kind (MicrovmSandbox) is unchanged. Verified by group-probe on the hub 2026-08-03.
+  apiGroup: kro.run
+  # Bridge/lifecycle pod image: needs the AWS CLI that KNOWS the pre-GA lambda-microvms
+  # service (RunMicrovm/suspend/resume/terminate) AND kubectl. alpine/k8s bundles kubectl
+  # but its aws-cli 1.34 does NOT have lambda-microvms (verified: prints the service list
+  # = unrecognized). So use the glibc, always-current aws-cli v2 (has lambda-microvms) and
+  # fetch kubectl at start (bridge.sh / lifecycle loop do this, same as the security-agent).
+  bridgeImage: public.ecr.aws/aws-cli/aws-cli:latest
+
+  # K8s API-server egress for the bridge (microvm-bridge-apiserver-egress NetworkPolicy).
+  # The bridge needs :443 to the API server to read the MicrovmSandbox handoff + annotate
+  # the Sandbox, but the shared coder-egress policy denies the service+VPC CIDRs. These
+  # scope the additive allow to the API server only. apiServerCidr = the `kubernetes`
+  # service ClusterIP /32; apiServerEndpointCidrs = the VPC range holding the apiserver
+  # endpoint IPs. Override per cluster (kubectl get svc kubernetes; get endpoints kubernetes).
+  apiServerCidr: "172.20.0.1/32"
+  apiServerEndpointCidrs:
+    - "10.0.0.0/16"
+
+  # AWS account id. TWO consumers, both of which break cross-account without it:
+  #   1. the controller role ARN for the ACK PodIdentityAssociation (takes an ARN,
+  #      not a role-ref) — templates/shim/10-rbac.yaml;
+  #   2. the GLOBALLY-UNIQUE suffix on the MicroVM artifact S3 bucket
+  #      (<image.name>-microvm-artifacts-<accountId>) — templates/image/10-rgd-and-image.yaml.
+  # Leave EMPTY here: it is injected from the deploying cluster's aws_account_id
+  # annotation in gitops/addons/registry/sandbox.yaml, so no per-cluster overlay is
+  # needed. The RGD instance `require`s it when microvm.enabled=true.
+  accountId: ""
+
+  # Controller bootstrap IAM (ALL-ACK: iam.services.k8s.aws Role + eks.services.k8s.aws
+  # PodIdentityAssociation — templates/shim/00-controller-pod-identity.yaml). This is
+  # the ONE IAM the KRO RGD can't self-create (creds-before-create). Managed by the
+  # Managed-ACK iam+eks controllers on the hub. The bridge/lifecycle SAs reuse this
+  # same role (they also call lambda-microvms).
+  podIdentity:
+    clusterName: hub
+    controllerNamespace: ack-system
+    controllerServiceAccount: ack-lambdamicrovms-controller
+
+  # EKS Managed KRO runs its controller as the cluster's KRO capability role. On this
+  # cluster its k8s identity is the EKS access-entry username
+  #   arn:aws:sts::<accountId>:assumed-role/<clusterName>-KROCapabilityRole/KRO
+  # (session name "KRO"). AmazonEKSKROPolicy grants KRO its own kro.run perms but NOT
+  # CRUD on the ACK children the MicrovmSandbox RGD graph creates (s3 buckets, iam
+  # roles, lambdamicrovms images/instances) — so KRO's instance reconcile hits
+  # "forbidden: ... cannot get resource buckets". templates/shim/40-kro-graph-rbac.yaml
+  # grants exactly those child kinds to this identity. Override roleName/sessionName if
+  # your cluster's capability wiring differs (confirm via
+  #   aws eks describe-access-entry --principal-arn .../KROCapabilityRole).
+  kroCapability:
+    enabled: true
+    roleName: ""          # defaults to "<podIdentity.clusterName>-KROCapabilityRole"
+    sessionName: KRO
+
+  # The ONE platform image built by KRO/ACK (10-rgd-microvm-image.yaml). Built ONCE
+  # per cluster; the shim reads its status (imageARN + executionRoleARN) to RunMicrovm
+  # per session. Lambda MicroVM is ARM_64-ONLY. The artifact is a zip containing the
+  # coder app + a Dockerfile — Lambda MicroVM's codeArtifact.uri is S3-ONLY, NOT an ECR
+  # image ref (the Dockerfile inside MAY pull private ECR base layers; the build role
+  # keeps ecr:Get*/BatchGetImage). Publish the arm64 coder artifact before enabling.
+  #   baseImageARN:    arn:aws:lambda:<region>:aws:microvm-image:al2023-1
+  baseImageARN: ""
+
+  # codeArtifactKey is the OBJECT KEY ONLY — deliberately NOT a full s3:// URI. The bucket
+  # half is composed inside the RGD from the bucket resource it actually creates:
+  #   uri: s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+  # ONE source of truth. A full URI value (as this held before) restated the
+  # `<image.name>-microvm-artifacts-<accountId>` bucket name a SECOND time — once in the
+  # Bucket resource, once in the URI — and the two drifted twice already: the un-suffixed
+  # bucket gave 409 BucketAlreadyExists + "Access denied when fetching artifact from S3"
+  # (CREATE_FAILED), and any change to image.name would have pointed the build at a bucket
+  # nothing creates. With a bare key, image.name and accountId can change freely and the
+  # URI follows the bucket automatically — nothing to keep in sync, in any overlay or in the
+  # registry (which CANNOT compose it anyway: its Go template only sees cluster
+  # metadata/annotations, never another Helm value).
+  # BUMP THIS KEY TO REBUILD the image — Lambda MicroVM does not rebuild when the same S3
+  # key is overwritten (SUBSTRATE-BENCHMARK.md pitfall 8). Publish the arm64 zip to
+  # s3://<image.name>-microvm-artifacts-<accountId>/<codeArtifactKey> before enabling.
+  #   r8: Dockerfile ARG CODER_IMAGE repointed from the chart AUTHOR's account to
+  #       the deploying account's ECR. The old value was unpullable — cross-account ECR needs
+  #       a repository policy on the far side, which we cannot set — so every build failed at
+  #       base-image pull even once the S3 artifact fetch was fixed. That ARG CANNOT be
+  #       templated (the MicrovmImage CRD's codeArtifact has only `uri`; no build-args field),
+  #       so it is edited in the Dockerfile and baked into the ZIP. Build the arm64 base
+  #       and publish it to YOUR account's ECR first — see docs/dark-factory/FLOW-D-ENABLEMENT.md.
+  #   r7: hook-server /run guard keyed on a per-invocation run-id (issue+note hash) instead
+  #       of a one-shot boolean, so a RESUMED VM (fix round) accepts a fresh /run and re-runs
+  #       the coder — the resume path was a no-op because the snapshot froze coderStarted=true.
+  #       Also truncates /tmp/coder.log per run so the bridge's "PR pushed" grep can't match
+  #       the previous round's line.
+  #   r6: fix-round iterate note forwarded (bridge payload -> hook-server -> coder env).
+  codeArtifactKey: "coder-v0.2.5-arm64-r8.zip"
+  image:
+    # Render the single committed MicrovmSandbox instance that triggers the build.
+    enabled: true
+    # Name of that platform image object; the bridge reads its status by this name.
+    name: coder
+
+  # Idle policy for RunMicrovm (auto-suspend/resume). EXPLICIT suspend/resume across
+  # the review→fix loop is driven by the microvm-lifecycle controller off
+  # Sandbox.operatingMode — see lifecycle below and project_flow_d_lifecycle memory:
+  #   coder codes → SUSPEND → agents review → (fix findings) → RESUME same VM →
+  #   … loop until cleared → merge/exit → TERMINATE.
+  defaults:
+    # maxIdleDurationSeconds: how long a RUNNING VM may sit idle (no inbound) before the
+    # runtime suspends it. Must exceed a coder run (a few min) — the bridge suspends
+    # explicitly anyway, this is just a backstop.
+    maxIdleDurationSeconds: 1800
+    # suspendedDurationSeconds: how long a SUSPENDED VM is kept before the runtime
+    # AUTO-TERMINATES it. THIS IS CRITICAL for the review→fix loop: the VM is suspended
+    # while the external review agents run (~8–15 min) and then waits for a human to post
+    # "fix findings" (minutes to hours). At the old 300s (5 min) the VM was ALWAYS
+    # auto-terminated before the fix round, so RESUME hit "has been terminated and its
+    # state cannot be changed" and the same-VM warm-resume was impossible. Keep it
+    # suspended long enough to span a realistic review+human cycle (24h); teardown
+    # terminates it explicitly at merge, so this only bounds abandoned PRs.
+    suspendedDurationSeconds: 86400
+
+  # microvm-lifecycle controller (30-microvm-lifecycle.yaml) — reconciles
+  # Sandbox.operatingMode Running↔Suspended → suspend/resume-microvm. Loop interval.
+  lifecycle:
+    intervalSeconds: 15
+
+  # Lambda-MicroVM warm pool the df-run claim binds when the darkfactory-lambda label
+  # fires (Flow D). Small — bridge pods are tiny (the real coder runs in the MicroVM).
+  warmPool:
+    name: coder-warmpool-microvm
+    targetIdle: 1

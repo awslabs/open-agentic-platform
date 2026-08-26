@@ -1,0 +1,72 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="OAP — Managed or OSS per capability" id="oapmoss">
+    <mxGraphModel dx="1700" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0" background="#0B0F17">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Open Agentic Platform on AWS" style="text;html=1;align=center;verticalAlign=middle;fontSize=30;fontStyle=1;fontFamily=Helvetica;fontColor=#F5A623;" vertex="1" parent="1">
+          <mxGeometry x="300" y="26" width="1000" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="CNCF-aligned  ·  cloud-agnostic  ·  AgentCore managed OR OSS alternative per capability" style="text;html=1;align=center;verticalAlign=middle;fontSize=15;fontFamily=Helvetica;fontColor=#9AA7B8;" vertex="1" parent="1">
+          <mxGeometry x="300" y="70" width="1000" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- COMPUTE -->
+        <mxCell id="compute" value="COMPUTE PLATFORM — cloud-agnostic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F1B2A;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="70" y="118" width="1460" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="cm1" value="Amazon EKS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="96" y="150" width="320" height="44" as="geometry" /></mxCell>
+        <mxCell id="cm2" value="ROSA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="440" y="150" width="320" height="44" as="geometry" /></mxCell>
+        <mxCell id="cm3" value="SUSE Rancher" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="784" y="150" width="320" height="44" as="geometry" /></mxCell>
+        <mxCell id="cm4" value="Self-Managed K8s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1128" y="150" width="378" height="44" as="geometry" /></mxCell>
+
+        <!-- AGENT ABSTRACTION -->
+        <mxCell id="abs" value="AGENT ABSTRACTION — Kro / KubeVela CRDs  (orchestrate Crossplane · ACK · OpenTofu)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#100B1A;strokeColor=#A06BD6;fontColor=#D9B8F5;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="226" width="1460" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="im" value="Imageless Agents&#10;&#10;CRD-defined  ·  no container image&#10;auto AuthN/AuthZ  ·  declarative K8s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#241436;strokeColor=#A06BD6;fontColor=#E3CBF7;fontSize=13;fontStyle=1;align=left;spacingLeft=14;verticalAlign=top;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="96" y="262" width="690" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="byo" value="BYO-Image Agents&#10;&#10;Strands SDK  ·  Spring AI  ·  Rust&#10;LangGraph  ·  CrewAI  ·  any OCI image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F2A1A;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=13;fontStyle=1;align=left;spacingLeft=14;verticalAlign=top;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="810" y="262" width="696" height="98" as="geometry" />
+        </mxCell>
+
+        <!-- CAPABILITY BACKENDS -->
+        <mxCell id="cap" value="CAPABILITY BACKENDS — AgentCore managed   ·OR·   OSS alternative per capability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#14100A;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="70" y="392" width="1460" height="196" as="geometry" />
+        </mxCell>
+        <mxCell id="k1" value="Memory&#10;&#10;AgentCore&#10;— or —&#10;Milvus · Qdrant · Mem0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;fontStyle=0;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="96" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k2" value="Gateway&#10;&#10;AgentCore&#10;— or —&#10;KGateway · LiteLLM · Envoy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="272" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k3" value="Identity&#10;&#10;AgentCore&#10;— or —&#10;Keycloak · SPIFFE/SPIRE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="448" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k4" value="Observability&#10;&#10;AgentCore&#10;— or —&#10;Langfuse · OTel · Prometheus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="624" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k5" value="Policy&#10;&#10;AgentCore&#10;— or —&#10;NeMo · OPA · Guardrails" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="800" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k6" value="Evaluations&#10;&#10;AgentCore&#10;— or —&#10;Ragas · DeepEval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="976" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k7" value="Code Interp.&#10;&#10;AgentCore&#10;— or —&#10;gVisor · Kata · Firecracker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="1152" y="428" width="168" height="140" as="geometry" /></mxCell>
+        <mxCell id="k8" value="Browser&#10;&#10;AgentCore&#10;— or —&#10;Playwright · Selenium" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2130;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=11;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="1328" y="428" width="178" height="140" as="geometry" /></mxCell>
+
+        <!-- MODELS -->
+        <mxCell id="bedrock" value="Amazon Bedrock" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2A1C10;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=14;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="70" y="604" width="716" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="b1" value="Claude 3.x / 4.x" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A2614;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=12;" vertex="1" parent="1"><mxGeometry x="96" y="640" width="220" height="34" as="geometry" /></mxCell>
+        <mxCell id="b2" value="Llama 3.x" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A2614;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=12;" vertex="1" parent="1"><mxGeometry x="330" y="640" width="150" height="34" as="geometry" /></mxCell>
+        <mxCell id="b3" value="Mistral" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A2614;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=12;" vertex="1" parent="1"><mxGeometry x="494" y="640" width="130" height="34" as="geometry" /></mxCell>
+        <mxCell id="b4" value="Amazon Nova" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A2614;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=12;" vertex="1" parent="1"><mxGeometry x="638" y="640" width="130" height="34" as="geometry" /></mxCell>
+        <mxCell id="b5" value="Titan Embeddings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3A2614;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=12;" vertex="1" parent="1"><mxGeometry x="96" y="682" width="220" height="34" as="geometry" /></mxCell>
+
+        <mxCell id="selfhost" value="Self-Hosted LLM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F2A1A;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=14;fontStyle=1;verticalAlign=top;align=left;spacingLeft=16;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="810" y="604" width="720" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s1" value="vLLM / RHOAI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12331F;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=12;" vertex="1" parent="1"><mxGeometry x="836" y="648" width="200" height="40" as="geometry" /></mxCell>
+        <mxCell id="s2" value="llm-d" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12331F;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=12;" vertex="1" parent="1"><mxGeometry x="1050" y="648" width="150" height="40" as="geometry" /></mxCell>
+        <mxCell id="s3" value="llama.cpp" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12331F;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=12;" vertex="1" parent="1"><mxGeometry x="1214" y="648" width="150" height="40" as="geometry" /></mxCell>
+        <mxCell id="s4" value="AWS Neuron" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12331F;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=12;" vertex="1" parent="1"><mxGeometry x="1378" y="648" width="128" height="40" as="geometry" /></mxCell>
+
+        <!-- flow arrows -->
+        <mxCell id="e1" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="compute" target="abs"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="abs" target="cap"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

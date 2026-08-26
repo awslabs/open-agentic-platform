@@ -1,0 +1,43 @@
+{{- /*
+Holdout content — the hidden scenarios + executable tests + the evaluator, kept
+in a ConfigMap ON THE HUB in the argo namespace. This is the WHOLE POINT of the
+holdout gate (docs/dark-factory §6.1): the coder can neither read nor write it.
+It lives in the argo namespace next to the workflow, is mounted ONLY into the
+hub-side holdout-gate step, and is NEVER projected into the Kata VM sandbox (the
+coder has no k8s API access and only ever clones the target repo).
+
+One ConfigMap per target repo (keyed by owner-name), plus the shared evaluate.js.
+Rendered from files under charts/dark-factory/holdout/.
+*/ -}}
+{{- if .Values.holdout.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: df-holdout-eval
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+data:
+  evaluate.js: |
+{{ .Files.Get "holdout/evaluate.js" | indent 4 }}
+{{- range $repo := .Values.trigger.argoEvents.repositories }}
+{{- range $name := $repo.names }}
+{{- $slug := printf "%s-%s" $repo.owner $name }}
+{{- $dir := printf "holdout/%s" $slug }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: df-holdout-{{ $slug | lower }}
+  namespace: {{ $.Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" $ | nindent 4 }}
+    dark-factory.io/holdout-repo: {{ $slug | lower | quote }}
+data:
+  scenarios.json: |
+{{ $.Files.Get (printf "%s/scenarios.json" $dir) | indent 4 }}
+  rubric.md: |
+{{ $.Files.Get (printf "%s/rubric.md" $dir) | indent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

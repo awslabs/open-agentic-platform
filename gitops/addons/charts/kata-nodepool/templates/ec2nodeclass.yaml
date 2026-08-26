@@ -1,0 +1,55 @@
+{{- /*
+EC2NodeClasses for the Kata pools. group=karpenter.k8s.aws is OUR group — Auto
+Mode's controller (group eks.amazonaws.com) never touches these.
+
+Subnets/SG/role are DISCOVERED from cluster tags (the GitOps requirement), see
+_helpers.tpl. Nested/fc pools add cpuOptions.nestedVirtualization; metal pools
+have native VT-x. fc pools use the devmapper userData (block snapshotter);
+kata pools the plain kvm userData.
+*/ -}}
+{{- $ := . -}}
+{{- $clusterName := required "aws.clusterName is required (injected from the aws_cluster_name cluster-secret annotation)" .Values.aws.clusterName -}}
+{{- $role := include "kata-nodepool.roleName" . -}}
+{{- range $pool := list
+  (dict "enabled" .Values.kataNested.enabled  "name" "kata-nested"   "nested" true  "fc" false)
+  (dict "enabled" .Values.kataMetal.enabled   "name" "kata-metal"    "nested" false "fc" false)
+  (dict "enabled" .Values.kataFc.enabled      "name" "kata-fc"       "nested" true  "fc" true)
+  (dict "enabled" .Values.kataFcMetal.enabled "name" "kata-fc-metal" "nested" false "fc" true)
+}}
+{{- if $pool.enabled }}
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ $pool.name }}
+  annotations:
+    # The karpenter.k8s.aws CRD is owned by the platform `karpenter` app; skip the
+    # dry-run against this Application until that CRD exists (retry converges it).
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Lower wave than the NodePool: a NodePool's nodeClassRef must resolve to an
+    # existing EC2NodeClass, so the NodeClass is applied first within this app.
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/part-of: kata-nodepool
+spec:
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - alias: {{ $.Values.defaults.amiAlias }}
+  {{- if $pool.nested }}
+  # Nested virtualization exposes VT-x so KVM can run micro-VMs on 8i nodes.
+  # (Bare-metal pools omit this — they have native VT-x.)
+  cpuOptions:
+    nestedVirtualization: enabled
+  {{- end }}
+  role: {{ $role }}
+  {{- include "kata-nodepool.subnetSelector" $ | nindent 2 }}
+  {{- include "kata-nodepool.sgSelector" $ | nindent 2 }}
+  {{- include "kata-nodepool.ec2common" $ | nindent 2 }}
+  {{- if $pool.fc }}
+  {{- include "kata-nodepool.userData.fc" $ | nindent 2 }}
+  {{- else }}
+  {{- include "kata-nodepool.userData.kata" $ | nindent 2 }}
+  {{- end }}
+{{- end }}
+{{- end }}

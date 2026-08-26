@@ -1,0 +1,547 @@
+# Agent Sandbox domain — Kata micro-VM sandboxes for the Dark Factory.
+# Three coordinated addons, wave-ordered:
+#   wave 0  agent-sandbox-operator  (upstream controller + CRDs)
+#   wave 1  kata-deploy             (Kata runtime on kata-capable MNG nodes)
+#   wave 2  agent-sandbox           (RuntimeClasses, SandboxTemplate, warm pool, NP)
+# Single-owner rule (these three apps were OutOfSync fighting over duplicates):
+#   Namespace agent-sandbox-system  → agent-sandbox-operator (wave 0, carries PSS labels)
+#   RuntimeClasses kata-clh/-qemu/-fc → agent-sandbox (kata-deploy's own rendering
+#                                       is disabled — it has no toleration support)
+# Enabled on DEV only (gitops/overlays/environments/dev/enabled-addons.yaml).
+# The kata-capable node layer IS GitOps-managed now, via the `kata-nodepool`
+# addon below (self-managed Karpenter EC2NodeClass + NodePool) over the platform
+# `karpenter` controller addon — superseding the out-of-band MNG the old
+# gitops/addons/charts/agent-sandbox/nodepool/README.md describes.
+
+# Upstream agent-sandbox operator (v0.5.1): the controller + CRDs. Must land
+# before the kata runtime (wave 1) and the capability chart's CRs (wave 2).
+#
+# CHART SOURCE: kubernetes-sigs/agent-sandbox `helm/` at tag v0.5.1, copied to
+# gitops/addons/charts/agent-sandbox-operator. It is a COPY rather than a direct
+# upstream reference because (a) upstream publishes no OCI/helm-repo chart — only
+# the in-tree helm/ dir — and (b) this appset binds every git source to the global
+# repoURLGit with NO per-addon override, so a `path:` addon can only ever point
+# into THIS repo. Re-vendor = replace that directory from a newer tag, then bump
+# image.tag below; PRESERVE the two ⚠️ LOCAL DEVIATION blocks it carries
+# (templates/namespace.yaml + the namespace.labels stanza in values.yaml).
+#
+# ⚠️ ONE-TIME MIGRATION off the old hand-merged manifests: the Deployment
+# agent-sandbox-controller keeps its name but its spec.selector changes from
+# `app: agent-sandbox-controller` to the upstream
+# app.kubernetes.io/name + /instance pair. spec.selector is IMMUTABLE and
+# ServerSideApply does not bypass that, so on a cluster where the OLD Deployment
+# already exists this app will report SyncFailed with "field is immutable" until
+# it is deleted once:
+#   kubectl delete deployment agent-sandbox-controller -n agent-sandbox-system
+# ArgoCD then recreates it. Safe: the controller is stateless and leader-elected,
+# so running Sandboxes keep running and only reconciliation pauses (~seconds).
+# Every other object (SA, Role/RoleBinding, ClusterRole/Binding roleRef, both
+# Services, the 4 CRDs) is name- and immutable-field-identical — verified by
+# rendering both charts — so nothing else churns.
+agent-sandbox-operator:
+  namespace: agent-sandbox-system
+  defaultVersion: '0.5.1'
+  path: 'gitops/addons/charts/agent-sandbox-operator'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '0'
+  syncPolicyAppSet:
+    preserveResourcesOnDeletion: false
+  selector:
+    matchExpressions:
+      - key: enable_agent_sandbox
+        operator: In
+        values: ['true']
+  valuesObject:
+    image:
+      # REQUIRED. Upstream ships tag: "" behind a Helm `required` guard, so the
+      # render fails without it. This is also the REAL version pin for this addon:
+      # the chart's own Chart.yaml says version 0.1.0 at every upstream tag, which
+      # makes defaultVersion above effectively decorative for a `path:` addon.
+      tag: v0.5.1
+    controller:
+      # REQUIRED — upstream default is FALSE. The whole warm pool lives in
+      # extensions.agents.x-k8s.io/v1beta1 (SandboxTemplate / SandboxClaim /
+      # SandboxWarmPool). With extensions off, those CRDs still install and our
+      # CRs still apply, but NOTHING reconciles them — it fails silently rather
+      # than erroring, so do not "clean this up".
+      extensions: true
+    namespace:
+      # This app owns agent-sandbox-system. Wave 0 + create:true guarantees the
+      # namespace exists WITH the PSS labels below before the capability chart
+      # (wave 2) places workloads in it — the CreateNamespace=true syncOption from
+      # _defaults would otherwise create it implicitly and UNLABELLED, silently
+      # disabling Pod Security enforcement.
+      create: true
+      # baseline, NOT restricted: the namespace hosts both the coder sandboxes and
+      # this controller, and neither the controller nor the kata tooling is
+      # restricted-compliant. Sandbox isolation comes from the Kata micro-VM +
+      # the SandboxTemplate securityContext, not from namespace PSS.
+      labels:
+        pod-security.kubernetes.io/enforce: baseline
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+
+# kata-deploy — installs the Kata runtime (containerd handlers for kata-clh /
+# kata-qemu) on the tainted kata nodes. Separate app (not a subchart dep of
+# agent-sandbox) so ArgoCD pulls the upstream OCI chart directly. Gated by
+# enable_agent_sandbox_kata — only clusters with a kata-capable nested-virt MNG
+# (see docs/dark-factory §12a) should carry that label. Sync-wave 1: runtime is
+# installed on nodes before the Sandbox operator (wave 2) schedules VMs.
+kata-deploy:
+  namespace: kube-system
+  chartName: kata-deploy
+  defaultVersion: '4.0.0'
+  # OCI chart at oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy.
+  # Do NOT set chartNamespace — the appset would build chart=<ns>/<name>
+  # (kata-containers/kata-deploy) producing a wrong OCI path. The namespace is
+  # already part of chartRepository.
+  chartRepository: 'ghcr.io/kata-containers/kata-deploy-charts'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '1'
+  selector:
+    matchExpressions:
+      - key: enable_agent_sandbox_kata
+        operator: In
+        values: ['true']
+  # NOTE: kata-deploy is installed as a TOP-LEVEL chart (not a subchart of
+  # agent-sandbox — see the comment above), so its values must sit at the top
+  # level of valuesObject. A `kata-deploy:` wrapper here is silently ignored by
+  # the chart (it reads .Values.nodeSelector / .Values.tolerations, NOT
+  # .Values.kata-deploy.*), which previously left the DaemonSet with empty
+  # scheduling and stranded it on the untainted Auto Mode nodes.
+  valuesObject:
+    image:
+      reference: quay.io/kata-containers/kata-deploy
+      tag: '4.0.0'
+    # RuntimeClass objects are owned by the agent-sandbox chart
+    # (10-runtimeclasses.yaml), NOT by this app. Both used to render kata-clh and
+    # kata-qemu, which left the two Applications permanently OutOfSync fighting
+    # over the same two names.
+    #
+    # agent-sandbox wins ownership because THIS chart has no toleration support at
+    # all: it emits scheduling.nodeSelector only, while kata-nodepool taints its
+    # nodes (kata=true:NoSchedule). A pod selecting just `runtimeClassName:
+    # kata-clh` would get the nodeSelector force-merged and then sit Pending on the
+    # taint. It also cannot name the Firecracker class `kata-fc` (see kata-deploy-fc
+    # below). Turning this off does NOT affect the runtime install — the DaemonSet,
+    # containerd handlers and startup-taint removal are untouched (verified: with
+    # runtimeClasses.enabled=false the chart still renders the installer DaemonSet
+    # and 0 RuntimeClasses).
+    #
+    # ⚠️ Keep the two in sync: the `handler` on each agent-sandbox
+    # kata.runtimeClasses entry must match a shim enabled below, and the copied
+    # `overhead` values there must be re-checked when this chart's version is
+    # bumped (upstream keeps a built-in per-shim overhead table).
+    runtimeClasses:
+      enabled: false
+    nodeSelector:
+      kata-enabled: 'true'
+    tolerations:
+      - key: kata
+        operator: Equal
+        value: 'true'
+        effect: NoSchedule
+      - key: katacontainers.io/runtime-not-ready
+        operator: Exists
+        effect: NoSchedule
+    # kata-deploy 4.0.0 (PR kata-containers#13284) removes this startup taint
+    # itself as the FINAL install step (after the runtime is installed + the node
+    # labeled), gating kata pods until the runtime is ready. Replaces the external
+    # kata-readiness DaemonSet (removed from the agent-sandbox chart). Key must
+    # match the NodePool's startupTaint (katacontainers.io/runtime-not-ready).
+    startupTaints:
+      - 'katacontainers.io/runtime-not-ready:NoSchedule'
+    shims:
+      disableAll: true
+      qemu:
+        enabled: true
+      clh:
+        enabled: true
+    # kata-deploy 4.0.0 defaults defaultShim to qemu-runtime-rs (the Rust runtime),
+    # which is NOT in our enabled set (disableAll + only qemu/clh) → the installer
+    # aborts ("DEFAULT_SHIM 'qemu-runtime-rs' must be one of the configured SHIMS")
+    # and never removes the startup taint. Pin it to an enabled shim (clh — matches
+    # the warmpool's runtimeClassName: kata-clh).
+    defaultShim:
+      amd64: clh
+
+# kata-deploy-fc — a SECOND kata-deploy 4.0.0 release for the FIRECRACKER runtime,
+# targeting the kata-fc nodes (kata-nodepool kataFc/kataFcMetal pools). Firecracker
+# can't share the clh/qemu install: it needs its own fc shim (snapshotter=devmapper,
+# which the node userData pre-configures) and its objects would collide with the
+# main kata-deploy release. env.multiInstallSuffix=fc renames the chart's fixed
+# objects (kata-deploy-sa-fc, -role-fc, -rb-fc, DaemonSet kata-deploy-fc) so the two
+# coexist. Gated by enable_agent_sandbox_kata_fc — OFF by default.
+#
+# The `kata-fc` RuntimeClass is owned by the agent-sandbox chart
+# (10-runtimeclasses.yaml, kata.runtimeClasses.fc) — same single-owner rule as
+# kata-clh/kata-qemu. This release keeps runtimeClasses.enabled=false below, and
+# not only to avoid a duplicate: multiInstallSuffix=fc would name the object
+# `kata-fc-fc`, which is not the name the warm pool selects.
+#
+# ⚠️ UNVERIFIED before enabling the fc path: that same suffix also drives the
+# containerd handler this chart installs (`kata-fc-fc`), whereas the agent-sandbox
+# fc entry declares `handler: kata-fc`. If the installer really does register the
+# suffixed handler on the node, that entry's handler must be changed to match, or
+# pods selecting kata-fc will fail at creation with an unknown-runtime error. Check
+# what lands in containerd's config on an fc node before turning any of this on.
+# Sync-wave 1: same as kata-deploy (runtime before the warm pool).
+kata-deploy-fc:
+  namespace: kube-system
+  chartName: kata-deploy
+  defaultVersion: '4.0.0'
+  chartRepository: 'ghcr.io/kata-containers/kata-deploy-charts'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '1'
+  selector:
+    matchExpressions:
+      - key: enable_agent_sandbox_kata_fc
+        operator: In
+        values: ['true']
+  valuesObject:
+    image:
+      reference: quay.io/kata-containers/kata-deploy
+      tag: '4.0.0'
+    # Rename the fixed objects with an -fc suffix so this release coexists with the
+    # main kata-deploy (qemu/clh) release in the same namespace.
+    env:
+      multiInstallSuffix: fc
+    # DISABLED for two reasons: agent-sandbox owns the RuntimeClasses (single-owner
+    # rule), and with multiInstallSuffix=fc this would render `kata-fc-fc` rather
+    # than the `kata-fc` the warm pool selects. See the ⚠️ handler note above.
+    runtimeClasses:
+      enabled: false
+    # Land only on the fc nodes (kata-nodepool sets kata-fc-enabled + the kata-fc
+    # taint + the runtime-not-ready startup taint).
+    nodeSelector:
+      kata-fc-enabled: 'true'
+    tolerations:
+      - key: kata-fc
+        operator: Equal
+        value: 'true'
+        effect: NoSchedule
+      - key: katacontainers.io/runtime-not-ready
+        operator: Exists
+        effect: NoSchedule
+    # Self-removed once the fc runtime is installed (matches the kata-fc NodePool
+    # startupTaint), gating fc pods until the node is ready.
+    startupTaints:
+      - 'katacontainers.io/runtime-not-ready:NoSchedule'
+    # Only the fc shim (snapshotter=devmapper — the node userData builds the
+    # thin-pool + wires the containerd devmapper snapshotter; kata-deploy-fc adds
+    # only the runtimes.kata-fc handler).
+    shims:
+      disableAll: true
+      fc:
+        enabled: true
+    # 4.0.0 defaults defaultShim to qemu-runtime-rs (not enabled here) → the
+    # installer aborts and never removes the startup taint. Pin it to fc.
+    defaultShim:
+      amd64: fc
+
+# kata-nodepool — the self-managed Karpenter EC2NodeClass + NodePool that
+# provision the nested-virt kata nodes (the consuming layer over the platform
+# `karpenter` controller addon). Replaces the out-of-band self-managed MNG the
+# old nodepool/README describes: subnets, cluster SG and node role are DISCOVERED
+# from cluster tags, so no AWS infra is created out-of-band. Gated by
+# enable_kata_nodepool. Requires the `karpenter` controller addon (CRDs + IAM,
+# platform registry) and enable_agent_sandbox_kata (runtime) on the same cluster.
+# Sync-wave 1: the node layer — the NodePool exists before the warm pool (wave 2)
+# creates the pending pods that trigger provisioning. The EC2NodeClass/NodePool
+# CRDs (karpenter.k8s.aws / karpenter.sh) are owned by the platform karpenter app
+# (a separate Application); until it has synced them, this app's dry-run would
+# fail. The two CRs carry a per-resource SkipDryRunOnMissingResource sync-option
+# annotation (the appset-chart replaces syncPolicy wholesale, so a registry-level
+# syncOptions key would be ignored) + the _defaults retry (limit -1) lets it
+# converge once the CRDs land.
+kata-nodepool:
+  namespace: kube-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/kata-nodepool'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '1'
+  selector:
+    matchExpressions:
+      - key: enable_kata_nodepool
+        operator: In
+        values: ['true']
+  valuesObject:
+    aws:
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+
+# Agent Sandbox capability chart — coder SandboxTemplate,
+# SandboxWarmPool, and the egress NetworkPolicy. Sync-wave 2: after the operator
+# (wave 0) + kata runtime (wave 1). The runtime-not-ready startup taint is now
+# removed by kata-deploy 4.0.0 itself (startupTaints), so the old kata-readiness
+# DaemonSet is gone. Consumers (the Dark Factory, Flow B) then claim from the
+# warm pool via a SandboxClaim(warmPoolRef).
+agent-sandbox:
+  namespace: agent-sandbox-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/agent-sandbox'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '2'
+  selector:
+    matchExpressions:
+      - key: enable_agent_sandbox
+        operator: In
+        values: ['true']
+  valuesObject:
+    coderTemplate:
+      # Bifrost gateway the IN-VM coder reaches. Defaults to the PINNED ClusterIP
+      # (bifrost chart staticService.clusterIP), NOT the svc DNS name, because a
+      # Kata sandbox pod cannot resolve cluster DNS: the agent-sandbox operator
+      # materializes it with `dnsPolicy: None` + public resolvers, and this Auto
+      # Mode cluster has no kube-dns Service for the self-managed kata nodes to
+      # use anyway. With the DNS name here a run dies inside the VM with
+      # getaddrinfo failures and never reaches the LLM (observed live: zero
+      # requests arrived at Bifrost).
+      #
+      # This value MUST stay in sync with two others — grep 172.20.0.100:
+      #   bifrost chart      staticService.clusterIP   (defines the address)
+      #   agent-sandbox      networkPolicy.bifrostClusterIp (admits it on :8080)
+      #
+      # The bifrost_url annotation still overrides, for a cluster where the
+      # sandbox has working DNS or Bifrost sits elsewhere.
+      bifrostUrl: '{{default "http://172.20.0.100:8080" (index .metadata.annotations "bifrost_url")}}'
+      # CODER GitHub credential, cluster-scoped in Secrets Manager so THIS
+      # cluster's ESO IRSA can be limited to <cluster>/* — the spoke then cannot
+      # read the hub's orchestrator/events tokens (review C1 boundary).
+      secretsMount:
+        externalSecret:
+          secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/dark-factory/github/coder'
+      # Coder image, built from examples/dark-factory/coder. The ACCOUNT and REGION
+      # come from the cluster's own annotations, so no per-cluster overlay is needed
+      # and no account ID is committed — the chart default points at the upstream
+      # EXAMPLE registry, which is not pullable from a consumer's account.
+      #
+      # ⚠️ Each deployment must build this image+tag into its OWN ECR (see
+      # examples/dark-factory/README.md "Build & deploy"). Templating the registry
+      # does not create the image: if the tag is absent the warm pods report
+      # ImagePullBackOff. Bump the tag here when the coder changes.
+      image: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/dark-factory-coder:v0.2.5'
+
+# Dark Factory — autonomous agent coding controller. Hub-only (consumes the
+# sandbox warm pool via SandboxClaim). Wave 3: after the capability chart
+# (wave 2). Hub-only pin uses selectorMatchLabels (applied unconditionally by
+# the appset-chart) rather than the old alwaysSelector — same effect: generated
+# only on control-plane, never on a spoke.
+dark-factory:
+  namespace: agent-sandbox-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/dark-factory'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '3'
+  selectorMatchLabels:
+    environment: control-plane
+  # OPT-IN. ONE label gates the whole Dark Factory / Flow D stack: this chart, the
+  # Lambda MicroVM substrate (agent-sandbox-lambda), and the pre-GA lambdamicrovms
+  # ACK controller. Without it these three rendered on EVERY control-plane cluster —
+  # `environment: control-plane` alone is a placement selector, not a capability gate,
+  # so a fresh install got Flow D whether or not it asked for it. That is not merely
+  # idle: trigger.argoEvents.repositories defaults to replace-me-owner/replace-me-repo,
+  # so the EventSource polls a repo that cannot exist and the sensor emits continuous
+  # failures with nothing connected. Mirrors the enable_* gate every other registry
+  # entry already carries (see agentcore.yaml's enable_agent_core).
+  #
+  # Deliberately ONE label rather than a separate enable_agent_sandbox_lambda: opting
+  # in to Flow D therefore also installs the Lambda MicroVM substrate + controller.
+  # The substrate itself stays dormant behind the chart's own microvm.enabled=false,
+  # but the ACK controller does install — accepted trade for a single knob.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
+  valuesObject:
+    # Bifrost gateway URL, shared by the in-VM coder AND the hub-side
+    # holdout/review steps. Defaults to the PINNED ClusterIP (bifrost chart
+    # staticService.clusterIP) rather than svc DNS.
+    #
+    # THIS IS THE VALUE THE CODER ACTUALLY USES. df-run's claim step injects
+    # BIFROST_URL into the sandbox container (20-workflowtemplate-df-run.yaml
+    # ~line 203), which OVERRIDES the SandboxTemplate's own bifrostUrl — so
+    # fixing agent-sandbox alone is not enough, and a run fails inside the VM
+    # with `API Error: 502 getaddrinfo ENOTFOUND bifrost.bifrost.svc.cluster.local`
+    # (observed live) even when the warm pods carry the right URL.
+    #
+    # A ClusterIP is required because the Kata sandbox cannot resolve cluster DNS
+    # (operator-injected `dnsPolicy: None`; and this Auto Mode cluster has no
+    # kube-dns Service for the self-managed kata nodes). The hub-side steps run on
+    # Auto Mode nodes with working DNS, but a ClusterIP works for them too, so one
+    # value serves both rather than splitting into two knobs.
+    #
+    # Keep in sync — grep 172.20.0.100:
+    #   bifrost        staticService.clusterIP          defines the address
+    #   agent-sandbox  networkPolicy.bifrostClusterIp   admits it on :8080
+    #   agent-sandbox  coderTemplate.bifrostUrl         warm-pool default
+    bifrost:
+      url: '{{default "http://172.20.0.100:8080" (index .metadata.annotations "bifrost_url")}}'
+    # ── Container images: registry resolved from the CLUSTER's own annotations ──
+    # ACCOUNT + REGION come from aws_account_id / aws_region, so no per-cluster
+    # overlay is needed and no account ID is committed to this repo. The chart
+    # defaults still name the upstream EXAMPLE registry, which is NOT pullable
+    # from a consumer's account — these templated values override it.
+    #
+    # ⚠️ Templating the registry does NOT build the images. Each deployment must
+    # build both into its OWN ECR at the tags below (see
+    # examples/dark-factory/README.md "Build & deploy"); a missing tag surfaces as
+    # ImagePullBackOff on the step that uses it, not at render time.
+    #
+    # deployTest.image MUST be set here: the chart default is empty behind a Helm
+    # `required` guard, so with no overlay and no value here the whole app fails to
+    # render. It is a DIFFERENT image from the coder — it needs kubectl + terraform,
+    # which the coder image does not carry, so the coder image cannot stand in.
+    reviewImage: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/dark-factory-coder:v0.2.5'
+    holdout:
+      evalImage: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/dark-factory-coder:v0.2.5'
+    deployTest:
+      image: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/dark-factory-deploy-test:v0.1.0'
+    # ── Flow D pod identity: account + cluster from THIS cluster's annotations ──
+    # 10-rbac.yaml builds the PodIdentityAssociation roleARN as
+    #   arn:aws:iam::<accountId>:role/<clusterName>-ack-lambdamicrovms-controller
+    # from microvm.podIdentity. The chart default for accountId is now EMPTY behind a
+    # Helm `required` guard (it used to hardcode the chart AUTHOR's account) and
+    # clusterName defaults to `hub`, so on any other account the ACK eks controller
+    # rejected it with:
+    #   AccessDeniedException: Cross-account pass role is not allowed
+    # and — because ArgoCD health-waits on that CR — the dark-factory app never
+    # reaches Synced. Observed live on a non-authoring account: the role DID exist
+    # locally (ACK created it), the ARN just named the wrong account.
+    #
+    # Templating both from annotations makes it correct on every cluster with no
+    # per-cluster overlay. Managed ACK/KRO capabilities themselves are enabled at
+    # the platform layer (appmod-blueprints) — verified ACTIVE here, not our concern.
+    microvm:
+      podIdentity:
+        clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+        accountId: '{{.metadata.annotations.aws_account_id}}'
+    # GitHub credentials, cluster-scoped in Secrets Manager (same pattern as
+    # langfuse/keycloak in observability.yaml). Three DISTINCT credentials so the
+    # untrusted coder VM never holds the orchestrator's merge-capable token
+    # (review C1). The coder's own key is injected by the agent-sandbox entry.
+    github:
+      externalSecret:
+        secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/dark-factory/github/orchestrator'
+    # NOTE: ONE trigger: block only — a second one would silently override this
+    # (duplicate YAML keys: last wins), dropping the externalSecret key.
+    #
+    # webhookUrl + ingress.host derive from the cluster-secret
+    # ingress_domain_name annotation (set per-cluster by the platform), instead
+    # of a hardcoded domain in the chart defaults. Mirrors the agent-gateway
+    # pattern (gateway.yaml). GitHub posts webhooks to webhookUrl+webhookEndpoint;
+    # the EventSource ingress is served on host.
+    trigger:
+      argoEvents:
+        webhookUrl: 'https://{{.metadata.annotations.ingress_domain_name}}'
+        ingress:
+          host: '{{.metadata.annotations.ingress_domain_name}}'
+        externalSecret:
+          secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/dark-factory/github/events'
+
+# ── Flow D — Lambda MicroVM substrate (ported from the old catalog) ───────────
+# These two entries came from gitops/addons/bootstrap/default/addons.yaml, which the
+# reference-model restructure replaces with this registry. Ported here so Flow D
+# stays deployable — without this, restoring registry/ would silently unregister the
+# whole MicroVM substrate.
+#
+# ⚠️ TRANSLATED, not copied: the original used `alwaysSelector`, which the pinned
+# appset-chart (platform-charts/appset-chart) does NOT read — it honours only
+# `selectorMatchLabels` and `selector`. Copied verbatim, these addons would render
+# with NO selector and be generated on EVERY cluster including spokes.
+# selectorMatchLabels is applied unconditionally (independent of useSelectors), so it
+# is the correct equivalent of alwaysSelector — same hub-only effect, matching the
+# dark-factory entry above. The original `enabled: true` key is dropped: nothing in
+# this appset chart reads it, and no other entry here carries one.
+
+# agent-sandbox-lambda — Flow D. A SECOND, opt-in Agent-Sandbox substrate: the coder
+# runs in an AWS Lambda MicroVM (Firecracker) instead of a Kata pod. KRO builds the
+# platform image ONCE (MicrovmImage + build/exec IAM + S3 + logs via ACK GA
+# controllers); a shim (bridge pod + lifecycle controller) drives the per-session VM
+# (RunMicrovm/suspend/resume/TerminateMicrovm) imperatively. Same namespace + operator
+# as agent-sandbox; only ADDS the MicroVM path. DORMANT until the per-cluster overlay
+# flips microvm.enabled=true (needs Managed KRO+ACK, the self-managed ack-lambdamicrovms
+# controller, and a published arm64 coder artifact). Hub-only, sync-wave 2.
+agent-sandbox-lambda:
+  namespace: agent-sandbox-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/agent-sandbox-lambda'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '2'
+  selectorMatchLabels:
+    environment: control-plane
+  # OPT-IN via the SAME single label as the dark-factory entry above (see the long
+  # note there): one knob provisions the whole Flow D stack, or none of it.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
+  valuesObject:
+    # Same reason as the dark-factory entry above: this chart's shim also creates
+    # PodIdentityAssociations whose roleARN embeds the account + cluster. The chart
+    # default is correctly EMPTY, but the hub overlay carried a hardcoded foreign
+    # account; injecting from annotations here is authoritative (valuesObject wins
+    # over overlay value files) and portable.
+    #
+    # accountId has a SECOND consumer: the MicroVM artifact S3 bucket the KRO RGD
+    # creates is `<image.name>-microvm-artifacts-<accountId>`. S3 bucket names are
+    # ONE global namespace shared by every AWS account, so the old un-suffixed
+    # `coder-microvm-artifacts` was already taken by a foreign account — CreateBucket
+    # returned 409 BucketAlreadyExists, the Bucket CR never got an ARN, and the
+    # MicrovmImage build died with "Access denied when fetching artifact from S3"
+    # (CREATE_FAILED), which parked agent-sandbox-lambda-hub at Progressing forever.
+    #
+    # NOTE the artifact S3 URI is deliberately NOT set here. It would have to restate
+    # the bucket name a second time, and this ApplicationSet Go template can only see
+    # CLUSTER metadata/annotations — it cannot read another Helm value such as
+    # microvm.image.name, so a URI written here would hardcode the `coder-` stem and
+    # silently diverge the moment image.name changed. Instead the chart holds a bare
+    # microvm.codeArtifactKey and the RGD composes
+    #   s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
+    # from the bucket it actually creates — one source of truth, still account-portable
+    # because accountId below is what makes the bucket name unique.
+    microvm:
+      accountId: '{{.metadata.annotations.aws_account_id}}'
+      podIdentity:
+        clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+
+# ack-lambdamicrovms — the SELF-MANAGED ACK controller for lambdamicrovms, which is
+# not yet in Managed ACK. Managed ACK and this controller COEXIST (different CRD
+# groups). When lambdamicrovms goes GA, delete this addon and Managed ACK adopts it —
+# the KRO RGD is unchanged.
+#
+# Flow D is dormant until a cluster opts in. Hub-only, like the rest of the sandbox
+# substrate. Installs oci://public.ecr.aws/aws-controllers-k8s/lambdamicrovms-chart.
+# Sync-wave 0 so the CRDs + controller are up before the agent-sandbox-lambda chart's
+# MicrovmSandbox RGD (wave 2) references them.
+ack-lambdamicrovms:
+  namespace: ack-system
+  chartName: lambdamicrovms-chart
+  defaultVersion: '0.1.1'
+  chartRepository: 'public.ecr.aws/aws-controllers-k8s'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '0'
+  selectorMatchLabels:
+    environment: control-plane
+  # OPT-IN via the SAME single label as the dark-factory entry above (see the long
+  # note there): one knob provisions the whole Flow D stack, or none of it.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
+  # ACK chart reads these at the ROOT of values (chart v0.1.1). The controller
+  # reconciles the Microvm + MicrovmImage CRDs; it uses EKS Pod Identity for AWS
+  # auth (empty SA annotations — the pod-identity association is created out of
+  # band / by the platform), so no IRSA role-arn annotation is set here.
+  valuesObject:
+    aws:
+      region: '{{default "us-west-2" (index .metadata.annotations "aws_region")}}'
+    serviceAccount:
+      create: true
+      name: ack-lambdamicrovms-controller
+    # Cluster-scoped install so the single MicrovmSandbox RGD (any namespace) can
+    # create Microvm/MicrovmImage CRs the controller reconciles.
+    installScope: cluster
+    deletionPolicy: delete

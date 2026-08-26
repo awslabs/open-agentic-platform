@@ -1,0 +1,81 @@
+{{- /*
+Dark Factory Grafana dashboard (observability) — managed by grafana-operator via a
+GrafanaDashboard CR, exactly like the platform's agent-platform-* dashboards
+(instanceSelector dashboards=external-grafana, folder "Agent Platform"). Panels are
+built on the df_run_* metrics the df-run WorkflowTemplate emits (scraped into AMP
+via the metrics Service in 70-metrics-service). GitOps-managed, no manual import.
+*/ -}}
+{{- if .Values.metrics.enabled }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dark-factory-overview
+  namespace: {{ .Values.metrics.grafana.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  allowCrossNamespaceImport: true
+  folder: {{ .Values.metrics.grafana.folder | quote }}
+  instanceSelector:
+    matchLabels:
+      {{- toYaml .Values.metrics.grafana.instanceSelector | nindent 6 }}
+  resyncPeriod: 10m
+  json: |
+    {
+      "title": "Dark Factory — Flow B",
+      "uid": "dark-factory-overview",
+      "tags": ["dark-factory", "agent-platform"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "time": { "from": "now-24h", "to": "now" },
+      "refresh": "1m",
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "df-run outcomes (total)",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+          "targets": [
+            { "expr": "sum by (status) (argo_workflows_df_runs_total)", "legendFormat": "{{`{{status}}`}}", "refId": "A" }
+          ]
+        },
+        {
+          "id": 2, "type": "timeseries", "title": "df-run outcomes over time (cumulative by status)",
+          "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+          "description": "argo_workflows_df_runs_total is a gauge (cumulative count per status).",
+          "targets": [
+            { "expr": "sum by (status) (argo_workflows_df_runs_total)", "legendFormat": "{{`{{status}}`}}", "refId": "A" }
+          ]
+        },
+        {
+          "id": 3, "type": "timeseries", "title": "df-run duration — lead time (s)",
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 6 },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            { "expr": "argo_workflows_df_run_duration_seconds", "legendFormat": "duration", "refId": "A" }
+          ]
+        },
+        {
+          "id": 4, "type": "piechart", "title": "Outcome mix",
+          "gridPos": { "h": 7, "w": 6, "x": 12, "y": 6 },
+          "targets": [
+            { "expr": "sum by (status) (argo_workflows_df_runs_total)", "legendFormat": "{{`{{status}}`}}", "refId": "A" }
+          ]
+        },
+        {
+          "id": 5, "type": "stat", "title": "Succeeded / Failed (cumulative)",
+          "gridPos": { "h": 7, "w": 6, "x": 18, "y": 6 },
+          "targets": [
+            { "expr": "sum(argo_workflows_df_runs_total{status=\"Succeeded\"})", "legendFormat": "succeeded", "refId": "A" },
+            { "expr": "sum(argo_workflows_df_runs_total{status=\"Failed\"})", "legendFormat": "failed", "refId": "B" }
+          ]
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Argo operational queue depth (df workflows)",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 13 },
+          "targets": [
+            { "expr": "sum(argo_workflows_count) by (status)", "legendFormat": "{{`{{status}}`}}", "refId": "A" }
+          ]
+        }
+      ]
+    }
+{{- end }}

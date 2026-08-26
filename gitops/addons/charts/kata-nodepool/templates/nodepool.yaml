@@ -1,0 +1,96 @@
+{{- /*
+NodePools for the Kata pools. nodeClassRef.group=karpenter.k8s.aws pins them to
+the self-managed controller; Auto Mode (group eks.amazonaws.com) leaves them
+alone. Each pool is tainted + labelled so ONLY the matching kata workloads land:
+  kata pools (clh/qemu): taint `kata`,    label katacontainers.io/kata-runtime
+  fc   pools           : taint `kata-fc`, label katacontainers.io/kata-runtime-fc
+Nested/fc pools select by instance-family + vCPU floor (widens the pool); metal
+pools by an explicit instance-type list.
+*/ -}}
+{{- $ := . -}}
+{{- range $pool := list
+  (dict "cfg" .Values.kataNested  "name" "kata-nested"   "fc" false "metal" false)
+  (dict "cfg" .Values.kataMetal   "name" "kata-metal"    "fc" false "metal" true)
+  (dict "cfg" .Values.kataFc      "name" "kata-fc"       "fc" true  "metal" false)
+  (dict "cfg" .Values.kataFcMetal "name" "kata-fc-metal" "fc" true  "metal" true)
+}}
+{{- $cfg := $pool.cfg }}
+{{- if $cfg.enabled }}
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ $pool.name }}
+  annotations:
+    # The karpenter.sh NodePool CRD is shared with Auto Mode but may be absent on a
+    # freshly-bootstrapped cluster before the karpenter app syncs; skip dry-run.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Higher wave than the EC2NodeClass (wave 0): this NodePool's nodeClassRef must
+    # resolve to an already-applied EC2NodeClass, so it syncs after the NodeClass.
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/part-of: kata-nodepool
+spec:
+  template:
+    metadata:
+      labels:
+        {{- /* The kata-runtime[-fc] label MUST exist at node birth — the
+               RuntimeClass admission controller requires it for the pod, so
+               Karpenter can only provision if the pool advertises it, else cold
+               start deadlocks. It is also what the pending warm-pool pods select. */}}
+        {{- if $pool.fc }}
+        katacontainers.io/kata-runtime-fc: "true"
+        kata-fc-enabled: "true"
+        {{- else }}
+        katacontainers.io/kata-runtime: "true"
+        kata-enabled: "true"
+        {{- end }}
+        node-type: {{ $pool.name }}
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws   # OUR group; Auto Mode uses eks.amazonaws.com
+        kind: EC2NodeClass
+        name: {{ $pool.name }}
+      taints:
+        - key: {{ if $pool.fc }}kata-fc{{ else }}kata{{ end }}
+          value: "true"
+          effect: NoSchedule
+      # Self-removed by kata-deploy(-fc) 4.0.0 once the runtime is installed,
+      # gating kata pods until the node is ready.
+      startupTaints:
+        - key: katacontainers.io/runtime-not-ready
+          effect: NoSchedule
+      requirements:
+        {{- if $pool.metal }}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            {{- toYaml $cfg.instanceTypes | nindent 12 }}
+        {{- else }}
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            {{- toYaml $cfg.instanceFamilies | nindent 12 }}
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: Gt
+          values: [{{ $cfg.minVcpu | quote }}]
+        {{- end }}
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            {{- toYaml $cfg.capacityTypes | nindent 12 }}
+        - key: kubernetes.io/arch
+          operator: In
+          values: [{{ $.Values.common.arch | quote }}]
+      expireAfter: {{ $.Values.common.expireAfter }}
+  # Higher weight = preferred; metal pools sit lower so they're the fallback only
+  # when the nested pool of the same VMM has no capacity.
+  weight: {{ $cfg.weight }}
+  limits:
+    cpu: {{ $cfg.cpuLimit | quote }}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: {{ $cfg.consolidateAfter }}
+{{- end }}
+{{- end }}

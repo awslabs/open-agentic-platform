@@ -1,0 +1,74 @@
+{{/*
+  KRO graph child-resource RBAC.
+
+  The MicrovmSandbox ResourceGraphDefinition (templates/image/) is reconciled by EKS
+  Managed KRO, whose controller authenticates to the API server as the cluster's KRO
+  capability role (EKS access entry, session name "KRO"). The AWS-managed
+  AmazonEKSKROPolicy attached to that access entry grants KRO its own kro.run perms and
+  discovery, but NOT create/update/delete on the ACK kinds this graph composes. So when
+  KRO tries to materialize the graph it fails:
+
+    resource reconciliation failed: buckets.s3.services.k8s.aws "coder-microvm-artifacts"
+    is forbidden: User ".../hub-KROCapabilityRole/KRO" cannot get resource "buckets" ...
+
+  This ClusterRole grants KRO CRUD on EXACTLY the three ACK groups the MicrovmSandbox
+  graph creates as children — s3 Buckets, iam Roles, and the self-managed lambdamicrovms
+  MicrovmImages/Microvms — and nothing else. K8s RBAC cannot scope list/watch/create by
+  resource NAME, so the grant is per-kind; it deliberately does NOT include core/*, apps,
+  rbac, secrets, or any other ACK service. delete is required so KRO can garbage-collect
+  the graph's children when a MicrovmSandbox is removed.
+
+  Gated by microvm.enabled AND microvm.podIdentity.kroCapability.enabled. Rendered as
+  ArgoCD sync-wave -2 (with the controller bootstrap IAM) so KRO can watch/CRUD the
+  children before the platform MicrovmSandbox instance (wave 1) reconciles.
+*/}}
+{{- if and .Values.microvm .Values.microvm.enabled }}
+{{- with .Values.microvm.kroCapability }}
+{{- if .enabled }}
+{{- $cluster := $.Values.microvm.podIdentity.clusterName }}
+{{- $account := $.Values.microvm.accountId | toString }}
+{{- $role := .roleName | default (printf "%s-KROCapabilityRole" $cluster) }}
+{{- $session := .sessionName | default "KRO" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $cluster }}-kro-microvm-graph
+  labels:
+    {{- include "agent-sandbox.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  # S3 artifact bucket (graph resource `bucket`).
+  - apiGroups: ["s3.services.k8s.aws"]
+    resources: ["buckets", "buckets/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Build + exec IAM roles (graph resources `buildRole`, `execRole`).
+  - apiGroups: ["iam.services.k8s.aws"]
+    resources: ["roles", "roles/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Platform image + (future) per-session instance (graph resource `image`; Microvm is
+  # driven imperatively by the shim but kept here so KRO can read/GC if ever graphed).
+  - apiGroups: ["lambdamicrovms.services.k8s.aws"]
+    resources: ["microvmimages", "microvmimages/status", "microvms", "microvms/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $cluster }}-kro-microvm-graph
+  labels:
+    {{- include "agent-sandbox.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $cluster }}-kro-microvm-graph
+subjects:
+  # The EKS access-entry username Managed KRO's controller presents.
+  - kind: User
+    name: "arn:aws:sts::{{ $account }}:assumed-role/{{ $role }}/{{ $session }}"
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}
+{{- end }}

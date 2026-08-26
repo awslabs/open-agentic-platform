@@ -1,0 +1,905 @@
+{{- /*
+df-run — the Flow B P1 pipeline as an Argo WorkflowTemplate.
+
+  trigger → claim warm sandbox → coder implements+tests (in the Kata VM) →
+  coder opens PR + posts a live sticky status → await human approval.
+
+Single-cluster on the hub: the claim step creates a SandboxClaim with the issue
+injected as env (verified contract: envVarsInjectionPolicy=Allowed), waits for
+the operator to bind a warm micro-VM (status Ready), then the coder VM — which
+boots the coder image from the SandboxTemplate — reads the env, implements on
+df/issue-N, builds+tests, pushes, and opens the PR + sticky comment itself using
+the short-TTL GitHub token projected into the VM. The workflow watches the coder
+pod to completion, then its onExit handler releases the claim (the operator
+refills the pool). P1 stops at "PR open, awaiting human" — merge/teardown +
+verification gates are P2-P4.
+
+Parameters (supplied by the trigger / Sensor):
+  issue-id, issue-number, repo (owner/name), issue-title, issue-body, base-branch
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: df-run
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  serviceAccountName: dark-factory-workflow
+  # Serialize per issue: repeated events for the SAME issue queue behind each other
+  # (no double-claim). This does NOT bound concurrent runs across DISTINCT issues — a
+  # mutex is one lock per name, not a counting semaphore. Cross-issue backpressure
+  # would need an Argo `semaphore` (ConfigMap-backed); none is wired, so do not
+  # document a cap here.
+  synchronization:
+    mutex:
+      name: "df-issue-{{`{{workflow.parameters.issue-id}}`}}"
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: issue-id
+      - name: issue-number
+      - name: repo
+      - name: issue-title
+      - name: issue-body
+        value: ""
+      - name: base-branch
+        value: main
+      # Optional revision request (df-iterate passes the PR comment here; empty on
+      # a first pass). Injected into the coder as DF_ITERATE_NOTE so it revises the
+      # existing branch to address the feedback.
+      - name: iterate-note
+        value: ""
+      # Base64 of the revision note — used when the note is arbitrary markdown
+      # (auto-fed agent findings) that can't be injected raw into the claim YAML.
+      # The coder decodes this first, falling back to the plain iterate-note.
+      - name: iterate-note-b64
+        value: ""
+      # Which label fired the run selects the coder substrate (Kata default vs
+      # Lambda MicroVM for darkfactory-lambda). MUST be declared with a default so
+      # every trigger-label reference resolves even when the submitter (sensor /
+      # manual) does not pass it. Defaulting to dark-factory keeps the Kata path for
+      # sensor submits that do not map a label.
+      - name: trigger-label
+        value: "dark-factory"
+  # Always release the claimed sandbox, on success OR failure.
+  onExit: teardown
+  ttlStrategy:
+    secondsAfterCompletion: {{ .Values.argo.workflowTtlSecondsAfterCompletion | default 604800 }}
+{{- if .Values.metrics.enabled }}
+  # Success metrics (Argo-native Prometheus). Argo exposes these on the workflow
+  # controller's :9090/metrics — scraped into the platform Prometheus. Gives the
+  # GitOps-native view of the factory: throughput, outcome mix, and lead time.
+  metrics:
+    prometheus:
+      - name: df_runs_total
+        help: "Dark Factory df-run workflows by status"
+        labels:
+          - { key: status, value: "{{`{{workflow.status}}`}}" }
+        counter:
+          value: "1"
+      - name: df_run_duration_seconds
+        help: "df-run wall-clock duration (lead time proxy)"
+        gauge:
+          value: "{{`{{workflow.duration}}`}}"
+{{- end }}
+  templates:
+
+    # ---- DAG ----
+    # claim → coder → [ verify fan: holdout-gate ∥ security-review ∥ devops-review ]
+    # → status. Every verify step runs OUTSIDE the coder (trusted hub pod), is gated
+    # on a PR existing, and is advisory in v1 (posts a commit status; never fails the
+    # run unless its *.blocking / blockSeverity is raised). `status` waits for all
+    # enabled verify steps via its dependencies list.
+    - name: main
+      dag:
+        tasks:
+          - name: claim
+            template: claim-sandbox
+          - name: drive-coder
+            template: await-coder
+            dependencies: [claim]
+            arguments:
+              parameters:
+                - name: sandbox
+                  value: "{{`{{tasks.claim.outputs.parameters.sandbox}}`}}"
+{{- if .Values.holdout.enabled }}
+          # P2 — holdout gate: hidden scenarios + a different-family judge.
+          - name: holdout-gate
+            template: holdout-gate
+            dependencies: [drive-coder]
+            when: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}} != \"\""
+            arguments:
+              parameters:
+                - name: pr-number
+                  value: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}}"
+{{- end }}
+{{- if .Values.review.enabled }}
+          # P3 — REAL AWS Frontier Agents, ordered: DevOps FIRST, then Security.
+          #
+          # DevOps Agent (release readiness): its GitHub App auto-reviews every PR
+          # and posts the `aws-devops-agent/release-readiness-review` CHECK-RUN. This
+          # `devops-gate` step WAITS for that check — it is not a separate reviewer,
+          # it is the wait+mirror for an external bot. That is `devopsAgent.gate:
+          # check`, the DEFAULT.
+          #
+          # (`gate: label` is the alternative: the coder runs the DevOps Agent as a
+          # Claude Code plugin in-VM and applies `needs-security-review` on a clear
+          # verdict, and this step waits for that label instead. The coder is still
+          # handed DF_DEVOPS_AGENT_MODE=claude-plugin, so both paths remain wired —
+          # but with the default `check` mode nothing depends on the in-VM plugin.
+          # An earlier version of this comment described only the label path, which
+          # contradicted docs §6.2.)
+          - name: devops-gate
+            template: devops-gate
+            dependencies: [drive-coder]
+            when: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}} != \"\""
+            arguments:
+              parameters:
+                - name: pr-number
+                  value: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}}"
+          # Security Agent — WAITS FOR the real aws-security-agent[bot]'s own review
+          # and mirrors its verdict into dark-factory/security. The App bot reviews
+          # autonomously + IN PARALLEL with the DevOps bot, so this runs alongside
+          # devops-gate (depends on drive-coder, NOT gated behind DevOps clearing —
+          # otherwise a slow DevOps review would skip the security signal entirely).
+          - name: security-agent
+            template: security-agent
+            dependencies: [drive-coder]
+            when: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}} != \"\""
+{{- end }}
+{{- if .Values.deployTest.enabled }}
+          # P4 — detect whether the PR touches deployable artifacts (cheap grep of
+          # the diff). Its output gates the (expensive, K8s-touching) deploy-test.
+          - name: detect-deployable
+            template: detect-deployable
+            dependencies: [drive-coder]
+            when: "{{`{{tasks.drive-coder.outputs.parameters.pr-number}}`}} != \"\""
+          # P4 — deploy-test: THE ONLY step that holds K8s access. Content-aware:
+          # k8s → ephemeral-namespace apply+probe+teardown; terraform → init+validate.
+          # Runs only when detect classified the change (kind != none).
+          - name: deploy-test
+            template: deploy-test
+            dependencies: [detect-deployable]
+            when: "{{`{{tasks.detect-deployable.outputs.parameters.kind}}`}} != none"
+            arguments:
+              parameters:
+                - name: kind
+                  value: "{{`{{tasks.detect-deployable.outputs.parameters.kind}}`}}"
+{{- end }}
+          - name: status
+            template: sticky-status
+            # Depend on BOTH agents (devops-gate + security-agent) plus holdout +
+            # deploy-test so the consolidated verdict is only computed once EVERY
+            # signal is terminal — required so a ❌ (and the auto-fix decision) is made
+            # on complete input, and so a clear verdict truly means both agents cleared.
+            dependencies:
+              {{- if or .Values.holdout.enabled .Values.review.enabled .Values.deployTest.enabled }}
+              {{- if .Values.holdout.enabled }}
+              - holdout-gate
+              {{- end }}
+              {{- if .Values.review.enabled }}
+              - devops-gate
+              - security-agent
+              {{- end }}
+              {{- if .Values.deployTest.enabled }}
+              - deploy-test
+              {{- end }}
+              {{- else }}
+              - drive-coder
+              {{- end }}
+            arguments:
+              parameters:
+                - name: phase
+                  value: "pr-open"
+
+    # ---- 1. Claim a warm sandbox (creates the SandboxClaim with issue env) ----
+    - name: claim-sandbox
+      outputs:
+        parameters:
+          - name: sandbox
+            valueFrom:
+              jsonPath: "{.status.sandbox.name}"
+      resource:
+        action: create
+        setOwnerReference: false
+        successCondition: status.conditions.0.status == True
+        failureCondition: status.conditions.0.reason == EnvVarsInjectionRejected
+        manifest: |
+          apiVersion: extensions.agents.x-k8s.io/v1beta1
+          kind: SandboxClaim
+          metadata:
+            name: df-issue-{{`{{workflow.parameters.issue-id}}`}}
+            namespace: {{ .Values.warmPool.namespace }}
+            labels:
+              dark-factory.io/issue: "{{`{{workflow.parameters.issue-id}}`}}"
+              # issue NUMBER too: df-merge-teardown / df-iterate are fired by PR
+              # events whose payload carries the branch (df/issue-<number>) but NOT
+              # the issue id, so they select the claim to reap by this label.
+              dark-factory.io/issue-number: "{{`{{workflow.parameters.issue-number}}`}}"
+              dark-factory.io/managed-by: df-run
+          spec:
+            warmPoolRef:
+              name: {{ .Values.warmPool.name }}
+            lifecycle:
+              ttlSecondsAfterFinished: {{ .Values.claimTtlSeconds }}
+            env:
+              - { containerName: coder, name: DF_ISSUE_NUMBER, value: "{{`{{workflow.parameters.issue-number}}`}}" }
+              - { containerName: coder, name: DF_REPO, value: "{{`{{workflow.parameters.repo}}`}}" }
+              - { containerName: coder, name: DF_BRANCH, value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}" }
+              - { containerName: coder, name: DF_BASE_BRANCH, value: "{{`{{workflow.parameters.base-branch}}`}}" }
+              - { containerName: coder, name: DF_ISSUE_TITLE, value: "{{`{{workflow.parameters.issue-title}}`}}" }
+              # Engine the coder VM runs: claude (default) | kiro. entrypoint.js
+              # branches on this (=="kiro" → kiro headless, else claude -p).
+              - { containerName: coder, name: CODER_ENGINE, value: "{{ .Values.coder.engine }}" }
+              # Back-compat alias (older coder images read CODER_PROFILE).
+              - { containerName: coder, name: CODER_PROFILE, value: "{{ .Values.coder.engine }}" }
+              - { containerName: coder, name: BIFROST_URL, value: "{{ .Values.bifrost.url }}" }
+              # Revision note: prefer the base64 form (safe for arbitrary markdown —
+              # auto-fed agent findings contain newlines/quotes/braces that broke the
+              # raw YAML injection). Both are single-line values here; the coder
+              # decodes B64 first, else uses the plain one.
+              - { containerName: coder, name: DF_ITERATE_NOTE, value: "{{`{{workflow.parameters.iterate-note}}`}}" }
+              - { containerName: coder, name: DF_ITERATE_NOTE_B64, value: "{{`{{workflow.parameters.iterate-note-b64}}`}}" }
+{{- if and .Values.devopsAgent.enabled (eq .Values.devopsAgent.gate "label") }}
+              # DevOps Agent via the coding-agent plugin, run inside the coder
+              # step BEFORE the PR opens — ONLY in label-gate mode. In the default
+              # check-gate mode the DevOps Agent GitHub App reviews the PR instead,
+              # so the coder does not attempt the (VM-incompatible) plugin path.
+              - { containerName: coder, name: DF_DEVOPS_AGENT_MODE, value: "claude-plugin" }
+              - { containerName: coder, name: DF_DEVOPS_CLEAR_LABEL, value: "{{ .Values.review.handoffLabel }}" }
+{{- end }}
+
+    # ---- 2. Wait for the coder VM to finish — GitHub is the completion bus ----
+    # The coder image (baked into the SandboxTemplate) auto-runs on VM start,
+    # reads DF_* env, implements + tests, pushes df/issue-N, and opens the PR
+    # itself using the short-TTL gh-token projected into the VM. The coder is
+    # credential-less to the k8s API (no SA token), so it CANNOT signal via a pod
+    # annotation — it self-reports through GitHub. This step polls the GitHub API
+    # (with the workflow's own token) for a PR whose head is df/issue-N, and
+    # treats the head commit's dark-factory/implementation check as the verdict.
+    - name: await-coder
+      inputs:
+        parameters:
+          - name: sandbox
+      activeDeadlineSeconds: {{ mul .Values.coder.runTimeoutMinutes 60 }}
+      script:
+        image: {{ .Values.stepImage }}
+        command: [sh]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+        source: |
+          set -eu
+          command -v curl >/dev/null 2>&1 || apk add --no-cache curl jq >/dev/null 2>&1
+          REPO="{{`{{workflow.parameters.repo}}`}}"
+          BRANCH="df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          ITERATE_NOTE="{{`{{workflow.parameters.iterate-note}}`}}"
+          ITERATE_NOTE_B64="{{`{{workflow.parameters.iterate-note-b64}}`}}"
+          API="https://api.github.com/repos/${REPO}"
+          # ROUND-AWARENESS: on a FIX ROUND (iterate-note set) the branch already
+          # exists and its OLD commit already has dark-factory/implementation=success.
+          # If we accept that, the verify fan (holdout/security/devops) runs against
+          # the STALE pre-fix commit before the coder's new push lands (observed 45s
+          # race). So record the branch's starting SHA and require a DIFFERENT head
+          # SHA (a genuinely new commit) before we consider the coder done on a fix
+          # round. First-pass runs (no iterate-note) have no prior commit → accept the
+          # first commit that reports impl=success.
+          START_SHA="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                        "${API}/branches/${BRANCH}" 2>/dev/null | jq -r '.commit.sha // empty' || echo "")"
+          IS_FIX="false"; { [ -n "${ITERATE_NOTE}" ] || [ -n "${ITERATE_NOTE_B64}" ]; } && IS_FIX="true"
+          echo "[df-run] polling GitHub for PR head=${BRANCH} (fix-round=${IS_FIX}, start-sha=${START_SHA:-none})..."
+          while true; do
+            pr="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" \
+                   -H "Accept: application/vnd.github+json" \
+                   "${API}/pulls?head=${REPO%%/*}:${BRANCH}&state=open" 2>/dev/null || echo '[]')"
+            n="$(echo "${pr}" | jq -r '.[0].number // empty')"
+            if [ -n "${n}" ]; then
+              sha="$(echo "${pr}" | jq -r '.[0].head.sha')"
+              # On a fix round, ignore the old commit until the coder pushes a new one.
+              if [ "${IS_FIX}" = "true" ] && [ -n "${START_SHA}" ] && [ "${sha}" = "${START_SHA}" ]; then
+                echo "[df-run] fix-round: head still at start sha ${sha} — waiting for the coder's new commit..."
+                sleep 15; continue
+              fi
+              st="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                     "${API}/commits/${sha}/status" 2>/dev/null | jq -r '.statuses[] | select(.context=="dark-factory/implementation") | .state' | head -1)"
+              echo "[df-run] PR #${n} open (sha=${sha}) impl-status=${st:-pending}"
+              case "${st}" in
+                success) echo "[df-run] coder finished — PR #${n} @ ${sha} ready."; echo "${n}" > /tmp/pr; echo "${sha}" > /tmp/sha; exit 0 ;;
+                failure|error) echo "[df-run] coder reported failure."; exit 1 ;;
+              esac
+            else
+              echo "[df-run] no PR yet — coder still working..."
+            fi
+            sleep 15
+          done
+      outputs:
+        parameters:
+          - name: pr-number
+            valueFrom:
+              path: /tmp/pr
+              default: ""
+          - name: head-sha
+            valueFrom:
+              path: /tmp/sha
+              default: ""
+
+{{- if .Values.holdout.enabled }}
+    # ---- 2b. Holdout gate (P2) — train/test separation for code ----
+    # Runs on the HUB (a trusted step, NOT the Kata VM). Checks out the coder's
+    # PR branch, diffs it vs base, then runs evaluate.js: each hidden scenario
+    # gets its executable test run against the built code AND a different-family
+    # judge (Nova) vote (2-of-3). Gate = passRatio >= threshold. The hidden
+    # scenarios come from the df-holdout-* ConfigMaps mounted here — they are
+    # NEVER mounted into the sandbox, so the coder cannot see or edit them.
+    # v1 is advisory: the gate result is posted as the dark-factory/holdout commit
+    # status; the workflow only fails on a red gate when holdout.blocking=true.
+    - name: holdout-gate
+      inputs:
+        parameters:
+          - name: pr-number
+      activeDeadlineSeconds: 900
+      # ⚠️ THIS STEP EXECUTES MODEL-WRITTEN CODE (review C2). It clones the coder's
+      # branch, runs `npm install --ignore-scripts`, and `require()`s the coder's
+      # module — so the coder's code runs in THIS pod, outside the Kata VM that
+      # exists to contain it. Therefore it must hold no credentials worth stealing:
+      #
+      #   automountServiceAccountToken: false   no K8s API token in the main container
+      #   executor.serviceAccountName            Argo strips the token from the WAIT
+      #                                          container too, so the executor needs
+      #                                          its own identity or the node hangs
+      #                                          unable to write workflowtaskresults.
+      #                                          dark-factory-executor grants exactly
+      #                                          that and nothing else.
+      #
+      # AWS credentials are absent by construction: IRSA now lives on
+      # dark-factory-security (used only by the security-agent step), not on the
+      # shared workflow SA. GH_TOKEN is still injected — the step posts its own
+      # commit status — which is why the evaluator should eventually run sandboxed
+      # rather than merely unprivileged.
+      automountServiceAccountToken: false
+      executor:
+        serviceAccountName: dark-factory-executor
+      volumes:
+        - name: holdout-eval
+          configMap:
+            name: df-holdout-eval
+        {{- range $repo := .Values.trigger.argoEvents.repositories }}
+        {{- range $name := $repo.names }}
+        - name: holdout-{{ printf "%s-%s" $repo.owner $name | lower }}
+          configMap:
+            name: df-holdout-{{ printf "%s-%s" $repo.owner $name | lower }}
+        {{- end }}
+        {{- end }}
+      script:
+        image: {{ .Values.holdout.evalImage | required "holdout.evalImage is required — set it in a per-cluster overlay (see values.yaml)" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: BIFROST_URL
+            value: {{ .Values.bifrost.url | quote }}
+          - name: JUDGE_MODEL
+            value: {{ .Values.holdout.judgeModel | quote }}
+          - name: JUDGE_RUNS
+            value: {{ .Values.holdout.judgeRuns | quote }}
+          - name: JUDGE_QUORUM
+            value: {{ .Values.holdout.judgeQuorum | quote }}
+          - name: THRESHOLD
+            value: {{ .Values.holdout.threshold | quote }}
+        volumeMounts:
+          - name: holdout-eval
+            mountPath: /holdout/evaluate.js
+            subPath: evaluate.js
+          {{- range $repo := .Values.trigger.argoEvents.repositories }}
+          {{- range $name := $repo.names }}
+          - name: holdout-{{ printf "%s-%s" $repo.owner $name | lower }}
+            mountPath: /holdout/{{ printf "%s-%s" $repo.owner $name }}
+          {{- end }}
+          {{- end }}
+        source: |
+          set -eu
+          REPO="{{`{{workflow.parameters.repo}}`}}"
+          BRANCH="df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          BASE="{{`{{workflow.parameters.base-branch}}`}}"
+          SLUG="$(echo "${REPO}" | tr '/' '-')"
+          API="https://api.github.com/repos/${REPO}"
+          WORK=/tmp/holdout-work
+          rm -rf "${WORK}"; mkdir -p "${WORK}"
+          echo "[holdout] cloning ${REPO}@${BRANCH} for evaluation..."
+          git clone --quiet --branch "${BRANCH}" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "${WORK}/repo"
+          cd "${WORK}/repo"
+          # Diff vs base — use the GitHub COMPARE API (authoritative changed-file
+          # patch), NOT a local git diff. A branch clone shares no reliable merge-base
+          # with a shallow base fetch, so `origin/BASE...HEAD` yields the WHOLE file as
+          # "added" (observed: a sum-only PR's diff contained every pre-existing
+          # function → every scenario's appliesWhen matched → wrong scenarios graded →
+          # false holdout failure). The compare API returns only the real per-file
+          # patch hunks, so appliesWhen keys on the ACTUAL change. (Same fix as
+          # detect-deployable.) Concatenate every file's patch into /tmp/diff.patch.
+          PR_NUM="{{`{{inputs.parameters.pr-number}}`}}"
+          curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${API}/pulls/${PR_NUM}/files?per_page=100" 2>/dev/null \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); files=d if isinstance(d,list) else []; open("/tmp/diff.patch","w").write("\n".join("diff --git a/%s b/%s\n%s"%(f.get("filename",""),f.get("filename",""),f.get("patch","")) for f in files))' 2>/dev/null || echo "" > /tmp/diff.patch
+          # Fallback: if the API path produced nothing, fall back to a local diff.
+          [ -s /tmp/diff.patch ] || { git fetch --quiet --depth 1 origin "${BASE}" 2>/dev/null || true; git diff "origin/${BASE}...HEAD" > /tmp/diff.patch 2>/dev/null || echo "" > /tmp/diff.patch; }
+          echo "[holdout] diff.patch $(wc -l < /tmp/diff.patch) lines (via compare API)"
+          # Build/install so executable tests can require the module.
+          #
+          # --ignore-scripts is REQUIRED, not hygiene: this step runs on the trusted
+          # hub, NOT in the Kata VM, and the tree being installed is coder-authored.
+          # Without it, a preinstall/postinstall hook in the coder's package.json
+          # executes here — arbitrary code in a pod that holds GH_TOKEN and a
+          # mounted ServiceAccount token, walking straight around the VM boundary
+          # the sandbox exists to enforce.
+          if [ -f package.json ]; then npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 || true; fi
+          SHA="$(git rev-parse HEAD)"
+
+          {{- /* hasKey, NOT `| default true`: Helm's `default` treats the bool false
+                 as empty and would silently flip requireScenarios:false back to
+                 true — fail-closed when the operator asked for advisory. */}}
+          REQ_SCEN={{ if hasKey .Values.holdout "requireScenarios" }}{{ printf "%v" .Values.holdout.requireScenarios }}{{ else }}true{{ end }}
+          SCEN="/holdout/${SLUG}/scenarios.json"
+          if [ ! -f "${SCEN}" ]; then
+            # NO FIXTURE = NOT VERIFIED, WHICH IS NOT A PASS (review §3 fail-open).
+            # This used to `exit 0` before posting anything, so the step went green
+            # and the PR showed no holdout status at all — on any repo without a
+            # fixture the headline quality gate silently verified nothing.
+            # Now: synthesize an unverified result and fall through to post a real
+            # verdict, so the PR says so out loud.
+            echo "[holdout] NO HIDDEN SCENARIOS for ${SLUG} — the gate cannot verify this change."
+            echo "[holdout] add holdout/${SLUG}/scenarios.json, or set holdout.requireScenarios=false to accept unverified changes."
+            printf '{"passed":0,"total":0,"skipped":0,"verified":false,"green":false,"ratio":0}\n' > /tmp/holdout-result.json
+            # Respect requireScenarios here too, so "no fixture" and "fixture with
+            # zero applicable scenarios" behave identically rather than one failing
+            # and the other passing.
+            if [ "${REQ_SCEN}" = "true" ]; then GATE=1; else GATE=0; fi
+          else
+            echo "[holdout] evaluating against hidden scenarios..."
+            set +e
+            REQUIRE_SCENARIOS="${REQ_SCEN}" \
+            REPO_DIR="${WORK}/repo" DIFF=/tmp/diff.patch SCENARIOS="${SCEN}" \
+              OUT=/tmp/holdout-result.json node /holdout/evaluate.js
+            GATE=$?
+            set -e
+          fi
+
+          RATIO="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(Math.round(r.ratio*100))' 2>/dev/null || echo 0)"
+          PASSED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.passed+"/"+r.total)' 2>/dev/null || echo '?/?')"
+          TOTAL="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.total)' 2>/dev/null || echo 0)"
+          SKIPPED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.skipped||0)' 2>/dev/null || echo 0)"
+          VERIFIED="$(node -e 'const r=require("/tmp/holdout-result.json");console.log(r.verified===false?"false":"true")' 2>/dev/null || echo false)"
+          # Distinguish the outcomes so the PR reads honestly:
+          #   verified=false → NO scenario matched (or no fixture at all). The gate
+          #                    checked NOTHING, so it is NOT a pass — it reports
+          #                    failure unless holdout.requireScenarios=false. This
+          #                    used to report success "as n/a", which on the PR was
+          #                    indistinguishable from a real pass (review §3).
+          #   gate ok        → passed. gate fail → below threshold.
+          if [ "${VERIFIED}" = "false" ] && [ "${GATE}" -ne 0 ]; then
+            STATE=failure; DESC="NOT VERIFIED — no hidden scenario matched this change (${SKIPPED} skipped); add scenarios for this repo"
+          elif [ "${VERIFIED}" = "false" ]; then
+            STATE=success; DESC="not applicable — no scenarios matched; accepted because requireScenarios=false (${SKIPPED} skipped)"
+          elif [ "${GATE}" -eq 0 ]; then
+            STATE=success; DESC="holdout ${PASSED} (${RATIO}%) — gate passed"
+          else
+            STATE=failure; DESC="holdout ${PASSED} (${RATIO}%) — below threshold"
+          fi
+
+          # Post the holdout verdict as a commit status on the PR head SHA. The
+          # coder image has no curl, so use node's https (always present). Retry
+          # transient failures so a blip doesn't drop the verdict.
+          GH_TOKEN="${GH_TOKEN}" REPO="${REPO}" SHA="${SHA}" STATE="${STATE}" DESC="${DESC}" node -e '
+            const https=require("https");
+            const body=JSON.stringify({state:process.env.STATE,context:"dark-factory/holdout",description:process.env.DESC});
+            let n=0;
+            (function post(){
+              const req=https.request({host:"api.github.com",method:"POST",path:"/repos/"+process.env.REPO+"/statuses/"+process.env.SHA,
+                headers:{"User-Agent":"dark-factory-holdout","Authorization":"Bearer "+process.env.GH_TOKEN,"Accept":"application/vnd.github+json","Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}},
+                r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>{if(r.statusCode>=300&&r.statusCode<500){console.error("status post "+r.statusCode+": "+b.slice(0,120))}else if(r.statusCode>=500&&++n<4){setTimeout(post,500*n);return} console.log("[holdout] posted dark-factory/holdout="+process.env.STATE)});});
+              req.on("error",e=>{if(++n<4){setTimeout(post,500*n)}else{console.error("status post error: "+e.message)}});
+              req.write(body);req.end();
+            })();
+          ' || true
+
+          {{- if .Values.holdout.blocking }}
+          echo "[holdout] blocking mode — gate result gates the workflow."
+          exit ${GATE}
+          {{- else }}
+          echo "[holdout] advisory mode — gate result reported, workflow continues."
+          exit 0
+          {{- end }}
+      outputs:
+        parameters:
+          - name: ratio
+            valueFrom:
+              path: /tmp/holdout-result.json
+              default: "{}"
+{{- end }}
+
+{{- if .Values.review.enabled }}
+    # ---- 2c. devops-gate (P3, step 1) — wait for the AWS DevOps Agent to clear ----
+    # The AWS DevOps Agent release-readiness review is its own GitHub App that
+    # auto-reviews every PR and posts a check-run / commit status (its native model
+    # — there is NO headless code-review API). This step polls the PR head for that
+    # check and emits cleared=true|false, which gates the Security Agent step so
+    # DevOps reviews FIRST, Security SECOND (docs §6.2).
+    #
+    # Mode (devopsAgent.gate):
+    #   check   → wait for the DevOps Agent's own check-run (context matches
+    #             devopsAgent.checkContext) to conclude success/neutral. This is the
+    #             real GitHub-App path (needs the one-time console repo connect).
+    #   label   → fallback: wait for the coder-applied handoffLabel (used only if
+    #             you drive DevOps via the coding-agent plugin instead of the App).
+    # If DevOps never reports within the window, cleared=false → Security is skipped
+    # and the sticky status shows DevOps not-run (NEVER a fake pass). Advisory: this
+    # step itself never fails the run.
+    - name: devops-gate
+      inputs:
+        parameters:
+          - name: pr-number
+      activeDeadlineSeconds: {{ add .Values.devopsAgent.waitSeconds 60 }}
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: PR
+            value: "{{`{{inputs.parameters.pr-number}}`}}"
+          - name: BRANCH
+            value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          - name: GATE_MODE
+            value: {{ .Values.devopsAgent.gate | quote }}
+          - name: LABEL
+            value: {{ .Values.review.handoffLabel | quote }}
+          - name: CHECK_CONTEXT
+            value: {{ .Values.devopsAgent.checkContext | quote }}
+          - name: WAIT_SECONDS
+            value: {{ .Values.devopsAgent.waitSeconds | quote }}
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/comment.js
+            subPath: comment.js
+        source: |
+          set -eu
+          echo "[devops-gate] mode=${GATE_MODE} PR #${PR} — waiting for AWS DevOps Agent..."
+          DEADLINE=$(( $(date +%s) + WAIT_SECONDS ))
+          CLEARED=false
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            if [ "$GATE_MODE" = "label" ]; then
+              # Fallback: coder-applied handoff label present on the PR.
+              R="$(GH_TOKEN="$GH_TOKEN" REPO="$REPO" PR="$PR" LABEL="$LABEL" node -e '
+                const https=require("https");const {GH_TOKEN,REPO,PR,LABEL}=process.env;
+                https.get({host:"api.github.com",path:"/repos/"+REPO+"/issues/"+PR+"/labels",headers:{"User-Agent":"df-devops-gate","Authorization":"Bearer "+GH_TOKEN,"Accept":"application/vnd.github+json"}},
+                  r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>{try{const ls=JSON.parse(b).map(x=>x.name);console.log(ls.includes(LABEL)?"cleared":"waiting")}catch(e){console.log("waiting")}})}).on("error",()=>console.log("waiting"));' 2>/dev/null || echo waiting)"
+            else
+              # Default: the DevOps Agent GitHub App's check-run on the PR head SHA.
+              # cleared iff a matching context concluded success/neutral; "blocked"
+              # if it concluded failure (BLOCK) — we stop and leave cleared=false.
+              R="$(GH_TOKEN="$GH_TOKEN" REPO="$REPO" BRANCH="$BRANCH" CHECK_CONTEXT="$CHECK_CONTEXT" node -e '
+                const https=require("https");const {GH_TOKEN,REPO,BRANCH,CHECK_CONTEXT}=process.env;
+                const g=(p)=>new Promise((res)=>{https.get({host:"api.github.com",path:p,headers:{"User-Agent":"df-devops-gate","Authorization":"Bearer "+GH_TOKEN,"Accept":"application/vnd.github+json"}},r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>{try{res(JSON.parse(b))}catch(e){res(null)}})}).on("error",()=>res(null))});
+                (async()=>{
+                  const pr=await g("/repos/"+REPO+"/pulls?head="+REPO.split("/")[0]+":"+BRANCH+"&state=open");
+                  if(!pr||!pr[0]){return console.log("waiting")}
+                  const sha=pr[0].head.sha;
+                  const re=new RegExp(CHECK_CONTEXT,"i");
+                  // check-runs API
+                  const cr=await g("/repos/"+REPO+"/commits/"+sha+"/check-runs");
+                  const runs=(cr&&cr.check_runs)||[];
+                  const m=runs.filter(x=>re.test(x.name));
+                  if(m.some(x=>x.status==="completed"&&["success","neutral"].includes(x.conclusion)))return console.log("cleared");
+                  if(m.some(x=>x.status==="completed"&&["failure","action_required","cancelled","timed_out"].includes(x.conclusion)))return console.log("blocked");
+                  // legacy commit statuses fallback
+                  const st=await g("/repos/"+REPO+"/commits/"+sha+"/status");
+                  const ss=((st&&st.statuses)||[]).filter(x=>re.test(x.context));
+                  if(ss.some(x=>x.state==="success"))return console.log("cleared");
+                  if(ss.some(x=>["failure","error"].includes(x.state)))return console.log("blocked");
+                  console.log("waiting");
+                })();' 2>/dev/null || echo waiting)"
+            fi
+            case "$R" in
+              cleared) CLEARED=true; echo "[devops-gate] AWS DevOps Agent CLEARED"; break ;;
+              blocked) CLEARED=false; echo "[devops-gate] AWS DevOps Agent returned BLOCK — Security stays gated"; break ;;
+              *) echo "[devops-gate] waiting for AWS DevOps Agent review..."; sleep 20 ;;
+            esac
+          done
+          echo "$CLEARED" > /tmp/cleared
+          echo "[devops-gate] cleared=${CLEARED}"
+
+          # NOTE: the DevOps verdict is NO LONGER relayed as its own PR comment.
+          # To avoid mixed/duplicate signals, the pipeline posts a SINGLE
+          # consolidated review (status.js → dark-factory:verdict-review) that
+          # mirrors the source-of-truth checks (Build/Holdout/Security/DevOps).
+          # The DevOps Agent's own commit status + the App bot's review remain
+          # the authoritative DevOps signal; `cleared` still gates the flow below.
+      outputs:
+        parameters:
+          - name: cleared
+            valueFrom:
+              path: /tmp/cleared
+              default: "false"
+
+    # ---- 2d. security-agent (P3, step 2) — REAL AWS Security Agent, headless ----
+    # Runs SECOND, only after DevOps cleared (label present). A trusted hub-side
+    # step that clones df/issue-N read-only, stages {source archive, unified diff}
+    # SINGLE SECURITY SIGNAL = THE REAL AWS SECURITY AGENT BOT.
+    # We do NOT run a second headless scan (that redundant path disagreed with the
+    # bot — reported "no findings" while aws-security-agent[bot] flagged real issues
+    # — and produced a false LGTM). Instead this step WAITS for the GitHub App bot's
+    # own review on the PR and MIRRORS its verdict into the dark-factory/security
+    # commit status (findings -> failure -> merge blocked; clean -> success). Because
+    # the consolidated `status` step depends on this step, the pipeline now naturally
+    # waits for the real bot before posting its verdict. Node-only → runs on reviewImage.
+    - name: security-agent
+      activeDeadlineSeconds: {{ add .Values.securityAgent.pollTimeoutSeconds 300 }}
+{{- if .Values.securityAgent.enabled }}
+      # The ONLY step that runs with AWS credentials (review C2). IRSA moved off the
+      # shared dark-factory-workflow SA — which holdout-gate also uses to execute
+      # coder code — onto this dedicated SA. This step never touches the coder's
+      # repo: it stages a diff in S3 and polls the Security Agent API.
+      #
+      # Conditional because dark-factory-security is only created when
+      # securityAgent.enabled; the step itself always renders (it degrades to a
+      # non-fatal pending status), so referencing a missing SA would break pod
+      # creation on the disabled path.
+      serviceAccountName: dark-factory-security
+{{- end }}
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [node]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: BRANCH
+            value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          # Findings at/above this severity fail the status (block the merge). The bot
+          # doesn't expose per-severity counts uniformly, so ANY finding fails unless
+          # BLOCK_LEVEL=none (then findings are advisory). Default medium.
+          - name: BLOCK_LEVEL
+            value: {{ .Values.securityAgent.blockLevel | quote }}
+          - name: POLL_TIMEOUT
+            value: {{ .Values.securityAgent.pollTimeoutSeconds | quote }}
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/security-wait.js
+            subPath: security-wait.js
+        source: |
+          require("/scripts/security-wait.js");
+{{- end }}
+
+{{- if .Values.deployTest.enabled }}
+    # ---- 2d. detect-deployable (P4) — does the diff touch deployable artifacts? ----
+    # Emits `deployable = true|false`, which gates the expensive deploy-test step.
+    # Uses the GitHub compare API (authoritative changed-file list) rather than a
+    # local git diff — a depth-1 clone + depth-1 base fetch share no merge-base, so
+    # `origin/BASE...HEAD` yields nothing (observed: empty file list → false).
+    - name: detect-deployable
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: BRANCH
+            value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          - name: BASE
+            value: "{{`{{workflow.parameters.base-branch}}`}}"
+          - name: K8S_PATTERNS
+            value: {{ .Values.deployTest.k8sPatterns | quote }}
+          - name: TF_PATTERNS
+            value: {{ .Values.deployTest.terraformPatterns | quote }}
+        source: |
+          set -eu
+          FILES="$(GH_TOKEN="$GH_TOKEN" REPO="$REPO" BASE="$BASE" BRANCH="$BRANCH" node -e '
+            const https=require("https");
+            const {GH_TOKEN,REPO,BASE,BRANCH}=process.env;
+            https.get({host:"api.github.com",path:"/repos/"+REPO+"/compare/"+BASE+"..."+BRANCH,headers:{"User-Agent":"df-detect","Authorization":"Bearer "+GH_TOKEN,"Accept":"application/vnd.github+json"}},
+              r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>{try{const j=JSON.parse(b);(j.files||[]).forEach(f=>console.log(f.filename));}catch(e){process.exit(0);}});}).on("error",()=>process.exit(0));
+          ')"
+          echo "[detect] changed files:"; echo "$FILES" | sed 's/^/  /'
+          # Classify: k8s takes precedence over terraform when both are present.
+          if echo "$FILES" | grep -qE "$K8S_PATTERNS"; then KIND=k8s
+          elif echo "$FILES" | grep -qE "$TF_PATTERNS"; then KIND=terraform
+          else KIND=none; fi
+          echo "$KIND" > /tmp/kind
+          echo "[detect] kind=$KIND"
+      outputs:
+        parameters:
+          - name: kind
+            valueFrom:
+              path: /tmp/kind
+              default: "none"
+
+    # ---- 2e. deploy-test (P4) — content-aware; THE ONLY step with K8s access ----
+    # Trusted hub step. Validates the change with the RIGHT tool for its kind:
+    #   kind=k8s       → ephemeral namespace apply + wait Ready + teardown (trap).
+    #   kind=terraform → terraform init -backend=false + validate (+ fmt check).
+    #                    Validation only — NO AWS creds, NO apply (no real infra).
+    # Posts the dark-factory/deploy-test commit status AND a marker PR comment with
+    # the details. Advisory in v1 (deployTest.blocking=false). The untrusted coder
+    # never has K8s access — it only produces the artifacts; this step runs them.
+    - name: deploy-test
+      inputs:
+        parameters:
+          - name: kind
+      activeDeadlineSeconds: {{ .Values.deployTest.timeoutSeconds }}
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.deployTest.image | required "deployTest.image is required — set it in a per-cluster overlay (see values.yaml)" }}
+        command: [bash]
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/comment.js
+            subPath: comment.js
+          - name: review-script
+            mountPath: /scripts/deploy-test.sh
+            subPath: deploy-test.sh
+        env:
+          - name: WF_NAME
+            value: "{{`{{workflow.name}}`}}"
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: BRANCH
+            value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          - name: ISSUE_NUMBER
+            value: "{{`{{workflow.parameters.issue-number}}`}}"
+          - name: KIND
+            value: "{{`{{inputs.parameters.kind}}`}}"
+          - name: MANIFEST_PATH
+            value: {{ .Values.deployTest.manifestPath | quote }}
+          - name: TF_PATH
+            value: {{ .Values.deployTest.terraformPath | quote }}
+          - name: READY_TIMEOUT
+            value: {{ .Values.deployTest.readyTimeoutSeconds | quote }}
+          - name: BLOCKING
+            value: {{ .Values.deployTest.blocking | quote }}
+          # Pod Security + quota for the ephemeral namespace (review: HIGH). Applied
+          # at namespace-create time by deploy-test.sh, since PodSecurity is checked
+          # at pod admission and labelling after create leaves an unchecked window.
+          - name: PSS_MODE
+            value: {{ .Values.deployTest.podSecurityStandard | default "restricted" | quote }}
+          - name: QUOTA_PODS
+            value: {{ (.Values.deployTest.quota).pods | default 20 | quote }}
+          - name: QUOTA_CPU
+            value: {{ (.Values.deployTest.quota).cpu | default 4 | quote }}
+          - name: QUOTA_MEMORY
+            value: {{ (.Values.deployTest.quota).memory | default "8Gi" | quote }}
+        source: |
+          set -eu
+          # All logic lives in review/deploy-test.sh (ConfigMap file) — keeping it out
+          # of this YAML block scalar avoids the shell-quoting hazards that broke
+          # inline multi-line markdown. Kind-driven so it generalizes to new profiles.
+          bash /scripts/deploy-test.sh
+{{- end }}
+
+    # ---- 3. Sticky status — rewrite the PR body from the live verdicts ----
+    # Runs AFTER every verify step (its DAG deps). The coder wrote the PR body at
+    # PR-open time, before verification ran, so its holdout/security/devops lines
+    # are placeholders ("pending"). This step reads the authoritative
+    # dark-factory/* commit STATUSES from GitHub (the source of truth the verify
+    # steps posted) and rewrites the PR body in place with the real verdicts — the
+    # "one live sticky status" from the design (README §7). Idempotent: the body
+    # between the markers is fully regenerated each run.
+    - name: sticky-status
+      inputs:
+        parameters:
+          - name: phase
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: BRANCH
+            value: "df/issue-{{`{{workflow.parameters.issue-number}}`}}"
+          # For the AUTO-FIX loop (status.js): on a ❌ verdict from the real agents,
+          # collect their findings and submit a bounded df-run revision (iterate-note
+          # = the findings) so the coder auto-revises — no human paraphrasing needed.
+          - name: ISSUE_NUMBER
+            value: "{{`{{workflow.parameters.issue-number}}`}}"
+          - name: BASE_BRANCH
+            value: "{{`{{workflow.parameters.base-branch}}`}}"
+          - name: TRIGGER_LABEL
+            value: "{{`{{workflow.parameters.trigger-label}}`}}"
+          - name: ARGO_NAMESPACE
+            value: {{ .Values.argo.namespace | quote }}
+          - name: AUTO_FIX_FINDINGS
+            value: {{ .Values.review.autoFixFindings | default false | quote }}
+          - name: MAX_ITERATIONS
+            value: {{ .Values.iterate.maxIterations | default 3 | quote }}
+{{- if .Values.devopsAgent.enabled }}
+          # Real AWS DevOps Agent posts a check-run (not a commit status) named this;
+          # status.js renders the DevOps row from the check-run when present.
+          - name: DEVOPS_CHECK
+            value: {{ .Values.devopsAgent.checkRunName | quote }}
+{{- end }}
+{{- if and .Values.securityAgent.app .Values.securityAgent.app.enabled }}
+          # Real AWS Security Agent GitHub App posts its own check/inline review;
+          # status.js renders the Security row from it when present (else the
+          # headless dark-factory/security status).
+          - name: SECURITY_CHECK
+            value: {{ .Values.securityAgent.app.checkRunName | quote }}
+{{- end }}
+{{- if .Values.postVerdictReview }}
+          # Post ONE consolidated verdict review (Security + DevOps results) on the
+          # PR so both agents' verdicts are ALWAYS visible in the Reviews section —
+          # the agent Apps review autonomously + inconsistently and cannot be added
+          # via the requested_reviewers API (verified no-op). status.js posts it once,
+          # when verification is terminal (idempotent via a hidden marker).
+          - name: POST_VERDICT_REVIEW
+            value: "true"
+{{- end }}
+          # Holdout is a train/test QUALITY signal, advisory by default — it does NOT
+          # gate the merge verdict unless holdout.blocking=true. status.js reads this
+          # to decide whether a red holdout flips the consolidated verdict.
+          - name: HOLDOUT_BLOCKING
+            value: {{ .Values.holdout.blocking | quote }}
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/status.js
+            subPath: status.js
+        source: |
+          set -eu
+          echo "[df-run] phase={{`{{inputs.parameters.phase}}`}} — updating PR body from live verdicts (${REPO} ${BRANCH})"
+          node /scripts/status.js
+
+    # ---- onExit: release the claim (operator refills the pool) ----
+    - name: teardown
+      resource:
+        action: delete
+        flags: ["--ignore-not-found"]
+        manifest: |
+          apiVersion: extensions.agents.x-k8s.io/v1beta1
+          kind: SandboxClaim
+          metadata:
+            name: df-issue-{{`{{workflow.parameters.issue-id}}`}}
+            namespace: {{ .Values.warmPool.namespace }}

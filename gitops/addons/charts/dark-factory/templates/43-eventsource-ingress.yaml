@@ -1,0 +1,31 @@
+{{- if and .Values.trigger.argoEvents.enabled .Values.trigger.argoEvents.ingress.enabled .Values.trigger.argoEvents.ingress.host }}
+{{- /*
+Ingress for the GitHub webhook EventSource — routes {host}/dark-factory to the
+EventSource service so GitHub webhooks reach it. Mirrors the platform ALB
+pattern used by argo-workflows. Only rendered when an ingress host is set.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dark-factory-webhook
+  namespace: {{ .Values.trigger.argoEvents.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  ingressClassName: platform
+  rules:
+    - host: {{ .Values.trigger.argoEvents.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.trigger.argoEvents.ingress.path | default "/dark-factory" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: dark-factory-github-eventsource-svc
+                port:
+                  number: {{ .Values.trigger.argoEvents.webhookPort | default 12000 }}
+{{- end }}

@@ -1,0 +1,87 @@
+{{- /*
+df-iterate — fired by the Sensor when a HUMAN comments on a Dark Factory PR
+(issue_comment created, on a PR, non-bot). It routes the comment back to the
+coder as a revision request so the coder revises the EXISTING df/issue-N branch.
+
+The issue_comment payload carries the PR number (body.issue.number) and the
+comment text, but NOT the coder branch or the original df issue number. So this
+workflow's first step resolves PR → head.ref (df/issue-<n>) → issue number, then
+submits df-run with iterate-note set (df-run injects it as DF_ITERATE_NOTE; the
+coder appends it to SPEC.md and revises the branch). Bounded by
+review.maxIterations via a label counter on the PR.
+
+Parameters (from the Sensor): repo, pr-number, comment-body, comment-id.
+*/ -}}
+{{- if and .Values.trigger.argoEvents.enabled .Values.iterate.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: df-iterate
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  # Runs in the argo ns as dark-factory-workflow (the sensor SA lives in
+  # argo-events, not here). iterate.js submits a df-run Workflow via the k8s API
+  # using this pod's SA token, so the role needs workflows:create (added in 10-rbac).
+  serviceAccountName: dark-factory-workflow
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: repo
+      - name: pr-number
+      - name: comment-body
+      - name: comment-id
+      - name: comment-author
+        value: ""
+  ttlStrategy:
+    secondsAfterCompletion: {{ .Values.argo.workflowTtlSecondsAfterCompletion | default 604800 }}
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: resolve-and-submit
+            template: resolve-and-submit
+
+    # Resolve PR → issue number, enforce the iteration cap, then submit df-run
+    # with the comment as the revision note. Runs as the sensor SA (can create
+    # Workflows). Uses node (coder image) for the GitHub API + submit via kubectl.
+    - name: resolve-and-submit
+      volumes:
+        - name: review-script
+          configMap:
+            name: df-review
+      script:
+        image: {{ .Values.reviewImage | required "reviewImage is required — an ECR URI is account-specific; the dark-factory registry entry templates it from aws_account_id + aws_region" }}
+        command: [bash]
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.github.tokenSecret }}
+                key: {{ .Values.github.tokenKey }}
+          - name: REPO
+            value: "{{`{{workflow.parameters.repo}}`}}"
+          - name: PR
+            value: "{{`{{workflow.parameters.pr-number}}`}}"
+          - name: COMMENT_BODY
+            value: "{{`{{workflow.parameters.comment-body}}`}}"
+          - name: COMMENT_AUTHOR
+            value: "{{`{{workflow.parameters.comment-author}}`}}"
+          - name: MAX_ITERATIONS
+            value: {{ .Values.iterate.maxIterations | quote }}
+          - name: ARGO_NAMESPACE
+            value: {{ .Values.argo.namespace }}
+          - name: BIFROST_URL
+            value: {{ .Values.bifrost.url | quote }}
+          - name: CODER_PROFILE
+            value: {{ .Values.coder.engine | quote }}
+        volumeMounts:
+          - name: review-script
+            mountPath: /scripts/iterate.js
+            subPath: iterate.js
+        source: |
+          set -eu
+          echo "[df-iterate] PR #${PR} in ${REPO} — resolving branch + submitting revision"
+          node /scripts/iterate.js
+{{- end }}

@@ -1,0 +1,47 @@
+{{- if .Values.networkPolicy.adminDenyControlPlane }}
+{{- /*
+Admin-tier ClusterNetworkPolicy — the AUTHORITATIVE control-plane isolation for
+coder sandboxes on the hub.
+
+Why this and not only the standard NetworkPolicy (30-networkpolicy.yaml):
+  1. EKS VPC-CNI standard NetworkPolicy "are only applied to Pods that are part
+     of a Deployment" — coder pods are owned by a `Sandbox` CR (not a
+     Deployment), so a namespaced NetworkPolicy does not reliably apply to them.
+  2. Standard NetworkPolicy egress ipBlock is matched on the Service ClusterIP
+     before kube-proxy DNAT, so control-plane Services (172.20.x) slip past an
+     ipBlock `except`.
+Admin-tier ClusterNetworkPolicy with a Deny action is evaluated FIRST, wins over
+everything, and applies regardless of pod ownership — the correct primitive for
+"untrusted coder must never reach the hub control plane".
+
+Requires: VPC-CNI ≥ 1.21 with the ClusterNetworkPolicy CRD
+(networking.k8s.aws/v1alpha1).
+*/ -}}
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ClusterNetworkPolicy
+metadata:
+  name: coder-sandbox-deny-control-plane
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+spec:
+  tier: Admin
+  priority: {{ .Values.networkPolicy.adminPriority | default 10 }}
+  subject:
+    namespaces:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ include "agent-sandbox.namespace" . }}
+  egress:
+    # Deny the coder any egress to the hub control-plane / sensitive namespaces.
+    # Deny wins and cannot be overridden by a namespace-scoped policy.
+    - action: Deny
+      name: deny-control-plane-namespaces
+      to:
+        - namespaces:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- range .Values.networkPolicy.controlPlaneNamespaces }}
+                  - {{ . | quote }}
+                  {{- end }}
+{{- end }}

@@ -1,0 +1,101 @@
+{{- /*
+SandboxTemplate — the podTemplate the warm pool (and Dark Factory claims) are
+cloned from. Encodes the isolation invariants for running untrusted,
+LLM-generated code:
+  - runtimeClassName: a Kata micro-VM (own kernel), not a shared-kernel container
+  - automountServiceAccountToken: false (no in-cluster API creds by default)
+  - runAsNonRoot + restricted seccomp + drop ALL caps
+  - workspace on an ephemeral PVC (per claim), model access via Bifrost only
+The concrete coder image (claude-code | kiro) and per-claim secrets are patched
+in by the consumer when it binds a SandboxClaim.
+*/ -}}
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ .Values.warmPool.templateName }}
+  namespace: {{ include "agent-sandbox.namespace" . }}
+  labels:
+    {{- include "agent-sandbox.labels" . | nindent 4 }}
+spec:
+  # Flow B (the Dark Factory) drives each claimed coder by injecting per-claim env
+  # (SPEC, target repo, branch, profile) via SandboxClaim.spec.env. The operator
+  # rejects that injection unless the template opts in — default is Disallowed.
+  # `Allowed` lets a claim ADD env vars (it cannot override the template's own,
+  # e.g. BIFROST_URL — use `Overrides` for that). Verified against the live CRD:
+  # without this, claims fail with reason=EnvVarsInjectionRejected.
+  envVarsInjectionPolicy: {{ .Values.coderTemplate.envVarsInjectionPolicy | default "Allowed" }}
+  podTemplate:
+    metadata:
+      labels:
+        {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
+        agent-sandbox.io/role: coder
+    spec:
+      {{- /* Warm-pool VMM selected by kata.vmm (a key of kata.runtimeClasses).
+             runtimeClassName + matching node scheduling both come from that one
+             entry, so flipping kata.vmm moves the pool onto the right pool. */ -}}
+      {{- $rc := index .Values.kata.runtimeClasses .Values.kata.vmm | required (printf "kata.vmm=%q has no matching entry in kata.runtimeClasses" .Values.kata.vmm) }}
+      runtimeClassName: {{ $rc.name }}
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml $rc.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml $rc.tolerations | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coder
+          image: {{ .Values.coderTemplate.image | required "coderTemplate.image is required — set it in a per-cluster overlay (see values.yaml)" }}
+          # Warm pods start BEFORE a claim injects env, so the coder can't run at
+          # boot. This command idles until the SandboxClaim injects DF_ISSUE_NUMBER
+          # (Flow B), then execs the baked-in coder entrypoint. When the image has
+          # no entrypoint (e.g. the busybox placeholder), it just idles — safe for
+          # the warm pool. Consumers other than Flow B simply never set DF_*.
+          command:
+            {{- toYaml .Values.coderTemplate.command | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # This platform uses Bifrost (not LiteLLM) as the LLM gateway.
+            - name: BIFROST_URL
+              value: {{ .Values.coderTemplate.bifrostUrl | quote }}
+          resources:
+            {{- toYaml .Values.coderTemplate.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.coderTemplate.secretsMount.enabled }}
+            # Short-TTL GitHub token (+ optional Bifrost key) the coder reads at
+            # /etc/secrets — mode 0400, never in env. The coder uses gh-token to
+            # clone/push + open the PR; Bifrost auth is optional on this platform.
+            - name: coder-secrets
+              mountPath: /etc/secrets
+              readOnly: true
+            {{- end }}
+      volumes:
+        # Ephemeral per-claim workspace. SandboxTemplate.spec only supports
+        # podTemplate (verified against the live CRD — it has NO
+        # volumeClaimTemplates field; that belongs on the Sandbox CR). Use an
+        # emptyDir sized by coderTemplate.workspaceSizeGi; consumers that need a
+        # persistent workspace across scale-to-zero set spec.volumeClaimTemplates
+        # on the Sandbox CR they create from this template.
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ .Values.coderTemplate.workspaceSizeGi }}Gi
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.coderTemplate.secretsMount.enabled }}
+        - name: coder-secrets
+          secret:
+            secretName: {{ .Values.coderTemplate.secretsMount.secretName }}
+            defaultMode: 0400
+        {{- end }}

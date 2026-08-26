@@ -1,0 +1,21 @@
+# Default tenant cluster provisioning values.
+# Consumed by the platform `clusters` ApplicationSet (matrix generator globs
+# fleet/spoke-values/tenants/*/crossplane-clusters/values.yaml). Each key becomes
+# a PlatformCluster claim → Crossplane provisions a spoke EKS cluster.
+#
+# region defaults to the hub region (the ApplicationSet injects
+# global.defaultRegion from the hub cluster secret's aws_region annotation),
+# so it is intentionally omitted here — both spokes run in the hub region.
+clusters:
+  spoke-dev:
+    clusterName: spoke-dev
+    vpcCidr: "10.1.0.0/16"
+    kubernetesVersion: "1.35"
+    autoMode: true
+    resourcePrefix: peeks
+  spoke-prod:
+    clusterName: spoke-prod
+    vpcCidr: "10.2.0.0/16"
+    kubernetesVersion: "1.35"
+    autoMode: true
+    resourcePrefix: peeks

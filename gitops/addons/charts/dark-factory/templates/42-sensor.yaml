@@ -1,0 +1,379 @@
+{{- if .Values.trigger.argoEvents.enabled }}
+{{- /*
+Sensor — the Flow B trigger brain. Subscribes to the GitHub EventSource on the
+EventBus, filters for the events Flow B acts on, and submits the matching
+Argo Workflow. P1 wires the issue-labeled → df-run path; the iterate / merge
+triggers (PR comment, review approved) are stubbed for P2+.
+
+The Sensor's own ServiceAccount needs to CREATE Workflows in the argo namespace
+(and read WorkflowTemplates). That SA + RBAC are defined below.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dark-factory-sensor
+  namespace: {{ .Values.trigger.argoEvents.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+---
+# The Sensor submits Workflows into the argo namespace → needs create there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dark-factory-sensor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtemplates"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dark-factory-sensor
+  namespace: {{ .Values.argo.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: dark-factory-sensor
+    namespace: {{ .Values.trigger.argoEvents.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dark-factory-sensor
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: dark-factory
+  namespace: {{ .Values.trigger.argoEvents.namespace }}
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+spec:
+  template:
+    serviceAccountName: dark-factory-sensor
+  dependencies:
+    # TWO label dependencies — one per substrate — so each fires a DIFFERENT
+    # WorkflowTemplate (Argo Events trigger conditions can only reference dependency
+    # NAMES, not field values, so routing by label ⇒ separate dependencies + triggers):
+    #   issue-labeled-kata   → df-run         (certified Kata pipeline)
+    #   issue-labeled-lambda → df-run-lambda  (Flow D MicroVM-native pipeline)
+    - name: issue-labeled-kata
+      eventSourceName: dark-factory-github
+      eventName: dark-factory
+      filters:
+        data:
+          - path: headers.X-Github-Event
+            type: string
+            value: ["issues"]
+          - path: body.action
+            type: string
+            value: ["labeled"]
+          - path: body.label.name
+            type: string
+            value: ["dark-factory"]
+    - name: issue-labeled-lambda
+      eventSourceName: dark-factory-github
+      eventName: dark-factory
+      filters:
+        data:
+          - path: headers.X-Github-Event
+            type: string
+            value: ["issues"]
+          - path: body.action
+            type: string
+            value: ["labeled"]
+          - path: body.label.name
+            type: string
+            value: ["darkfactory-lambda"]
+    - name: pr-approved
+      eventSourceName: dark-factory-github
+      eventName: dark-factory
+      filters:
+        data:
+          # A human APPROVED a review on a df/issue-N PR → merge + teardown.
+          - path: headers.X-Github-Event
+            type: string
+            value: ["pull_request_review"]
+          - path: body.action
+            type: string
+            value: ["submitted"]
+          - path: body.review.state
+            type: string
+            value: ["approved"]
+          - path: body.pull_request.head.ref
+            type: string
+            # Only Dark Factory branches (df/issue-<n>); string values are regex.
+            value: ["df/issue-.*"]
+{{- if .Values.iterate.enabled }}
+    - name: pr-commented
+      eventSourceName: dark-factory-github
+      eventName: dark-factory
+      filters:
+        data:
+          # A human commented on a PR → bounded df-iterate. issue_comment fires for
+          # both issues and PRs; require the PR link.
+          - path: headers.X-Github-Event
+            type: string
+            value: ["issue_comment"]
+          - path: body.action
+            type: string
+            value: ["created"]
+          - path: body.issue.pull_request.url
+            type: string
+            value: ["https://.*"]
+          - path: body.comment.user.type
+            type: string
+            value: ["User"]
+          # SELF-TRIGGER GUARD (important): the factory's OWN comments (sticky status,
+          # findings, iteration notices) are posted with a real PAT → user.type="User",
+          # so the data check above does NOT exclude them. Each such comment would
+          # otherwise CREATE a df-iterate workflow (even though iterate.js then no-ops on
+          # the marker) — noisy runaway of empty workflows. So we ALSO exclude them HERE,
+          # at the sensor, with an EXPRESSION filter (govaluate — see the note below):
+          # drop any comment whose body contains a "dark-factory:" marker, so no workflow
+          # is even created. iterate.js keeps the marker + bot + identity guards as
+          # defense-in-depth (this expr is the primary stop).
+        exprs:
+          # govaluate syntax — NOT expr-lang. argo-events evaluates `expr` with
+          # Knetic/govaluate (docs/sensors/filters/expr.md), whose regex comparators are
+          # `=~` / `!~`; it has NO `matches` or `contains` keywords. The previous
+          # expr-lang-style expression failed to TOKENIZE, so this dependency was
+          # discarded on EVERY event with
+          #   expr filter error (Cannot transition token types from VARIABLE
+          #   [body_comment_body] to VARIABLE [matches])
+          # i.e. pr-commented could never be satisfied and df-iterate NEVER ran — the
+          # self-trigger guard "worked" only by dropping humans too. `!~` treats the RHS
+          # as a Go regexp, so this is a plain substring exclusion.
+          - expr: 'body_comment_body !~ "dark-factory:"'
+            fields:
+              - name: body_comment_body
+                path: body.comment.body
+{{- end }}
+  triggers:
+    # ---- KATA: dark-factory label → df-run (certified pipeline) ----
+    - template:
+        name: submit-df-run
+        conditions: "issue-labeled-kata"
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                # DEDUP: deterministic name keyed on the GitHub issue id (globally
+                # unique). GitHub delivers the `labeled` webhook more than once
+                # (delivery retries + rapid re-labels), so without this each
+                # delivery spawned a competing df-run that force-pushed its own
+                # commit and split the commit statuses across SHAs. With a fixed
+                # name, the 2nd+ submit collides (AlreadyExists) and is a harmless
+                # no-op — one issue = one in-flight run.
+                name: df-run-pending
+                namespace: {{ .Values.argo.namespace }}
+              spec:
+                workflowTemplateRef:
+                  name: df-run
+                arguments:
+                  parameters:
+                    - name: issue-id
+                    - name: issue-number
+                    - name: repo
+                    - name: issue-title
+                    - name: issue-body
+                    - name: base-branch
+                    - name: trigger-label
+          parameters:
+            - src:
+                dependencyName: issue-labeled-kata
+                dataTemplate: "df-run-{{ `{{ .Input.body.issue.id | int64 }}` }}"
+              dest: metadata.name
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.issue.id
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.issue.number
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.repository.full_name
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.issue.title
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.issue.body
+              dest: spec.arguments.parameters.4.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.repository.default_branch
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: issue-labeled-kata
+                dataKey: body.label.name
+              dest: spec.arguments.parameters.6.value
+
+    # ---- LAMBDA: darkfactory-lambda label → df-run-lambda (Flow D MicroVM) ----
+    - template:
+        name: submit-df-run-lambda
+        conditions: "issue-labeled-lambda"
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                name: df-run-lambda-pending
+                namespace: {{ .Values.argo.namespace }}
+              spec:
+                workflowTemplateRef:
+                  name: df-run-lambda
+                arguments:
+                  parameters:
+                    - name: issue-id
+                    - name: issue-number
+                    - name: repo
+                    - name: issue-title
+                    - name: issue-body
+                    - name: base-branch
+                    - name: trigger-label
+          parameters:
+            # Dedup key = df-run-lambda-<issue-NUMBER> (stable across first run + fix
+            # rounds → one workflow name per issue, matching the mvm-<number> CR).
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataTemplate: "df-run-lambda-{{ `{{ .Input.body.issue.number }}` }}"
+              dest: metadata.name
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.issue.id
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.issue.number
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.repository.full_name
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.issue.title
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.issue.body
+              dest: spec.arguments.parameters.4.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.repository.default_branch
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: issue-labeled-lambda
+                dataKey: body.label.name
+              dest: spec.arguments.parameters.6.value
+
+    # ---- PR review approved → df-merge-teardown (the ONLY merge path) ----
+    - template:
+        name: submit-df-merge
+        conditions: "pr-approved"
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                # Dedup per PR head SHA so repeated approvals don't double-merge.
+                name: df-merge-pending
+                namespace: {{ .Values.argo.namespace }}
+              spec:
+                workflowTemplateRef:
+                  name: df-merge-teardown
+                arguments:
+                  parameters:
+                    - name: issue-number
+                    - name: repo
+                    - name: pr-number
+          parameters:
+            # Name = df-merge-<pr-head-sha> (unique per reviewed commit).
+            - src:
+                dependencyName: pr-approved
+                dataTemplate: "df-merge-{{ `{{ .Input.body.pull_request.head.sha | trunc 12 }}` }}"
+              dest: metadata.name
+            # issue-number parsed from the branch ref df/issue-<n>.
+            - src:
+                dependencyName: pr-approved
+                dataTemplate: "{{ `{{ .Input.body.pull_request.head.ref | trimPrefix \"df/issue-\" }}` }}"
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: pr-approved
+                dataKey: body.repository.full_name
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: pr-approved
+                dataKey: body.pull_request.number
+              dest: spec.arguments.parameters.2.value
+{{- if .Values.iterate.enabled }}
+    # ---- PR comment → df-iterate (bounded revision loop) ----
+    - template:
+        name: submit-df-iterate
+        conditions: "pr-commented"
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                # Dedup per comment id so a duplicate webhook is a no-op.
+                name: df-iterate-pending
+                namespace: {{ .Values.argo.namespace }}
+              spec:
+                workflowTemplateRef:
+                  name: df-iterate
+                arguments:
+                  parameters:
+                    - name: repo
+                    - name: pr-number
+                    - name: comment-body
+                    - name: comment-id
+                    - name: comment-author
+          parameters:
+            - src:
+                dependencyName: pr-commented
+                dataTemplate: "df-iterate-{{ `{{ .Input.body.comment.id | int64 }}` }}"
+              dest: metadata.name
+            - src:
+                dependencyName: pr-commented
+                dataKey: body.repository.full_name
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: pr-commented
+                dataKey: body.issue.number
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: pr-commented
+                dataKey: body.comment.body
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: pr-commented
+                dataKey: body.comment.id
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: pr-commented
+                dataKey: body.comment.user.login
+              dest: spec.arguments.parameters.4.value
+{{- end }}
+{{- end }}

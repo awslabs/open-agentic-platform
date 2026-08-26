@@ -1,0 +1,49 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="Dark Factory — issue to merged PR" id="dfflow">
+    <mxGraphModel dx="1700" dy="1000" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="620" math="0" shadow="0" background="#0B0F17">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Dark Factory — GitHub issue → autonomous, reviewed, merged PR" style="text;html=1;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontFamily=Helvetica;fontColor=#F5A623;" vertex="1" parent="1">
+          <mxGeometry x="60" y="28" width="1200" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Untrusted, code-writing agents run inside hardware-isolated Kata micro-VMs, next to the control plane — safely." style="text;html=1;align=left;verticalAlign=middle;fontSize=14;fontFamily=Helvetica;fontColor=#9AA7B8;" vertex="1" parent="1">
+          <mxGeometry x="62" y="66" width="1200" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Row 1: trigger + sandbox -->
+        <mxCell id="issue" value="🏷️  GitHub issue&#10;labeled dark-factory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1A1F2B;strokeColor=#6E7681;fontColor=#E6EDF3;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="70" y="130" width="200" height="80" as="geometry" /></mxCell>
+        <mxCell id="sensor" value="Argo Events&#10;Sensor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="330" y="130" width="170" height="80" as="geometry" /></mxCell>
+        <mxCell id="dfrun" value="df-run&#10;Argo Workflow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="560" y="130" width="170" height="80" as="geometry" /></mxCell>
+        <mxCell id="vm" value="🔒 Kata micro-VM&#10;&#10;coder: Claude Code / Kiro&#10;credential-less · network-locked" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#241436;strokeColor=#A06BD6;fontColor=#E3CBF7;fontSize=12;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="790" y="118" width="300" height="104" as="geometry" /></mxCell>
+        <mxCell id="pr" value="🔀 Pull Request&#10;opened" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1A1F2B;strokeColor=#6E7681;fontColor=#E6EDF3;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1150" y="130" width="200" height="80" as="geometry" /></mxCell>
+
+        <!-- Row 2: reviews (DevOps then Security) + gates -->
+        <mxCell id="devops" value="AWS DevOps Agent&#10;release readiness&#10;(cross-repo · standards · access-control)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#14100A;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=13;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="70" y="300" width="300" height="86" as="geometry" /></mxCell>
+        <mxCell id="sec" value="AWS Security Agent&#10;code security review&#10;(OWASP · secrets · IAM · deps)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#14100A;strokeColor=#EC7211;fontColor=#F6B27A;fontSize=13;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="430" y="300" width="300" height="86" as="geometry" /></mxCell>
+        <mxCell id="gates" value="Holdout gate&#10;terraform validate&#10;ephemeral deploy-test" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="790" y="300" width="300" height="86" as="geometry" /></mxCell>
+        <mxCell id="human" value="👤 Human&#10;approve?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#0F2A1A;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1170" y="292" width="160" height="102" as="geometry" /></mxCell>
+
+        <!-- Row 3: merge -->
+        <mxCell id="merge" value="df-merge-teardown&#10;squash-merge + reap the sandbox VM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12314F;strokeColor=#2570B8;fontColor=#8EC5FF;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="790" y="470" width="300" height="72" as="geometry" /></mxCell>
+        <mxCell id="done" value="✅ Merged to main" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F2A1A;strokeColor=#3FA060;fontColor=#B8E8C8;fontSize=14;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1150" y="474" width="200" height="64" as="geometry" /></mxCell>
+
+        <!-- edges row1 -->
+        <mxCell id="a1" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="issue" target="sensor"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a2" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="sensor" target="dfrun"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a3" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="dfrun" target="vm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a4" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="vm" target="pr"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <!-- pr down to devops -->
+        <mxCell id="a5" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="pr" target="devops"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1250" y="250" /><mxPoint x="220" y="250" /></Array></mxGeometry></mxCell>
+        <!-- devops -> sec -> gates -> human -->
+        <mxCell id="a6" value="cleared" style="endArrow=block;html=1;strokeColor=#EC7211;strokeWidth=2;fontColor=#F6B27A;fontSize=11;" edge="1" parent="1" source="devops" target="sec"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a7" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="sec" target="gates"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a8" style="endArrow=block;html=1;strokeColor=#4A5A70;strokeWidth=2;" edge="1" parent="1" source="gates" target="human"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <!-- human -> merge -> done -->
+        <mxCell id="a9" value="yes" style="endArrow=block;html=1;strokeColor=#3FA060;strokeWidth=2;fontColor=#B8E8C8;fontSize=11;" edge="1" parent="1" source="human" target="merge"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a10" style="endArrow=block;html=1;strokeColor=#3FA060;strokeWidth=2;" edge="1" parent="1" source="merge" target="done"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
