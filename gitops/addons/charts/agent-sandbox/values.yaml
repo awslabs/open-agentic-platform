@@ -263,7 +263,11 @@ warmPool:
   enabled: true
   # Number of idle sandboxes to keep ready. Claim one → pool-manager refills;
   # release one → pool-manager shrinks back to this target.
-  targetIdle: 3
+  # 1, not 3: each idle sandbox is a real Kata micro-VM holding EC2 capacity, and a
+  # demonstrator/workshop cluster claims one at a time — three idle VMs is standing
+  # cost with nothing to show for it. Raise it where concurrent claims are expected
+  # (the pool refills after each claim, so 1 only costs a cold-start on claim #2).
+  targetIdle: 1
   # Idle sandboxes scale to replicas:0 after this TTL (PVC retained); resume on
   # demand. Set 0 to keep idle sandboxes running (higher cost, instant claim).
   idleScaleToZeroSeconds: 900

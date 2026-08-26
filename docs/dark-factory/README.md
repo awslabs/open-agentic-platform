@@ -816,8 +816,9 @@ aws secretsmanager create-secret --region "$REGION" \
 
 > **`SANDBOX` is the cluster running the warm pool, which is now the hub.** `df-run`'s claim step
 > creates a `SandboxClaim` with no cross-cluster mechanism, so the pool must sit on the same cluster
-> as Argo — `agent_sandbox: true` lives in `overlays/environments/control-plane/enabled-addons.yaml`
-> and is `false` for `dev`. All three secrets therefore land under `hub/` today. The `<cluster>/`
+> as Argo. `agent_sandbox` lives in `overlays/environments/control-plane/enabled-addons.yaml` and is
+> now `false` there by default (explicit opt-in — see FLOW-D-ENABLEMENT.md §E1); set it, plus
+> `agent_sandbox_kata` and `kata_nodepool`, to run the Kata path. All three secrets land under `hub/`. The `<cluster>/`
 > prefix resolves from each cluster's own `aws_cluster_name` annotation, so if you move the pool back
 > to a spoke, only this variable changes.
 

@@ -239,6 +239,37 @@ become *applicable*, all error, and the gate hard-fails at 0%. Do **not** "fix" 
 
 ## Part E — Enable, sync, and trigger
 
+### E1. Opt in (nothing renders without this)
+
+Flow D is **off by default**. One label gates the whole stack — the pipeline chart, the Lambda MicroVM
+substrate, and the pre-GA `lambdamicrovms` ACK controller:
+
+```yaml
+# gitops/overlays/environments/control-plane/enabled-addons.yaml
+enabledAddons:
+  dark_factory: true
+```
+
+Skip this and none of the three ArgoCD Applications are created at all — no error, they simply never
+appear, because the registry entries select on `enable_dark_factory`.
+
+Flow D's Lambda substrate needs nothing else. But `df-run` (Flow A/B, the **Kata** path) claims from
+the Kata warm pool, so if you also want that path, these three must go true **together** — the warm
+pool is the demand that scales the NodePool up, and either half alone misbehaves:
+
+```yaml
+  agent_sandbox: true        # operator + CRDs + SandboxTemplate + warm pool
+  agent_sandbox_kata: true   # the clh/qemu runtime on the node
+  kata_nodepool: true        # dedicated Karpenter NodePool for nested-virt nodes
+```
+
+`agent_sandbox: true` with `kata_nodepool: false` leaves warm pods **Pending** forever (no node carries
+the kata taint); the reverse leaves a NodePool idle at 0 nodes. The warm pool keeps **one** idle sandbox
+by default (`warmPool.targetIdle`) — each is a real Kata micro-VM holding EC2 capacity, so raise it only
+where concurrent claims are expected.
+
+### E2. Point the substrate at your image
+
 ```yaml
 # clusters/<cluster>/agent-sandbox-lambda/values.yaml
 microvm:

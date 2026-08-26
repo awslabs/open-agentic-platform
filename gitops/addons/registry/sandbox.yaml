@@ -334,6 +334,25 @@ dark-factory:
     argocd.argoproj.io/sync-wave: '3'
   selectorMatchLabels:
     environment: control-plane
+  # OPT-IN. ONE label gates the whole Dark Factory / Flow D stack: this chart, the
+  # Lambda MicroVM substrate (agent-sandbox-lambda), and the pre-GA lambdamicrovms
+  # ACK controller. Without it these three rendered on EVERY control-plane cluster —
+  # `environment: control-plane` alone is a placement selector, not a capability gate,
+  # so a fresh install got Flow D whether or not it asked for it. That is not merely
+  # idle: trigger.argoEvents.repositories defaults to replace-me-owner/replace-me-repo,
+  # so the EventSource polls a repo that cannot exist and the sensor emits continuous
+  # failures with nothing connected. Mirrors the enable_* gate every other registry
+  # entry already carries (see agentcore.yaml's enable_agent_core).
+  #
+  # Deliberately ONE label rather than a separate enable_agent_sandbox_lambda: opting
+  # in to Flow D therefore also installs the Lambda MicroVM substrate + controller.
+  # The substrate itself stays dormant behind the chart's own microvm.enabled=false,
+  # but the ACK controller does install — accepted trade for a single knob.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
   valuesObject:
     # Bifrost gateway URL, shared by the in-VM coder AND the hub-side
     # holdout/review steps. Defaults to the PINNED ClusterIP (bifrost chart
@@ -451,6 +470,13 @@ agent-sandbox-lambda:
     argocd.argoproj.io/sync-wave: '2'
   selectorMatchLabels:
     environment: control-plane
+  # OPT-IN via the SAME single label as the dark-factory entry above (see the long
+  # note there): one knob provisions the whole Flow D stack, or none of it.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
   valuesObject:
     # Same reason as the dark-factory entry above: this chart's shim also creates
     # PodIdentityAssociations whose roleARN embeds the account + cluster. The chart
@@ -498,6 +524,13 @@ ack-lambdamicrovms:
     argocd.argoproj.io/sync-wave: '0'
   selectorMatchLabels:
     environment: control-plane
+  # OPT-IN via the SAME single label as the dark-factory entry above (see the long
+  # note there): one knob provisions the whole Flow D stack, or none of it.
+  selector:
+    matchExpressions:
+      - key: enable_dark_factory
+        operator: In
+        values: ['true']
   # ACK chart reads these at the ROOT of values (chart v0.1.1). The controller
   # reconciles the Microvm + MicrovmImage CRDs; it uses EKS Pod Identity for AWS
   # auth (empty SA annotations — the pod-identity association is created out of

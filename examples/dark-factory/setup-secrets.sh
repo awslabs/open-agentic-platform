@@ -73,7 +73,8 @@ REGION="${REGION:-us-west-2}"
 
 # Both Argo AND the warm pool live on cluster `hub`: df-run's claim step creates a
 # SandboxClaim with no cross-cluster mechanism, so the pool must sit beside Argo
-# (agent_sandbox: true in overlays/environments/control-plane, false in dev).
+# (agent_sandbox in overlays/environments/control-plane/enabled-addons.yaml — now false by
+# default, explicit opt-in; see docs/dark-factory/FLOW-D-ENABLEMENT.md §E1).
 #
 # These are `aws_cluster_name` ANNOTATION values — the registry interpolates them
 # into the SM key as <cluster>/dark-factory/github/*. They are not kubectl context

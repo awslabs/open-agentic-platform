@@ -79,7 +79,14 @@ enabledAddons:
   # a pending pod matches the kata taint + label. The warm pool below IS that
   # demand — which is why "wait for a kata node" could never have been the gate.
   karpenter: true
-  kata_nodepool: true
+  # OFF BY DEFAULT (explicit opt-in). Provisions a dedicated Karpenter NodePool +
+  # EC2NodeClass (kata-nested) for nested-virt kata nodes. The selector
+  # (enable_kata_nodepool) already existed, but committing `true` here meant a fresh
+  # install provisioned the pool regardless — real EC2 capacity for a capability the
+  # cluster may not want. Karpenter is demand-driven so an unused pool holds 0 nodes,
+  # but the CRs are still created and reconciled. Set true together with
+  # agent_sandbox + agent_sandbox_kata below.
+  kata_nodepool: false
   # ACK controllers
   ack_iam: false
   ack_eks: false
@@ -124,7 +131,22 @@ enabledAddons:
   # this cluster's aws_account_id + aws_region annotations — so NO per-cluster
   # overlay is needed. The image itself still has to be built into that account's
   # ECR at the pinned tag, or the warm pods report ImagePullBackOff.
-  agent_sandbox: true
+  # OFF BY DEFAULT (explicit opt-in) — see kata_nodepool above. This one label gates
+  # BOTH the operator (sandbox CRDs) and the capability chart (RuntimeClasses,
+  # SandboxTemplate, warm pool). The warm pool is the demand that makes the kata
+  # NodePool scale up, so enabling this without kata_nodepool leaves warm pods
+  # Pending, and enabling kata_nodepool without this leaves the pool idle at 0.
+  # NOTE: dark_factory below CLAIMS from this warm pool (df-run's claim step), so
+  # Flow A/B needs this true; Flow D's Lambda substrate does not.
+  agent_sandbox: false
   # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
   # Required, or the warm pool's runtimeClassName has no handler on the node.
-  agent_sandbox_kata: true
+  agent_sandbox_kata: false
+  # Dark Factory / Flow D — OFF BY DEFAULT (explicit opt-in). This ONE label gates
+  # the pipeline chart, the Lambda MicroVM substrate (agent-sandbox-lambda) and the
+  # pre-GA lambdamicrovms ACK controller — see gitops/addons/registry/sandbox.yaml.
+  # Set true only on a cluster that has a real GitHub repo wired into
+  # trigger.argoEvents.repositories; the shipped default is
+  # replace-me-owner/replace-me-repo, which makes the EventSource poll a repo that
+  # cannot exist and the sensor fail continuously.
+  dark_factory: false
