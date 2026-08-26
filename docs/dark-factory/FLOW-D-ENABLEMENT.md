@@ -253,20 +253,39 @@ enabledAddons:
 Skip this and none of the three ArgoCD Applications are created at all — no error, they simply never
 appear, because the registry entries select on `enable_dark_factory`.
 
-Flow D's Lambda substrate needs nothing else. But `df-run` (Flow A/B, the **Kata** path) claims from
-the Kata warm pool, so if you also want that path, these three must go true **together** — the warm
-pool is the demand that scales the NodePool up, and either half alone misbehaves:
+`dark_factory` is not sufficient on its own — **`agent_sandbox: true` is also required**, even for a
+Lambda-only deployment:
 
 ```yaml
-  agent_sandbox: true        # operator + CRDs + SandboxTemplate + warm pool
-  agent_sandbox_kata: true   # the clh/qemu runtime on the node
+  agent_sandbox: true        # REQUIRED by Flow D too — see below
+```
+
+The `agent-sandbox-operator` (gated by `enable_agent_sandbox`) is the only thing that installs the
+`Sandbox*` CRDs, and the Lambda substrate itself renders a `SandboxTemplate` (the bridge) plus a
+`SandboxWarmPool`. Neither of those CRs carries `SkipDryRunOnMissingResource`, and ArgoCD computes an
+app's whole diff before applying any sync wave, so with the CRDs absent the `agent-sandbox-lambda`
+Application fails at comparison — the same shape as the ComparisonError described in E2 below, and it
+does **not** self-heal. The operator is cheap: CRDs plus one controller Deployment, no EC2 capacity.
+
+The **Kata** runtime flags are genuinely optional for Flow D, and only needed for `df-run` (Flow A/B),
+which claims from the Kata warm pool:
+
+```yaml
+  agent_sandbox_kata: true   # the clh/qemu runtime binaries on the node (kata-deploy)
   kata_nodepool: true        # dedicated Karpenter NodePool for nested-virt nodes
 ```
 
-`agent_sandbox: true` with `kata_nodepool: false` leaves warm pods **Pending** forever (no node carries
-the kata taint); the reverse leaves a NodePool idle at 0 nodes. The warm pool keeps **one** idle sandbox
-by default (`warmPool.targetIdle`) — each is a real Kata micro-VM holding EC2 capacity, so raise it only
-where concurrent claims are expected.
+Enable those two **together** or not at all: `kata_nodepool` alone leaves a NodePool idle at 0 nodes,
+and the runtime alone gives you a handler with no node to run on. Note the split — `kata-deploy` ships
+the runtime binaries but is configured `runtimeClasses.enabled: false`, so the three RuntimeClasses
+(`kata-clh`, `kata-fc`, `kata-qemu`) come from the `agent-sandbox` chart instead. Both halves are
+needed for a working Kata sandbox.
+
+⚠️ **Flow-D-only clusters:** `agent_sandbox: true` also renders the Kata `SandboxWarmPool`
+(`coder-warmpool`, `warmPool.targetIdle: 1`). Its pods pin `nodeSelector
+katacontainers.io/kata-runtime=true` and tolerate the `kata` taint, which only `kata-nodepool` creates —
+so without the two Kata flags that one warm pod sits **Pending** indefinitely. Harmless but untidy; set
+`warmPool.enabled: false` in a per-cluster `agent-sandbox` overlay if you want Flow D with no Kata path.
 
 ### E2. Point the substrate at your image
 

@@ -136,8 +136,14 @@ enabledAddons:
   # SandboxTemplate, warm pool). The warm pool is the demand that makes the kata
   # NodePool scale up, so enabling this without kata_nodepool leaves warm pods
   # Pending, and enabling kata_nodepool without this leaves the pool idle at 0.
-  # NOTE: dark_factory below CLAIMS from this warm pool (df-run's claim step), so
-  # Flow A/B needs this true; Flow D's Lambda substrate does not.
+  # REQUIRED BY dark_factory TOO, not just Flow A/B: this gates the operator, which
+  # is the ONLY source of the Sandbox* CRDs, and the agent-sandbox-lambda chart
+  # renders a SandboxTemplate + SandboxWarmPool. Neither CR carries
+  # SkipDryRunOnMissingResource, and ArgoCD diffs a whole app before applying any
+  # wave, so with the CRDs absent that Application fails at COMPARISON and does not
+  # self-heal. So: dark_factory: true REQUIRES agent_sandbox: true. The Kata flags
+  # (agent_sandbox_kata, kata_nodepool) stay optional — they matter only for the
+  # Kata path, whose warm pool df-run claims from.
   agent_sandbox: false
   # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
   # Required, or the warm pool's runtimeClassName has no handler on the node.
