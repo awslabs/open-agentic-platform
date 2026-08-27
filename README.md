@@ -6,7 +6,7 @@ Amazon EKS — installed with one command.**
 OAP turns a set of EKS clusters into an agent platform: a place where a team can onboard a model,
 declare an agent as a Kubernetes resource, give it tools (MCP), memory, a browser, and a code
 interpreter, wire multiple agents together (A2A), secure every hop with real identity, and watch it
-all through end-to-end traces — entirely via GitOps. It ships with a hands-on workshop and two
+all through end-to-end traces — entirely via GitOps. It ships with two
 flagship patterns: a **multi-agent financial-services** system and the **Dark Factory** autonomous
 coding pipeline running in hardware-isolated micro-VM sandboxes.
 
@@ -78,7 +78,7 @@ ApplicationSets. Status reflects the current reference deployment.
 
 | Capability | Delivered by | Status | What it gives you |
 |---|---|---|---|
-| **Model as a Service** | `bifrost` (platform) · `litellm` (workshop) | ✅ | LLM gateway to Bedrock with routing, fallbacks, rate limiting, caching, cost tracking. Onboard a model declaratively. |
+| **Model as a Service** | `bifrost` (platform) · `litellm` (alternative) | ✅ | LLM gateway to Bedrock with routing, fallbacks, rate limiting, caching, cost tracking. Onboard a model declaratively. |
 | **Agent Identities** | `agent-gateway` + Keycloak | ✅ | OIDC identities for agents, users, and MCP clients (`platform` realm). |
 | **Agent Gateway** | `agent-gateway`, `gateway-api-crds` | ✅ | A2A + MCP gateway with JWT-auth policies enforced on every call. |
 | **Agent Runtime** | `crossplane-agentcore` | ✅ | Crossplane compositions for Amazon Bedrock AgentCore (`agentruntimes` CRD). |
@@ -91,8 +91,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Evaluation** | (planned) | ⬜ | Eval tooling (AgentCore Evals / RAGAS) — roadmap. |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
-keys, model routing); **LiteLLM** is included as an alternative chart and is the gateway used in the
-workshop teaching path. Both front Amazon Bedrock.
+keys, model routing); **LiteLLM** is included as an alternative chart. Both front Amazon Bedrock.
 
 ---
 
@@ -195,27 +194,11 @@ control spoke discovery.
 
 ---
 
-## Workshop
-
-`workshop/` is a hands-on path from zero to a secured, observable multi-agent system:
-
-| Module | Description |
-|--------|-------------|
-| `00-initial-setup` | Bedrock + model gateway configuration (Model as a Service) |
-| `01-first-agent` | Deploy your first agent as a CRD |
-| `02-k8s-ops-agent` | A Kubernetes operations agent |
-| `03-multi-tool-agent` | Onboard MCP tool servers and wire them to an agent |
-| `04-multi-agents` | Financial-services multi-agent orchestration (A2A) |
-| `05-observability` | Tracing, LLM observability, metrics, dashboards |
-
----
-
 ## Flagship Patterns
 
 ### Multi-Agent Financial Services (A2A)
 A `financial-advisor` agent delegates to specialist agents (portfolio, market, risk) over the A2A
 protocol — every hop authenticated through the gateway and traced through OTEL / Jaeger / Langfuse.
-See `workshop/04-multi-agents/financial-services`.
 
 ### Dark Factory — autonomous coding in hardware-isolated sandboxes (V2)
 The Dark Factory turns a **GitHub issue into a reviewed, merged PR, autonomously**:
