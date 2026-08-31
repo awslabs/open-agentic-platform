@@ -2,6 +2,10 @@
 config.local.yaml
 private/
 .local/
+# Local credential scratch files. `.locals` holds live values (gateway virtual
+# keys and similar); `.env` is what `.env.example` gets copied to.
+.locals
+.env
 
 # Dark Factory IAM terraform working files (committed: iam/*.tf; ignored: state/plugins)
 gitops/addons/charts/dark-factory/iam/.terraform/
