@@ -18,7 +18,9 @@ dependencies = [
 dev = [
     "pytest~=8.0",
     "pytest-asyncio~=0.23.0",
-    "httpx~=0.27.0",
+    # Must track strands-agents[a2a], which requires httpx>=0.28.1; pinning
+    # ~=0.27.0 here made the dev extra unresolvable.
+    "httpx~=0.28.1",
 ]
 
 [build-system]
@@ -34,5 +36,5 @@ packages = ["app"]
 dev = [
     "pytest~=8.0",
     "pytest-asyncio~=0.23.0",
-    "httpx~=0.27.0",
+    "httpx~=0.28.1",
 ]
