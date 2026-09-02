@@ -3,6 +3,17 @@
 **A complete, production-shaped platform for building, running, securing, and observing AI agents on
 Amazon EKS — installed with one command.**
 
+<div align="center">
+
+[![License](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
+[![EKS](https://img.shields.io/badge/Amazon-EKS-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/eks/)
+[![Bedrock](https://img.shields.io/badge/Amazon-Bedrock-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/bedrock/)
+[![Kata](https://img.shields.io/badge/Kata-micro--VM-1e88e5)](https://katacontainers.io/)
+[![Lambda MicroVM](https://img.shields.io/badge/AWS_Lambda-MicroVM-FF9900?logo=awslambda&logoColor=white)](https://aws.amazon.com/lambda/)
+[![ArgoCD](https://img.shields.io/badge/GitOps-ArgoCD-EF7B4D?logo=argo&logoColor=white)](https://argo-cd.readthedocs.io/)
+
+</div>
+
 OAP turns a set of EKS clusters into an agent platform: a place where a team can onboard a model,
 declare an agent as a Kubernetes resource, give it tools (MCP), memory, a browser, and a code
 interpreter, wire multiple agents together (A2A), secure every hop with real identity, and watch it
