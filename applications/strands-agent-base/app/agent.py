@@ -26,31 +26,50 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
+from .identity import WORKLOAD_KEY, HeadersProvider, outbound
 
 logger = logging.getLogger(__name__)
 
 # ── shared resources (created once) ──────────────────────────────────────
 
 _model: Optional[OpenAIModel] = None
-_mcp_tools: list = []
-_mcp_clients: list = []
-_mcp_connected_at: Optional[float] = None
 
-# The gateway-identity token (audience "agentgateway") mounted at
-# WORKLOAD_TOKEN_PATH has a fixed TTL (expirationSeconds on the projected
-# ServiceAccount token, currently 1h). _get_mcp_tools() opens a persistent
-# MCP connection per server and reuses it, so a long-lived agent session
-# eventually calls a tool with the credentials the connection authenticated
-# with at connect time — which expire even though the token *file* on disk
-# gets rotated by the kubelet, because the open connection doesn't re-read
-# it. Recycle each MCPClient in place (stop() + start() on the same
-# instance, which re-invokes the transport callable and therefore
-# _gateway_headers()) after this many seconds, well under the token's 1h
-# lifetime. Reconnecting the same instances (rather than creating new ones)
-# keeps any already-built Agent's cached tool objects valid, since those
-# tools are bound to the MCPClient object identity, not a point-in-time
-# session.
+# An MCP connection binds its credential when it opens, so connections cannot be
+# shared between callers: reusing one would run a caller's tool calls under
+# whoever's token opened the connection, and serve them that caller's tool list.
+# Pools are therefore keyed by credential (see identity.outbound).
+_pools: dict = {}
+
+# The projected ServiceAccount token has a fixed TTL (expirationSeconds,
+# currently 1h). The kubelet rewrites the file before it expires, but an open
+# connection does not re-read it, so a long-lived workload pool would eventually
+# call tools with an expired credential. Recycle in place (stop() + start() on the
+# same MCPClient, which re-invokes the transport callable and therefore the
+# headers provider) well inside that lifetime; reusing the instances keeps
+# already-built Agents' tool objects valid, since those bind to MCPClient object
+# identity rather than a point-in-time session.
+#
+# Caller pools need no equivalent: their key is derived from the credential, so a
+# refreshed caller token yields a new pool instead of a stale one.
 _MCP_CONNECTION_MAX_AGE_SECONDS = 45 * 60
+
+# Cap on pools held open at once; the least recently used is closed past this.
+# Each pool costs one connection per configured MCP server.
+_MAX_MCP_POOLS = int(os.getenv("MCP_MAX_POOLS", "16"))
+
+
+class _McpPool:
+    """MCP clients and tools for one caller credential.
+
+    `headers` is a provider invoked at connect time, not a fixed dict, so a
+    recycled connection re-reads a rotated token.
+    """
+
+    def __init__(self, headers: HeadersProvider):
+        self.headers = headers
+        self.clients: list = []
+        self.tools: list = []
+        self.connected_at: float = 0.0
 
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -78,68 +97,65 @@ def _get_model() -> OpenAIModel:
     return _model
 
 
-def _gateway_headers() -> dict:
-    """Authorization header from the projected workload-identity token.
-
-    The `gateway-identity` OAM trait mounts a projected ServiceAccount token
-    (audience `agentgateway`) and sets WORKLOAD_TOKEN_PATH. AgentGateway
-    validates it against the cluster OIDC issuer. Read fresh on each connect so
-    the kubelet-rotated token is always current. Returns {} when no token is
-    mounted (gateway auth not in use).
-    """
-    path = os.getenv("WORKLOAD_TOKEN_PATH")
-    if path:
+def _open(pool: _McpPool, urls: list) -> None:
+    for url in urls:
+        logger.info(f"Connecting to MCP server: {url}")
         try:
-            with open(path) as f:
-                return {"Authorization": "Bearer " + f.read().strip()}
-        except OSError:
-            logger.warning("WORKLOAD_TOKEN_PATH set but token unreadable at %s", path)
-    return {}
+            client = MCPClient(
+                lambda u=url, p=pool: streamablehttp_client(u, headers=p.headers())
+            )
+            client.start()
+            server_tools = client.list_tools_sync()
+            logger.info(f"  Loaded {len(server_tools)} tools from {url}")
+            pool.clients.append(client)
+            pool.tools.extend(server_tools)
+        except Exception as exc:
+            logger.warning(f"  Failed to connect to MCP server {url}: {exc}")
+    pool.connected_at = time.monotonic()
 
 
-def _get_mcp_tools() -> list:
-    global _mcp_tools, _mcp_clients, _mcp_connected_at
+def _close(pool: _McpPool) -> None:
+    for client in pool.clients:
+        try:
+            client.stop(None, None, None)
+        except Exception as exc:
+            logger.warning(f"  Failed to close MCP connection: {exc}")
+    pool.clients = []
 
-    if _mcp_clients:
-        age = time.monotonic() - _mcp_connected_at
-        if age < _MCP_CONNECTION_MAX_AGE_SECONDS:
-            return _mcp_tools
+
+def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
+    """Tools from the MCP pool for *key*, connecting or recycling as needed."""
+    urls = config.MCP_SERVER_URLS
+    if not urls:
+        return []
+
+    pool = _pools.pop(key, None)
+    if pool is None:
+        pool = _McpPool(headers)
+        _open(pool, urls)
+    elif (
+        key == WORKLOAD_KEY
+        and time.monotonic() - pool.connected_at >= _MCP_CONNECTION_MAX_AGE_SECONDS
+    ):
         logger.info(
-            "Recycling %d MCP connection(s) after %.0fs (max age %ds) so the "
-            "gateway auth token is re-read fresh",
-            len(_mcp_clients), age, _MCP_CONNECTION_MAX_AGE_SECONDS,
+            "Recycling %d workload MCP connection(s) to pick up the rotated token",
+            len(pool.clients),
         )
-        for client in _mcp_clients:
+        for client in pool.clients:
             try:
                 client.stop(None, None, None)
                 client.start()
             except Exception as exc:
                 logger.warning(f"  Failed to recycle MCP connection: {exc}")
-        _mcp_connected_at = time.monotonic()
-        return _mcp_tools
+        pool.connected_at = time.monotonic()
 
-    urls = config.MCP_SERVER_URLS
-    if not urls:
-        return []
+    # Re-insert last so dict insertion order doubles as the LRU order.
+    _pools[key] = pool
+    while len(_pools) > _MAX_MCP_POOLS:
+        logger.info("Closing least recently used MCP pool (max %d)", _MAX_MCP_POOLS)
+        _close(_pools.pop(next(iter(_pools))))
 
-    clients: list = []
-    tools: list = []
-    for url in urls:
-        logger.info(f"Connecting to MCP server: {url}")
-        try:
-            client = MCPClient(lambda u=url: streamablehttp_client(u, headers=_gateway_headers()))
-            client.start()
-            server_tools = client.list_tools_sync()
-            logger.info(f"  Loaded {len(server_tools)} tools from {url}")
-            clients.append(client)
-            tools.extend(server_tools)
-        except Exception as exc:
-            logger.warning(f"  Failed to connect to MCP server {url}: {exc}")
-
-    _mcp_tools = tools
-    _mcp_clients = clients
-    _mcp_connected_at = time.monotonic()
-    return _mcp_tools
+    return pool.tools
 
 
 # ── per-session agent creation ───────────────────────────────────────────
@@ -196,7 +212,8 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     with exponential backoff instead of crashing the process.
     """
     session_manager = _build_session_manager(session_id, actor_id)
-    tools = _get_mcp_tools() or None
+    headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
+    tools = _get_mcp_tools(key, headers) or None
     return Agent(
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT,
@@ -223,32 +240,34 @@ def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Ag
 
 # ── session cache ────────────────────────────────────────────────────────
 
-_agents: dict[str, Agent] = {}
+_agents: dict[tuple, Agent] = {}
 
 
 def get_or_create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> tuple[Agent, str]:
     """Return a cached agent for *session_id*, creating one if needed.
 
+    Cached per (caller, session) rather than per session alone. `session_id`
+    arrives from the request body as `contextId`, so keying on it alone would let
+    one caller retrieve another caller's agent, whose MCP connections carry that
+    caller's credential, by supplying a known context id.
+
     Returns (agent, session_id).
     """
-    if session_id and session_id in _agents:
-        return _agents[session_id], session_id
+    _, caller = outbound(config.PROPAGATE_CALLER_TOKEN)
+
+    if session_id and (caller, session_id) in _agents:
+        return _agents[(caller, session_id)], session_id
 
     sid = session_id or str(uuid.uuid4())
     agent = create_agent(session_id=sid, actor_id=actor_id)
-    _agents[sid] = agent
+    _agents[(caller, sid)] = agent
     return agent, sid
 
 
 # ── cleanup ──────────────────────────────────────────────────────────────
 
 def shutdown_mcp() -> None:
-    global _mcp_clients
-    if _mcp_clients:
-        logger.info("Closing MCP client connections")
-        for client in _mcp_clients:
-            try:
-                client.stop(None, None, None)
-            except Exception as exc:
-                logger.warning(f"  Failed to close MCP connection: {exc}")
-        _mcp_clients = []
+    if _pools:
+        logger.info("Closing MCP client connections for %d pool(s)", len(_pools))
+        while _pools:
+            _close(_pools.pop(next(iter(_pools))))

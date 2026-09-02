@@ -53,10 +53,25 @@ gateway-api-crds:
   valuesObject:
     gatewayApiVersion: "1.5.0"
 
+# agentgateway 1.4.1 is pinned deliberately, and a HIGHER tag in this registry is not
+# necessarily newer. Both charts below must stay on the same version.
+#
+# cr.agentgateway.dev/charts also publishes v2.2.0 and v2.2.1, which look like a newer
+# major but are not agentgateway releases: upstream agentgateway/agentgateway has no 2.x
+# release at all, and its newest final release is v1.4.1 (2026-07-29). The v2.2.1 chart
+# ships a SMALLER API surface than v1.4.1: its AgentgatewayPolicy backend.auth accepts
+# only [aws, key, passthrough, secretRef], with zero occurrences of oauthTokenExchange,
+# and it drops the agentgatewaymodels CRD. Those CRDs carry kgateway references, so the
+# 2.2.x tags track kgateway's versioning, not this project's.
+#
+# 1.4.1 is what unblocks token exchange (ADR-6 in
+# docs/architecture/agent-identity-and-token-exchange.md). Verified on the pulled chart:
+# backend.auth gains oauthTokenExchange and crossAppAccess, versus v1.1.0 which had only
+# [aws, azure, gcp, key, passthrough, secretRef].
 agentgateway-crds:
   namespace: agentgateway-system
   chartName: agentgateway-crds
-  defaultVersion: 'v1.1.0'
+  defaultVersion: 'v1.4.1'
   chartRepository: 'cr.agentgateway.dev'
   chartNamespace: charts
   annotationsAppSet:
@@ -72,10 +87,12 @@ agentgateway-crds:
       jsonPointers:
         - /metadata/annotations
 
+# Keep in lockstep with agentgateway-crds above; see the version note there before
+# changing this, because a higher tag in this registry can be a downgrade.
 agentgateway:
   namespace: agentgateway-system
   chartName: agentgateway
-  defaultVersion: 'v1.1.0'
+  defaultVersion: 'v1.4.1'
   chartRepository: 'cr.agentgateway.dev'
   chartNamespace: charts
   annotationsAppSet:
