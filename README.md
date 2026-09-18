@@ -305,7 +305,7 @@ Design docs and open work items — check these before starting a new feature:
 | [`docs/dark-factory/README.md`](docs/dark-factory/README.md) | Dark Factory design, flows, diagrams | — |
 | [`docs/dark-factory/AGENT-INSTALL.md`](docs/dark-factory/AGENT-INSTALL.md) | Connecting the AWS DevOps + Security Agents | — |
 | [`gitops/DEPLOYMENT.md`](gitops/DEPLOYMENT.md) | GitOps deployment runbook (ArgoCD bootstrap, addon enablement, Pod Identity) | LiteLLM Pod-Identity step superseded by declarative Crossplane in the bifrost chart |
-| [`gitops/addons/charts/bifrost/DESIGN.md`](gitops/addons/charts/bifrost/DESIGN.md) | Bifrost AI Gateway + **per-workload Virtual Key** target design | ⚠️ `is_vk_mandatory` disabled — implement per-workload VK minting before enabling |
+| [`gitops/addons/charts/bifrost/DESIGN.md`](gitops/addons/charts/bifrost/DESIGN.md) | Bifrost AI Gateway + **per-workload Virtual Key** minting | ✅ VK minting wired into agent onboarding; `is_vk_mandatory` + admin auth enabled. Bedrock Guardrails still TODO |
 | [`platform/oam/DESIGN.md`](platform/oam/DESIGN.md) | KubeVela OAM `agent` / `mcp-server` ComponentDefinitions | — |
 | [`applications/strands-agent-base/ARCHITECTURE.md`](applications/strands-agent-base/ARCHITECTURE.md) | Strands agent internals, gateway integration, A2A | References LiteLLM — superseded by Bifrost (`OpenAIModel` + `x-bf-vk`) |
 

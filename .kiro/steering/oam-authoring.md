@@ -113,9 +113,36 @@ actions actually needed. `"Action": ["service:*"]` on `"Resource": "*"` is not
 acceptable in new work; the existing AgentCore components do this and should be
 tightened.
 
+## 5. MCP backend path (the /mcp vs /mcp/ trap)
+
+The path AgentGateway uses when it **calls** an MCP backend is not the gateway's
+inbound HTTPRoute path and is not a container env. It comes from the
+`agentgateway.dev/mcp-path` annotation on the target **Service** (default `/mcp`
+for StreamableHTTP, `/sse` for SSE).
+
+- On a **selector** target (what `mcp-server` emits, required for stateful session
+  affinity), this Service annotation is the ONLY way to set the backend-call path.
+  The AgentgatewayBackend CRD allows a `path` field only on **static** targets, and
+  a container `MCP_PATH` env never reaches the gateway. The `mcp-server` component
+  exposes this as the `mcpPath` parameter and stamps it on both the stable and
+  preview Services.
+- The value MUST match the path the server actually serves. A **FastMCP** server
+  (`mcp.run(transport="http", ...)`) mounts its streamable-HTTP app behind a
+  Starlette `Mount` that issues a 307 redirect from `/mcp` to `/mcp/`. AgentGateway
+  does not follow that redirect, so the MCP session breaks with a 422 and the agent
+  loads **0 tools**. Set `mcpPath: "/mcp/"` (trailing slash) for a FastMCP backend.
+- The `/mcp` default is correct for servers that serve `/mcp` without redirecting,
+  including the Express-based Node servers under `applications/` (Express default
+  non-strict routing treats `/mcp` and `/mcp/` as the same route).
+
+When you change `mcpPath`, keep the stable and preview Services identical so a
+blue-green promotion never changes the path the gateway calls.
+
 ## Review checklist
 
 - [ ] No region, account id, or cluster name required in the example OAM app
+- [ ] For an MCP server behind the gateway, `mcpPath` matches what the server serves
+      (`/mcp/` for FastMCP, `/mcp` for servers that don't redirect)
 - [ ] Every new or changed definition has a CUE source, and `generate.sh` output
       is committed
 - [ ] `generate.sh` produced no unintended diffs in other definitions
