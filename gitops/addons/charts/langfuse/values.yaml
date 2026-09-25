@@ -31,6 +31,10 @@ ingress:
   enabled: false
   className: platform
   host: ""
+  # ALB rule priority within the shared "platform" ingress group. Langfuse must be
+  # served at "/" (Next.js has no runtime basePath), so this "/" catch-all is given a
+  # high order to be evaluated LAST and avoid shadowing specific-path ingresses.
+  groupOrder: "900"
 
 keycloak:
   clientSecret: ""

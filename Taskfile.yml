@@ -58,6 +58,15 @@ vars:
     sh: yq -r '.agenticRepo.revision' {{.CONFIG_FILE}}
   AGENTIC_REPO_BASEPATH:
     sh: yq -r '.agenticRepo.basepath' {{.CONFIG_FILE}}
+  # Optional in-cluster overlay (Option A). Empty by default → overlay disabled.
+  # Point at an in-cluster GitOps repo (e.g. the platform fleet-config) to override
+  # OAP addon values without committing to the addon repo.
+  OVERLAY_REPO_URL:
+    sh: yq -r '.agenticRepo.overlayUrl // ""' {{.CONFIG_FILE}}
+  OVERLAY_REPO_REVISION:
+    sh: yq -r '.agenticRepo.overlayRevision // "main"' {{.CONFIG_FILE}}
+  OVERLAY_REPO_BASEPATH:
+    sh: yq -r '.agenticRepo.overlayBasepath // ""' {{.CONFIG_FILE}}
 
 # Exported to every task's command environment. AWS_CONFIG_FILE must be a real
 # env var (not just a template var) so the aws CLI and the kubectl exec plugin
@@ -304,9 +313,13 @@ tasks:
       # Application's source B.
       PLATFORM_REPO_URL: "{{.PLATFORM_REPO}}"
       PLATFORM_REPO_REVISION: "{{.PLATFORM_REF}}"
+      # Option A overlay coordinates (empty OVERLAY_REPO_URL → overlay source omitted).
+      OVERLAY_REPO_URL: "{{.OVERLAY_REPO_URL}}"
+      OVERLAY_REVISION: "{{.OVERLAY_REPO_REVISION}}"
+      OVERLAY_BASEPATH: "{{.OVERLAY_REPO_BASEPATH}}"
     cmds:
       - task: agentic:hub-oidc-annotation
-      - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
+      - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION} ${OVERLAY_REPO_URL} ${OVERLAY_REVISION} ${OVERLAY_BASEPATH}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
       - printf '\n✓ Agentic platform bootstrap applied. ArgoCD will sync components to clusters with enable_agent_platform=true label (set via fleet overlays).\n'
 
   agentic:seed-observability:

@@ -15,6 +15,11 @@ metadata:
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     {{- end }}
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
+    # Langfuse (Next.js) can only be served at "/" (assets use absolute /_next paths;
+    # no runtime basePath), so on a shared ALB group its "/" rule is a catch-all.
+    # Give it a high group.order so it is evaluated LAST and never shadows
+    # specific-path ingresses on the same group (e.g. app chat, CI/CD webhooks).
+    alb.ingress.kubernetes.io/group.order: {{ .Values.ingress.groupOrder | default "900" | quote }}
     argocd.argoproj.io/sync-wave: "10"
 spec:
   ingressClassName: {{ .Values.ingress.className | default "platform" }}

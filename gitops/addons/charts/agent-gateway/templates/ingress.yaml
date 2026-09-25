@@ -57,19 +57,36 @@ spec:
                 name: agentgateway-ingress
                 port:
                   number: 8080
+{{- /*
+  Dedicated agent hostname: routes ALL paths to agentgateway-proxy on a
+  separate name covered by the wildcard ACM cert (HTTPS:443; ExternalDNS
+  creates the Route53 record).
+
+  Rendered only when the cluster has both a real domain and its own TLS.
+  Two distinct ways it breaks otherwise:
+
+  1. No host at all (a spoke with no hostname of its own) renders "agents.",
+     which is not a valid RFC 1123 host. An empty host on the primary ingress
+     above is fine, because Kubernetes treats that as a wildcard.
+  2. insecure mode means TLS terminates upstream, so no ACM cert covers a
+     sibling host while this Ingress asks for HTTPS:443. With a CloudFront
+     hostname it is worse than useless: agentHost is derived from the PARENT
+     domain, so "<dist>.cloudfront.net" yields "agents.cloudfront.net", a
+     domain we do not own. The load balancer controller then fails the whole
+     shared ALB group with "no certificate found for host", which takes the
+     primary agentgateway ingress down with it rather than just this one.
+
+  Keyed on `insecure` rather than matching "cloudfront.net" in the hostname,
+  so any upstream TLS terminator behaves the same. Matching a provider string
+  is what .kiro/steering/platform-portability.md rules out.
+
+  Agents stay reachable without this: the primary ingress serves /sse and
+  OAuth discovery on the shared host, path-based, and agentgateway-proxy also
+  has its own NLB Service.
+*/}}
+{{- if and .Values.ingress.host (not $insecure) }}
 ---
 {{- $agentHost := .Values.ingress.agentHost | default (printf "agents.%s" .Values.ingress.host) }}
-{{- /*
-No-domain clusters (e.g. a KRO spoke with no CloudFront/Route53 hostname of its
-own) render .Values.ingress.host as "". "agents." is not a valid RFC 1123
-ingress host, unlike an empty host on the main ingress above (which Kubernetes
-accepts as a wildcard). There is no dedicated-subdomain equivalent without a
-parent domain, so skip this Ingress entirely rather than emit an invalid host;
-agent routes still reach agentgateway-proxy via its own NLB Service.
-*/}}
-{{- if .Values.ingress.host }}
-# Dedicated agent hostname: routes all paths to agentgateway-proxy.
-# Covered by the wildcard ACM cert. ExternalDNS creates the Route53 record.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
