@@ -1,4 +1,4 @@
-# Hub (control-plane) overlay for the PLATFORM `karpenter` addon.
+# Control-plane overlay for the PLATFORM `karpenter` addon.
 #
 # WHY THIS FILE IS HERE AND NOT IN THE PLATFORM REPO
 # The karpenter chart + registry entry live in appmod-blueprints, so the
@@ -8,7 +8,16 @@
 # This file works because the hub cluster secret now carries overlay_repo_url
 # pointing at THIS repo (see gitops/fleet/hub/values.yaml), which activates the
 # appset-chart's "layer 5" and appends
-#   $overlay/gitops/overlays/clusters/hub/karpenter/values.yaml
+#   $overlay/gitops/overlays/environments/control-plane/karpenter/values.yaml
+#
+# WHY environments/control-plane AND NOT clusters/<name>
+# The per-cluster layer resolves to overlays/clusters/<clusterName>/karpenter/values.yaml,
+# where <clusterName> is hub.clusterName from config.local.yaml. This file previously
+# lived at overlays/clusters/hub/ and so was never read on any cluster not literally
+# named "hub". It was dead for its entire existence, silently, because a missing value
+# file is not an error. A directory named after the cluster duplicates a value
+# config.local.yaml already owns and can always drift from it; the environment layer is
+# keyed on a stable platform tier and is read on every cluster in it.
 # AFTER the platform layers — so what we set here wins.
 #
 # WHAT IT DOES

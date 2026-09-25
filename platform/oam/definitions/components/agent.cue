@@ -2,6 +2,7 @@
 import (
 	"strings"
 	"encoding/json"
+	"list"
 )
 
 agent: {
@@ -86,7 +87,7 @@ template: {
 							containerPort: 8083
 							protocol:      "TCP"
 						}]
-						env: [
+						env: list.Concat([[
 							{name: "AGENT_NAME", value: context.name},
 							{name: "AGENT_DESCRIPTION", value: parameter.description},
 							{name: "MODEL_ID", value: parameter.modelConfig.modelId},
@@ -119,7 +120,7 @@ template: {
 							{name: "LANGFUSE_PUBLIC_KEY", value: parameter.langfuse.publicKey},
 							{name: "LANGFUSE_SECRET_KEY", value: parameter.langfuse.secretKey},
 							{name: "LANGFUSE_BASE_URL", value: parameter.langfuse.baseUrl},
-						] + _memoryEnv + [
+						], _memoryEnv, [
 							if len(parameter.mcpServers) > 0 {
 								{
 									name:  "MCP_SERVER_NAMES"
@@ -127,7 +128,7 @@ template: {
 								}
 							},
 							for e in parameter.env {e},
-						]
+						]])
 						livenessProbe: {
 							httpGet: {
 								path: "/health"

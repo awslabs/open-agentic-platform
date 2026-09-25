@@ -28,11 +28,10 @@ spec:
             jwksPath: {{ $jwksPath | quote }}
             cacheDuration: {{ .Values.jwtAuth.cacheDuration | quote }}
             backendRef:
-              group: ""
-              kind: Service
-              name: {{ .Values.global.keycloak.serviceName }}
-              namespace: {{ .Values.global.keycloak.namespace }}
-              port: {{ .Values.global.keycloak.servicePort }}
+              group: agentgateway.dev
+              kind: AgentgatewayBackend
+              name: keycloak-jwks
+              namespace: agentgateway-system
       {{- if $wi.issuer }}
       # Workload callers — cluster EKS OIDC (projected ServiceAccount tokens)
       - issuer: {{ $wi.issuer | quote }}

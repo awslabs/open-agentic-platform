@@ -57,7 +57,7 @@ Redeploying creates brand new ones, and AWS IAM takes minutes to propagate, duri
 which the pod's role gets:
 
 ```
-AccessDenied: User: arn:aws:sts::929819487611:assumed-role/browser-mcp-role/...
+AccessDenied: User: arn:aws:sts::123456789012:assumed-role/browser-mcp-role/...
 is not authorized to perform: bedrock-agentcore:ListBrowsers
 ```
 

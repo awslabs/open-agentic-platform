@@ -7,7 +7,7 @@ Repos / branches:
 - OAP (this repo): `aws-samples/sample-open-agentic-platform` — branch `feature/oam-for-agents` (PR #33 → `main`).
 - Platform: `aws-samples/appmod-blueprints` — branch `feature/agent-platform-shapirov`.
 
-Reference environment: cluster `peeks-hub`, account `929819487611`, `us-west-2`.
+Reference environment: cluster `peeks-hub`, account `123456789012`, `us-west-2`.
 EKS OIDC issuer: `https://oidc.eks.us-west-2.amazonaws.com/id/1BABC5C7BFD3BFE9636A486678E1D6F6`.
 Component versions: agentgateway `v1.4.1` (was `v1.1.0`; see ADR-6), Crossplane `v2.2.1`
 (functions: environment-configs v0.3.0, patch-and-transform v0.10.0, cel-filter v0.2.0),

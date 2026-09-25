@@ -35,6 +35,11 @@ vars:
     sh: yq -r '.hub.clusterName' {{.CONFIG_FILE}}
   DOMAIN:
     sh: yq -r '.domain' {{.CONFIG_FILE}}
+  # Passed straight through to the platform, which treats it as: the consumer
+  # terminates TLS upstream, so serve plain HTTP at the load balancer. Whatever sets
+  # this owns the upstream TLS. See workshop/ for the CloudFront case.
+  INSECURE:
+    sh: yq -r '.insecure // false' {{.CONFIG_FILE}}
   RESOURCE_PREFIX:
     sh: yq -r '.resourcePrefix' {{.CONFIG_FILE}}
   INGRESS_NAME:
@@ -90,16 +95,36 @@ tasks:
   # ─── Platform (appmod-blueprints) ───────────────────────────────────────────
 
   platform:clone:
-    desc: Clone or update the base platform repo
+    desc: Clone or update the base platform repo to the configured ref
     cmds:
+      # No `status:` guard here. Guarding on the directory existing would skip this
+      # task once the clone is present, which silently pins the checkout to whatever
+      # ref it was first cloned at and makes changing platform.ref a no-op.
+      #
+      # The clone is --single-branch, so its refspec only tracks the original branch
+      # and a bare `git fetch origin` will not retrieve a different one. Fetch the
+      # configured ref explicitly into a remote-tracking branch.
       - |
+        set -e
         if [ -d "{{.PLATFORM_DIR}}/.git" ]; then
-          cd {{.PLATFORM_DIR}} && git fetch origin && git checkout {{.PLATFORM_REF}} && git pull origin {{.PLATFORM_REF}} 2>/dev/null || true
+          cd {{.PLATFORM_DIR}}
+          git fetch --quiet origin "+refs/heads/{{.PLATFORM_REF}}:refs/remotes/origin/{{.PLATFORM_REF}}"
+          # Check out the remote ref DETACHED and with --force, so the working tree is
+          # exactly that ref. This clone is a read-only materialized view of another repo,
+          # not a branch we develop on, and treating it as one has bitten twice:
+          #   - `git merge --ff-only ... || true` reported success while leaving the
+          #     checkout STALE, because the upstream ref had been force-pushed and a
+          #     diverged branch cannot fast-forward. The platform then runs old code while
+          #     the log claims it is current, which looks exactly like the fix not working.
+          #   - local debug edits to .platform survived and silently changed behaviour.
+          # --force discards local modifications, which is intended: anything that must
+          # persist belongs in this repo. Untracked files are left alone, because the
+          # platform writes generated kubeconfigs and credentials under .platform/private/.
+          git checkout --quiet --force --detach "origin/{{.PLATFORM_REF}}"
         else
-          git clone --branch {{.PLATFORM_REF}} --single-branch {{.PLATFORM_REPO}} {{.PLATFORM_DIR}}
+          git clone --quiet --branch {{.PLATFORM_REF}} --single-branch {{.PLATFORM_REPO}} {{.PLATFORM_DIR}}
         fi
-    status:
-      - test -d "{{.PLATFORM_DIR}}/.git"
+        printf '✓ platform %s @ %s\n' "{{.PLATFORM_REF}}" "$(git -C "{{.ROOT_DIR}}/{{.PLATFORM_DIR}}" rev-parse --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
 
   platform:configure:
     desc: Generate platform config.local.yaml from agentic config
@@ -120,6 +145,7 @@ tasks:
           accountId: "{{.AWS_ACCOUNT_ID}}"
           profile: "{{.AWS_PROFILE}}"
         domain: "{{.DOMAIN}}"
+        insecure: {{.INSECURE}}
         resourcePrefix: "{{.RESOURCE_PREFIX}}"
         identityCenter:
           instanceArn: "{{.IDC_INSTANCE_ARN}}"
@@ -338,19 +364,29 @@ tasks:
           --region {{.AWS_REGION}}
         printf '✓ Updated hub/config with aws_grafana_url=%s\n' "$AMG_ENDPOINT"
 
-        # Force fleet-secret ExternalSecret refresh so annotation propagates
-        kubectl --context {{.HUB_CLUSTER_NAME}} annotate externalsecret fleet-secret-hub -n argocd \
-          force-sync=$(date +%s) --overwrite
-        printf '✓ Fleet secret refresh triggered\n'
+        # Force fleet-secret ExternalSecret refresh so annotation propagates.
+        # The name is suffixed with the cluster name (e.g. fleet-secret-peeks-hub),
+        # so discover it rather than hardcoding, the same way the platform does
+        # (cluster-providers/*/Taskfile.yaml: grep -i fleet-secret | grep <hub>).
+        ES=$(kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd get externalsecret -o name 2>/dev/null \
+          | grep -i fleet-secret | grep {{.HUB_CLUSTER_NAME}} | head -1 || true)
+        if [ -n "$ES" ]; then
+          kubectl --context {{.HUB_CLUSTER_NAME}} annotate "$ES" -n argocd \
+            force-sync=$(date +%s) --overwrite
+          printf '✓ Fleet secret refresh triggered (%s)\n' "$ES"
+        else
+          printf '⚠ No fleet-secret ExternalSecret found for %s — skipping refresh.\n' "{{.HUB_CLUSTER_NAME}}"
+        fi
       # Run the platform's full observability seeding (AMP creds, Grafana API key,
       # Keycloak SAML update, spoke scraper data). This populates hub/secrets with
       # the fields that grafana-admin-credentials and grafana-amp-creds ExternalSecrets need.
-      - cd {{.PLATFORM_DIR}} && task kind-crossplane:secrets-manager:seed-observability
+      # Provider-scoped: must match platform.clusterProvider, not a fixed provider.
+      - cd {{.PLATFORM_DIR}} && task {{.CLUSTER_PROVIDER}}:secrets-manager:seed-observability
 
   # ─── Ingress / Domain Post-Install ───────────────────────────────────────────
 
   ingress:post-install:
-    desc: Post-install ingress setup — updates CloudFront origin or validates custom domain DNS
+    desc: Post-install ingress setup — point DNS at the platform ALB (custom domain only)
     cmds:
       - |
         DOMAIN="{{.DOMAIN}}"
@@ -359,11 +395,12 @@ tasks:
           exit 0
         fi
 
-        # Derive TLS mode from domain name
-        if echo "$DOMAIN" | grep -q "cloudfront.net"; then
-          TLS_MODE="cloudfront"
-        else
-          TLS_MODE="alb"
+        # insecure means the consumer terminates TLS upstream and owns whatever sits in
+        # front of the load balancer, including its origin configuration. There is
+        # nothing for OAP to do here in that case.
+        if [ "{{.INSECURE}}" = "true" ]; then
+          printf '✓ insecure mode: TLS and the ALB origin are owned upstream. Nothing to do.\n'
+          exit 0
         fi
 
         # Discover the ALB DNS name (created by LBC from grouped ingresses)
@@ -388,53 +425,15 @@ tasks:
 
         printf '▸ ALB discovered: %s\n' "$ALB_DNS"
 
-        # ── CloudFront mode (domain is *.cloudfront.net) ──
-        if [ "$TLS_MODE" = "cloudfront" ]; then
-          DIST_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?DomainName=='${DOMAIN}'].Id" \
-            --output text)
-
-          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
-            printf '⚠ Could not find CloudFront distribution for %s. Skipping origin update.\n' "$DOMAIN"
-            exit 0
-          fi
-
-          CURRENT_ORIGIN=$(aws cloudfront get-distribution-config --id "$DIST_ID" \
-            --query "DistributionConfig.Origins.Items[0].DomainName" --output text)
-
-          if [ "$CURRENT_ORIGIN" = "$ALB_DNS" ]; then
-            printf '✓ CloudFront origin already points to %s\n' "$ALB_DNS"
-            exit 0
-          fi
-
-          printf '▸ Updating CloudFront %s origin: %s → %s\n' "$DIST_ID" "$CURRENT_ORIGIN" "$ALB_DNS"
-
-          ETAG=$(aws cloudfront get-distribution-config --id "$DIST_ID" --query "ETag" --output text)
-          aws cloudfront get-distribution-config --id "$DIST_ID" --query "DistributionConfig" > /tmp/cf-dist-config.json
-
-          jq --arg domain "$ALB_DNS" '.Origins.Items[0].DomainName = $domain' \
-            /tmp/cf-dist-config.json > /tmp/cf-dist-config-updated.json
-
-          aws cloudfront update-distribution \
-            --id "$DIST_ID" \
-            --if-match "$ETAG" \
-            --distribution-config file:///tmp/cf-dist-config-updated.json > /dev/null
-
-          rm -f /tmp/cf-dist-config.json /tmp/cf-dist-config-updated.json
-          printf '✓ CloudFront origin updated to %s (deployment in progress)\n' "$ALB_DNS"
-
-        # ── ALB mode (custom domain, ACM cert expected) ──
+        printf '▸ Custom domain: %s\n' "$DOMAIN"
+        printf '  ALB DNS: %s\n' "$ALB_DNS"
+        RESOLVED=$(dig +short "$DOMAIN" 2>/dev/null | head -1 || echo "")
+        if [ -z "$RESOLVED" ]; then
+          printf '⚠ Domain %s does not resolve yet.\n' "$DOMAIN"
+          printf '  Create a DNS record (CNAME or Route53 alias) pointing to:\n'
+          printf '    %s\n' "$ALB_DNS"
         else
-          printf '▸ Custom domain: %s\n' "$DOMAIN"
-          printf '  ALB DNS: %s\n' "$ALB_DNS"
-          RESOLVED=$(dig +short "$DOMAIN" 2>/dev/null | head -1 || echo "")
-          if [ -z "$RESOLVED" ]; then
-            printf '⚠ Domain %s does not resolve yet.\n' "$DOMAIN"
-            printf '  Create a DNS record (CNAME or Route53 alias) pointing to:\n'
-            printf '    %s\n' "$ALB_DNS"
-          else
-            printf '✓ Domain %s resolves to %s\n' "$DOMAIN" "$RESOLVED"
-          fi
+          printf '✓ Domain %s resolves to %s\n' "$DOMAIN" "$RESOLVED"
         fi
 
   # ─── Utilities ──────────────────────────────────────────────────────────────

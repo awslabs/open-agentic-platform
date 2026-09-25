@@ -1,0 +1,26 @@
+# Fleet member: oap-dev
+#
+# Registers the cluster with ArgoCD. The platform's git generator scans
+# fleet/members/*/values.yaml and mints an ArgoCD cluster secret from this file;
+# every addon ApplicationSet then fans out across those secrets.
+#
+# Registration is separate from provisioning. This file only registers; oap-dev is
+# provisioned via KRO (fleet/spoke-values/tenants/default/kro-clusters/values.yaml).
+#
+# mode: externalSecret is required for KRO spokes: it reads oap-dev/config from Secrets
+# Manager (written by the EksclusterWithVpc RGD) to populate aws_vpc_id / subnet / SG
+# annotations. Omitting it defaults to "direct" mode (Crossplane spokes) — the secret
+# never gets aws_vpc_id and the LBC crashloops on Auto Mode (can't reach IMDS).
+mode: externalSecret
+clusterName: oap-dev
+labels:
+  # Selects the addon tier at overlays/environments/dev, where agent_platform is
+  # enabled, so this spoke receives the agentic capabilities.
+  environment: dev
+  tenant: default
+  client_provisioner: keycloak
+clients:
+  - name: agentgateway          # → clientId "agentgateway-dev"
+    type: confidential
+    flows:
+      - client_credentials

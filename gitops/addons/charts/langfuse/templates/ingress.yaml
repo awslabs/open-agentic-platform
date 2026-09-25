@@ -1,4 +1,6 @@
 {{- if .Values.ingress.enabled }}
+{{- /* insecure: HTTP-only ingress, no cert (consumer terminates TLS upstream, e.g. CloudFront). Same convention as keycloak/argo-workflows. */}}
+{{- $insecure := eq (toString (.Values.global.insecure | default "false")) "true" }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,7 +8,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   annotations:
     alb.ingress.kubernetes.io/target-type: ip
-    {{- if contains "cloudfront.net" .Values.ingress.host }}
+    {{- if $insecure }}
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
     {{- else }}
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'

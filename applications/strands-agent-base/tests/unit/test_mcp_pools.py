@@ -16,8 +16,12 @@ def isolated_agent_state(monkeypatch, tmp_path):
     """Fake MCP transport, one configured server, and empty pools per test."""
     transport_calls: list = []
 
-    def fake_transport(url, headers=None):
-        transport_calls.append((url, dict(headers or {})))
+    def fake_transport(url, http_client=None):
+        raw = dict(getattr(http_client, "headers", None) or {})
+        # httpx2.Headers lowercases keys; the app and these tests always refer
+        # to "Authorization" (matching identity.py's own header construction).
+        headers = {"Authorization": raw["authorization"]} if "authorization" in raw else {}
+        transport_calls.append((url, headers))
         return object()
 
     class FakeClient:
@@ -40,7 +44,7 @@ def isolated_agent_state(monkeypatch, tmp_path):
             return [f"tool-{id(self)}"]
 
     FakeClient.instances = []
-    monkeypatch.setattr(agent_mod, "streamablehttp_client", fake_transport)
+    monkeypatch.setattr(agent_mod, "streamable_http_client", fake_transport)
     monkeypatch.setattr(agent_mod, "MCPClient", FakeClient)
     monkeypatch.setattr(config, "MCP_SERVER_NAMES_RAW", "mcp-time")
     monkeypatch.setattr(agent_mod, "_pools", {})

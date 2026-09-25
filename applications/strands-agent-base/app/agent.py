@@ -12,7 +12,7 @@ logging.basicConfig(
 )
 
 from botocore.exceptions import ClientError
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from strands import Agent
 from strands.models.openai import OpenAIModel
 from strands.tools.mcp.mcp_client import MCPClient
@@ -101,8 +101,13 @@ def _open(pool: _McpPool, urls: list) -> None:
     for url in urls:
         logger.info(f"Connecting to MCP server: {url}")
         try:
+            # streamable_http_client no longer takes a `headers` kwarg directly
+            # (mcp SDK, pulled in via strands-agents 1.57.0's bump): headers now
+            # travel on a pre-built httpx client passed as `http_client`.
             client = MCPClient(
-                lambda u=url, p=pool: streamablehttp_client(u, headers=p.headers())
+                lambda u=url, p=pool: streamable_http_client(
+                    u, http_client=create_mcp_http_client(headers=p.headers())
+                )
             )
             client.start()
             server_tools = client.list_tools_sync()
