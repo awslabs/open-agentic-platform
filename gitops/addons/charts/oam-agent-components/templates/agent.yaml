@@ -17,6 +17,77 @@ spec:
         	"encoding/json"
         )
 
+        // Idempotent Bifrost Virtual Key mint script, run by the vkMintJob.
+        //
+        // Idempotency is keyed on the VK *name* (== the agent name), because Bifrost
+        // generates the id and token, not the caller. We list VKs, reuse the token of
+        // the one already named after this agent, and only POST a new one when absent.
+        // The token is then written into the <name>-llm-vk Secret. Admin basic-auth
+        // credentials come from the bifrost-admin Secret, so this keeps working once
+        // the management API is closed (enforceAuthOnInference / auth_config).
+        //
+        // Fails closed: any Bifrost error leaves the Secret untouched and the Job
+        // retries (backoffLimit). While enforcement is still off, a missing Secret is
+        // harmless because the agent mounts it optional.
+        let _vkMintScript = """
+        	set -eu
+        	VK_API="$BIFROST_URL/api/governance/virtual-keys"
+        	AUTH="$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASS"
+
+        	echo "Looking up existing virtual key named $AGENT_NAME"
+        	LIST=$(wget -q -O- --auth-no-challenge --user="$BIFROST_ADMIN_USER" --password="$BIFROST_ADMIN_PASS" "$VK_API" || echo '')
+
+        	# Extract the token ("value") of the VK whose "name" equals AGENT_NAME.
+        	# kubectl's bundled jq is not present, so parse with a small sed/grep pass
+        	# over the compact JSON objects.
+        	VK=$(printf '%s' "$LIST" \\
+        		| tr '}' '\\n' \\
+        		| grep "\\"name\\":\\"$AGENT_NAME\\"" \\
+        		| sed -n 's/.*"value":"\\([^"]*\\)".*/\\1/p' \\
+        		| head -n1)
+
+        	if [ -z "$VK" ]; then
+        		echo "No existing VK; creating one"
+        		MODELS=$(printf '%s' "$VK_ALLOWED_MODELS" | sed 's/,/","/g')
+        		BODY=$(cat <<JSON
+        	{
+        	  "name": "$AGENT_NAME",
+        	  "description": "Auto-minted per-agent key for $AGENT_NAME",
+        	  "is_active": true,
+        	  "provider_configs": [
+        	    { "provider": "$VK_PROVIDER", "allowed_models": ["$MODELS"], "key_ids": ["*"], "weight": 1 }
+        	  ],
+        	  "budgets": [
+        	    { "max_limit": $VK_BUDGET_MAX, "reset_duration": "$VK_BUDGET_RESET" }
+        	  ],
+        	  "rate_limit": {
+        	    "request_max_limit": $VK_REQ_MAX, "request_reset_duration": "$VK_RL_RESET",
+        	    "token_max_limit": $VK_TOKEN_MAX, "token_reset_duration": "$VK_RL_RESET"
+        	  }
+        	}
+        	JSON
+        	)
+        		RESP=$(printf '%s' "$BODY" | wget -q -O- --auth-no-challenge \\
+        			--user="$BIFROST_ADMIN_USER" --password="$BIFROST_ADMIN_PASS" \\
+        			--header="Content-Type: application/json" --post-data="$BODY" "$VK_API")
+        		VK=$(printf '%s' "$RESP" | sed -n 's/.*"value":"\\([^"]*\\)".*/\\1/p' | head -n1)
+        	else
+        		echo "Reusing existing VK for $AGENT_NAME"
+        	fi
+
+        	if [ -z "$VK" ]; then
+        		echo "ERROR: could not obtain a virtual key value" >&2
+        		exit 1
+        	fi
+
+        	echo "Writing VK into secret $SECRET_NAME"
+        	kubectl create secret generic "$SECRET_NAME" \\
+        		--namespace "$NAMESPACE" \\
+        		--from-literal=vk="$VK" \\
+        		--dry-run=client -o yaml | kubectl apply -f -
+        	echo "Done."
+        	"""
+
         // Build memory env vars from config
         let _memoryEnv = [
         	if parameter.memory != _|_ {
@@ -89,7 +160,27 @@ spec:
         						{name: "SYSTEM_PROMPT", value: parameter.systemMessage},
         						{name: "PORT", value: "8083"},
         						{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
-        						{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
+        						// The Bifrost virtual key. Two mutually exclusive sources:
+        						//  - mint on (default): the mint Job writes <name>-llm-vk and the agent
+        						//    reads it here via secretKeyRef. optional=true so the pod still
+        						//    starts before the Job has run (and while enforcement is off), then
+        						//    picks up the VK on its next restart. This is the same
+        						//    "start now, converge later" stance the servers take elsewhere.
+        						//  - mint off: fall back to the literal llmGatewayApiKey (empty by
+        						//    default), preserving the previous behaviour for a static key.
+        						if parameter.modelConfig.mintVirtualKey {
+        							{
+        								name: "LLM_GATEWAY_API_KEY"
+        								valueFrom: secretKeyRef: {
+        									name:     context.name + "-llm-vk"
+        									key:      "vk"
+        									optional: true
+        								}
+        							}
+        						},
+        						if !parameter.modelConfig.mintVirtualKey {
+        							{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey}
+        						},
         						// Observability env vars — mode-dependent
         						{name: "OTEL_SERVICE_NAME", value: context.name},
         						{name: "OTEL_TRACES_EXPORTER", value: "otlp"},
@@ -160,6 +251,128 @@ spec:
         			name:      context.name
         			namespace: context.namespace
         			labels: "app.kubernetes.io/name": context.name
+        		}
+        	}
+
+        	// ── Per-agent Bifrost Virtual Key minting ───────────────────────────────
+        	// Every agent gets its own VK (identity + budget + rate limit) with no
+        	// operator action. The Job is idempotent: it GETs the VK by id first and
+        	// only POSTs when absent, so a redeploy reuses the existing key. It writes
+        	// the token into <name>-llm-vk, which the Rollout mounts as
+        	// LLM_GATEWAY_API_KEY. See gitops/addons/charts/bifrost/DESIGN.md.
+        	if parameter.modelConfig.mintVirtualKey {
+        		// Dedicated SA for the Job, distinct from the agent SA, so its Secret-write
+        		// permission does not widen the agent's own identity.
+        		vkMintServiceAccount: {
+        			apiVersion: "v1"
+        			kind:       "ServiceAccount"
+        			metadata: {
+        				name:      context.name + "-vk-mint"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        		}
+
+        		// Least-privilege Role: create the VK Secret, and read/update only the one
+        		// this agent owns (resourceNames cannot scope create, so create is unnamed).
+        		vkMintRole: {
+        			apiVersion: "rbac.authorization.k8s.io/v1"
+        			kind:       "Role"
+        			metadata: {
+        				name:      context.name + "-vk-mint"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			rules: [
+        				{
+        					apiGroups: [""]
+        					resources: ["secrets"]
+        					verbs: ["create"]
+        				},
+        				{
+        					apiGroups: [""]
+        					resources: ["secrets"]
+        					resourceNames: [context.name + "-llm-vk"]
+        					verbs: ["get", "update", "patch"]
+        				},
+        			]
+        		}
+
+        		vkMintRoleBinding: {
+        			apiVersion: "rbac.authorization.k8s.io/v1"
+        			kind:       "RoleBinding"
+        			metadata: {
+        				name:      context.name + "-vk-mint"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			roleRef: {
+        				apiGroup: "rbac.authorization.k8s.io"
+        				kind:     "Role"
+        				name:     context.name + "-vk-mint"
+        			}
+        			subjects: [{
+        				kind:      "ServiceAccount"
+        				name:      context.name + "-vk-mint"
+        				namespace: context.namespace
+        			}]
+        		}
+
+        		// The mint Job. Shell + wget approach (per DESIGN.md) — no CUE HTTP
+        		// complexity. Idempotent, and safe to re-run on every redeploy.
+        		vkMintJob: {
+        			apiVersion: "batch/v1"
+        			kind:       "Job"
+        			metadata: {
+        				name:      context.name + "-vk-mint"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			spec: {
+        				// Let a redeploy re-run the (idempotent) Job rather than erroring on an
+        				// immutable completed Job with the same name.
+        				ttlSecondsAfterFinished: 600
+        				backoffLimit:            6
+        				template: {
+        					metadata: labels: "app.kubernetes.io/name": context.name
+        					spec: {
+        						serviceAccountName: context.name + "-vk-mint"
+        						restartPolicy:      "OnFailure"
+        						containers: [{
+        							name:  "mint"
+        							image: parameter.modelConfig.mintJobImage
+        							env: [
+        								{name: "AGENT_NAME", value: context.name},
+        								{name: "NAMESPACE", value: context.namespace},
+        								{name: "SECRET_NAME", value: context.name + "-llm-vk"},
+        								{name: "BIFROST_URL", value: parameter.modelConfig.bifrostAdminUrl},
+        								{name: "VK_PROVIDER", value: parameter.modelConfig.vkProvider},
+        								{name: "VK_ALLOWED_MODELS", value: strings.Join(parameter.modelConfig.vkAllowedModels, ",")},
+        								{name: "VK_BUDGET_MAX", value: "\(parameter.modelConfig.vkBudgetMaxUsd)"},
+        								{name: "VK_BUDGET_RESET", value: parameter.modelConfig.vkBudgetResetDuration},
+        								{name: "VK_REQ_MAX", value: "\(parameter.modelConfig.vkRequestMaxLimit)"},
+        								{name: "VK_TOKEN_MAX", value: "\(parameter.modelConfig.vkTokenMaxLimit)"},
+        								{name: "VK_RL_RESET", value: parameter.modelConfig.vkRateLimitResetDuration},
+        								{
+        									name: "BIFROST_ADMIN_USER"
+        									valueFrom: secretKeyRef: {
+        										name: parameter.modelConfig.bifrostAdminSecret
+        										key:  parameter.modelConfig.bifrostAdminUsernameKey
+        									}
+        								},
+        								{
+        									name: "BIFROST_ADMIN_PASS"
+        									valueFrom: secretKeyRef: {
+        										name: parameter.modelConfig.bifrostAdminSecret
+        										key:  parameter.modelConfig.bifrostAdminPasswordKey
+        									}
+        								},
+        							]
+        							command: ["/bin/sh", "-c", _vkMintScript]
+        						}]
+        					}
+        				}
+        			}
         		}
         	}
 
@@ -303,9 +516,44 @@ spec:
         	// Gateway is Bifrost (OpenAI-compatible endpoint at /v1). llmGatewayApiKey
         	// is the Bifrost virtual key (presented by the agent via the x-bf-vk header).
         	modelConfig: {
-        		modelId:          *"claude-sonnet" | string
-        		llmGatewayUrl:    *"http://bifrost.bifrost.svc.cluster.local:8080/v1" | string
+        		modelId:       *"claude-sonnet" | string
+        		llmGatewayUrl: *"http://bifrost.bifrost.svc.cluster.local:8080/v1" | string
+        		// Static fallback virtual key. Only used when mintVirtualKey is false;
+        		// when minting is on the VK comes from the <name>-llm-vk Secret instead.
         		llmGatewayApiKey: *"" | string
+
+        		// +usage=Automatically mint a per-agent Bifrost Virtual Key at deploy time.
+        		// On (default) emits a mint Job that GET-then-POSTs the VK keyed on the
+        		// agent name and writes it into the <name>-llm-vk Secret, which the agent
+        		// mounts as LLM_GATEWAY_API_KEY. This is what gives each agent its own
+        		// identity, budget, and rate limit at the gateway. Turn off only to pin a
+        		// key by hand via llmGatewayApiKey.
+        		mintVirtualKey: *true | bool
+        		// +usage=Bifrost management API base URL the mint Job calls (no trailing /v1).
+        		bifrostAdminUrl: *"http://bifrost.bifrost.svc.cluster.local:8080" | string
+        		// +usage=Provider the minted VK is scoped to (Bifrost provider name).
+        		vkProvider: *"bedrock" | string
+        		// +usage=Models the minted VK may use. ["*"] allows all models on the provider.
+        		vkAllowedModels: *["*"] | [...string]
+        		// +usage=Monthly USD spend cap attached to the minted VK.
+        		vkBudgetMaxUsd: *50.0 | number
+        		// +usage=Budget reset window (Bifrost duration: 1h, 1d, 1w, 1M, 1Q, 1Y).
+        		vkBudgetResetDuration: *"1M" | string
+        		// +usage=Per-VK request cap per rate-limit window.
+        		vkRequestMaxLimit: *5000 | int
+        		// +usage=Per-VK token cap per rate-limit window.
+        		vkTokenMaxLimit: *500000 | int
+        		// +usage=Rate-limit reset window (Bifrost duration).
+        		vkRateLimitResetDuration: *"1h" | string
+        		// +usage=Container image for the mint Job. Needs a shell, wget/curl, and
+        		// kubectl to write the Secret. bitnami/kubectl carries kubectl + wget.
+        		mintJobImage: *"bitnami/kubectl:1.31" | string
+        		// +usage=Kubernetes Secret holding the Bifrost admin credentials the mint
+        		// Job authenticates with (created once at bootstrap, not per-agent). Keys
+        		// default to username/password.
+        		bifrostAdminSecret:      *"bifrost-admin" | string
+        		bifrostAdminUsernameKey: *"username" | string
+        		bifrostAdminPasswordKey: *"password" | string
         	}
 
         	// Langfuse direct OTLP (Strands StrandsTelemetry sends traces directly)
