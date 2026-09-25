@@ -82,6 +82,19 @@ workloadIdentity:
   # CEL prefix identifying allowed workload subjects (system:serviceaccount:<ns>:<sa>).
   allowedSubjectPrefix: "system:serviceaccount:"
 
+# Caller credential passthrough.
+#
+# jwt-policy.yaml validates the caller's bearer token at the gateway edge and
+# that validation strips the credential, so without this the token never reaches
+# the backend and an agent cannot forward the caller's identity to its tools
+# (it falls back to its own ServiceAccount token). Enabled by default because
+# user-delegated tool access is a platform contract, not an opt-in.
+#
+# Disable on clusters that use backend.auth.oauthTokenExchange instead, which
+# gives tools a reduced-scope token rather than the caller's original one.
+credentialPassthrough:
+  enabled: true
+
 # MCP authentication configuration
 # Disabled by default — Gateway-level JWT auth (jwt-policy.yaml) handles
 # authentication. Enable only if you need MCP-specific OAuth discovery
