@@ -19,10 +19,10 @@ spec:
         issuer: {{ $issuerUrl | quote }}
         jwks:
           backendRef:
-            name: {{ .Values.global.keycloak.serviceName }}
-            kind: Service
-            namespace: {{ .Values.global.keycloak.namespace }}
-            port: {{ .Values.global.keycloak.servicePort }}
+            name: keycloak-jwks
+            group: agentgateway.dev
+            kind: AgentgatewayBackend
+            namespace: agentgateway-system
           jwksPath: {{ $jwksPath | quote }}
         audiences:
         {{- range .Values.mcpAuth.audiences }}

@@ -1,0 +1,58 @@
+# KRO spoke provisioning values, tenant "default".
+#
+# WHY KRO RATHER THAN CROSSPLANE
+# KRO is the engine that provisions the hub in this environment, and since the platform
+# publishes aws_private_subnet_ids and aws_cluster_security_group_id from the RGD, a
+# KRO-provisioned spoke gets the same EnvironmentConfig as a Crossplane-provisioned one.
+# The Crossplane platform-cluster Composition cannot compose at all on Crossplane v2
+# (v2.2.1 here): its six Usage bases declare protection.crossplane.io/v1beta1 Usage,
+# which v2 made namespaced, with no namespace, so the composite fails with "an empty
+# namespace may not be set when a resource name is provided" after ~7 of 35 resources.
+# Tracked in #17.
+#
+# The clusters-kro ApplicationSet globs
+# tenants/<tenant>/kro-clusters/clusters/*.json to decide WHICH spokes exist and reads
+# the matching entry below for HOW to build each one. A spoke needs both, plus a fleet
+# member under fleet/members/<name>/ so ArgoCD gets a cluster secret.
+#
+# Discovery follows the OVERLAY repo, not the fleet repo: clusters-kro resolves
+# repoURL/revision/basepath as `or overlay_repo_* fleetRepo*`. If gitops/fleet/hub/
+# values.yaml points the overlay at a tree without the trigger json, this file is never
+# read and zero spokes are generated, silently. Keep them in step.
+#
+# The cluster name is used verbatim for the EKS cluster AND for every IAM role the RGD
+# creates (<name>-cluster-role, <name>-cluster-node-role, <name>-argocd-capability-role).
+# It does NOT need to carry resourcePrefix: the platform's cluster-mgmt-eks policy grants
+# iam:PassRole by SERVICE (eks / capabilities.eks / pods.eks), not by role name. Before
+# that fix a spoke whose name lacked the prefix failed CreateCluster with AccessDenied on
+# iam:PassRole.
+clusters:
+  oap-dev:
+    clusterName: oap-dev
+    tenant: default
+    # Selects overlays/environments/dev, where agent_platform is enabled.
+    environment: dev
+    # Load-bearing. An empty provider label makes the addon registry route this spoke to
+    # the crossplane pod-identity chart, whose selector is provider NotIn [kro-ack] and
+    # therefore matches an empty value, and that chart then 409-conflicts with the pod
+    # identity associations the EksCluster RGD has already created.
+    provider: "kro-ack"
+    region: us-west-2
+    k8sVersion: "1.35"
+    # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
+    # kro-clusters chart resolves both via `default $.Values.global.accountId`
+    # (clusters.yaml), and clusters-kro.yaml's ApplicationSet template already
+    # populates global.accountId from the hub cluster secret's own
+    # aws_account_id annotation — the real AWS account, never committed to git.
+    # A real account ID belongs here only as a last resort if that fallback is
+    # ever unavailable; do not reintroduce it as a habit.
+    # Must match the hub's prefix so the spoke can assume the hub's
+    # <prefix>-cluster-mgmt-* roles via ACK CARM.
+    resourcePrefix: peeks
+    # 10.0.0.0/16 is the hub; 10.2.0.0/16 is an unrelated CDK VPC hosting ROSA workers.
+    cidr:
+      vpcCidr: "10.1.0.0/16"
+      publicSubnet1Cidr: "10.1.1.0/24"
+      publicSubnet2Cidr: "10.1.2.0/24"
+      privateSubnet1Cidr: "10.1.11.0/24"
+      privateSubnet2Cidr: "10.1.12.0/24"

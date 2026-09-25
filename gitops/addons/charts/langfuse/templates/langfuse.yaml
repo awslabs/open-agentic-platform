@@ -465,7 +465,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: mc
-          image: minio/mc:latest
+          image: {{ .Values.minio.mcImage.repository }}:{{ .Values.minio.mcImage.tag }}
           command:
             - sh
             - -c

@@ -1,4 +1,8 @@
 global:
+  # insecure=true: ingress serves plain HTTP; TLS is terminated upstream of the
+  # ALB (e.g. by CloudFront). Set from the cluster secret's insecure annotation,
+  # same convention as the keycloak/argo-workflows charts.
+  insecure: "false"
   # KeyCloak configuration
   keycloak:
     # Kubernetes service name for JWKS fetching (cluster-internal)

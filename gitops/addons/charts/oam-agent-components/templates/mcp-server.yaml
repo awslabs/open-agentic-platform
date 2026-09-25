@@ -138,6 +138,17 @@ spec:
         				"app.kubernetes.io/name":  context.name
         				"agentgateway.dev/target": context.name
         			}
+        			// The path agentgateway calls the MCP target at. On a selector target the
+        			// path CANNOT be set on the AgentgatewayBackend (the CRD allows it only on
+        			// static targets), and a container MCP_PATH env never reaches the gateway.
+        			// This Service annotation is the only place the backend-call path is
+        			// expressible for a selector target, so it is what actually fixes a path
+        			// mismatch. It MUST match the path the server serves: FastMCP mounts its
+        			// streamable-HTTP app behind a Starlette Mount that 307-redirects /mcp to
+        			// /mcp/, and the gateway does not follow that redirect (the session breaks
+        			// with a 422), so a FastMCP backend needs the trailing slash. Default keeps
+        			// the upstream default of /mcp for servers that serve it without redirect.
+        			annotations: "agentgateway.dev/mcp-path": parameter.mcpPath
         		}
         		spec: {
         			selector: "app.kubernetes.io/name": context.name
@@ -160,6 +171,9 @@ spec:
         			name:      context.name + "-preview"
         			namespace: context.namespace
         			labels: "app.kubernetes.io/name": context.name
+        			// Keep the preview Service's MCP path identical to stable so a blue-green
+        			// promotion never changes the path the gateway calls the backend at.
+        			annotations: "agentgateway.dev/mcp-path": parameter.mcpPath
         		}
         		spec: {
         			selector: "app.kubernetes.io/name": context.name
@@ -285,6 +299,17 @@ spec:
         	sessionAffinity: *true | bool
         	// +usage=Container port the MCP server listens on (FastMCP default 8000)
         	port: *8000 | int
+        	// +usage=Path agentgateway calls the MCP target at, emitted as the
+        	// agentgateway.dev/mcp-path Service annotation. This is the ONLY way to set the
+        	// backend-call path on a selector target (the AgentgatewayBackend CRD allows a
+        	// path only on static targets, and a container MCP_PATH env never reaches the
+        	// gateway). It must match what the server actually serves. Use "/mcp/" WITH the
+        	// trailing slash for a FastMCP server: FastMCP mounts streamable-HTTP behind a
+        	// Starlette Mount that 307-redirects /mcp to /mcp/, and the gateway does not
+        	// follow that redirect, so the session breaks (422) and the agent loads 0 tools.
+        	// Servers that serve /mcp without a redirect (e.g. the Express-based Node servers
+        	// here) work with the "/mcp" default.
+        	mcpPath: *"/mcp" | string
         	// +usage=Service port exposed by the stable/preview Services
         	servicePort: *80 | int
         	// +usage=Optional container command override

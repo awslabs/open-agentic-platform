@@ -62,9 +62,30 @@ platform-engineering foundation, all on Amazon EKS Auto Mode:
 - AWS account with Amazon Bedrock access
 - [Task](https://taskfile.dev), `kubectl`, Helm 3.x, AWS CLI, `yq`
 - Podman or Docker (for the Kind-based bootstrap)
-- A domain with an ACM cert + Route53 zone (ingress), and IAM Identity Center (ArgoCD SSO)
+- IAM Identity Center (ArgoCD SSO)
 
-### Install
+### Install — no domain required (fastest path)
+
+No domain, no ACM cert, no Route53 zone. Reach the platform over HTTPS through a free
+`*.cloudfront.net` hostname:
+
+```bash
+# 1. Configure
+cp config.yaml config.local.yaml
+# Edit config.local.yaml with your AWS / SSO values (leave domain empty)
+
+# 2. Install everything through CloudFront
+cd workshop && task install
+```
+
+That's it. `workshop/task install` reserves a CloudFront hostname, installs the platform + spokes +
+agentic capabilities exactly like the root `task install` below, then attaches CloudFront to the
+platform's load balancer. See [`workshop/README.md`](workshop/README.md) for how it works, prerequisites,
+timing, and teardown.
+
+### Install — with your own domain
+
+If you already have a domain with an ACM cert + Route53 zone:
 
 ```bash
 # 1. Configure
@@ -75,9 +96,9 @@ cp config.yaml config.local.yaml
 task install
 ```
 
-That's it. The installer bootstraps from Kind, provisions an EKS **hub** cluster, deploys the base
-platform (ArgoCD, Crossplane, observability), provisions optional **spoke** clusters, then layers on
-the agentic capabilities as ArgoCD-managed addons. The Kind bootstrap is destroyed once the hub is
+Either path bootstraps from Kind, provisions an EKS **hub** cluster, deploys the base platform
+(ArgoCD, Crossplane, observability), provisions optional **spoke** clusters, then layers on the
+agentic capabilities as ArgoCD-managed addons. The Kind bootstrap is destroyed once the hub is
 self-managing.
 
 ---
@@ -300,12 +321,13 @@ Design docs and open work items — check these before starting a new feature:
 
 | Document | Covers | Open items |
 |---|---|---|
+| [`workshop/README.md`](workshop/README.md) | No-domain install via CloudFront (`cd workshop && task install`) | — |
 | [`docs/architecture/`](docs/architecture/) | Agent identity & token exchange, platform architecture | — |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Tracing, LLM observability, metrics/dashboards | — |
 | [`docs/dark-factory/README.md`](docs/dark-factory/README.md) | Dark Factory design, flows, diagrams | — |
 | [`docs/dark-factory/AGENT-INSTALL.md`](docs/dark-factory/AGENT-INSTALL.md) | Connecting the AWS DevOps + Security Agents | — |
 | [`gitops/DEPLOYMENT.md`](gitops/DEPLOYMENT.md) | GitOps deployment runbook (ArgoCD bootstrap, addon enablement, Pod Identity) | LiteLLM Pod-Identity step superseded by declarative Crossplane in the bifrost chart |
-| [`gitops/addons/charts/bifrost/DESIGN.md`](gitops/addons/charts/bifrost/DESIGN.md) | Bifrost AI Gateway + **per-workload Virtual Key** target design | ⚠️ `is_vk_mandatory` disabled — implement per-workload VK minting before enabling |
+| [`gitops/addons/charts/bifrost/DESIGN.md`](gitops/addons/charts/bifrost/DESIGN.md) | Bifrost AI Gateway + **per-workload Virtual Key** minting | ✅ VK minting wired into agent onboarding; `is_vk_mandatory` + admin auth enabled. Bedrock Guardrails still TODO |
 | [`platform/oam/DESIGN.md`](platform/oam/DESIGN.md) | KubeVela OAM `agent` / `mcp-server` ComponentDefinitions | — |
 | [`applications/strands-agent-base/ARCHITECTURE.md`](applications/strands-agent-base/ARCHITECTURE.md) | Strands agent internals, gateway integration, A2A | References LiteLLM — superseded by Bifrost (`OpenAIModel` + `x-bf-vk`) |
 

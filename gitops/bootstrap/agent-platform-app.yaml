@@ -42,6 +42,19 @@ spec:
             enable_agent_platform: "true"
           repoURLGit: "${REPO_URL}"
           repoURLGitRevision: "${REVISION}"
+          # In-cluster overlay layer (Option A). The appset-chart already renders a
+          # second `$overlay` source and appends its value files at highest precedence
+          # (with ignoreMissingValueFiles: true, so absent overlay files are a no-op),
+          # exactly as the platform `cluster-addons` bootstrap does. Supplying these
+          # coordinates lets operators override any OAP addon value (image mirror,
+          # endpoints, hosts, secret-manager keys) from an in-cluster GitOps repo
+          # WITHOUT committing to this addon repo. Leave empty to disable the overlay.
+          #   $overlay/configs/<addon>/values.yaml
+          #   $overlay/overlays/environments/<env>/<addon>/values.yaml
+          #   $overlay/overlays/clusters/<cluster>/<addon>/values.yaml
+          overlayRepoURLGit: "${OVERLAY_REPO_URL}"
+          overlayRepoURLGitRevision: "${OVERLAY_REVISION}"
+          overlayRepoURLGitBasePath: "${OVERLAY_BASEPATH}"
   destination:
     namespace: argocd
     name: ${HUB_CLUSTER_NAME}

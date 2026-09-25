@@ -120,8 +120,9 @@ agent-gateway:
         values: ['true']
   valuesObject:
     global:
+      insecure: '{{default "false" .metadata.annotations.insecure}}'
       keycloak:
-        issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "keycloak_issuer_url")}}'
+        issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "oidc_issuer_url")}}'
         serviceName: '{{default "keycloak" (index .metadata.annotations "keycloak_service_name")}}'
         namespace: '{{default "keycloak" (index .metadata.annotations "keycloak_namespace")}}'
     ingress:

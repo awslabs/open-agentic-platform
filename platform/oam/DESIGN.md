@@ -78,11 +78,24 @@ The `mcp-server` component deploys Model Context Protocol servers with agentgate
 ### Generated Resources
 
 1. **Argo Rollout** — blue-green deployment
-2. **Stable Service** — `appProtocol: agentgateway.dev/mcp`, port 80 → containerPort
-3. **Preview Service** — blue-green preview
-4. **AgentgatewayBackend** — static target to stable service FQDN
+2. **Stable Service** — `appProtocol: agentgateway.dev/mcp`, port 80 → containerPort, and the
+   `agentgateway.dev/mcp-path` annotation (from `mcpPath`, default `/mcp`) that sets the path
+   the gateway calls the target at
+3. **Preview Service** — blue-green preview (same `agentgateway.dev/mcp-path` annotation)
+4. **AgentgatewayBackend** — selector target matching the stable Service's
+   `agentgateway.dev/target` label (selector, not static, so stateful session affinity works)
 5. **HTTPRoute** — registers at `/mcp/<name>` (optional)
 6. **AgentgatewayPolicy** — tool-level CEL authorization (optional)
+
+> **MCP path / trailing slash.** The gateway calls the MCP target at the path from the
+> `agentgateway.dev/mcp-path` Service annotation (set via the `mcpPath` parameter). On a
+> *selector* target this annotation is the only way to set that path — the AgentgatewayBackend
+> CRD allows a `path` only on *static* targets, and a container `MCP_PATH` env never reaches the
+> gateway. It must match what the server serves: a FastMCP server mounts its streamable-HTTP app
+> behind a Starlette `Mount` that 307-redirects `/mcp` to `/mcp/`, the gateway does not follow
+> that redirect, and the session breaks (422) so the agent loads 0 tools. Use `mcpPath: "/mcp/"`
+> for FastMCP; the `/mcp` default is correct for servers that serve `/mcp` without redirecting
+> (e.g. the Express-based Node servers in `applications/`).
 
 ### Per-Server Routing (Not Federation)
 

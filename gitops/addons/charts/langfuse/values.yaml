@@ -1,5 +1,9 @@
 global:
   awsRegion: ""
+  # insecure=true: ingress serves plain HTTP; TLS is terminated upstream of the
+  # ALB (e.g. by CloudFront). Set from the cluster secret's insecure annotation,
+  # same convention as the keycloak/argo-workflows charts.
+  insecure: "false"
 
 clusterName: ""
 
@@ -27,6 +31,10 @@ ingress:
   enabled: false
   className: platform
   host: ""
+  # ALB rule priority within the shared "platform" ingress group. Langfuse must be
+  # served at "/" (Next.js has no runtime basePath), so this "/" catch-all is given a
+  # high order to be evaluated LAST and avoid shadowing specific-path ingresses.
+  groupOrder: "900"
 
 keycloak:
   clientSecret: ""
@@ -91,8 +99,18 @@ redis:
 
 # MinIO (S3-compatible blob storage for Langfuse v3 event upload)
 minio:
+  # Default to quay.io: anonymous Docker Hub pulls (minio/minio, minio/mc) are
+  # rate-limited and break fresh installs behind a shared NAT egress IP with
+  # "toomanyrequests"/"insufficient_scope". quay.io hosts the same official
+  # images without that throttle. Override repository to a private mirror
+  # (e.g. an ECR repo) via a per-cluster overlay when air-gapped.
   image:
-    repository: minio/minio
+    repository: quay.io/minio/minio
+    tag: "latest"
+  # MinIO client (mc) image used by the bucket-init job. Kept as a value so it
+  # can be mirrored/overridden alongside the server image.
+  mcImage:
+    repository: quay.io/minio/mc
     tag: "latest"
   storage: 10Gi
   rootUser: minio
