@@ -250,7 +250,7 @@ Two further results from the same probe:
 - **`audience` filters, it cannot add.** `audience=<client>` returns `400` /
   "Requested audience not available: <client>" unless that audience already resolves
   from the requester's client scopes and role mappings. This is a concrete prerequisite
-  for the `delegated-identity` trait below, not a limitation.
+  for the delegation outputs on `gateway-identity` below, not a limitation.
 
 Why upstream nonetheless ships `actorToken`: it is optional in agentgateway's schema
 and other IdPs do honour actor semantics (Entra OBO). agentgateway implements the spec
@@ -299,10 +299,17 @@ Keycloak — see the blocker above). Do the first, substitute `azp` for the seco
    `oauthTokenExchange` live (commit `70faa71`).
 2. **Answer the delegation gate.** ✅ **done** — no `act`. See the Keycloak blocker.
 3. **Propagate the caller token in the base image.** ✅ **done** — see below.
-4. **`delegated-identity` trait** — designed below, not yet implemented.
+4. **Delegation on the `gateway-identity` trait** — designed below, not yet implemented.
+   Delivered by extending the existing trait rather than adding a second one: the agent's
+   own ServiceAccount identity and the delegated caller identity are two branches of one
+   question, and `identity.py:outbound()` already resolves them in one place. The trait
+   gains a `delegateTo` list (**not** `audiences`; `audience` already means the SA token's
+   audience on this trait), which serves as both the delegation scope and its enablement
+   gate.
 5. **Per-tool authorization at the gateway** — requires `mcpAuth.enabled: true`
    (currently `false` in the agent-gateway chart, so no MCP-level authorization is
-   active at all yet).
+   active at all yet). See "Authorization lives at the gateway, not at the exchange"
+   for the three CRD-verified constraints that shape it.
 
 #### Where the exchange happens, and why there
 
@@ -372,7 +379,16 @@ Two supporting changes were required rather than optional:
 
 `PROPAGATE_CALLER_TOKEN=false` restores workload-only identity on every hop.
 
-#### `delegated-identity` trait (design, not implemented)
+#### Delegation on the `gateway-identity` trait (design, not implemented)
+
+> **Revised 2026-09-28.** Originally scoped as a separate `delegated-identity` trait.
+> Delivered instead by extending the existing `gateway-identity` trait, because the two are
+> mechanically disjoint (that trait is `patch:`-only today; delegation is `outputs`-only, and
+> a KubeVela template may carry both) and because a developer should answer "what identity
+> does my agent have" once. `identity.py:outbound()` already treats the caller token and the
+> ServiceAccount token as one decision. Cost of merging: `gateway-identity` is
+> `podDisruptive: true`, so enabling delegation restarts the workload even though only a
+> gateway-side resource changed.
 
 Named for the capability, not the provider. A trait called `keycloak-token-exchange`
 would break OAM portability, which `.kiro/steering/oam-authoring.md` forbids: a
@@ -412,10 +428,19 @@ Keycloak's docs:
 
 - The **subject token must already carry the requester client in `aud`**, or the
   exchange is rejected. Do not solve this with a static audience mapper listing every
-  agent. Give each agent client a role (e.g. `use`), assign it to permitted users, and
-  map those roles onto the user-facing client so audience resolution populates `aud`.
-  This makes the precondition useful: it becomes the enforcement point for *which
-  users may invoke which agent*, checked at the gateway before the agent is reached.
+  agent. Give each agent client a role (e.g. `use`) and map those roles onto the
+  user-facing client so audience resolution populates `aud`.
+
+  > **Revised 2026-09-28.** This bullet previously continued: "assign it to permitted
+  > users… This makes the precondition useful: it becomes the enforcement point for
+  > *which users may invoke which agent*, checked at the gateway before the agent is
+  > reached." That is no longer the design. Assigning a client role per user-tool pair is
+  > a manual Keycloak step for every pair, which fails the customer bar in
+  > `.kiro/steering/project.md` ("A change is **not done** until it works without human
+  > intervention from a clean state"). The role is granted broadly instead, so the
+  > exchange always succeeds, and authorization moves to the gateway. See
+  > **"Authorization lives at the gateway, not at the exchange"** below.
+
 - **`audiences` filters, it cannot add.** Each MCP backend needs a client scope with
   client role mappings so the requested audience resolves; otherwise Keycloak returns
   "Requested audience not available".
@@ -424,12 +449,108 @@ Keycloak's docs:
 - Optionally the `downscope-assertion-grant-enforcer` client policy executor, which
   enforces downscoping only.
 
+#### Authorization lives at the gateway, not at the exchange
+
+**Decided 2026-09-28.** The token exchange provides **containment** and **attribution**.
+It is not the authorization point.
+
+- *Containment:* `aud` narrows from realm-wide `account` to the agent's declared MCP
+  servers, so a leaked or logged token is bounded to those backends. Verified: the probe
+  showed `aud=['zz-tx-tool','account']` becoming `aud=zz-tx-tool`, with `account` removed.
+- *Attribution:* `azp` carries the exchanging client, so every downstream call names
+  which agent acted. This is the only available carrier, because `act` is unachievable on
+  Keycloak (see the blocker above).
+- *Not authorization:* the Keycloak client role that makes `audience` resolve is granted
+  broadly, so the exchange succeeds for any authenticated caller. The access decision is
+  made by the gateway.
+
+Authorization is `backend.mcp.authorization` on the MCP backend, which the
+`mcp-server` ComponentDefinition already emits from its `authPolicy` parameter
+(`platform/oam/definitions/components/mcp-server.cue:265-282`, unused today because the
+agent-gateway chart ships `mcpAuth.enabled: false`).
+
+Three constraints, read from the live CRD `agentgatewaypolicies.agentgateway.dev` on
+`oap-dev`. Recorded because each one invalidates a design someone will otherwise attempt.
+
+**1. CEL is the only policy language.** `policy.matchExpressions` is "CEL expressions that
+must all evaluate to true for the rule to match", each item "A Common Expression Language
+(CEL) expression", max 16384 characters, up to 256 expressions. There is no Cedar or Rego
+field. Other languages are reachable only by delegating to an external service
+(`externalAuthorization`, or `mcpGuardrails` for argument-level decisions), where the
+language is whatever that service uses.
+
+**2. Discovery permission is derived from call permission and cannot be set separately.**
+The CRD, verbatim:
+
+> List operations, such as `list_tools`, will have each item evaluated. Items that do not
+> meet the rule will be filtered. Get or call operations, such as `call_tool`, will
+> evaluate the specific item and reject requests that do not meet the rule.
+
+One rule set governs both. So "any identity may list tools, invocation restricted by
+policy" is **not expressible as CEL**: a rule that denies calling a tool also hides it from
+`tools/list`. `mcp.methodName` exists but is a post-request variable (access logs), not
+available during authorization.
+
+This is a deliberate convention, not an agentgateway gap. ToolHive (Cedar) has list
+methods "bypass request-level authorization entirely" and filters the response using
+`Action::"call_tool"` per item, and ships a `FeatureType` entity with `operation: "list"`
+that its docs mark "not currently used for authorization". AWS AgentCore Gateway (Cedar)
+states the rule directly: a principal may list a tool only "if there exists any set of
+circumstances under which a call to that tool would be permitted". LiteLLM applies one
+permission set to "list or call".
+
+The consequence for design: the axis that separates discovery from invocation is
+**arguments and tool metadata**, not identity. Identity- or name-based rules necessarily
+filter discovery, which is the desired behaviour (an agent that may never call a tool
+should not see it). Argument-based rules leave discovery open automatically, and require
+`mcpGuardrails`/ExtMCP because `mcp.tool.arguments` is post-request and unavailable to CEL.
+
+**3. `Deny` fails open on evaluation errors.** From the CRD: "`Deny` is not recommended
+because expression failures fail to deny; prefer `Allow` or `Require`." `action` is an enum
+of `Allow | Deny | Require` defaulting to `Allow`, and "if at least one `Allow` rule is
+configured, requests are denied unless at least one allow rule matches". So write the
+initial permissive rule as `Require` on `has(jwt.sub)` rather than a bare allow, so later
+narrower `Allow` rules compose instead of being bypassed.
+
+`has(jwt.sub)` rather than a `realm_access` check, because the gateway admits two identity
+classes: Keycloak user tokens (which carry `realm_access`) and EKS OIDC ServiceAccount
+tokens from agents (which do not — see the note at
+`gitops/addons/charts/agent-gateway/values.yaml:60`). A `realm_access` rule would admit
+humans and exclude every agent. `sub` is present in both.
+
+Where the policy belongs: the agent-gateway chart, beside the existing
+`templates/mcp-policy.yaml` (which is authentication only) and attached to the shared
+`mcp-servers-backend` AgentgatewayBackend. Backend-scoped rules apply to every target in
+that backend, and Solo's guidance is to keep one policy and discriminate with
+`mcp.tool.target` rather than write one per server. That also puts the policy in an
+operator-owned file rather than in a developer's OAM Application, matching how
+`jwt-policy.yaml` and `credential-passthrough-policy.yaml` are already delivered.
+
 **Open before implementing:**
 
-- Whether a Crossplane Keycloak provider is installed, or client provisioning must go
-  through a Job like the existing `keycloak-config` one.
-- `generate.sh` produces a clean diff. It may not: `agent.yaml` has drifted from
-  `agent.cue` and regenerating drops its `opentelemetry-instrument` command (issue #50).
+- ~~Whether a Crossplane Keycloak provider is installed, or client provisioning must go
+  through a Job like the existing `keycloak-config` one.~~ **Decided 2026-09-28:**
+  Crossplane `provider-keycloak`
+  (`xpkg.upbound.io/crossplane-contrib/provider-keycloak:v2.7.2`) plus an XRD and
+  Composition, following the live `XPodIdentity` precedent. The existing
+  `keycloak-client-provisioner` chart cannot serve per-agent clients: it is per-cluster and
+  operator-declared in a fleet member file, its `jq`-built client JSON has no `attributes`
+  key so it cannot set `standard.token.exchange.enabled` (proven: `agentgateway-dev`, which
+  it created, lacks the attribute), it cannot create client roles, it treats HTTP 409 as
+  "skip" so it never updates, and it writes to AWS Secrets Manager where
+  `clientAuth.secretRef` needs a Kubernetes Secret. It can be installed from OAP rather
+  than upstream: OAP already ships its own provider at
+  `gitops/addons/charts/crossplane-agentcore/templates/01-provider.yaml`.
+- ~~`generate.sh` produces a clean diff. It may not: `agent.yaml` has drifted from
+  `agent.cue` and regenerating drops its `opentelemetry-instrument` command (issue #50).~~
+  **Stale as of 2026-09-28:** `agent.cue:83` carries
+  `command: ["opentelemetry-instrument", "python", "-m", "app.main"]` and so does the
+  generated `agent.yaml:79`, one occurrence each on `origin/main`, so regenerating does not
+  drop tracing. `us-east-1` no longer appears in `agent.yaml` either. The `agent.yaml`
+  entries under "Known violations" in `.kiro/steering/oam-authoring.md` are both out of
+  date; `decentralized-observability-identity.yaml` having no CUE source still holds.
+  Running `generate.sh` remains unverified, but the two documented reasons to expect a
+  dirty diff are gone.
 - Whether `client-auth-federated:v1` / `kubernetes-service-accounts:v1` (both GA in
   Keycloak 26.7.2, absent from our 26.3.3) let the agent client authenticate with its
   projected ServiceAccount token instead of a secret. This decides whether
@@ -492,5 +613,5 @@ Keycloak's docs:
 | Keycloak Standard Token Exchange V2 (internal-internal, subject-only) | **works** — verified HTTP 200 with the per-client toggle on |
 | **`act` delegation via `actor_token`** | **not possible on Keycloak 26.3.3 — silently ignored (ADR-6 blocker)** |
 | Caller token propagation in `strands-agent-base` (`app/identity.py`) | done — per-credential MCP pools, 32 unit tests |
-| `delegated-identity` trait (per-agent IdP client + route policy) | designed, not implemented |
+| Delegation on `gateway-identity` (per-agent IdP client + route policy) | designed, not implemented |
 | MCP-level authorization (`mcpAuth.enabled`) | not started — currently `false`, so no MCP authz is active |
