@@ -1,0 +1,20 @@
+# orion-hub langfuse overlay — pin MinIO to the seb-demo public ECR mirror.
+#
+# Why: the upstream community MinIO images were removed from public anonymous
+# registries (docker.io/minio/minio -> 404; quay.io/minio/minio + mc -> 401 gated),
+# so the chart default quay.io/minio/minio:latest is unpullable -> ImagePullBackOff
+# on langfuse-minio, which takes down the S3 blob store and blocks trace ingestion.
+#
+# Pin: tag `mirror-20260921` is IMMUTABLE and resolves to digest
+#   sha256:52dfd5c0bbd38d3219f2058c7af216d9f9a27a994b7b5baad09bbd38866015ff
+#   (MinIO RELEASE.2025-09-07T16-13-09Z, amd64). The chart builds image refs as
+#   repository:tag (no @digest support), so the immutable tag is the digest pin.
+# mcImage reuses the same mirror: that image bundles the `mc` binary + a shell,
+# which the langfuse-minio-init job (sh -c 'mc ...') requires.
+minio:
+  image:
+    repository: public.ecr.aws/seb-demo/minio
+    tag: "mirror-20260921"
+  mcImage:
+    repository: public.ecr.aws/seb-demo/mc
+    tag: "mirror-20260921"

@@ -10,8 +10,8 @@ spec:
     # (referenced below via $values) plus the charts/, configs/ and overlays/ that
     # ArgoCD resolves at sync time from the paths inside those registry entries.
     - ref: values
-      repoURL: "${REPO_URL}"
-      targetRevision: "${REVISION}"
+      repoURL: "${OAP_REPO_URL}"
+      targetRevision: "${OAP_REVISION}"
     # Source B — the PLATFORM repo (appmod-blueprints): the generator chart itself.
     # Reference model — the appset-chart is NOT vendored into this repo; it is
     # pulled from the platform repo at a pinned revision. Other addon repos reuse
@@ -29,19 +29,29 @@ spec:
         # (highest) is reserved for env-injected repo coordinates ONLY — it must
         # not re-set repoURLGitBasePath/useSelectors or it would clobber _defaults.
         valueFiles:
-          - "$values/${BASEPATH}registry/_defaults.yaml"
-          - "$values/${BASEPATH}registry/gateway.yaml"
-          - "$values/${BASEPATH}registry/observability.yaml"
-          - "$values/${BASEPATH}registry/agentcore.yaml"
-          - "$values/${BASEPATH}registry/sandbox.yaml"
+          - "$values/${OAP_BASEPATH}registry/_defaults.yaml"
+          - "$values/${OAP_BASEPATH}registry/gateway.yaml"
+          - "$values/${OAP_BASEPATH}registry/observability.yaml"
+          - "$values/${OAP_BASEPATH}registry/agentcore.yaml"
+          - "$values/${OAP_BASEPATH}registry/sandbox.yaml"
         valuesObject:
           # Umbrella gate: whole agentic bundle is off unless the cluster carries
           # enable_agent_platform. Per-addon enable_<addon> selectors (useSelectors
           # from _defaults) gate placement within the bundle.
           globalSelectors:
             enable_agent_platform: "true"
-          repoURLGit: "${REPO_URL}"
-          repoURLGitRevision: "${REVISION}"
+          # NO HARDCODED REVISION HERE (annotation-driven, permanent).
+          # repoURLGit / repoURLGitRevision are deliberately NOT set in valuesObject.
+          # They fall through to registry/_defaults.yaml, which resolves them from the
+          # cluster-secret annotations at ApplicationSet generation time:
+          #   repoURLGit          <- {{default "<upstream>" .metadata.annotations.addons_repo_url}}
+          #   repoURLGitRevision  <- {{default "main"       .metadata.annotations.addons_repo_revision}}
+          # These OAP-scoped snake_case annotations are distinct from appmod's
+          # camelCase addonsRepoRevision, so the OAP revision is decoupled from the
+          # platform (appmod) revision. Overriding them here (baking ${OAP_REVISION})
+          # is what previously pinned every child appset to a fixed branch; removing
+          # the override makes the revision follow the cluster's SecretsManager config
+          # with no appset-level hardcode.
           # In-cluster overlay layer (Option A). The appset-chart already renders a
           # second `$overlay` source and appends its value files at highest precedence
           # (with ignoreMissingValueFiles: true, so absent overlay files are a no-op),

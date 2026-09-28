@@ -4,13 +4,23 @@ vars:
   CONFIG_FILE: '{{.CONFIG_FILE | default "config.local.yaml"}}'
   PLATFORM_DIR: '.platform'
 
-  # Parsed from config
+  # Parsed from config.
+  # Repo-key alignment (OAP-first + config unique): OAP historically read the
+  # platform repo coordinates under `.platform.{repo,ref,clusterProvider}`, while
+  # the appmod-blueprints `create-config.sh` writes them as top-level `.repo.{url,
+  # revision}` + `.clusterProvider`. To let BOTH Taskfiles consume ONE superset
+  # config.local.yaml, fall back to the appmod schema when `.platform.*` is absent.
+  # Fully backward-compatible: a config that still carries `.platform.*` (e.g. the
+  # OAP-standalone `platform:configure` output) resolves exactly as before, so the
+  # `//` fallback is inert there. NOTE: the appmod key is `.repo` (NOT `.platform`)
+  # on purpose — setting `.platform.ref` would flip appmod's workshop Taskfile out
+  # of in-place mode into `.platform/` clone mode, which breaks the PEEKS install.
   PLATFORM_REPO:
-    sh: yq -r '.platform.repo' {{.CONFIG_FILE}}
+    sh: yq -r '.platform.repo // .repo.url' {{.CONFIG_FILE}}
   PLATFORM_REF:
-    sh: yq -r '.platform.ref' {{.CONFIG_FILE}}
+    sh: yq -r '.platform.ref // .repo.revision' {{.CONFIG_FILE}}
   CLUSTER_PROVIDER:
-    sh: yq -r '.platform.clusterProvider' {{.CONFIG_FILE}}
+    sh: yq -r '.platform.clusterProvider // .clusterProvider' {{.CONFIG_FILE}}
   AWS_REGION:
     sh: yq -r '.aws.region' {{.CONFIG_FILE}}
   AWS_ACCOUNT_ID:
@@ -278,9 +288,9 @@ tasks:
     desc: Apply the agentic platform bootstrap Application to ArgoCD
     deps: [agentic:ensure-kubeconfig]
     env:
-      REPO_URL: "{{.AGENTIC_REPO_URL}}"
-      REVISION: "{{.AGENTIC_REPO_REVISION}}"
-      BASEPATH: "{{.AGENTIC_REPO_BASEPATH}}"
+      OAP_REPO_URL: "{{.AGENTIC_REPO_URL}}"
+      OAP_REVISION: "{{.AGENTIC_REPO_REVISION}}"
+      OAP_BASEPATH: "{{.AGENTIC_REPO_BASEPATH}}"
       HUB_CLUSTER_NAME: "{{.HUB_CLUSTER_NAME}}"
       # Reference model: the appset-chart generator is sourced from the platform
       # repo (appmod-blueprints), not vendored here. These feed the bootstrap
@@ -293,7 +303,7 @@ tasks:
       OVERLAY_BASEPATH: "{{.OVERLAY_REPO_BASEPATH}}"
     cmds:
       - task: agentic:hub-oidc-annotation
-      - envsubst '${REPO_URL} ${REVISION} ${BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION} ${OVERLAY_REPO_URL} ${OVERLAY_REVISION} ${OVERLAY_BASEPATH}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
+      - envsubst '${OAP_REPO_URL} ${OAP_REVISION} ${OAP_BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION} ${OVERLAY_REPO_URL} ${OVERLAY_REVISION} ${OVERLAY_BASEPATH}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
       - printf '\n✓ Agentic platform bootstrap applied. ArgoCD will sync components to clusters with enable_agent_platform=true label (set via fleet overlays).\n'
 
   agentic:seed-observability:

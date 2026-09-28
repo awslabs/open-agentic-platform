@@ -21,8 +21,8 @@ syncPolicyAppSet:
 
 useSelectors: true
 
-repoURLGit: '{{default "https://github.com/aws-samples/sample-open-agentic-platform.git" .metadata.annotations.addons_repo_url}}'
-repoURLGitRevision: '{{default "main" .metadata.annotations.addons_repo_revision}}'
+repoURLGit: '{{default "https://github.com/allamand/open-agentic-platform.git" .metadata.annotations.addons_repo_url}}'
+repoURLGitRevision: '{{default "integration/peeks-e2e-2b" .metadata.annotations.addons_repo_revision}}'
 # Registry `path:` fields are literal (gitops/addons/charts/<name>), so this
 # basePath ONLY governs per-addon config value-file resolution:
 #   $values/{repoURLGitBasePath}/<addon>/values.yaml  →  gitops/addons/configs/<addon>/values.yaml

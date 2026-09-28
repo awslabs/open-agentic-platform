@@ -95,8 +95,18 @@ redis:
 
 # MinIO (S3-compatible blob storage for Langfuse v3 event upload)
 minio:
+  # Default to quay.io: anonymous Docker Hub pulls (minio/minio, minio/mc) are
+  # rate-limited/blocked behind a shared NAT egress IP ("insufficient_scope"/
+  # "toomanyrequests"), which breaks fresh installs. quay.io hosts the same
+  # official images without that throttle. Override to a private ECR mirror via
+  # a per-cluster overlay when air-gapped.
   image:
-    repository: minio/minio
+    repository: quay.io/minio/minio
+    tag: "latest"
+  # MinIO client (mc) image used by the bucket-init job. Kept as a value so it
+  # can be mirrored/overridden alongside the server image.
+  mcImage:
+    repository: quay.io/minio/mc
     tag: "latest"
   storage: 10Gi
   rootUser: minio
