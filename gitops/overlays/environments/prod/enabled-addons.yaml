@@ -28,6 +28,11 @@ enabledAddons:
   monitoring: true
   agent_core: true
   agent_gateway: true
+  # Crossplane provider-keycloak. Needed on every cluster where agents run, because
+  # the gateway-identity trait emits its IdpClient claim in the agent's namespace
+  # on THAT cluster, so the provider and Composition must be local to it.
+  # FALSE until the XIdpClient XRD + Composition exist.
+  crossplane_keycloak: false
   oam_components: true
   # Agent Sandbox capability — DISABLED for now (same reason as dev): EKS Auto
   # Mode + Bottlerocket cannot host Kata. Re-enable once Auto Mode integration

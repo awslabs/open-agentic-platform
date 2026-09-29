@@ -189,3 +189,11 @@ crossplane-keycloak:
         # keycloak-backend.yaml, which parses the host out of the same annotation.
         # Falls back to ingress_domain_name when the annotation is absent.
         url: '{{ $iss := index .metadata.annotations "oidc_issuer_url" }}{{ if $iss }}https://{{ index (splitList "/" (trimPrefix "https://" (trimPrefix "http://" $iss))) 0 }}{{ else }}https://{{ index .metadata.annotations "ingress_domain_name" }}{{ end }}'
+    credentials:
+      externalSecret:
+        # Secrets Manager entry holding the Keycloak admin password. Keycloak is
+        # hub-only, so spokes read the HUB's entry: keyed on hub_cluster_name, not
+        # this cluster's name. Verified present as `peeks-hub/keycloak`, and the
+        # spoke's external-secrets role can read it (SecretsManagerReadWrite, same
+        # account).
+        secretManagerKey: '{{ index .metadata.annotations "hub_cluster_name" }}/keycloak'

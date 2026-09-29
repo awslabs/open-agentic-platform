@@ -44,15 +44,16 @@ provider:
 
 # Admin credentials the provider uses to talk to Keycloak.
 #
-# NOT stored in this chart. The Secret must already exist in the provider's
-# namespace; the chart only references it. Two ways to satisfy that, chosen with
-# `credentials.create`:
+# Default path: an ExternalSecret pulls the admin password from AWS Secrets
+# Manager and target.template assembles the JSON blob the provider expects, so no
+# password reaches git. This works on the hub and on spokes alike, because the
+# source is Secrets Manager rather than an in-cluster Secret and the Keycloak URL
+# is the public host.
 #
-#   false (default) - the Secret is managed out of band (ExternalSecret, sealed
-#     secret, or whatever the cluster already uses). Nothing is templated.
-#   true            - the chart renders the Secret from credentials.* values.
-#     Only for local or throwaway clusters: it puts the admin password into the
-#     rendered manifest and therefore into git if values are committed.
+# credentials.create=true instead renders the Secret straight from values. Only
+# for local or throwaway clusters: it puts the admin password into the rendered
+# manifest and therefore into git if values are committed. Setting it disables the
+# ExternalSecret path.
 credentials:
   create: false
   secretName: keycloak-provider-credentials
@@ -62,5 +63,15 @@ credentials:
   username: admin
   # Only read when create is true. Leave empty otherwise.
   password: ""
+  externalSecret:
+    enabled: true
+    clusterSecretStore: aws-secrets-manager
+    refreshInterval: 1h
+    # Secrets Manager entry holding the Keycloak admin password. Verified to exist
+    # as `peeks-hub/keycloak` with properties keycloak_admin_password,
+    # keycloak_postgres_password, user_password. Supplied per cluster by the addon
+    # registry so a spoke can point at the hub's entry.
+    secretManagerKey: ""
+    passwordProperty: keycloak_admin_password
 
 namespace: crossplane-system
