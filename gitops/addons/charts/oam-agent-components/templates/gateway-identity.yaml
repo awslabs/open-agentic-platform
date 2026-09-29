@@ -48,13 +48,89 @@ spec:
         _idpSecretName: context.name + "-idp"
 
         outputs: {
+        	// Hop-1 (user -> agent) credential policy, ALWAYS emitted so the agent's own
+        	// route is self-sufficient rather than depending on a Gateway-wide policy.
+        	// Targets the HTTPRoute the agent component emits as context.name when
+        	// registerWithGateway is true (agent.cue:235-243). When that is false no route
+        	// exists and this policy never attaches, which is harmless: an agent not
+        	// registered with the gateway receives no gateway traffic.
+        	//
+        	// Two mutually exclusive modes. The CRD enforces the exclusivity: "at most one
+        	// of [key secretRef passthrough aws azure gcp oauthTokenExchange
+        	// crossAppAccess] may be set".
+        	//
+        	//   tokenExchange: false -> passthrough. The caller's token is restored onto the
+        	//     request to the agent, the same effect the Gateway-scoped
+        	//     credential-passthrough-policy has today, but scoped to this one route.
+        	//   tokenExchange: true  -> oauthTokenExchange. The caller's token is exchanged
+        	//     and the result replaces it on the way to the agent.
+        	//
+        	// Why a policy is needed at all: jwt-policy.yaml validates the caller at the
+        	// edge and that validation CONSUMES the credential, so without a backend auth
+        	// policy the agent pod receives no `authorization` header (verified on oap-dev;
+        	// see credential-passthrough-policy.yaml). There is no positive way to express
+        	// "strip": `backend.auth: {}` is rejected by the CRD. Absence of a policy IS
+        	// the strip, which is exactly what the agent -> MCP path relies on.
+        	"\(context.name)-caller-credential": {
+        		apiVersion: "agentgateway.dev/v1alpha1"
+        		kind:       "AgentgatewayPolicy"
+        		metadata: {
+        			name:      context.name + "-caller-credential"
+        			namespace: context.namespace
+        			labels: "app.kubernetes.io/name": context.name
+        		}
+        		spec: {
+        			targetRefs: [{
+        				group: "gateway.networking.k8s.io"
+        				kind:  "HTTPRoute"
+        				name:  context.name
+        			}]
+        			if !parameter.tokenExchange {
+        				backend: auth: passthrough: {}
+        			}
+        			if parameter.tokenExchange {
+        				backend: auth: oauthTokenExchange: {
+        					grantType: "TokenExchange"
+        					// group and kind are REQUIRED: backendRef.kind defaults to
+        					// `Service`, and keycloak-jwks is an AgentgatewayBackend. It is a
+        					// generic static route to Keycloak's public host on 443 with the
+        					// path supplied by the consumer, so reusing it for the token
+        					// endpoint is correct despite the jwks-shaped name. Deliberately
+        					// public rather than a cluster-internal Service, because Keycloak
+        					// is hub-only and a Service backendRef resolves nothing on a spoke
+        					// (see keycloak-backend.yaml).
+        					backendRef: {
+        						group:     "agentgateway.dev"
+        						kind:      "AgentgatewayBackend"
+        						name:      "keycloak-jwks"
+        						namespace: parameter.gatewayNamespace
+        					}
+        					path: parameter.tokenPath
+        					// Audience narrowing is OPTIONAL and provider-specific: Keycloak
+        					// populates `aud` from client scopes and `audience` only filters
+        					// that set, never adds to it, and it rejects the whole request if
+        					// any requested audience does not resolve. Left out by default.
+        					if len(parameter.delegateTo) > 0 {
+        						audiences: parameter.delegateTo
+        					}
+        					clientAuth: {
+        						// clientId becomes `azp` in the exchanged token: this is how a
+        						// downstream policy learns which agent acted.
+        						clientId: context.name
+        						secretRef: name: _idpSecretName
+        					}
+        				}
+        			}
+        		}
+        	}
+
         	if parameter.tokenExchange {
-        		// Abstract claim for the agent's Keycloak client, satisfied by a
-        		// swappable Composition (same arrangement as aws-service-identity's
-        		// PodIdentity claim). The Composition must set the client's
-        		// `standard.token.exchange.enabled` attribute — verified mandatory:
-        		// without it Keycloak rejects the exchange with 400 invalid_request —
-        		// and must report Ready, because the init container below waits on it.
+        		// Abstract claim for the agent's Keycloak client, satisfied by a swappable
+        		// Composition (same arrangement as aws-service-identity's PodIdentity
+        		// claim). The Composition must set the client's
+        		// `standard.token.exchange.enabled` attribute — verified mandatory, without
+        		// it Keycloak rejects the exchange with 400 invalid_request — and must
+        		// report Ready, because the init container below waits on it.
         		"\(context.name)-idp-client": {
         			apiVersion: "platform.gitops.io/v1alpha1"
         			kind:       "IdpClient"
@@ -66,10 +142,6 @@ spec:
         			spec: {
         				clientId: context.name
         				realm:    parameter.realm
-        				// Target clients this client may exchange its callers' tokens
-        				// toward. `audiences` FILTERS, it cannot add: each target needs a
-        				// client role mapped onto the user-facing client or Keycloak
-        				// returns "Requested audience not available".
         				if len(parameter.delegateTo) > 0 {
         					audiences: parameter.delegateTo
         				}
@@ -77,8 +149,8 @@ spec:
         			}
         		}
 
-        		// RBAC so the pod's ServiceAccount can read its own IdpClient, used by
-        		// the readiness init container. Namespaced and read-only.
+        		// RBAC so the pod's ServiceAccount can read its own IdpClient, used by the
+        		// readiness init container. Namespaced and read-only.
         		"\(context.name)-idpclient-reader-role": {
         			apiVersion: "rbac.authorization.k8s.io/v1"
         			kind:       "Role"
@@ -109,58 +181,6 @@ spec:
         				name:      context.name
         				namespace: context.namespace
         			}]
-        		}
-
-        		// Route-scoped exchange. Targets the HTTPRoute the agent component emits
-        		// as context.name when registerWithGateway is true (agent.cue:235-243),
-        		// so it overrides the Gateway-scoped passthrough for this agent only.
-        		//
-        		// subjectToken is omitted deliberately: it defaults to Authorization
-        		// Bearer / AccessToken, which is the caller's token. location is omitted
-        		// for the same reason — it defaults to `Authorization: Bearer`, so the
-        		// exchanged token replaces the original on the way to the agent.
-        		"\(context.name)-delegation-policy": {
-        			apiVersion: "agentgateway.dev/v1alpha1"
-        			kind:       "AgentgatewayPolicy"
-        			metadata: {
-        				name:      context.name + "-delegation"
-        				namespace: context.namespace
-        				labels: "app.kubernetes.io/name": context.name
-        			}
-        			spec: {
-        				targetRefs: [{
-        					group: "gateway.networking.k8s.io"
-        					kind:  "HTTPRoute"
-        					name:  context.name
-        				}]
-        				backend: auth: oauthTokenExchange: {
-        					grantType: "TokenExchange"
-        					// group and kind are REQUIRED here: backendRef.kind defaults to
-        					// `Service`, and keycloak-jwks is an AgentgatewayBackend. It is a
-        					// generic static route to Keycloak's public host on 443 with the
-        					// path supplied by the consumer, so reusing it for the token
-        					// endpoint is correct despite the jwks-shaped name. Deliberately
-        					// public rather than a cluster-internal Service because Keycloak
-        					// is hub-only and a Service backendRef resolves nothing on a
-        					// spoke (see keycloak-backend.yaml).
-        					backendRef: {
-        						group:     "agentgateway.dev"
-        						kind:      "AgentgatewayBackend"
-        						name:      "keycloak-jwks"
-        						namespace: parameter.gatewayNamespace
-        					}
-        					path: parameter.tokenPath
-        					if len(parameter.delegateTo) > 0 {
-        						audiences: parameter.delegateTo
-        					}
-        					clientAuth: {
-        						// clientId becomes `azp` in the exchanged token: this is how a
-        						// downstream backend learns which agent acted.
-        						clientId: context.name
-        						secretRef: name: _idpSecretName
-        					}
-        				}
-        			}
         		}
         	}
         }

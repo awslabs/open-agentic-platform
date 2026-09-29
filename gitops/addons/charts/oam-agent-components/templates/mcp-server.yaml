@@ -241,6 +241,64 @@ spec:
         		}
         	}
 
+        	// Agent -> MCP credential handling. The gateway validates the caller's token
+        	// (traffic.jwtAuthentication on the Gateway policy) and authorizes the call
+        	// (backend.mcp.authorization, below), then this policy makes sure the JWT itself
+        	// is NOT handed to the MCP server process.
+        	//
+        	// Rationale: an MCP server has little use for the raw token, and any bearer
+        	// token it receives is replayable — the gateway does NOT validate `aud` on
+        	// Keycloak tokens (jwt-policy.yaml sets `audiences` only on the EKS OIDC
+        	// provider), and the exchange preserves `realm_access`, so a token reaching the
+        	// server could be replayed against agent routes. Not forwarding it removes that
+        	// surface entirely.
+        	//
+        	// `remove` is belt-and-braces: absence of a `backend.auth.passthrough` policy on
+        	// this backend already means the gateway drops the credential after validating
+        	// it, because there is no positive way to express "strip" (`backend.auth: {}` is
+        	// rejected by the CRD). The explicit remove also holds while the Gateway-scoped
+        	// credential-passthrough-policy is still enabled. Note for future work: if this
+        	// backend ever gains its own `backend.auth` (a static key or secretRef for the
+        	// upstream), confirm the ordering — removing `authorization` could strip that
+        	// injected credential too.
+        	//
+        	// Identity is passed as plain headers instead, so tool invocations remain
+        	// attributable in MCP-server logs without handing over a credential. These are
+        	// only as trustworthy as the network path: MCP Services are ClusterIP, so an
+        	// in-cluster caller bypassing the gateway could spoof them. Keep MCP servers
+        	// reachable only via the gateway if that matters.
+        	if parameter.stripCallerToken {
+        		callerIdentityPolicy: {
+        			apiVersion: "agentgateway.dev/v1alpha1"
+        			kind:       "AgentgatewayPolicy"
+        			metadata: {
+        				name:      context.name + "-caller-identity"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			spec: {
+        				targetRefs: [{
+        					group: "agentgateway.dev"
+        					kind:  "AgentgatewayBackend"
+        					name:  context.name + "-backend"
+        				}]
+        				backend: transformation: request: {
+        					remove: ["authorization"]
+        					set: [
+        						{
+        							name:  "x-oap-user"
+        							value: "has(jwt.preferred_username) ? jwt.preferred_username : (has(jwt.sub) ? jwt.sub : \"\")"
+        						},
+        						{
+        							name:  "x-oap-agent"
+        							value: "has(jwt.azp) ? jwt.azp : \"\""
+        						},
+        					]
+        				}
+        			}
+        		}
+        	}
+
         	// Optional: AgentgatewayPolicy for tool-level authorization (CEL).
         	if parameter.authPolicy != _|_ && len(parameter.authPolicy.matchExpressions) > 0 {
         		toolAccessPolicy: {
@@ -326,9 +384,14 @@ spec:
         			memory?: string
         		}
         	}
+        	// +usage=Do not forward the caller's JWT to the MCP server process; pass identity as x-oap-user / x-oap-agent headers instead. The gateway still validates and authorizes the call. Default true, because a bearer token reaching the server is replayable and the server has little use for it.
+        	stripCallerToken: *true | bool
         	// +usage=Tool-level authorization policy (CEL-based)
         	authPolicy?: {
-        		action: *"Allow" | "Deny"
+        		// The CRD enum is Allow | Deny | Require. Prefer Allow or Require: the CRD
+        		// warns "Deny is not recommended because expression failures fail to deny",
+        		// i.e. a CEL evaluation error in a Deny rule fails OPEN.
+        		action: *"Allow" | "Deny" | "Require"
         		matchExpressions: [...string]
         	}
         }
