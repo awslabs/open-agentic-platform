@@ -302,10 +302,13 @@ Keycloak — see the blocker above). Do the first, substitute `azp` for the seco
 4. **Delegation on the `gateway-identity` trait** — designed below, not yet implemented.
    Delivered by extending the existing trait rather than adding a second one: the agent's
    own ServiceAccount identity and the delegated caller identity are two branches of one
-   question, and `identity.py:outbound()` already resolves them in one place. The trait
-   gains a `delegateTo` list (**not** `audiences`; `audience` already means the SA token's
-   audience on this trait), which serves as both the delegation scope and its enablement
-   gate.
+   question, and `identity.py:outbound()` already resolves them in one place. Two
+   parameters, because they buy different things and stage differently:
+   `tokenExchange: true` is the enablement gate and yields **attribution** (`azp` = this
+   agent), needing only the agent's own IdP client; adding `delegateTo: [...]` yields
+   **containment** (`aud` narrowed to those backends), which additionally requires a
+   Keycloak client and client role per named backend. Deliberately not called `audiences`:
+   `audience` already means the ServiceAccount token's audience on this trait.
 5. **Per-tool authorization at the gateway** — requires `mcpAuth.enabled: true`
    (currently `false` in the agent-gateway chart, so no MCP-level authorization is
    active at all yet). See "Authorization lives at the gateway, not at the exchange"

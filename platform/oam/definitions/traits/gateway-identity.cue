@@ -20,10 +20,22 @@
 //    identity, `_open()` swallows the failure into a warning, and the agent card
 //    advertises zero tools — silently and permanently.
 //
-// 2. OPT-IN via `delegateTo` — delegated caller identity. Attaches an RFC 8693
+// 2. OPT-IN via `tokenExchange` — delegated caller identity. Attaches an RFC 8693
 //    token exchange to the agent's own HTTPRoute, so the caller's token is
-//    narrowed BEFORE it reaches the agent: `aud` bounded to the named MCP servers
-//    and `azp` stamped with this agent. The agent forwards the result unchanged.
+//    exchanged BEFORE it reaches the agent, stamping `azp` with this agent. Every
+//    downstream call then names which agent acted. Add `delegateTo` to also narrow
+//    the token's `aud` to specific MCP backends.
+//
+//    The two parameters buy different things, and they stage differently:
+//      tokenExchange: true    -> ATTRIBUTION. `azp` = this agent. Needs only the
+//                                agent's own IdP client, so it works as soon as the
+//                                IdpClient Composition exists.
+//      + delegateTo: [...]    -> CONTAINMENT. `aud` narrows from realm-wide
+//                                `account` to exactly those backends, so a leaked
+//                                token is bounded. Requires a Keycloak client and
+//                                client role for each named backend, or Keycloak
+//                                rejects the exchange with "Requested audience not
+//                                available". `audiences` FILTERS, it cannot add.
 //
 //    Why hop 1 and not inside the agent: `clientAuth.clientId` is what Keycloak
 //    stamps into `azp`, so the exchanging client must be per-agent; and the
@@ -32,9 +44,13 @@
 //    and silently ignores it (HTTP 200, no `act`), so `azp` is the only available
 //    carrier. See docs/architecture/agent-identity-and-token-exchange.md (ADR-6).
 //
-//    `delegateTo` is both the scope and the enablement gate. Empty (the default)
-//    emits nothing new, so existing Applications are unaffected and the platform
-//    keeps today's Gateway-scoped credential passthrough. Policy precedence is
+//    Authorization does NOT live here. The exchange provides containment and
+//    attribution; the access decision is the gateway's `backend.mcp.authorization`
+//    CEL. See ADR-6, "Authorization lives at the gateway, not at the exchange".
+//
+//    `tokenExchange` is the enablement gate. False (the default) emits nothing new,
+//    so existing Applications are unaffected and the platform keeps today's
+//    Gateway-scoped credential passthrough. Policy precedence is
 //    Gateway < Listener < Route < Route Rule < Backend, so this route-scoped
 //    policy overrides that passthrough for this agent only. The two compose;
 //    nothing needs removing first.
@@ -68,7 +84,9 @@ template: {
 		audience: *"agentgateway" | string
 		// +usage=Container to mount the token into (defaults to the component name)
 		containerName: *context.name | string
-		// +usage=MCP server names this agent may act on behalf of a caller for. Non-empty enables token exchange at the gateway, narrowing the caller's token to exactly these audiences. Empty (default) leaves the platform's credential passthrough in place.
+		// +usage=Enable RFC 8693 token exchange at the gateway for this agent. The caller's token is exchanged before it reaches the agent, stamping azp with this agent so every downstream call names who acted. Needs the agent's IdP client to exist; see delegateTo to also narrow the token's audience.
+		tokenExchange: *false | bool
+		// +usage=MCP server names to narrow the exchanged token's audience to. Optional, and only meaningful with tokenExchange. Empty means the exchange still happens but the token's aud is not narrowed to specific backends. Each entry must match the Keycloak client id of that MCP server, or Keycloak rejects the exchange with "Requested audience not available".
 		delegateTo: *[] | [...string]
 		// +usage=Keycloak token endpoint path. Defaults to the platform's realm so the same OAM Application is portable across clusters; override only for a non-default IdP layout.
 		tokenPath: *"{{ .Values.global.keycloak.pathPrefix }}/realms/{{ .Values.global.keycloak.realm }}/protocol/openid-connect/token" | string
@@ -93,7 +111,7 @@ template: {
 	_idpSecretName: context.name + "-idp"
 
 	outputs: {
-		if len(parameter.delegateTo) > 0 {
+		if parameter.tokenExchange {
 			// Abstract claim for the agent's Keycloak client, satisfied by a
 			// swappable Composition (same arrangement as aws-service-identity's
 			// PodIdentity claim). The Composition must set the client's
@@ -115,7 +133,9 @@ template: {
 					// toward. `audiences` FILTERS, it cannot add: each target needs a
 					// client role mapped onto the user-facing client or Keycloak
 					// returns "Requested audience not available".
-					audiences: parameter.delegateTo
+					if len(parameter.delegateTo) > 0 {
+						audiences: parameter.delegateTo
+					}
 					writeConnectionSecretToRef: name: _idpSecretName
 				}
 			}
@@ -192,8 +212,10 @@ template: {
 							name:      "keycloak-jwks"
 							namespace: parameter.gatewayNamespace
 						}
-						path:      parameter.tokenPath
-						audiences: parameter.delegateTo
+						path: parameter.tokenPath
+						if len(parameter.delegateTo) > 0 {
+							audiences: parameter.delegateTo
+						}
 						clientAuth: {
 							// clientId becomes `azp` in the exchanged token: this is how a
 							// downstream backend learns which agent acted.
@@ -219,7 +241,7 @@ template: {
 			}]
 		}]
 
-		if len(parameter.delegateTo) > 0 {
+		if parameter.tokenExchange {
 			// +patchKey=name
 			// Control-plane readiness gate: distroless kubectl (entrypoint = kubectl)
 			// blocks until the IdpClient reports Ready, i.e. the Composition has

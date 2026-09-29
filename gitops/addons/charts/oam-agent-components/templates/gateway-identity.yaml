@@ -21,7 +21,9 @@ spec:
         	audience: *"agentgateway" | string
         	// +usage=Container to mount the token into (defaults to the component name)
         	containerName: *context.name | string
-        	// +usage=MCP server names this agent may act on behalf of a caller for. Non-empty enables token exchange at the gateway, narrowing the caller's token to exactly these audiences. Empty (default) leaves the platform's credential passthrough in place.
+        	// +usage=Enable RFC 8693 token exchange at the gateway for this agent. The caller's token is exchanged before it reaches the agent, stamping azp with this agent so every downstream call names who acted. Needs the agent's IdP client to exist; see delegateTo to also narrow the token's audience.
+        	tokenExchange: *false | bool
+        	// +usage=MCP server names to narrow the exchanged token's audience to. Optional, and only meaningful with tokenExchange. Empty means the exchange still happens but the token's aud is not narrowed to specific backends. Each entry must match the Keycloak client id of that MCP server, or Keycloak rejects the exchange with "Requested audience not available".
         	delegateTo: *[] | [...string]
         	// +usage=Keycloak token endpoint path. Defaults to the platform's realm so the same OAM Application is portable across clusters; override only for a non-default IdP layout.
         	tokenPath: *"{{ .Values.global.keycloak.pathPrefix }}/realms/{{ .Values.global.keycloak.realm }}/protocol/openid-connect/token" | string
@@ -46,7 +48,7 @@ spec:
         _idpSecretName: context.name + "-idp"
 
         outputs: {
-        	if len(parameter.delegateTo) > 0 {
+        	if parameter.tokenExchange {
         		// Abstract claim for the agent's Keycloak client, satisfied by a
         		// swappable Composition (same arrangement as aws-service-identity's
         		// PodIdentity claim). The Composition must set the client's
@@ -68,7 +70,9 @@ spec:
         				// toward. `audiences` FILTERS, it cannot add: each target needs a
         				// client role mapped onto the user-facing client or Keycloak
         				// returns "Requested audience not available".
-        				audiences: parameter.delegateTo
+        				if len(parameter.delegateTo) > 0 {
+        					audiences: parameter.delegateTo
+        				}
         				writeConnectionSecretToRef: name: _idpSecretName
         			}
         		}
@@ -145,8 +149,10 @@ spec:
         						name:      "keycloak-jwks"
         						namespace: parameter.gatewayNamespace
         					}
-        					path:      parameter.tokenPath
-        					audiences: parameter.delegateTo
+        					path: parameter.tokenPath
+        					if len(parameter.delegateTo) > 0 {
+        						audiences: parameter.delegateTo
+        					}
         					clientAuth: {
         						// clientId becomes `azp` in the exchanged token: this is how a
         						// downstream backend learns which agent acted.
@@ -172,7 +178,7 @@ spec:
         		}]
         	}]
 
-        	if len(parameter.delegateTo) > 0 {
+        	if parameter.tokenExchange {
         		// +patchKey=name
         		// Control-plane readiness gate: distroless kubectl (entrypoint = kubectl)
         		// blocks until the IdpClient reports Ready, i.e. the Composition has
