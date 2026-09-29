@@ -192,8 +192,11 @@ crossplane-keycloak:
     credentials:
       externalSecret:
         # Secrets Manager entry holding the Keycloak admin password. Keycloak is
-        # hub-only, so spokes read the HUB's entry: keyed on hub_cluster_name, not
-        # this cluster's name. Verified present as `peeks-hub/keycloak`, and the
-        # spoke's external-secrets role can read it (SecretsManagerReadWrite, same
-        # account).
-        secretManagerKey: '{{ index .metadata.annotations "hub_cluster_name" }}/keycloak'
+        # hub-only, so a spoke must read the HUB's entry, keyed on
+        # hub_cluster_name rather than its own name.
+        #
+        # The hub itself has NO hub_cluster_name annotation (verified on peeks-hub:
+        # absent, while oap-dev carries hub_cluster_name=peeks-hub), so fall back to
+        # aws_cluster_name. Both paths resolve to peeks-hub/keycloak, which is the
+        # entry that exists. Without the fallback the hub rendered "/keycloak".
+        secretManagerKey: '{{ default (index .metadata.annotations "aws_cluster_name") (index .metadata.annotations "hub_cluster_name") }}/keycloak'
