@@ -5,6 +5,22 @@ global:
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
   awsAccountId: "*"
+  # Keycloak coordinates for the gateway-identity trait's token exchange. The trait
+  # builds the RFC 8693 token endpoint path from these, so a developer's OAM
+  # Application never names a realm or a URL (oam-authoring.md §1).
+  #
+  # Plain chart defaults rather than cluster-secret annotations, deliberately:
+  # there is no keycloak_realm or keycloak_path_prefix annotation on cluster
+  # secrets (checked on peeks-hub 2026-09-29; what exists is oidc_issuer_url,
+  # e.g. https://<host>/keycloak/realms/platform, which embeds both). The
+  # agent-gateway chart treats these the same way — see its values.yaml, which
+  # hardcodes realm: platform and pathPrefix: "/keycloak" and only sources
+  # issuerUrl/serviceName/namespace from annotations. Keep the two charts'
+  # defaults in step; override here if a cluster uses a different realm.
+  keycloak:
+    realm: platform
+    # HTTP relative path prefix, matching Keycloak's http-relative-path setting.
+    pathPrefix: /keycloak
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using
