@@ -1,0 +1,51 @@
+{{- /*
+Provider install. Follows the in-repo precedent in
+gitops/addons/charts/crossplane-agentcore/templates/01-provider.yaml, which is
+why this lives in OAP rather than upstream: OAP already ships its own Crossplane
+provider, so adding a second needs no appmod change.
+
+SkipDryRunOnMissingResource because the Provider CRD may not exist yet on a first
+sync, matching how the agentcore provider is annotated.
+*/ -}}
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-keycloak-runtime
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              args:
+                - --max-reconcile-rate={{ .Values.provider.maxReconcileRate }}
+                - --max-concurrent-reconciles={{ .Values.provider.maxConcurrentReconciles }}
+                # Real ceiling on concurrent Keycloak calls: the embedded
+                # terraform-provider-keycloak client is not concurrency-safe, so
+                # each in-flight reconcile borrows its own client from this pool.
+                - --keycloak-client-pool-size={{ .Values.provider.clientPoolSize }}
+              resources:
+{{ toYaml .Values.provider.resources | indent 16 }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-keycloak
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-keycloak:{{ .Values.provider.version }}
+  packagePullPolicy: IfNotPresent
+  revisionActivationPolicy: Automatic
+  revisionHistoryLimit: 1
+  skipDependencyResolution: true
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: provider-keycloak-runtime

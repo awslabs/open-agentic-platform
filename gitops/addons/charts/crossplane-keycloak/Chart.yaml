@@ -1,0 +1,14 @@
+apiVersion: v2
+name: crossplane-keycloak
+description: |
+  Crossplane provider-keycloak plus the platform's IdP-client abstraction.
+
+  Installs provider-keycloak and a ProviderConfig so the platform can provision
+  Keycloak clients declaratively. This is what satisfies the IdpClient claim the
+  gateway-identity trait emits when tokenExchange is enabled: an agent needs a
+  confidential Keycloak client with standard.token.exchange.enabled and a
+  client secret in a Kubernetes Secret, and no existing mechanism can produce
+  that (see docs/architecture/agent-identity-and-token-exchange.md).
+type: application
+version: 0.1.0
+appVersion: "3.1.0"

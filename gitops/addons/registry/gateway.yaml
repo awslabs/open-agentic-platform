@@ -151,3 +151,41 @@ agent-gateway:
       issuer: '{{ index .metadata.annotations "eks_oidc_provider" }}'
       jwksHost: '{{ with (index .metadata.annotations "eks_oidc_provider") }}oidc.eks.{{ index $.metadata.annotations "aws_region" }}.amazonaws.com{{ end }}'
       jwksPath: '{{ with (index .metadata.annotations "eks_oidc_provider") }}{{ printf "%s/keys" (trimPrefix (printf "https://oidc.eks.%s.amazonaws.com" (index $.metadata.annotations "aws_region")) .) }}{{ end }}'
+
+# Crossplane provider-keycloak. Lives in the gateway domain because the only
+# consumer is the identity story: the gateway-identity trait emits an IdpClient
+# claim when tokenExchange is enabled, and this provider is what will satisfy it.
+#
+# Installed from OAP rather than upstream, following the precedent that OAP
+# already ships its own provider (crossplane-agentcore's 01-provider.yaml), so
+# this needs no appmod-blueprints change.
+#
+# Sync-wave 4 matches crossplane-agentcore: after crossplane-base establishes the
+# Provider/DeploymentRuntimeConfig CRDs on the platform side.
+#
+# Admin credentials are NOT templated by default (credentials.create=false); the
+# Secret is expected to exist in crossplane-system already. Enabling this addon
+# without that Secret leaves the ProviderConfig unusable, which is why the hub
+# flag ships false.
+crossplane-keycloak:
+  namespace: crossplane-system
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/crossplane-keycloak'
+  annotationsAppSet:
+    argocd.argoproj.io/sync-wave: '4'
+  selector:
+    matchExpressions:
+      - key: enable_crossplane_keycloak
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      keycloak:
+        # Scheme + host ONLY, no path. The provider takes base_path separately and
+        # normalises both, so including "/keycloak" here would produce a doubled
+        # path. oidc_issuer_url is the full issuer
+        # (https://<host>/keycloak/realms/platform), so strip the scheme, take the
+        # first path segment as the host, and re-prefix https. Same technique as
+        # keycloak-backend.yaml, which parses the host out of the same annotation.
+        # Falls back to ingress_domain_name when the annotation is absent.
+        url: '{{ $iss := index .metadata.annotations "oidc_issuer_url" }}{{ if $iss }}https://{{ index (splitList "/" (trimPrefix "https://" (trimPrefix "http://" $iss))) 0 }}{{ else }}https://{{ index .metadata.annotations "ingress_domain_name" }}{{ end }}'

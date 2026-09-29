@@ -140,6 +140,15 @@ enabledAddons:
   monitoring: true
   agent_core: true
   agent_gateway: true
+  # Crossplane provider-keycloak, which will satisfy the IdpClient claim the
+  # gateway-identity trait emits when tokenExchange is enabled.
+  #
+  # FALSE until two prerequisites are met: (1) the admin credentials Secret exists
+  # in crossplane-system (the chart does not template it by default), and (2) the
+  # XIdpClient XRD + Composition exist. Without (2) an IdpClient claim is never
+  # reconciled, and the trait's readiness init container would block the agent pod
+  # indefinitely. See docs/architecture/agent-identity-and-token-exchange.md.
+  crossplane_keycloak: false
   oam_components: true
   # Agent Sandbox capability — Kata micro-VM sandboxes + warm pool (STEP 2 of the
   # move off the spoke; disabled on the dev overlay in the same change).

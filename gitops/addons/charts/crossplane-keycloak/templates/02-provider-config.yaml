@@ -1,0 +1,59 @@
+{{- /*
+ProviderConfig pointing at the Keycloak admin credentials.
+
+Shape taken from the provider's own README: apiVersion keycloak.crossplane.io/v1beta1,
+credentials.source: Secret, and a secretRef naming a key that holds a JSON blob.
+The blob supports the same fields as the Terraform provider configuration; url,
+admin_url and base_path are validated and normalised by the provider before use.
+
+Sync-wave 3 so it lands after the provider (wave 2) has established its CRDs.
+*/ -}}
+apiVersion: keycloak.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: {{ .Values.credentials.secretName }}
+      key: {{ .Values.credentials.secretKey }}
+      namespace: {{ .Values.namespace }}
+{{- if .Values.credentials.create }}
+---
+{{- /*
+Rendered ONLY when credentials.create is true, which is intended for local or
+throwaway clusters. It writes the admin password into the rendered manifest, so
+on a real cluster leave create=false and supply this Secret out of band
+(ExternalSecret or equivalent) instead.
+*/ -}}
+{{- if not .Values.credentials.password }}
+{{- fail "credentials.create is true but credentials.password is empty" }}
+{{- end }}
+{{- if not .Values.global.keycloak.url }}
+{{- fail "credentials.create is true but global.keycloak.url is empty" }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.credentials.secretName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    type: provider-credentials
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+type: Opaque
+stringData:
+  {{ .Values.credentials.secretKey }}: |
+    {
+      "client_id": {{ .Values.credentials.clientId | quote }},
+      "username": {{ .Values.credentials.username | quote }},
+      "password": {{ .Values.credentials.password | quote }},
+      "url": {{ .Values.global.keycloak.url | quote }},
+      "base_path": {{ .Values.global.keycloak.basePath | quote }},
+      "realm": {{ .Values.global.keycloak.adminRealm | quote }}
+    }
+{{- end }}

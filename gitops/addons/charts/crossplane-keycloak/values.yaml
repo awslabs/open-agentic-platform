@@ -1,0 +1,66 @@
+global:
+  keycloak:
+    # Public base URL of Keycloak, WITHOUT the realm path. The provider validates
+    # and normalises this: it must be an absolute URL with scheme and host, must
+    # not carry query parameters or a fragment, and a trailing "/" is stripped.
+    # Per-cluster value comes from the addon registry, derived from the same
+    # annotation the agent-gateway chart uses for its issuer URL.
+    url: ""
+    # Keycloak's http-relative-path. Kept separate from url because the provider
+    # takes it as base_path; "/" is normalised to empty to avoid double slashes.
+    basePath: /keycloak
+    # Realm the provider authenticates against (NOT the realm it manages objects
+    # in; that is per-resource). Admin credentials live in the master realm.
+    adminRealm: master
+
+# Crossplane provider. Pinned by tag; v3.1.0 is the newest release published to
+# xpkg.upbound.io/crossplane-contrib/provider-keycloak (1055 tags, verified).
+provider:
+  version: "v3.1.0"
+  # Resource requests for the provider pod.
+  #
+  # 512Mi/1Gi rather than Crossplane's 1Gi/2Gi default, from measurement on a hub
+  # running ten providers: actual steady-state was 153-384Mi, so 1Gi requests
+  # over-reserved ~3.4x. 512Mi keeps ~33% headroom over the observed high-water
+  # mark. Upjet providers embed the Terraform provider plugin and load its
+  # resource schema into memory, plus controller-runtime informer caches, which
+  # is why the floor is a few hundred MiB rather than ~100Mi. Raise these if the
+  # provider is OOMKilled or evicted. Same change proposed upstream for the
+  # shared providers in aws-samples/appmod-blueprints#941.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  # Concurrency. The embedded terraform-provider-keycloak client is NOT safe for
+  # concurrent use; the provider gives each in-flight reconcile its own client
+  # from a per-ProviderConfig pool. clientPoolSize is therefore the real ceiling
+  # on concurrent calls against Keycloak — raising maxConcurrentReconciles above
+  # it only adds queueing. Defaults match the provider's own (10/5/5).
+  maxReconcileRate: 10
+  maxConcurrentReconciles: 5
+  clientPoolSize: 5
+
+# Admin credentials the provider uses to talk to Keycloak.
+#
+# NOT stored in this chart. The Secret must already exist in the provider's
+# namespace; the chart only references it. Two ways to satisfy that, chosen with
+# `credentials.create`:
+#
+#   false (default) - the Secret is managed out of band (ExternalSecret, sealed
+#     secret, or whatever the cluster already uses). Nothing is templated.
+#   true            - the chart renders the Secret from credentials.* values.
+#     Only for local or throwaway clusters: it puts the admin password into the
+#     rendered manifest and therefore into git if values are committed.
+credentials:
+  create: false
+  secretName: keycloak-provider-credentials
+  # Key holding the JSON credential blob the provider expects.
+  secretKey: credentials
+  clientId: admin-cli
+  username: admin
+  # Only read when create is true. Leave empty otherwise.
+  password: ""
+
+namespace: crossplane-system
