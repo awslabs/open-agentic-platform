@@ -1,5 +1,15 @@
 # Agent Identity & Token Exchange — Architecture Decisions
 
+> **Design revised 2026-09-30. Sections describing per-agent Keycloak clients and a
+> hop-1 exchange are SUPERSEDED.** The exchange now attaches to **hop 2**, one policy per
+> MCP backend, each narrowing `aud` to that one server, using a **single** platform
+> exchange client rather than one client per agent. Rationale: per-agent clients bought
+> only attribution (`azp` = the agent), while the MCP spec's requirement is that a server
+> receive a token audienced to **itself**; and the vendor's own documented pattern attaches
+> the exchange to the backend for exactly that reason. The `gateway-identity` trait no
+> longer carries `tokenExchange`/`delegateTo`; see `mcp-server.cue`. Passages below that
+> describe the earlier shape are retained for the decision record, not as current design.
+
 Status: living document. Captures the significant decisions behind the secretless
 workload-identity model and the roadmap to user-delegated (on-behalf-of) access.
 
@@ -299,16 +309,19 @@ Keycloak — see the blocker above). Do the first, substitute `azp` for the seco
    `oauthTokenExchange` live (commit `70faa71`).
 2. **Answer the delegation gate.** ✅ **done** — no `act`. See the Keycloak blocker.
 3. **Propagate the caller token in the base image.** ✅ **done** — see below.
-4. **Delegation on the `gateway-identity` trait** — designed below, not yet implemented.
-   Delivered by extending the existing trait rather than adding a second one: the agent's
-   own ServiceAccount identity and the delegated caller identity are two branches of one
-   question, and `identity.py:outbound()` already resolves them in one place. Two
-   parameters, because they buy different things and stage differently:
-   `tokenExchange: true` is the enablement gate and yields **attribution** (`azp` = this
-   agent), needing only the agent's own IdP client; adding `delegateTo: [...]` yields
-   **containment** (`aud` narrowed to those backends), which additionally requires a
-   Keycloak client and client role per named backend. Deliberately not called `audiences`:
-   `audience` already means the ServiceAccount token's audience on this trait.
+4. **Delegation on the `mcp-server` component** — implemented, pending its Keycloak
+   objects. `tokenExchange: true` attaches an RFC 8693 exchange to that server's backend
+   and narrows the token's `aud` to a single audience (default: the component name). This
+   replaces the earlier plan to put the exchange on the `gateway-identity` trait with
+   `tokenExchange`/`delegateTo` parameters: that produced `azp` = the agent but left `aud`
+   un-narrowed, i.e. attribution without containment, and it required one Keycloak client
+   per agent. Containment is what the MCP spec actually asks for, and it is a property of
+   the target, so it belongs on the target's policy.
+   Still required before enabling: the platform exchange client (with a client role in the
+   realm's default-roles composite, without which Keycloak rejects every exchange with
+   `access_denied — Client is not within the token audience`), one client per MCP server to
+   resolve as its audience, and replication of the exchange client's Secret into each
+   namespace running an MCP server, because `clientAuth.secretRef` has no namespace field.
 5. **Per-tool authorization at the gateway** — requires `mcpAuth.enabled: true`
    (currently `false` in the agent-gateway chart, so no MCP-level authorization is
    active at all yet). See "Authorization lives at the gateway, not at the exchange"

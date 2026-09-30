@@ -5,9 +5,10 @@ global:
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
   awsAccountId: "*"
-  # Keycloak coordinates for the gateway-identity trait's token exchange. The trait
-  # builds the RFC 8693 token endpoint path from these, so a developer's OAM
-  # Application never names a realm or a URL (oam-authoring.md §1).
+  # Keycloak coordinates for the mcp-server component's token exchange (hop 2:
+  # agent -> MCP server). The component builds the RFC 8693 token endpoint path from
+  # these, so a developer's OAM Application never names a realm or a URL
+  # (oam-authoring.md §1).
   #
   # Plain chart defaults rather than cluster-secret annotations, deliberately:
   # there is no keycloak_realm or keycloak_path_prefix annotation on cluster
@@ -19,6 +20,14 @@ global:
   # defaults in step; override here if a cluster uses a different realm.
   keycloak:
     realm: platform
+    # Client the GATEWAY authenticates as when exchanging a caller's token for one
+    # audienced to a specific MCP server (mcp-server.cue, tokenExchange). One client
+    # for the whole platform, not one per agent: Keycloak stamps this into `azp`, and
+    # per-agent attribution is not what the exchange is for. Its Secret must be
+    # present in every namespace that runs an MCP server, because the policy's
+    # clientAuth.secretRef has no namespace field.
+    exchangeClientId: agentgateway-exchange
+    exchangeSecretName: agentgateway-exchange-idp
     # HTTP relative path prefix, matching Keycloak's http-relative-path setting.
     pathPrefix: /keycloak
 

@@ -1,69 +1,51 @@
 // gateway-identity TraitDefinition
 //
-// Gives a workload its identity to AgentGateway/MCP. Two halves of one question
-// ("what credential does this agent present?"), which `app/identity.py:outbound()`
-// already resolves in one place: forward the caller's bearer if one arrived,
-// otherwise fall back to the agent's own projected ServiceAccount token.
+// Gives a workload its own identity to AgentGateway, and makes its inbound route
+// self-sufficient about credentials.
 //
-// 1. ALWAYS — the agent's own identity. Mounts a projected ServiceAccount token
-//    scoped to the `agentgateway` audience and points WORKLOAD_TOKEN_PATH at it.
-//    AgentGateway validates it against the cluster's EKS OIDC issuer (see the
-//    agent-gateway workloadIdentity provider). Auto-rotated by the kubelet; no
-//    secret to manage.
+// 1. The agent's own identity. Mounts a projected ServiceAccount token scoped to
+//    the `agentgateway` audience and points WORKLOAD_TOKEN_PATH at it, which
+//    `app/identity.py:outbound()` falls back to when no caller token arrived.
+//    Auto-rotated by the kubelet; no secret to manage.
 //
 //    This is not optional scaffolding for autonomous runs. The A2A server builds
 //    the agent card at startup by invoking the agent factory once with the
 //    placeholder context id `__agent_card__` (app/agent.py:25), with no request in
 //    flight. `inbound_auth` is therefore unset, so the ServiceAccount token is the
 //    ONLY credential available when tools are discovered. Without it the agent
-//    presents nothing, agentgateway returns an empty catalog to an unauthorized
+//    presents nothing, the gateway returns an empty catalog to an unauthorized
 //    identity, `_open()` swallows the failure into a warning, and the agent card
 //    advertises zero tools — silently and permanently.
 //
-// 2. OPT-IN via `tokenExchange` — delegated caller identity. Attaches an RFC 8693
-//    token exchange to the agent's own HTTPRoute, so the caller's token is
-//    exchanged BEFORE it reaches the agent, stamping `azp` with this agent. Every
-//    downstream call then names which agent acted. Add `delegateTo` to also narrow
-//    the token's `aud` to specific MCP backends.
+//    Note for spokes: the gateway only validates these tokens where its
+//    workloadIdentity JWT provider is configured, which requires the
+//    `eks_oidc_provider` cluster-secret annotation. That annotation is present on
+//    the hub and absent on spokes, which publish the same value as
+//    `eks_oidc_issuer`/`oidcProvider` instead, so the provider is currently
+//    inactive on spokes. Tracked separately; it affects the startup path above.
 //
-//    The two parameters buy different things, and they stage differently:
-//      tokenExchange: true    -> ATTRIBUTION. `azp` = this agent. Needs only the
-//                                agent's own IdP client, so it works as soon as the
-//                                IdpClient Composition exists.
-//      + delegateTo: [...]    -> CONTAINMENT. `aud` narrows from realm-wide
-//                                `account` to exactly those backends, so a leaked
-//                                token is bounded. Requires a Keycloak client and
-//                                client role for each named backend, or Keycloak
-//                                rejects the exchange with "Requested audience not
-//                                available". `audiences` FILTERS, it cannot add.
+// 2. Hop-1 credential handling (user -> agent). Emits a route-scoped policy that
+//    restores the caller's token onto the request to the agent.
 //
-//    Why hop 1 and not inside the agent: `clientAuth.clientId` is what Keycloak
-//    stamps into `azp`, so the exchanging client must be per-agent; and the
-//    gateway validates exactly one JWT per request, so user and agent identity
-//    must coexist in one token as `sub` and `azp`. Keycloak accepts `actor_token`
-//    and silently ignores it (HTTP 200, no `act`), so `azp` is the only available
-//    carrier. See docs/architecture/agent-identity-and-token-exchange.md (ADR-6).
+//    Why a policy is needed at all: jwt-policy.yaml validates the caller at the
+//    edge and that validation CONSUMES the credential, so without a backend auth
+//    policy the agent pod receives no `authorization` header (verified on oap-dev;
+//    see credential-passthrough-policy.yaml). There is no positive way to express
+//    "strip" either: `backend.auth: {}` and `backend: {}` are both rejected by the
+//    CRD, so ABSENCE of a policy is the strip. That asymmetry is why this trait
+//    states the agent's hop explicitly instead of relying on the Gateway-wide
+//    passthrough, and it is what lets the agent -> MCP hop be governed separately
+//    by the mcp-server component.
 //
-//    Authorization does NOT live here. The exchange provides containment and
-//    attribution; the access decision is the gateway's `backend.mcp.authorization`
-//    CEL. See ADR-6, "Authorization lives at the gateway, not at the exchange".
-//
-//    `tokenExchange` is the enablement gate. False (the default) emits nothing new,
-//    so existing Applications are unaffected and the platform keeps today's
-//    Gateway-scoped credential passthrough. Policy precedence is
-//    Gateway < Listener < Route < Route Rule < Backend, so this route-scoped
-//    policy overrides that passthrough for this agent only. The two compose;
-//    nothing needs removing first.
-//
-//    Ordering: the exchange needs a Keycloak client and its secret to exist. The
-//    trait emits an IdpClient claim and gates the pod on it with an init container,
-//    the same arrangement aws-service-identity uses for PodIdentity. Without that
-//    gate the pod would start, fail every exchange, and look healthy.
+// Token exchange deliberately does NOT live here. It belongs on hop 2, attached to
+// each MCP backend, so each server receives a token audienced to itself; see
+// mcp-server.cue and ADR-6. Putting it on hop 1 would stamp `azp` with the agent
+// but leave `aud` un-narrowed, which buys attribution and no containment, and it
+// would require one Keycloak client per agent to do it.
 //
 // Rides on the pod's ServiceAccount (owned by the component, name == context.name),
-// so the token's `sub` (system:serviceaccount:<ns>:<name>) is the workload identity,
-// and `clientId == context.name` keeps one identity anchor across ServiceAccount,
-// container, component, HTTPRoute and IdP client (ADR-3).
+// so the token's `sub` (system:serviceaccount:<ns>:<name>) is the workload identity
+// and one name anchors ServiceAccount, container, component and HTTPRoute (ADR-3).
 "gateway-identity": {
 	alias:       ""
 	annotations: {}
@@ -73,29 +55,17 @@
 		podDisruptive:   true
 		workloadRefPath: ""
 	}
-	description: "Give a workload its identity to AgentGateway: projected ServiceAccount token, plus optional token exchange that narrows the caller's credential to named MCP servers"
+	description: "Give a workload its identity to AgentGateway: a projected ServiceAccount token, plus route-scoped handling of the caller's credential"
 	labels: {}
 	type: "trait"
 }
 
 template: {
 	parameter: {
-		// +usage=Audience stamped into the projected ServiceAccount token; must match the gateway's expected audience. This is the AGENT's own identity, unrelated to delegateTo.
+		// +usage=Audience stamped into the projected ServiceAccount token; must match the gateway's expected audience for workload identity.
 		audience: *"agentgateway" | string
 		// +usage=Container to mount the token into (defaults to the component name)
 		containerName: *context.name | string
-		// +usage=Enable RFC 8693 token exchange at the gateway for this agent. The caller's token is exchanged before it reaches the agent, stamping azp with this agent so every downstream call names who acted. Needs the agent's IdP client to exist; see delegateTo to also narrow the token's audience.
-		tokenExchange: *false | bool
-		// +usage=MCP server names to narrow the exchanged token's audience to. Optional, and only meaningful with tokenExchange. Empty means the exchange still happens but the token's aud is not narrowed to specific backends. Each entry must match the Keycloak client id of that MCP server, or Keycloak rejects the exchange with "Requested audience not available".
-		delegateTo: *[] | [...string]
-		// +usage=Keycloak token endpoint path. Defaults to the platform's realm so the same OAM Application is portable across clusters; override only for a non-default IdP layout.
-		tokenPath: *"{{ .Values.global.keycloak.pathPrefix }}/realms/{{ .Values.global.keycloak.realm }}/protocol/openid-connect/token" | string
-		// +usage=Keycloak realm the agent's IdP client is created in. Supplied by the platform; do not set in a developer's Application.
-		realm: *"{{ .Values.global.keycloak.realm }}" | string
-		// +usage=Namespace holding the shared Keycloak backend and the gateway. Supplied by the platform.
-		gatewayNamespace: *"agentgateway-system" | string
-		// +usage=Distroless kubectl image for the IdpClient-readiness init gate (entrypoint = kubectl). Chainguard kubectl:latest, pinned by multi-arch index digest (amd64+arm64) for immutability.
-		waitImage: *"public.ecr.aws/chainguard/kubectl:latest@sha256:5cd49041fed950723afaefcd141a163e5a5306f243841510d3e1e3667b0cdfb9" | string
 	}
 
 	_mountDir:   "/var/run/secrets/agentgateway"
@@ -105,35 +75,16 @@ template: {
 		readOnly:  true
 	}
 
-	// Secret the Composition writes the generated client credential into, and that
-	// the exchange policy reads `clientSecret` from. Deterministic so both sides
-	// agree without a lookup.
-	_idpSecretName: context.name + "-idp"
-
 	outputs: {
-		// Hop-1 (user -> agent) credential policy, ALWAYS emitted so the agent's own
-		// route is self-sufficient rather than depending on a Gateway-wide policy.
 		// Targets the HTTPRoute the agent component emits as context.name when
 		// registerWithGateway is true (agent.cue:235-243). When that is false no route
 		// exists and this policy never attaches, which is harmless: an agent not
 		// registered with the gateway receives no gateway traffic.
 		//
-		// Two mutually exclusive modes. The CRD enforces the exclusivity: "at most one
-		// of [key secretRef passthrough aws azure gcp oauthTokenExchange
-		// crossAppAccess] may be set".
-		//
-		//   tokenExchange: false -> passthrough. The caller's token is restored onto the
-		//     request to the agent, the same effect the Gateway-scoped
-		//     credential-passthrough-policy has today, but scoped to this one route.
-		//   tokenExchange: true  -> oauthTokenExchange. The caller's token is exchanged
-		//     and the result replaces it on the way to the agent.
-		//
-		// Why a policy is needed at all: jwt-policy.yaml validates the caller at the
-		// edge and that validation CONSUMES the credential, so without a backend auth
-		// policy the agent pod receives no `authorization` header (verified on oap-dev;
-		// see credential-passthrough-policy.yaml). There is no positive way to express
-		// "strip": `backend.auth: {}` is rejected by the CRD. Absence of a policy IS
-		// the strip, which is exactly what the agent -> MCP path relies on.
+		// Route-scoped, so it overrides the Gateway-wide credential-passthrough-policy
+		// for this route only (precedence: Gateway < Listener < Route < Route Rule <
+		// Backend). Same effect as that policy today; stating it here means the agent's
+		// hop stays correct if the Gateway-wide one is ever narrowed or removed.
 		"\(context.name)-caller-credential": {
 			apiVersion: "agentgateway.dev/v1alpha1"
 			kind:       "AgentgatewayPolicy"
@@ -148,102 +99,7 @@ template: {
 					kind:  "HTTPRoute"
 					name:  context.name
 				}]
-				if !parameter.tokenExchange {
-					backend: auth: passthrough: {}
-				}
-				if parameter.tokenExchange {
-					backend: auth: oauthTokenExchange: {
-						grantType: "TokenExchange"
-						// group and kind are REQUIRED: backendRef.kind defaults to
-						// `Service`, and keycloak-jwks is an AgentgatewayBackend. It is a
-						// generic static route to Keycloak's public host on 443 with the
-						// path supplied by the consumer, so reusing it for the token
-						// endpoint is correct despite the jwks-shaped name. Deliberately
-						// public rather than a cluster-internal Service, because Keycloak
-						// is hub-only and a Service backendRef resolves nothing on a spoke
-						// (see keycloak-backend.yaml).
-						backendRef: {
-							group:     "agentgateway.dev"
-							kind:      "AgentgatewayBackend"
-							name:      "keycloak-jwks"
-							namespace: parameter.gatewayNamespace
-						}
-						path: parameter.tokenPath
-						// Audience narrowing is OPTIONAL and provider-specific: Keycloak
-						// populates `aud` from client scopes and `audience` only filters
-						// that set, never adds to it, and it rejects the whole request if
-						// any requested audience does not resolve. Left out by default.
-						if len(parameter.delegateTo) > 0 {
-							audiences: parameter.delegateTo
-						}
-						clientAuth: {
-							// clientId becomes `azp` in the exchanged token: this is how a
-							// downstream policy learns which agent acted.
-							clientId: context.name
-							secretRef: name: _idpSecretName
-						}
-					}
-				}
-			}
-		}
-
-		if parameter.tokenExchange {
-			// Abstract claim for the agent's Keycloak client, satisfied by a swappable
-			// Composition (same arrangement as aws-service-identity's PodIdentity
-			// claim). The Composition must set the client's
-			// `standard.token.exchange.enabled` attribute — verified mandatory, without
-			// it Keycloak rejects the exchange with 400 invalid_request — and must
-			// report Ready, because the init container below waits on it.
-			"\(context.name)-idp-client": {
-				apiVersion: "platform.gitops.io/v1alpha1"
-				kind:       "IdpClient"
-				metadata: {
-					name:      context.name
-					namespace: context.namespace
-					labels: "app.kubernetes.io/name": context.name
-				}
-				spec: {
-					clientId: context.name
-					realm:    parameter.realm
-					if len(parameter.delegateTo) > 0 {
-						audiences: parameter.delegateTo
-					}
-					writeConnectionSecretToRef: name: _idpSecretName
-				}
-			}
-
-			// RBAC so the pod's ServiceAccount can read its own IdpClient, used by the
-			// readiness init container. Namespaced and read-only.
-			"\(context.name)-idpclient-reader-role": {
-				apiVersion: "rbac.authorization.k8s.io/v1"
-				kind:       "Role"
-				metadata: {
-					name:      context.name + "-idpclient-reader"
-					namespace: context.namespace
-				}
-				rules: [{
-					apiGroups: ["platform.gitops.io"]
-					resources: ["idpclients"]
-					verbs: ["get", "list", "watch"]
-				}]
-			}
-			"\(context.name)-idpclient-reader-binding": {
-				apiVersion: "rbac.authorization.k8s.io/v1"
-				kind:       "RoleBinding"
-				metadata: {
-					name:      context.name + "-idpclient-reader"
-					namespace: context.namespace
-				}
-				roleRef: {
-					apiGroup: "rbac.authorization.k8s.io"
-					kind:     "Role"
-					name:     context.name + "-idpclient-reader"
-				}
-				subjects: [{
-					kind:      "ServiceAccount"
-					name:      context.name
-					namespace: context.namespace
-				}]
+				backend: auth: passthrough: {}
 			}
 		}
 	}
@@ -260,26 +116,6 @@ template: {
 				}
 			}]
 		}]
-
-		if parameter.tokenExchange {
-			// +patchKey=name
-			// Control-plane readiness gate: distroless kubectl (entrypoint = kubectl)
-			// blocks until the IdpClient reports Ready, i.e. the Composition has
-			// created the Keycloak client and written its secret. Uses the pod's
-			// ServiceAccount (in-cluster config) plus the Role/RoleBinding above. If
-			// the claim does not exist yet the init container fails and the kubelet
-			// retries it, which is the intended backoff.
-			initContainers: [{
-				name:  "wait-for-idp-client"
-				image: parameter.waitImage
-				args: [
-					"wait", "--for=condition=Ready",
-					"idpclients.platform.gitops.io/\(context.name)",
-					"-n", context.namespace,
-					"--timeout=300s",
-				]
-			}]
-		}
 
 		// +patchKey=name
 		containers: [{

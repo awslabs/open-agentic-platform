@@ -153,8 +153,9 @@ agent-gateway:
       jwksPath: '{{ with (index .metadata.annotations "eks_oidc_provider") }}{{ printf "%s/keys" (trimPrefix (printf "https://oidc.eks.%s.amazonaws.com" (index $.metadata.annotations "aws_region")) .) }}{{ end }}'
 
 # Crossplane provider-keycloak. Lives in the gateway domain because the only
-# consumer is the identity story: the gateway-identity trait emits an IdpClient
-# claim when tokenExchange is enabled, and this provider is what will satisfy it.
+# consumer is the identity story: the MCP token exchange needs Keycloak clients
+# (one for the gateway, one per MCP server as its audience), and this provider is
+# what provisions them.
 #
 # Installed from OAP rather than upstream, following the precedent that OAP
 # already ships its own provider (crossplane-agentcore's 01-provider.yaml), so
