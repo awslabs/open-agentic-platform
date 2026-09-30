@@ -447,8 +447,24 @@ Keycloak's docs:
 - **`audiences` filters, it cannot add.** Each MCP backend needs a client scope with
   client role mappings so the requested audience resolves; otherwise Keycloak returns
   "Requested audience not available".
-- `standard.token.exchange.enabled: "true"` on each agent client (verified attribute
-  name).
+- Standard token exchange enabled on each agent client. The raw Keycloak attribute is
+  `standard.token.exchange.enabled: "true"` (verified attribute name), but Crossplane
+  `provider-keycloak` v3.1.0 models it as a first-class boolean, so a Composition sets
+  `spec.forProvider.standardTokenExchangeEnabled: true` and does NOT need the
+  `extraConfig` map.
+
+  > **Corrected 2026-09-30**, after installing the provider and introspecting its CRDs.
+  > Earlier notes here and in the implementation plan said `extra_config` was "the escape
+  > hatch" for this attribute, on the basis of Terraform provider docs. That was true of
+  > older versions; v3.1.0 exposes it natively. Verified shapes, cluster-scoped:
+  > `openidclient.keycloak.crossplane.io`, kind `Client`, storage version **v1alpha2**
+  > (v1alpha1 still served). Relevant `spec.forProvider` fields: `clientId`, `realmId`,
+  > `accessType`, `standardTokenExchangeEnabled` (bool),
+  > `allowRefreshTokenInStandardTokenExchange` (`NO` | `SAME_SESSION`, also native, which
+  > covers the refresh-token switch noted under Deferred), `serviceAccountsEnabled`,
+  > `standardFlowEnabled`, `extraConfig` (map[string]string, still available but not
+  > needed here). Note `clientSecretSecretRef` is an INPUT for supplying a known secret;
+  > the generated secret comes out via `spec.writeConnectionSecretToRef`.
 - Optionally the `downscope-assertion-grant-enforcer` client policy executor, which
   enforces downscoping only.
 
