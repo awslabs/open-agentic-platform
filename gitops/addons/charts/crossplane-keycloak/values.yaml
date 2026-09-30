@@ -74,4 +74,27 @@ credentials:
     secretManagerKey: ""
     passwordProperty: keycloak_admin_password
 
+# The Keycloak client the gateway authenticates as when exchanging a caller's token
+# for one audienced to a specific MCP server (mcp-server.cue, tokenExchange).
+#
+# DEFAULT FALSE. Enabling this creates real objects in the shared realm, and the
+# audience mapper only takes effect once its client scope is attached to the clients
+# users authenticate through. Attaching is deliberately NOT done here: the provider's
+# ClientDefaultScopes resource owns `defaultScopes` as a whole list, so managing a
+# shared client's scopes from this chart would clobber the scopes it already has.
+# Attach the scope to the caller client(s), then set this true.
+exchange:
+  enabled: false
+  realm: platform
+  clientId: agentgateway-exchange
+  # Connection secret the provider writes the generated client secret into, under key
+  # `clientSecret`. The MCP policy's clientAuth.secretRef reads that key by default.
+  # NOTE: secretRef has no namespace field, so a copy of this Secret must exist in
+  # every namespace that runs an MCP server. Replication is not handled here yet.
+  secretName: agentgateway-exchange-idp
+  # Client scope carrying the audience mapper that puts the exchange client into the
+  # caller's token `aud`, without which Keycloak rejects every exchange with
+  # "Client is not within the token audience".
+  audienceScopeName: agentgateway-exchange-audience
+
 namespace: crossplane-system

@@ -1,0 +1,126 @@
+{{- if .Values.exchange.enabled }}
+{{- /*
+The Keycloak client the GATEWAY authenticates as when it exchanges a caller's token
+for one audienced to a specific MCP server (mcp-server.cue, tokenExchange).
+
+ONE client for the whole platform, not one per agent. Keycloak stamps the
+exchanging client into `azp`, so a per-agent client would yield per-agent
+attribution — but attribution is not what the exchange is for, and the MCP
+authorization spec's requirement is that a server receive a token audienced to
+ITSELF. That is a property of the target, so it is expressed per target in the
+mcp-server policy's single `audiences` entry, not per caller here.
+
+Field notes, introspected from the installed v3.1.0 CRDs rather than assumed:
+  - group openidclient.keycloak.crossplane.io, kind Client, CLUSTER-scoped, storage
+    version v1alpha2 (v1alpha1 is still served; do not use it).
+  - standardTokenExchangeEnabled is a NATIVE boolean. extraConfig is not needed;
+    that was only true of older provider versions. Verified live: setting it
+    produces the Keycloak attribute standard.token.exchange.enabled = true.
+  - clientSecretSecretRef is an INPUT for supplying a known secret. The GENERATED
+    secret comes out via writeConnectionSecretToRef, whose payload includes the key
+    `clientSecret` — exactly what the policy's clientAuth.secretRef reads by
+    default, so no key override is needed anywhere.
+
+Sync-wave 4: after the ProviderConfig (wave 3), which these resources need in order
+to reconcile at all.
+*/ -}}
+apiVersion: openidclient.keycloak.crossplane.io/v1alpha2
+kind: Client
+metadata:
+  name: {{ .Values.exchange.clientId }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  providerConfigRef:
+    name: default
+  writeConnectionSecretToRef:
+    name: {{ .Values.exchange.secretName }}
+    namespace: {{ .Values.namespace }}
+  forProvider:
+    realmId: {{ .Values.exchange.realm | quote }}
+    clientId: {{ .Values.exchange.clientId | quote }}
+    name: {{ .Values.exchange.clientId | quote }}
+    description: "Gateway client for RFC 8693 token exchange to MCP servers (managed by OAP)"
+    # CONFIDENTIAL so the client has a secret to authenticate the exchange with.
+    accessType: CONFIDENTIAL
+    standardTokenExchangeEnabled: true
+    # No browser or direct-grant flows: this client never authenticates a user, it
+    # only exchanges tokens minted elsewhere.
+    standardFlowEnabled: false
+    implicitFlowEnabled: false
+    directAccessGrantsEnabled: false
+    serviceAccountsEnabled: false
+---
+{{- /*
+A dedicated client scope that carries nothing but the audience mapper below.
+
+Why a scope rather than putting the mapper straight onto each caller client: a scope
+is attached once and reused, and it keeps this chart from having to enumerate every
+client a user might authenticate through. The mapper can also be attached directly
+to a client via clientId/clientIdRef if a narrower blast radius is wanted.
+*/ -}}
+apiVersion: openidclient.keycloak.crossplane.io/v1alpha1
+kind: ClientScope
+metadata:
+  name: {{ .Values.exchange.audienceScopeName }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  providerConfigRef:
+    name: default
+  forProvider:
+    realmId: {{ .Values.exchange.realm | quote }}
+    name: {{ .Values.exchange.audienceScopeName | quote }}
+    description: "Adds the token-exchange client to the token audience (managed by OAP)"
+    # Keep the scope name out of the `scope` claim: it is plumbing, not a permission
+    # a resource server should reason about.
+    includeInTokenScope: false
+---
+{{- /*
+Puts the exchange client into the `aud` of tokens issued with the scope above.
+
+This solves a prerequisite verified the hard way against live Keycloak: the
+REQUESTER client must appear in the SUBJECT token's `aud`, or the exchange fails
+with
+
+    access_denied - Client is not within the token audience
+
+and that holds even when no `audience` parameter is sent. So the caller's token has
+to name the exchange client before any narrowing can happen.
+
+An audience protocol mapper is the purpose-built mechanism for this. The alternative
+that was tested first — a client role on the exchange client, added to the realm's
+default-roles composite — also works and needs no per-user step, but it expresses an
+audience as a permission. It is also awkward to manage declaratively here: the
+provider's defaults Roles resource owns `defaultRoles` as a WHOLE LIST of realm-level
+role names, so managing it would fight whatever the realm already has.
+
+clientScopeIdRef references the ClientScope above by its Kubernetes name, and
+Crossplane resolves it to the Keycloak UUID. includedClientAudience is a plain
+client-id string (it has no Ref field).
+
+addToAccessToken is what matters: the exchange reads the access token. The ID token
+is irrelevant here, so it is left off to keep the audience out of tokens that do not
+need it.
+*/ -}}
+apiVersion: openidgroup.keycloak.crossplane.io/v1alpha1
+kind: AudienceProtocolMapper
+metadata:
+  name: {{ .Values.exchange.clientId }}-audience-mapper
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  providerConfigRef:
+    name: default
+  forProvider:
+    realmId: {{ .Values.exchange.realm | quote }}
+    name: {{ .Values.exchange.clientId }}-audience-mapper
+    clientScopeIdRef:
+      name: {{ .Values.exchange.audienceScopeName }}
+    includedClientAudience: {{ .Values.exchange.clientId | quote }}
+    addToAccessToken: true
+    addToIdToken: false
+{{- end }}
