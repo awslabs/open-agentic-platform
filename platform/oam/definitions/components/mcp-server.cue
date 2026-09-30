@@ -15,6 +15,10 @@
 // so shared-template reuse would require a cluster-registered cue.oam.dev
 // Package. The duplication is the accepted, bounded cost of keeping mcp-server a
 // first-class, self-contained component.
+import (
+	"strings"
+)
+
 "mcp-server": {
 	alias:       ""
 	annotations: {}
@@ -261,38 +265,29 @@ template: {
 			}
 		}
 
-		// Agent -> MCP credential handling. The gateway validates the caller's token
-		// (traffic.jwtAuthentication on the Gateway policy) and authorizes the call
-		// (backend.mcp.authorization, below), then this policy makes sure the JWT itself
-		// is NOT handed to the MCP server process.
+		// Who may call this MCP server at all.
 		//
-		// Rationale: an MCP server has little use for the raw token, and any bearer
-		// token it receives is replayable — the gateway does NOT validate `aud` on
-		// Keycloak tokens (jwt-policy.yaml sets `audiences` only on the EKS OIDC
-		// provider), and the exchange preserves `realm_access`, so a token reaching the
-		// server could be replayed against agent routes. Not forwarding it removes that
-		// surface entirely.
+		// The MCP spec makes a server an OAuth 2.1 resource server that MUST validate
+		// tokens and MUST reject any whose audience is not itself, and it forbids token
+		// passthrough outright. Our servers do not validate today, so the gateway is the
+		// only enforcement point — this rule is it.
 		//
-		// `remove` is belt-and-braces: absence of a `backend.auth.passthrough` policy on
-		// this backend already means the gateway drops the credential after validating
-		// it, because there is no positive way to express "strip" (`backend.auth: {}` is
-		// rejected by the CRD). The explicit remove also holds while the Gateway-scoped
-		// credential-passthrough-policy is still enabled. Note for future work: if this
-		// backend ever gains its own `backend.auth` (a static key or secretRef for the
-		// upstream), confirm the ordering — removing `authorization` could strip that
-		// injected credential too.
+		// Identity used is the agent's ServiceAccount token subject
+		// (system:serviceaccount:<ns>:<name>), which jwt-policy.yaml already validates
+		// via its EKS OIDC provider. No Keycloak objects are involved.
 		//
-		// Identity is passed as plain headers instead, so tool invocations remain
-		// attributable in MCP-server logs without handing over a credential. These are
-		// only as trustworthy as the network path: MCP Services are ClusterIP, so an
-		// in-cluster caller bypassing the gateway could spoof them. Keep MCP servers
-		// reachable only via the gateway if that matters.
-		if parameter.stripCallerToken {
-			callerIdentityPolicy: {
+		// ONE expression, not one per agent: the CRD states matchExpressions are
+		// "CEL expressions that must ALL evaluate to true", i.e. ANDed within a rule, so
+		// listing subjects separately would require a caller to be every agent at once.
+		// Action is Allow because the CRD warns "Deny is not recommended because
+		// expression failures fail to deny"; with an Allow rule present, non-matching
+		// requests are denied.
+		if len(parameter.allowedAgents) > 0 {
+			agentAccessPolicy: {
 				apiVersion: "agentgateway.dev/v1alpha1"
 				kind:       "AgentgatewayPolicy"
 				metadata: {
-					name:      context.name + "-caller-identity"
+					name:      context.name + "-agent-access"
 					namespace: context.namespace
 					labels: "app.kubernetes.io/name": context.name
 				}
@@ -302,17 +297,19 @@ template: {
 						kind:  "AgentgatewayBackend"
 						name:  context.name + "-backend"
 					}]
-					backend: transformation: request: {
-						remove: ["authorization"]
-						set: [
-							{
-								name:  "x-oap-user"
-								value: "has(jwt.preferred_username) ? jwt.preferred_username : (has(jwt.sub) ? jwt.sub : \"\")"
-							},
-							{
-								name:  "x-oap-agent"
-								value: "has(jwt.azp) ? jwt.azp : \"\""
-							},
+					backend: mcp: authorization: {
+						action: "Allow"
+						policy: matchExpressions: [
+							"jwt.sub in [" + strings.Join([
+								for a in parameter.allowedAgents {
+									if strings.Contains(a, "/") {
+										"\"system:serviceaccount:" + strings.Replace(a, "/", ":", 1) + "\""
+									}
+									if !strings.Contains(a, "/") {
+										"\"system:serviceaccount:" + context.namespace + ":" + a + "\""
+									}
+								},
+							], ", ") + "]",
 						]
 					}
 				}
@@ -404,8 +401,8 @@ template: {
 				memory?: string
 			}
 		}
-		// +usage=Do not forward the caller's JWT to the MCP server process; pass identity as x-oap-user / x-oap-agent headers instead. The gateway still validates and authorizes the call. Default true, because a bearer token reaching the server is replayable and the server has little use for it.
-		stripCallerToken: *true | bool
+		// +usage=Agent component names allowed to call this server. Emits an MCP authorization Allow rule matching those agents' ServiceAccount token subjects, so anything else is denied. Use "<namespace>/<name>" for an agent in another namespace. Requires the agent to present its OWN identity on the agent->MCP hop (PROPAGATE_CALLER_TOKEN=false); with caller-token propagation on, the subject is the end user, not the agent.
+		allowedAgents: *[] | [...string]
 		// +usage=Tool-level authorization policy (CEL-based)
 		authPolicy?: {
 			// The CRD enum is Allow | Deny | Require. Prefer Allow or Require: the CRD
