@@ -81,6 +81,11 @@ credentials:
 # tokens issued to the caller clients listed below, so turn it on deliberately.
 exchange:
   enabled: false
+  # create on exactly ONE cluster (the hub), adopt everywhere else. Every cluster
+  # points at the same realm, so two creators would fight over one external client.
+  # adopt is read-only and exists only so the per-server mapper's clientIdRef has a
+  # local resource to resolve the client's Keycloak UUID from.
+  mode: create
   realm: platform
   clientId: agentgateway-exchange
   # Connection secret the provider writes the generated client secret into, under key

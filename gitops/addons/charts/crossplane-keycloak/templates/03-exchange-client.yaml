@@ -23,6 +23,20 @@ With all three in place, `audience=<server>` returns `aud = <server>` exactly, w
 `sub` still the user and `realm_access` intact (so the gateway's existing CEL still
 passes). Verified for two different targets from one exchange client.
 */ -}}
+{{- /*
+MODE MATTERS, because every cluster running this chart points at the SAME Keycloak
+realm (Keycloak is hub-only; spokes reach it over the public host). Two clusters both
+CREATING this client would fight over one external object.
+
+  mode: create  -> exactly ONE cluster, the hub. Creates the client and writes its
+                   generated secret to a connection Secret.
+  mode: adopt   -> every other cluster. import + Observe, so Crossplane only reads,
+                   purely so this resource exists locally for the per-server
+                   AudienceProtocolMapper's clientIdRef to resolve a UUID from.
+
+Spokes need the resource to exist locally because clientIdRef resolves within the
+cluster, but they must not own the external client.
+*/ -}}
 apiVersion: openidclient.keycloak.crossplane.io/v1alpha2
 kind: Client
 metadata:
@@ -33,10 +47,17 @@ metadata:
 spec:
   providerConfigRef:
     name: default
+{{- if eq .Values.exchange.mode "adopt" }}
+  managementPolicies: ["Observe"]
+{{- else }}
   writeConnectionSecretToRef:
     name: {{ .Values.exchange.secretName }}
     namespace: {{ .Values.namespace }}
+{{- end }}
   forProvider:
+{{- if eq .Values.exchange.mode "adopt" }}
+    import: true
+{{- end }}
     realmId: {{ .Values.exchange.realm | quote }}
     clientId: {{ .Values.exchange.clientId | quote }}
     name: {{ .Values.exchange.clientId | quote }}
@@ -53,6 +74,7 @@ spec:
     directAccessGrantsEnabled: false
     serviceAccountsEnabled: false
 
+{{- if eq .Values.exchange.mode "create" }}
 {{- range .Values.exchange.callerClients }}
 ---
 {{- /*
@@ -115,5 +137,6 @@ spec:
     includedClientAudience: {{ $.Values.exchange.clientId | quote }}
     addToAccessToken: true
     addToIdToken: false
+{{- end }}
 {{- end }}
 {{- end }}
