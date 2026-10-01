@@ -33,6 +33,22 @@ The following addons must be enabled in the cluster overlay (`gitops/overlays/en
 
 These prerequisites are enforced by ArgoCD sync-wave ordering, not by Helm chart `dependencies:` (which would imply bundling — not what we want here, since each addon is a separate ArgoCD Application).
 
+### Conditional: Kata isolation for `agent` (`sandbox: true`)
+
+The `agent` component's `properties.sandbox: true` needs the Kata isolation substrate. These are **not** required for this chart to sync — the ComponentDefinition registers either way — but a sandboxed Application stays `Pending` without them:
+
+- `agent_sandbox: true` — renders the Kata `RuntimeClass` objects (`kata-clh`, `kata-qemu`, `kata-fc`).
+- `agent_sandbox_kata: true` — installs the clh/qemu containerd runtime on the node via `kata-deploy`.
+- `kata_nodepool: true` with `kataNested.enabled` — provisions the nested-virt node pool the RuntimeClass steers to.
+
+The agent-sandbox **operator** (the `Sandbox` CRD and its controller) is *not* a prerequisite: this chart's `agent` component never creates a `Sandbox` resource, it only sets `runtimeClassName` on the Rollout's pod template.
+
+| Value | Default | Purpose |
+|---|---|---|
+| `global.sandboxRuntimeClass` | `kata-clh` | The Kata RuntimeClass a sandboxed agent selects. Platform-owned; an application developer cannot set it from their OAM. `kata-qemu` is a one-line change (same node pool). `kata-fc` additionally needs `kataFc.enabled` on `kata-nodepool` and the `agent_sandbox_kata_fc` addon. **Empty makes `sandbox: true` fail the render**, by design, rather than silently scheduling an unisolated pod. |
+
+See [`docs/sandbox-agents/DESIGN.md`](../../../../docs/sandbox-agents/DESIGN.md).
+
 ## Lifecycle
 
 - **Install**: ArgoCD applies all three ComponentDefinitions in a single sync. KubeVela's mutating webhook attaches `spec.workload.type: rollouts.argoproj.io` and creates the shared `WorkloadDefinition` if it doesn't already exist (it does — the `kubevela` chart's `appmod-service` ComponentDefinition creates it first).
