@@ -18,6 +18,23 @@ agent: {
 }
 
 template: {
+	// PLATFORM-OWNED isolation runtime. NOT a parameter: the leading underscore
+	// makes this a CUE local, so it is structurally unreachable from a developer's
+	// `properties` block. That is what enforces "the platform picks the VMM"
+	// rather than a convention a caller could ignore.
+	//
+	// The value is a Helm placeholder substituted when Argo renders the
+	// oam-agent-components chart, BEFORE KubeVela ever parses this CUE -- the same
+	// mechanism .kiro/steering/oam-authoring.md §1 prescribes for region/account,
+	// and the one agentcore-memory.cue and aws-service-identity.cue already use.
+	// The chart's values.yaml carries the fallback (kata-clh); a per-cluster
+	// override sets global.sandboxRuntimeClass to kata-qemu / kata-fc.
+	//
+	// Deliberate deviation from steering §1: that rule prescribes an OVERRIDABLE
+	// default (`*"{{ ... }}" | string`). A local is non-overridable on purpose,
+	// because the isolation class is a security boundary, not a portability knob.
+	_sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
+
 	// Build memory env vars from config
 	let _memoryEnv = [
 		if parameter.memory != _|_ {
