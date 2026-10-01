@@ -258,7 +258,11 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: str = "user"
 
     Returns (agent, session_id).
     """
-    _, caller = outbound(config.PROPAGATE_CALLER_TOKEN)
+    # Key on the INBOUND caller, whatever credential goes OUTBOUND. With
+    # PROPAGATE_CALLER_TOKEN=false the outbound key is the constant workload key,
+    # so keying on it let two users who send the same contextId share one agent
+    # and its conversation history.
+    _, caller = outbound(True)
 
     if session_id and (caller, session_id) in _agents:
         return _agents[(caller, session_id)], session_id

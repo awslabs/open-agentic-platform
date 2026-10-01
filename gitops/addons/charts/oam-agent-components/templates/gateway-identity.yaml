@@ -5,7 +5,7 @@ kind: TraitDefinition
 metadata:
   annotations:
     definition.oam.dev/alias: ""
-    definition.oam.dev/description: 'Give a workload its identity to AgentGateway: a projected ServiceAccount token, plus route-scoped handling of the caller''s credential'
+    definition.oam.dev/description: Give a workload a secretless identity to AgentGateway via a projected ServiceAccount token
   name: gateway-identity
 spec:
   appliesToWorkloads:
@@ -17,7 +17,7 @@ spec:
     cue:
       template: |
         parameter: {
-        	// +usage=Audience stamped into the projected ServiceAccount token; must match the gateway's expected audience for workload identity.
+        	// +usage=Audience stamped into the projected token; must match the gateway's expected audience
         	audience: *"agentgateway" | string
         	// +usage=Container to mount the token into (defaults to the component name)
         	containerName: *context.name | string
@@ -28,35 +28,6 @@ spec:
         	name:      "agentgateway-token"
         	mountPath: _mountDir
         	readOnly:  true
-        }
-
-        outputs: {
-        	// Targets the HTTPRoute the agent component emits as context.name when
-        	// registerWithGateway is true (agent.cue:235-243). When that is false no route
-        	// exists and this policy never attaches, which is harmless: an agent not
-        	// registered with the gateway receives no gateway traffic.
-        	//
-        	// Route-scoped, so it overrides the Gateway-wide credential-passthrough-policy
-        	// for this route only (precedence: Gateway < Listener < Route < Route Rule <
-        	// Backend). Same effect as that policy today; stating it here means the agent's
-        	// hop stays correct if the Gateway-wide one is ever narrowed or removed.
-        	"\(context.name)-caller-credential": {
-        		apiVersion: "agentgateway.dev/v1alpha1"
-        		kind:       "AgentgatewayPolicy"
-        		metadata: {
-        			name:      context.name + "-caller-credential"
-        			namespace: context.namespace
-        			labels: "app.kubernetes.io/name": context.name
-        		}
-        		spec: {
-        			targetRefs: [{
-        				group: "gateway.networking.k8s.io"
-        				kind:  "HTTPRoute"
-        				name:  context.name
-        			}]
-        			backend: auth: passthrough: {}
-        		}
-        	}
         }
 
         patch: spec: template: spec: {
@@ -71,7 +42,6 @@ spec:
         			}
         		}]
         	}]
-
         	// +patchKey=name
         	containers: [{
         		name: parameter.containerName
