@@ -1,8 +1,14 @@
 # Sandbox-Isolated Agents — Kata MicroVM Isolation for the OAM `agent` Component
 
-> **Status:** Design, approved for implementation. One opt-in boolean runs an OAM `agent` inside a
-> Kata microVM with a hardened `securityContext`. The workload stays an Argo Rollout in both paths,
-> so blue-green, `replicas`, Services, gateway routing and health gating are unchanged.
+> **Status:** Implemented in `agent.cue` and the chart/registry wiring; **not yet verified on a
+> cluster**. One opt-in boolean runs an OAM `agent` inside a Kata microVM with a hardened
+> `securityContext`. The workload stays an Argo Rollout in both paths, so blue-green, `replicas`,
+> Services, gateway routing and health gating are unchanged.
+>
+> **Two steps remain before this reaches a cluster.** (1) `gitops/addons/charts/oam-agent-components/templates/agent.yaml`
+> must be regenerated — `KUBECONFIG=.platform/private/hub-kubeconfig platform/oam/generate.sh` —
+> because that generated ComponentDefinition, not the CUE source, is what Argo ships; until it is
+> regenerated the feature is inert on every cluster. (2) The validation plan in §8 has not been run.
 
 ## 1. Problem and contract
 
