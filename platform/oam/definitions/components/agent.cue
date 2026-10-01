@@ -35,6 +35,22 @@ template: {
 	// because the isolation class is a security boundary, not a portability knob.
 	_sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
 
+	// FAIL CLOSED. If the platform never configured an isolation runtime and a
+	// developer asks for one, emitting a pod with no runtimeClassName would
+	// schedule an ordinary runc container: isolation requested, isolation not
+	// delivered, and nothing anywhere reports a problem. Fail the render instead.
+	//
+	// This covers only the UNCONFIGURED-PLATFORM case. A class that is configured
+	// but has no matching node cannot be caught here -- the OAM layer cannot read
+	// node labels at render time -- and surfaces at runtime as Pending pods, which
+	// leave the Rollout un-progressed and therefore not-Ready rather than
+	// fake-green.
+	if parameter.sandbox && _sandboxRuntimeClass == "" {
+		_|_ // "sandbox: true requires global.sandboxRuntimeClass on the
+		//  oam-agent-components chart; this cluster has no isolation runtime
+		//  configured."
+	}
+
 	// Build memory env vars from config
 	let _memoryEnv = [
 		if parameter.memory != _|_ {
