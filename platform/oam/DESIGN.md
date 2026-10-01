@@ -69,6 +69,25 @@ Agents listen on port 8083 (A2A protocol convention). The stable service maps po
 
 Agents reference MCP servers by name. The `MCP_SERVERS` env var is constructed from the `mcpServers` parameter, building service URLs as `http://<name>.<namespace>.svc.cluster.local:<port>`.
 
+### Agent Sandbox Isolation (`sandbox: true`)
+
+`properties.sandbox: true` runs the agent inside a **Kata microVM** instead of a shared-kernel container. It is opt-in and defaults to `false`; with the flag absent or false the rendered output is byte-for-byte what it was before the flag existed.
+
+**The workload does not change.** It is an Argo `Rollout` in both paths, so blue-green, `replicas`, both Services, the Agent Card and gateway registration are unaffected, and KubeVela's existing Rollout health gating still applies. No `Sandbox` custom resource is created, so the agent-sandbox **operator is not a prerequisite** — only the Kata RuntimeClasses and a node pool.
+
+`sandbox: true` adds exactly two things to `spec.template.spec`:
+
+1. **`runtimeClassName`**, from the platform value (below). Kubernetes' built-in RuntimeClass admission controller force-merges that class's `nodeSelector` and `tolerations` onto the pod and applies its `overhead.podFixed`, so the component needs no knowledge of the Kata node pool or its taint.
+2. **A hardened `securityContext`** at container and pod level: `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, all capabilities dropped, `RuntimeDefault` seccomp. The microVM constrains what a compromised agent reaches on the host; this constrains what it can do inside the guest. `readOnlyRootFilesystem` is deliberately not set, because agent images write to `/tmp`.
+
+> **⚠️ The image must run as non-root.** `runAsNonRoot: true` means an image whose `USER` is root — or which sets no `USER` and no numeric `runAsUser` — **fails to start** under `sandbox: true`. This is intended (a root process inside a microVM is not isolation) and it is the single way this flag is not purely additive for an existing image. A `CreateContainerConfigError` mentioning `runAsNonRoot` is this, not a Kata fault.
+
+**The VMM is a platform choice, not a developer one.** There is no `sandboxRuntimeClass` parameter. The class comes from `global.sandboxRuntimeClass` on the `oam-agent-components` chart (default `kata-clh`), consumed in `agent.cue` as the CUE **local** `_sandboxRuntimeClass` — a local rather than a parameter precisely so a developer's `properties` block cannot reach it. The VMM is ambient environment config, which a portable OAM Application must never carry (`.kiro/steering/oam-authoring.md` §1).
+
+Leaving that platform value empty makes `sandbox: true` **fail the render** rather than silently scheduling an unisolated pod. A class that is configured but has no matching node cannot be caught at render time — nothing in the OAM layer reads node labels — and instead leaves pods `Pending`, which keeps the Rollout un-progressed and therefore not-Ready.
+
+Full design, VMM comparison and limitations: [`docs/sandbox-agents/DESIGN.md`](../../docs/sandbox-agents/DESIGN.md). Worked example: `examples/example-agent-sandbox.yaml`.
+
 ---
 
 ## MCP Server Component (`mcp-server.cue`)
