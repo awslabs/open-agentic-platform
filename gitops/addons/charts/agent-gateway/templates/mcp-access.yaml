@@ -29,7 +29,8 @@ in both lists.
 A server with no entry here keeps the Gateway-wide rule, i.e. today's behaviour.
 
 Subjects are ServiceAccount token `sub` values, so the calling agent must present its own
-identity: propagateCallerToken: false on the agent component.
+identity, which is the platform default
+(oam-agent-components global.agentIdentity.propagateCallerToken "false").
 
 Entry shape:
   mcpAccess:
