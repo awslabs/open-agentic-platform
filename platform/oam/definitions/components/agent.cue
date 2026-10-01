@@ -193,6 +193,29 @@ template: {
 						if parameter.resources != _|_ {
 							resources: parameter.resources
 						}
+
+						// The microVM constrains what a compromised agent reaches on
+						// the HOST; it does nothing about privileges inside the guest.
+						// agent-sandbox-operator/values.yaml is explicit that the coder
+						// sandboxes get their isolation from "the Kata micro-VM boundary
+						// plus the restricted securityContext baked into the
+						// SandboxTemplate pod spec" -- this component uses no
+						// SandboxTemplate, so it supplies that second half itself.
+						// Without this, sandbox: true would wrap a root container with
+						// full capabilities in a VM and call it isolated.
+						//
+						// readOnlyRootFilesystem is deliberately NOT set: agent images
+						// write to /tmp (model SDK caches, OTel buffers, Python
+						// bytecode), so enabling it needs an emptyDir mount and
+						// per-image verification. Tracked as a follow-up.
+						if parameter.sandbox {
+							securityContext: {
+								allowPrivilegeEscalation: false
+								runAsNonRoot:             true
+								capabilities: drop: ["ALL"]
+								seccompProfile: type: "RuntimeDefault"
+							}
+						}
 					}]
 				}
 			}
