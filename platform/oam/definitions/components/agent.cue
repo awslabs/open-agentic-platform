@@ -104,6 +104,18 @@ template: {
 				}
 				spec: {
 					serviceAccountName: context.name
+
+					// Isolation: this single field is the whole node-placement
+					// mechanism. Kubernetes' built-in RuntimeClass admission
+					// controller force-merges the class's scheduling.nodeSelector
+					// and scheduling.tolerations onto the pod, and applies its
+					// overhead.podFixed for scheduling and kubelet accounting --
+					// so nothing here needs to know about the Kata node pool, its
+					// taint, or the VMM's memory cost.
+					if parameter.sandbox {
+						runtimeClassName: _sandboxRuntimeClass
+					}
+
 					containers: [{
 						name:  context.name
 						image: parameter.image
