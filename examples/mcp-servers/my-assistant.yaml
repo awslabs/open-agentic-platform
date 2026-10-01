@@ -16,11 +16,6 @@ spec:
           modelId: claude-sonnet
         mcpServers:
           - name: mcp-time
-        # Present THIS AGENT's own identity to its MCP servers rather than
-        # forwarding the caller's token. Required for the mcpAccess grant on mcp-time
-        # rule to match: that rule checks the agent's ServiceAccount subject, and
-        # with the default (true) the gateway would see the end user instead.
-        propagateCallerToken: false
         resources:
           requests:
             cpu: 500m

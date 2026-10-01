@@ -18,6 +18,18 @@ global:
   # hardcodes realm: platform and pathPrefix: "/keycloak" and only sources
   # issuerUrl/serviceName/namespace from annotations. Keep the two charts'
   # defaults in step; override here if a cluster uses a different realm.
+  # How agents identify themselves to MCP servers. Platform-owned: no developer
+  # Application sets these. Strings, because they are substituted into CUE as text.
+  agentIdentity:
+    # "false": agents present their OWN ServiceAccount identity to MCP servers, so the
+    # gateway knows which agent is calling and mcpAccess grants can restrict by agent.
+    # "true": agents forward the user's Keycloak token (main's behaviour, the token
+    # passthrough the MCP spec forbids).
+    propagateCallerToken: "false"
+    # "true": every MCP server exchanges the incoming token for one audienced to itself.
+    # Only works with propagateCallerToken "true": Keycloak cannot exchange a
+    # ServiceAccount token. Not proven end to end through a tool call.
+    mcpTokenExchange: "false"
   keycloak:
     realm: platform
     # Client the GATEWAY authenticates as when exchanging a caller's token for one

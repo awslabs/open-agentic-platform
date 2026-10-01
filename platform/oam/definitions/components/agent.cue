@@ -1,7 +1,6 @@
 // Agent ComponentDefinition with blue-green deployment and pluggable memory
 import (
 	"strings"
-	"strconv"
 	"encoding/json"
 	"list"
 )
@@ -96,7 +95,10 @@ template: {
 							{name: "PORT", value: "8083"},
 							{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
 							{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
-							{name: "PROPAGATE_CALLER_TOKEN", value: strconv.FormatBool(parameter.propagateCallerToken)},
+							// Platform-owned, not a parameter. "false": the agent presents its OWN ServiceAccount
+							// identity to MCP servers, which mcpAccess grants match on. "true": it forwards the
+							// user's token (main's behaviour, the passthrough the MCP spec forbids).
+							{name: "PROPAGATE_CALLER_TOKEN", value: "{{ .Values.global.agentIdentity.propagateCallerToken }}"},
 							// Observability env vars — mode-dependent
 							{name: "OTEL_SERVICE_NAME", value: context.name},
 							{name: "OTEL_TRACES_EXPORTER", value: "otlp"},
@@ -278,13 +280,6 @@ template: {
 		// Required fields
 		description:   string
 		systemMessage: string
-
-		// +usage=Forward the caller's bearer token to this agent's MCP servers. True
-		// (the default) preserves today's behaviour: the server sees the END USER's
-		// identity. Set false so the server instead sees THIS AGENT's own ServiceAccount
-		// identity — required for an mcpAccess grant (agent-gateway chart) to match,
-		// since that grant checks the agent's subject, not the user's.
-		propagateCallerToken: *true | bool
 
 		// Image
 		image: *"public.ecr.aws/z0a4o2j5/strands-agent:latest" | string
