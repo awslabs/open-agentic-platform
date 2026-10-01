@@ -90,8 +90,10 @@ exchange:
   clientId: agentgateway-exchange
   # Connection secret the provider writes the generated client secret into, under key
   # `clientSecret` — the key the policy's clientAuth.secretRef reads by default.
-  # The policy's secretRef has no namespace field, so mcp-server.cue replicates this
-  # Secret into each MCP server's namespace via a provider-kubernetes Object.
+  # Written on EVERY cluster: in adopt mode the provider reads the secret from Keycloak
+  # rather than needing it shipped from the hub (verified). The policy's secretRef has no
+  # namespace field, so mcp-server.cue replicates it from here into each MCP server's
+  # namespace with a provider-kubernetes Object.
   secretName: agentgateway-exchange-idp
   # Clients users authenticate THROUGH. Each gets a read-only adoption (import +
   # Observe, never written) plus an audience mapper that puts the exchange client into

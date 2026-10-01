@@ -47,15 +47,19 @@ metadata:
 spec:
   providerConfigRef:
     name: default
-{{- if eq .Values.exchange.mode "adopt" }}
-  managementPolicies: ["Observe"]
-{{- else }}
+  # BOTH modes write the connection Secret. A spoke does not need the hub to ship it
+  # the secret: adopting the client makes the provider read it from Keycloak's
+  # /clients/{id}/client-secret and publish it locally. Verified by adopting a
+  # hub-created client from oap-dev and getting the identical 32-char value.
   writeConnectionSecretToRef:
     name: {{ .Values.exchange.secretName }}
     namespace: {{ .Values.namespace }}
-{{- end }}
   forProvider:
 {{- if eq .Values.exchange.mode "adopt" }}
+    # Adopt the client the hub created instead of creating it. Verified non-mutating:
+    # after a spoke adopted a client at full management policies, the client's
+    # standardFlowEnabled and standard.token.exchange.enabled were both unchanged,
+    # because the provider only sends fields present in spec.
     import: true
 {{- end }}
     realmId: {{ .Values.exchange.realm | quote }}
