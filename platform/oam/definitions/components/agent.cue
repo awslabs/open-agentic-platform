@@ -217,6 +217,20 @@ template: {
 							}
 						}
 					}]
+
+					// Pod-level mirror of the container hardening above. Both levels
+					// are set because they are enforced by different things:
+					// Pod Security admission evaluates the POD's securityContext when
+					// deciding whether a namespace at `restricted` admits the pod at
+					// all, while the container context governs the running process.
+					// Setting only the container would leave a restricted namespace
+					// rejecting an otherwise-correct sandboxed agent.
+					if parameter.sandbox {
+						securityContext: {
+							runAsNonRoot: true
+							seccompProfile: type: "RuntimeDefault"
+						}
+					}
 				}
 			}
 		}
