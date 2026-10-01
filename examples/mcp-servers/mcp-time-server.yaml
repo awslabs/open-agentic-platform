@@ -19,27 +19,13 @@ spec:
         env:
           - name: LOCAL_TIMEZONE
             value: UTC
-        # Who may call this server at all, by agent ServiceAccount identity.
-        # Requires PROPAGATE_CALLER_TOKEN=false on the calling agent, else the
-        # gateway sees the end user's subject, not the agent's.
+        # Which agents may call this server is NOT set here. It is a platform grant in
+        # gitops/overlays/environments/<env>/agent-gateway/values.yaml (mcpAccess), so
+        # onboarding a new agent never touches this Application.
         #
-        # MUTUALLY EXCLUSIVE WITH tokenExchange ON THIS SAME BACKEND, verified live:
-        # the exchange policy below applies unconditionally to every caller of this
-        # backend and tries to use whatever bearer token arrived as the RFC 8693
-        # subject_token. An EKS ServiceAccount token is not a Keycloak-issued token,
-        # so Keycloak rejects it outright with "invalid_request - Invalid token",
-        # which surfaces at the gateway as mcp.method.name=initialize status=500
-        # "http request failed: invalid request". Keycloak's standard token exchange
-        # is internal-to-itself only; an EKS OIDC token can never be its subject_token.
-        # So an agent calling under its OWN identity (this rule) and a server that
-        # exchanges the CALLER's Keycloak identity (tokenExchange, below) are two
-        # different consumption models for one backend — pick one.
-        allowedAgents:
-          - oap-assistant-a
-
-        # --- OR, not AND, the block above ---
-        #
-        # RFC 8693 exchange at the gateway: the caller's Keycloak-issued token is
+        # Optional, for callers that forward a USER token instead (propagateCallerToken:
+        # true). Do not combine with an mcpAccess grant: an agent ServiceAccount token
+        # cannot be exchanged by Keycloak. RFC 8693 exchange at the gateway: the caller's Keycloak-issued token is
         # exchanged for one audienced to THIS server (aud=mcp-time) before the
         # request reaches it, so the server receives a token it can validate as its
         # own, per the MCP authorization spec. Needs the platform's exchange client

@@ -1,0 +1,8 @@
+# Agent -> MCP server grants for the dev environment.
+# Adding an agent here takes effect on the next sync, with no change to the MCP server
+# or the agent. Shape and semantics: gitops/addons/charts/agent-gateway/templates/mcp-access.yaml
+mcpAccess:
+  mcp-time:
+    namespace: default
+    agents:
+      - oap-assistant-a

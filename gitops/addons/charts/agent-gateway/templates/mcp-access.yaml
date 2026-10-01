@@ -1,0 +1,73 @@
+{{- /*
+Which agents may call which MCP servers. Owned by the platform, not by the MCP server.
+
+Grants live in values (`mcpAccess`), set per environment in
+gitops/overlays/environments/<env>/agent-gateway/values.yaml. Adding an agent to a
+server is one line there: no change to the MCP server's Application, no change to the
+agent's Application, nothing redeployed. The server team keeps its own tool-level rules
+(`authPolicy` on the mcp-server component).
+
+Why `traffic.authorization` on the server's HTTPRoute, and not `backend.mcp.authorization`
+on its backend:
+  - The mcp-server component already writes `backend.mcp.authorization` (authPolicy).
+    Two policies of equal specificity setting the SAME field tie, and agentgateway keeps
+    one at random and silently drops the other while both report Accepted. Writing a
+    DIFFERENT field means the two compose instead.
+  - It is the right granularity: this decides who may reach the server at all. Which
+    tools they may use is the server team's authPolicy.
+
+Precedence is Gateway < Route, field by field, so for these routes this rule REPLACES the
+Gateway-wide authorization in jwt-policy.yaml rather than adding to it. That is intended:
+only the listed agents get in. JWT authentication itself (jwtAuthentication) is a
+different field and still comes from the Gateway, so tokens are still validated.
+
+A server with no entry here keeps the Gateway-wide rule, i.e. today's behaviour.
+
+Subjects are ServiceAccount token `sub` values, so the calling agent must present its own
+identity: propagateCallerToken: false on the agent component.
+
+Entry shape:
+  mcpAccess:
+    <mcp-server component name>:
+      namespace: <namespace of the MCP server>   # the policy must live beside its route
+      agents: [<agent>, <namespace>/<agent>]     # bare name = same namespace as the server
+*/ -}}
+{{- range $server, $grant := .Values.mcpAccess }}
+{{- if $grant.agents }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: {{ $server }}-access
+  namespace: {{ required (printf "mcpAccess.%s.namespace is required" $server) $grant.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+    oap.dev/mcp-server: {{ $server }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ $server }}
+  traffic:
+    authorization:
+      # Allow, not Deny: the CRD warns Deny fails OPEN when an expression errors.
+      action: Allow
+      policy:
+        # ONE expression: matchExpressions are ANDed, so one per agent would require a
+        # caller to be every agent at once.
+        matchExpressions:
+          - {{ printf "jwt.sub in [%s]" (include "agent-gateway.mcpAccessSubjects" (dict "agents" $grant.agents "ns" $grant.namespace)) | squote }}
+{{- end }}
+{{- end }}
+
+{{- define "agent-gateway.mcpAccessSubjects" -}}
+{{- $out := list -}}
+{{- range .agents -}}
+{{- if contains "/" . -}}
+{{- $out = append $out (printf "%q" (printf "system:serviceaccount:%s" (replace "/" ":" .))) -}}
+{{- else -}}
+{{- $out = append $out (printf "%q" (printf "system:serviceaccount:%s:%s" $.ns .)) -}}
+{{- end -}}
+{{- end -}}
+{{- join ", " $out -}}
+{{- end -}}

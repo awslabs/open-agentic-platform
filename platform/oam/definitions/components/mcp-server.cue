@@ -15,10 +15,6 @@
 // so shared-template reuse would require a cluster-registered cue.oam.dev
 // Package. The duplication is the accepted, bounded cost of keeping mcp-server a
 // first-class, self-contained component.
-import (
-	"strings"
-)
-
 "mcp-server": {
 	alias:       ""
 	annotations: {}
@@ -132,46 +128,6 @@ template: {
 			}
 		}
 	}
-
-	// Subjects of the agents permitted to call this server, as ServiceAccount token
-	// `sub` values. "<ns>/<name>" addresses an agent in another namespace.
-	_agentSubjects: [
-		for a in parameter.allowedAgents {
-			if strings.Contains(a, "/") {
-				"\"system:serviceaccount:" + strings.Replace(a, "/", ":", 1) + "\""
-			}
-			if !strings.Contains(a, "/") {
-				"\"system:serviceaccount:" + context.namespace + ":" + a + "\""
-			}
-		},
-	]
-
-	// One list literal with two conditional element groups, rather than two lists
-	// concatenated: a field defined only inside an `if` cannot be referenced from
-	// outside it in CUE, and list `+` is deprecated since v0.11 in favour of
-	// list.Concat. A single literal sidesteps both.
-	_mcpAuthExprs: [
-		if len(_agentSubjects) > 0 {
-			"jwt.sub in [" + strings.Join(_agentSubjects, ", ") + "]"
-		},
-		if parameter.authPolicy != _|_ for e in parameter.authPolicy.matchExpressions {e},
-	]
-
-	// Same reason for the [...][0] form: authPolicy is optional, so the action has to be
-	// selected by an expression rather than defined in two branches.
-	_mcpAuthAction: [
-		if parameter.authPolicy != _|_ {parameter.authPolicy.action},
-		"Allow",
-	][0]
-
-	// Deny inverts under AND: "deny if permitted-agent AND matches" would deny the very
-	// agents allowedAgents admits. Rejected at render time rather than emitted wrong.
-	// (The CRD also warns Deny fails OPEN when an expression errors.) Unreferenced on
-	// purpose — it exists to make the combination unsatisfiable.
-	if len(_agentSubjects) > 0 && parameter.authPolicy != _|_ {
-		_denyGuard: parameter.authPolicy.action & ("Allow" | "Require")
-	}
-
 
 	outputs: {
 		// Dedicated ServiceAccount — the workload's identity anchor (name ==
@@ -305,32 +261,13 @@ template: {
 			}
 		}
 
-		// Authorization for this MCP server — deliberately ONE policy.
-		//
-		// `backend.mcp.authorization` is a single object with one `action` and one
-		// `matchExpressions` list; the CRD has no list of rules. And agentgateway resolves
-		// two policies of EQUAL specificity that set the SAME field by picking one and
-		// "silently dropping the rest", by a choice that "isn't based on creation time,
-		// name, or namespace" and that "can change between controller restarts", while
-		// BOTH policies still report Accepted and Attached as True. A second policy for
-		// this field would therefore make one of the two silently vanish. So allowedAgents
-		// and authPolicy feed one policy rather than emitting one each.
-		//
-		// Composition is AND, because the CRD defines matchExpressions as "CEL expressions
-		// that must ALL evaluate to true": the caller must be a permitted agent AND satisfy
-		// the tool rule. That also means subjects go in ONE `jwt.sub in [...]` expression,
-		// since one expression per agent would require a caller to be every agent at once.
-		//
-		// The MCP spec makes a server an OAuth 2.1 resource server that MUST validate
-		// tokens and MUST reject any whose audience is not itself, and forbids token
-		// passthrough outright. Our servers do not validate today, so the gateway is the
-		// only enforcement point and this rule is it.
-		if len(_mcpAuthExprs) > 0 {
-			mcpAuthPolicy: {
+		// Optional: AgentgatewayPolicy for tool-level authorization (CEL).
+		if parameter.authPolicy != _|_ && len(parameter.authPolicy.matchExpressions) > 0 {
+			toolAccessPolicy: {
 				apiVersion: "agentgateway.dev/v1alpha1"
 				kind:       "AgentgatewayPolicy"
 				metadata: {
-					name:      context.name + "-mcp-authz"
+					name:      context.name + "-tool-access"
 					namespace: context.namespace
 					labels: "app.kubernetes.io/name": context.name
 				}
@@ -341,8 +278,8 @@ template: {
 						name:  context.name + "-backend"
 					}]
 					backend: mcp: authorization: {
-						action: _mcpAuthAction
-						policy: matchExpressions: _mcpAuthExprs
+						action: parameter.authPolicy.action
+						policy: matchExpressions: parameter.authPolicy.matchExpressions
 					}
 				}
 			}
@@ -353,7 +290,7 @@ template: {
 		// This is what makes the MCP spec's audience requirement satisfiable; forwarding
 		// the caller's realm-wide token is the anti-pattern the spec names.
 		//
-		// Safe to emit as a SEPARATE policy from the authorization one above, despite both
+		// Safe to emit as a SEPARATE policy from the tool-access one above, despite both
 		// targeting this backend: they set DIFFERENT fields (`backend.auth` vs
 		// `backend.mcp`), and the merge is field-level, so they compose instead of tying.
 		//
@@ -367,8 +304,8 @@ template: {
 		//   - the exchange client must appear in the SUBJECT token's `aud`, otherwise
 		//     Keycloak returns access_denied "Client is not within the token audience" —
 		//     this holds even when no audience parameter is sent. The platform arranges it
-		//     by putting a client role in the realm's default-roles composite, so no
-		//     per-user step is needed.
+		//     with an audience protocol mapper on each caller client (crossplane-keycloak
+		//     chart, exchange.callerClients), so no per-user step is needed.
 		if parameter.tokenExchange {
 			credentialPolicy: {
 				apiVersion: "agentgateway.dev/v1alpha1"
@@ -460,7 +397,7 @@ template: {
 					forProvider: {
 						realmId: parameter.keycloakRealm
 						name:    parameter.audience + "-aud"
-						clientIdRef: name: parameter.exchangeClientResource
+						clientIdRef: name: parameter.exchangeClientId
 						includedClientAudience: parameter.audience
 						addToAccessToken:       true
 						addToIdToken:           false
@@ -565,9 +502,7 @@ template: {
 				memory?: string
 			}
 		}
-		// +usage=Agent component names allowed to call this server. Emits an MCP authorization Allow rule matching those agents' ServiceAccount token subjects, so anything else is denied. Use "<namespace>/<name>" for an agent in another namespace. Requires the agent to present its OWN identity on the agent->MCP hop (PROPAGATE_CALLER_TOKEN=false); with caller-token propagation on, the subject is the end user, not the agent.
-		allowedAgents: *[] | [...string]
-		// +usage=Exchange the caller's token for one audienced to THIS server before forwarding (RFC 8693, at the gateway). This is what lets the server validate the token as its own, which the MCP spec requires of it. Needs a Keycloak client whose id matches `audience`, and the platform's exchange client to be enabled. NOTE: mutually exclusive in practice with allowedAgents for the same caller — verified live. The exchange applies to every caller of this backend and treats whatever bearer arrived as a Keycloak subject_token; an EKS ServiceAccount token (what allowedAgents authorizes) is rejected by Keycloak with "invalid_request - Invalid token", surfacing at the gateway as a 500 on mcp.method.name=initialize. Keycloak token exchange is internal-to-itself only. Use allowedAgents for agent-identity callers and tokenExchange for Keycloak-identity callers, not both on one backend.
+		// +usage=Exchange the caller's token for one audienced to THIS server before forwarding (RFC 8693, at the gateway). This is what lets the server validate the token as its own, which the MCP spec requires of it. Needs a Keycloak client whose id matches `audience`, and the platform's exchange client to be enabled. NOTE: incompatible with callers that present an agent ServiceAccount token — verified live. The exchange applies to every caller of this backend and treats whatever bearer arrived as a Keycloak subject_token; an EKS ServiceAccount token is rejected by Keycloak with "invalid_request - Invalid token", surfacing at the gateway as a 500 on mcp.method.name=initialize. Keycloak token exchange is internal-to-itself only. Use the platform mcpAccess grant (agent-gateway chart) for agent-identity callers and tokenExchange for Keycloak-identity callers, not both on one server.
 		tokenExchange: *false | bool
 		// +usage=Keycloak client id representing this MCP server; becomes the exchanged token's `aud`. Defaults to the component name so the Keycloak client, component, Service, backend and route all share one name. Only used when tokenExchange is true.
 		audience: *context.name | string
@@ -577,8 +512,6 @@ template: {
 		exchangeSecretName: *"{{ .Values.global.keycloak.exchangeSecretName }}" | string
 		// +usage=Keycloak realm the exchange objects live in. Platform-supplied.
 		keycloakRealm: *"{{ .Values.global.keycloak.realm }}" | string
-		// +usage=Kubernetes name of the exchange client's Crossplane Client resource, used to resolve its Keycloak UUID. Platform-supplied; must match the crossplane-keycloak chart's exchange.clientId.
-		exchangeClientResource: *"{{ .Values.global.keycloak.exchangeClientId }}" | string
 		// +usage=Namespace holding the exchange client's generated Secret, replicated from here into this component's namespace. Platform-supplied.
 		exchangeSecretNamespace: *"{{ .Values.global.keycloak.exchangeSecretNamespace }}" | string
 		// +usage=Keycloak token endpoint path. Defaults to the platform's realm so the same OAM Application stays portable across clusters; override only for a non-default IdP layout.

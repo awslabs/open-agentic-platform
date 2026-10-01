@@ -282,8 +282,8 @@ template: {
 		// +usage=Forward the caller's bearer token to this agent's MCP servers. True
 		// (the default) preserves today's behaviour: the server sees the END USER's
 		// identity. Set false so the server instead sees THIS AGENT's own ServiceAccount
-		// identity — required for an mcp-server component's allowedAgents to match,
-		// since that rule checks the agent's subject, not the user's.
+		// identity — required for an mcpAccess grant (agent-gateway chart) to match,
+		// since that grant checks the agent's subject, not the user's.
 		propagateCallerToken: *true | bool
 
 		// Image
