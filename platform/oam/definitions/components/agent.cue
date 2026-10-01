@@ -282,7 +282,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:latest" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.3.1-session-isolation" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
