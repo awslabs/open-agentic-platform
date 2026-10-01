@@ -142,15 +142,21 @@ agent-gateway:
         resource: '{{default "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/sse" (index .metadata.annotations "agent_gateway_resource_url")}}'
     # Secretless workload identity (Shape A): trust the cluster's own EKS OIDC
     # issuer as a second JWT provider so agent ServiceAccount tokens authenticate
-    # without a secret. Sourced from the eks_oidc_provider cluster-secret
-    # annotation (set automatically by the platform cluster composition for
-    # spokes; set manually on the hub — see gitops/DEPLOYMENT.md). When the
-    # annotation is absent the value is empty and the workload provider is
-    # omitted (humans-only via Keycloak).
+    # without a secret.
+    #
+    # Reads THREE possible annotation names, because the clusters disagree on which
+    # one they carry — verified live, not assumed: peeks-hub (the hub) has
+    # eks_oidc_provider and neither of the others; oap-dev (a spoke) has
+    # eks_oidc_issuer and oidcProvider and NOT eks_oidc_provider. Keying on
+    # eks_oidc_provider alone left spokes with only the Keycloak provider, so every
+    # agent ServiceAccount token 401'd with "token uses the unknown key ..." —
+    # the gateway had no provider for that issuer at all. The three-way fallback
+    # repairs existing spokes with no cluster mutation; whichever annotation a given
+    # cluster actually carries wins, and the first with a non-empty value is used.
     workloadIdentity:
-      issuer: '{{ index .metadata.annotations "eks_oidc_provider" }}'
-      jwksHost: '{{ with (index .metadata.annotations "eks_oidc_provider") }}oidc.eks.{{ index $.metadata.annotations "aws_region" }}.amazonaws.com{{ end }}'
-      jwksPath: '{{ with (index .metadata.annotations "eks_oidc_provider") }}{{ printf "%s/keys" (trimPrefix (printf "https://oidc.eks.%s.amazonaws.com" (index $.metadata.annotations "aws_region")) .) }}{{ end }}'
+      issuer: '{{ $oidc := or (index .metadata.annotations "eks_oidc_provider") (index .metadata.annotations "eks_oidc_issuer") (index .metadata.annotations "oidcProvider") }}{{ $oidc }}'
+      jwksHost: '{{ $oidc := or (index .metadata.annotations "eks_oidc_provider") (index .metadata.annotations "eks_oidc_issuer") (index .metadata.annotations "oidcProvider") }}{{ with $oidc }}oidc.eks.{{ index $.metadata.annotations "aws_region" }}.amazonaws.com{{ end }}'
+      jwksPath: '{{ $oidc := or (index .metadata.annotations "eks_oidc_provider") (index .metadata.annotations "eks_oidc_issuer") (index .metadata.annotations "oidcProvider") }}{{ with $oidc }}{{ printf "%s/keys" (trimPrefix (printf "https://oidc.eks.%s.amazonaws.com" (index $.metadata.annotations "aws_region")) .) }}{{ end }}'
 
 # Crossplane provider-keycloak. Lives in the gateway domain because the only
 # consumer is the identity story: the MCP token exchange needs Keycloak clients
