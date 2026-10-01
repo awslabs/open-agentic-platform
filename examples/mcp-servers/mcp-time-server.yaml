@@ -19,3 +19,9 @@ spec:
         env:
           - name: LOCAL_TIMEZONE
             value: UTC
+        # Security demo: only these agents may call this server. Everyone else, including
+        # other agents and users calling the server directly, gets 403. Remove the field
+        # to allow every agent. The platform can restrict further (mcpAccess); a caller
+        # must then be in both lists.
+        allowedAgents:
+          - oap-assistant-a

@@ -1,3 +1,7 @@
+import (
+	"strings"
+)
+
 // mcp-server ComponentDefinition
 //
 // An MCP server managed by an Argo Rollout (blue-green) that also registers
@@ -144,6 +148,19 @@ template: {
 		tokenPath:               "{{ .Values.global.keycloak.pathPrefix }}/realms/{{ .Values.global.keycloak.realm }}/protocol/openid-connect/token"
 	}
 
+	// ServiceAccount token subjects for allowedAgents. "<ns>/<name>" addresses an agent
+	// in another namespace; a bare name means this server's namespace.
+	_agentSubjects: [
+		for a in parameter.allowedAgents {
+			if strings.Contains(a, "/") {
+				"\"system:serviceaccount:" + strings.Replace(a, "/", ":", 1) + "\""
+			}
+			if !strings.Contains(a, "/") {
+				"\"system:serviceaccount:" + context.namespace + ":" + a + "\""
+			}
+		},
+	]
+
 	outputs: {
 		// Dedicated ServiceAccount — the workload's identity anchor (name ==
 		// context.name), so aws-service-identity / gateway-identity attach cleanly.
@@ -272,6 +289,41 @@ template: {
 							name:  context.name + "-backend"
 						}]
 					}]
+				}
+			}
+		}
+
+		// Optional: only these agents may call this server.
+		//
+		// `traffic.authorization` on this server's HTTPRoute with action Require. The CRD says
+		// authorization rules from different policies "are merged": Allow rules are ORed, so
+		// an Allow here would be ORed with the Gateway's own Allow (any authenticated caller)
+		// and restrict nothing (verified live). Require rules must ALL match, so this narrows.
+		// The platform's mcpAccess grant (agent-gateway chart) is also a Require on this
+		// route; with both set, a caller must be in BOTH lists.
+		//
+		// Matches the agent's ServiceAccount subject, so it needs agents to present their own
+		// identity (the platform default, global.agentIdentity.propagateCallerToken "false").
+		if parameter.registerWithGateway && len(_agentSubjects) > 0 {
+			agentAccessPolicy: {
+				apiVersion: "agentgateway.dev/v1alpha1"
+				kind:       "AgentgatewayPolicy"
+				metadata: {
+					name:      context.name + "-allowed-agents"
+					namespace: context.namespace
+					labels: "app.kubernetes.io/name": context.name
+				}
+				spec: {
+					targetRefs: [{
+						group: "gateway.networking.k8s.io"
+						kind:  "HTTPRoute"
+						name:  context.name
+					}]
+					traffic: authorization: {
+						action: "Require"
+						// ONE expression listing every agent; one per agent would be ANDed.
+						policy: matchExpressions: ["jwt.sub in [" + strings.Join(_agentSubjects, ", ") + "]"]
+					}
 				}
 			}
 		}
@@ -517,6 +569,8 @@ template: {
 				memory?: string
 			}
 		}
+		// +usage=Agents allowed to call this server, e.g. ["oap-assistant-a", "other-ns/agent-b"]. Empty (default) allows every agent. The platform can restrict further with mcpAccess in the agent-gateway chart; a caller must then be in both lists.
+		allowedAgents: *[] | [...string]
 		// +usage=Tool-level authorization policy (CEL-based)
 		authPolicy?: {
 			// The CRD enum is Allow | Deny | Require. Prefer Allow or Require: the CRD
