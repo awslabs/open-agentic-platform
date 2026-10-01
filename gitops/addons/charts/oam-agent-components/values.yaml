@@ -28,6 +28,9 @@ global:
     # clientAuth.secretRef has no namespace field.
     exchangeClientId: agentgateway-exchange
     exchangeSecretName: agentgateway-exchange-idp
+    # Namespace the crossplane-keycloak chart writes the exchange client's Secret into.
+    # mcp-server replicates it from there into each MCP server's namespace.
+    exchangeSecretNamespace: crossplane-system
     # HTTP relative path prefix, matching Keycloak's http-relative-path setting.
     pathPrefix: /keycloak
 

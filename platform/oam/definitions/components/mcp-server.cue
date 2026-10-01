@@ -411,6 +411,97 @@ template: {
 					}
 				}
 			}
+
+			// The Keycloak client that IS this server's audience. Keycloak's `audience`
+			// parameter FILTERS an already-resolvable set, so without a client of this id the
+			// exchange fails with `invalid_request - Requested audience not available`.
+			// Confidential and flow-less: nothing ever authenticates AS this client, it exists
+			// to be named as an audience.
+			identityClient: {
+				apiVersion: "openidclient.keycloak.crossplane.io/v1alpha2"
+				kind:       "Client"
+				metadata: {
+					name: parameter.audience
+					labels: "app.kubernetes.io/name": context.name
+				}
+				spec: {
+					providerConfigRef: name: "default"
+					forProvider: {
+						realmId:             parameter.keycloakRealm
+						clientId:            parameter.audience
+						name:                parameter.audience
+						description:         "Audience for MCP server " + context.name + " (managed by OAP)"
+						accessType:          "CONFIDENTIAL"
+						standardFlowEnabled: false
+						implicitFlowEnabled: false
+						directAccessGrantsEnabled: false
+						serviceAccountsEnabled:    false
+					}
+				}
+			}
+
+			// Makes this server's audience resolvable FROM the exchange client. Attached to the
+			// exchange client, not to this one: the filter runs against the audiences the
+			// exchanging client can already produce. clientIdRef resolves that client's Keycloak
+			// UUID from its Crossplane resource, so no UUID is ever written down.
+			//
+			// Every MCP server adds one mapper here, so an UNAUDIENCED exchange from this client
+			// would carry all of them at once. That is exactly why each policy sends its own
+			// single `audience`: the filter is what delivers one-server-per-token.
+			identityAudienceMapper: {
+				apiVersion: "openidgroup.keycloak.crossplane.io/v1alpha1"
+				kind:       "AudienceProtocolMapper"
+				metadata: {
+					name: parameter.audience + "-aud"
+					labels: "app.kubernetes.io/name": context.name
+				}
+				spec: {
+					providerConfigRef: name: "default"
+					forProvider: {
+						realmId: parameter.keycloakRealm
+						name:    parameter.audience + "-aud"
+						clientIdRef: name: parameter.exchangeClientResource
+						includedClientAudience: parameter.audience
+						addToAccessToken:       true
+						addToIdToken:           false
+					}
+				}
+			}
+
+			// Copies the exchange client's Secret into THIS namespace, because
+			// clientAuth.secretRef has no namespace field and the policy can only read a Secret
+			// beside itself. references[].patchesFrom reads the source Secret's data key and
+			// patches it in, so the value is never templated into git.
+			exchangeSecretCopy: {
+				apiVersion: "kubernetes.crossplane.io/v1alpha2"
+				kind:       "Object"
+				metadata: {
+					name: context.name + "-exchange-secret"
+					labels: "app.kubernetes.io/name": context.name
+				}
+				spec: {
+					providerConfigRef: name: "default"
+					references: [{
+						patchesFrom: {
+							apiVersion: "v1"
+							kind:       "Secret"
+							name:       parameter.exchangeSecretName
+							namespace:  parameter.exchangeSecretNamespace
+							fieldPath:  "data.clientSecret"
+						}
+						toFieldPath: "data.clientSecret"
+					}]
+					forProvider: manifest: {
+						apiVersion: "v1"
+						kind:       "Secret"
+						type:       "Opaque"
+						metadata: {
+							name:      parameter.exchangeSecretName
+							namespace: context.namespace
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -484,6 +575,12 @@ template: {
 		exchangeClientId: *"{{ .Values.global.keycloak.exchangeClientId }}" | string
 		// +usage=Secret holding that client's credential under key `clientSecret`. Must exist in this namespace, because the policy's secretRef has no namespace field. Platform-supplied.
 		exchangeSecretName: *"{{ .Values.global.keycloak.exchangeSecretName }}" | string
+		// +usage=Keycloak realm the exchange objects live in. Platform-supplied.
+		keycloakRealm: *"{{ .Values.global.keycloak.realm }}" | string
+		// +usage=Kubernetes name of the exchange client's Crossplane Client resource, used to resolve its Keycloak UUID. Platform-supplied; must match the crossplane-keycloak chart's exchange.clientId.
+		exchangeClientResource: *"{{ .Values.global.keycloak.exchangeClientId }}" | string
+		// +usage=Namespace holding the exchange client's generated Secret, replicated from here into this component's namespace. Platform-supplied.
+		exchangeSecretNamespace: *"{{ .Values.global.keycloak.exchangeSecretNamespace }}" | string
 		// +usage=Keycloak token endpoint path. Defaults to the platform's realm so the same OAM Application stays portable across clusters; override only for a non-default IdP layout.
 		tokenPath: *"{{ .Values.global.keycloak.pathPrefix }}/realms/{{ .Values.global.keycloak.realm }}/protocol/openid-connect/token" | string
 		// +usage=Tool-level authorization policy (CEL-based)

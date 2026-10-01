@@ -77,24 +77,26 @@ credentials:
 # The Keycloak client the gateway authenticates as when exchanging a caller's token
 # for one audienced to a specific MCP server (mcp-server.cue, tokenExchange).
 #
-# DEFAULT FALSE. Enabling this creates real objects in the shared realm, and the
-# audience mapper only takes effect once its client scope is attached to the clients
-# users authenticate through. Attaching is deliberately NOT done here: the provider's
-# ClientDefaultScopes resource owns `defaultScopes` as a whole list, so managing a
-# shared client's scopes from this chart would clobber the scopes it already has.
-# Attach the scope to the caller client(s), then set this true.
+# DEFAULT FALSE. Enabling this creates objects in the realm and changes the `aud` of
+# tokens issued to the caller clients listed below, so turn it on deliberately.
 exchange:
   enabled: false
   realm: platform
   clientId: agentgateway-exchange
   # Connection secret the provider writes the generated client secret into, under key
-  # `clientSecret`. The MCP policy's clientAuth.secretRef reads that key by default.
-  # NOTE: secretRef has no namespace field, so a copy of this Secret must exist in
-  # every namespace that runs an MCP server. Replication is not handled here yet.
+  # `clientSecret` — the key the policy's clientAuth.secretRef reads by default.
+  # The policy's secretRef has no namespace field, so mcp-server.cue replicates this
+  # Secret into each MCP server's namespace via a provider-kubernetes Object.
   secretName: agentgateway-exchange-idp
-  # Client scope carrying the audience mapper that puts the exchange client into the
-  # caller's token `aud`, without which Keycloak rejects every exchange with
-  # "Client is not within the token audience".
-  audienceScopeName: agentgateway-exchange-audience
+  # Clients users authenticate THROUGH. Each gets a read-only adoption (import +
+  # Observe, never written) plus an audience mapper that puts the exchange client into
+  # its tokens' `aud`. Without that, Keycloak rejects every exchange with
+  # "Client is not within the token audience" — verified, and it applies even when no
+  # audience parameter is sent.
+  #
+  # mcp-client is the agent-facing client created by the platform's Keycloak bootstrap.
+  # Add any other client whose users should reach MCP servers through an agent.
+  callerClients:
+    - mcp-client
 
 namespace: crossplane-system
