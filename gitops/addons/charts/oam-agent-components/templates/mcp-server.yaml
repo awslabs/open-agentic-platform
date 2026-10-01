@@ -383,6 +383,16 @@ spec:
         						namespace: parameter.gatewayNamespace
         					}
         					path: _platform.tokenPath
+        					// Read the caller's token from the copy the agent-gateway chart makes before
+        					// JWT validation (templates/token-exchange-subject.yaml). The default source is
+        					// the Authorization header, but the gateway's jwtAuthentication REMOVES that
+        					// header once it validates it, so the exchange found nothing and Keycloak
+        					// returned "invalid request" (verified live). Enterprise has preserveToken
+        					// for this; the OSS CRD does not.
+        					subjectToken: source: header: {
+        						name:   "x-oap-subject-token"
+        						prefix: "Bearer "
+        					}
         					audiences: [context.name]
         					clientAuth: {
         						clientId: _platform.exchangeClientId

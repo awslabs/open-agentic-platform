@@ -26,9 +26,12 @@ global:
     # "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
-    # "true": every MCP server exchanges the incoming token for one audienced to itself.
-    # Only works with propagateCallerToken "true": Keycloak cannot exchange a
-    # ServiceAccount token. Not proven end to end through a tool call.
+    # "true": every MCP server exchanges the incoming token for one audienced to itself
+    # (aud=<server>, user identity kept; verified live against a test server). Requires:
+    # propagateCallerToken "true" (Keycloak cannot exchange a ServiceAccount token),
+    # agent-gateway tokenExchangeSubject.enabled true, and crossplane-keycloak exchange
+    # enabled. Known limit: tool discovery at agent startup presents the agent's SA token
+    # and is not exchanged, so the agent card lists no tools from exchanged servers.
     mcpTokenExchange: "false"
   keycloak:
     realm: platform
