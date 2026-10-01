@@ -180,6 +180,16 @@ crossplane-keycloak:
         operator: In
         values: ['true']
   valuesObject:
+    exchange:
+      # Token-exchange client for MCP (mcp-server.cue, tokenExchange).
+      enabled: true
+      # create on the HUB, adopt on spokes. Every cluster talks to the SAME realm
+      # (Keycloak is hub-only), so exactly one may create the client. The others adopt
+      # it, which also makes their provider read the client secret from Keycloak and
+      # publish it locally, and gives the per-server AudienceProtocolMapper's
+      # clientIdRef a local resource to resolve. Spokes carry hub_cluster_name; the hub
+      # does not (verified: absent on peeks-hub, hub_cluster_name=peeks-hub on oap-dev).
+      mode: '{{ if index .metadata.annotations "hub_cluster_name" }}adopt{{ else }}create{{ end }}'
     global:
       keycloak:
         # Scheme + host ONLY, no path. The provider takes base_path separately and
