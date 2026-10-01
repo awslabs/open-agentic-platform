@@ -1,0 +1,67 @@
+# Sandbox-isolated agent — the same agent as example-agent-simple.yaml, but running
+# inside a Kata microVM instead of a shared-kernel container.
+#
+# The ONLY difference from the non-sandboxed example is one line: `sandbox: true`.
+# Everything else — blue-green, replicas, the Agent Card, gateway registration,
+# the identity trait — behaves exactly as it does without the flag, because the
+# workload is still an Argo Rollout in both paths.
+#
+# PRECONDITIONS
+#   1. The image must run as NON-ROOT. sandbox: true sets runAsNonRoot, so an image
+#      whose USER is root (or which sets no USER and no numeric runAsUser) fails to
+#      start. This is the one way the flag is not purely additive.
+#   2. The cluster needs the Kata RuntimeClasses and a matching node pool:
+#      agent_sandbox + agent_sandbox_kata + kata_nodepool (kataNested.enabled).
+#      Without them the pod stays Pending and the Rollout reports not-Ready.
+#
+# The Kata VMM itself is NOT set here. It is a platform choice, carried by
+# global.sandboxRuntimeClass on the oam-agent-components chart (default kata-clh).
+# See docs/sandbox-agents/DESIGN.md.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: my-assistant-sandboxed
+  namespace: default
+spec:
+  components:
+    # The component name IS the agent's identity (context.name): it names the
+    # Rollout, both Services, the ServiceAccount, the container, AGENT_NAME and the
+    # gateway route — identical to a non-sandboxed agent.
+    - name: oap-assistant-sbx
+      type: agent
+      properties:
+        # ── Isolation opt-in: the whole feature ──────────────────────────────────
+        sandbox: true
+
+        description: "General purpose AI assistant, running in a Kata microVM"
+        systemMessage: |
+          You are a helpful AI assistant with access to various tools.
+          Always be clear, concise, and helpful. When asked about time, use the tools.
+        modelConfig:
+          modelId: claude-sonnet
+
+        # replicas is fully supported: each replica is its own microVM, and
+        # blue-green promotion works as usual. The existing multi-replica guidance
+        # still applies — use a memory provider, because the in-pod session cache
+        # has no A2A affinity.
+        replicas: 2
+
+        registerWithGateway: true
+        mcpServers:
+          - name: mcp-time
+
+        # The Kata RuntimeClass adds overhead.podFixed (130Mi/250m for kata-clh,
+        # 320Mi for kata-qemu) ON TOP of these requests, for both scheduling and
+        # kubelet accounting. Size the Kata node pool accordingly.
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+      traits:
+        # Identity is unchanged by sandboxing: the trait attaches a projected SA
+        # token (audience agentgateway) to the same ServiceAccount, which the Kata
+        # pod mounts like any other pod.
+        - type: gateway-identity
