@@ -16,10 +16,15 @@ on its backend:
   - It is the right granularity: this decides who may reach the server at all. Which
     tools they may use is the server team's authPolicy.
 
-Precedence is Gateway < Route, field by field, so for these routes this rule REPLACES the
-Gateway-wide authorization in jwt-policy.yaml rather than adding to it. That is intended:
-only the listed agents get in. JWT authentication itself (jwtAuthentication) is a
-different field and still comes from the Gateway, so tokens are still validated.
+Use `Require`, never `Allow`. The CRD states authorization rules "are merged" across
+policies and attachment points, they do not replace each other. An `Allow` here would be
+ORed with the Gateway-wide `Allow` in jwt-policy.yaml (any authenticated caller), so it
+would restrict nothing; that was verified live: an unlisted agent and a plain user token
+both got 200. `Require` rules must ALL match, so a request needs the Gateway rule AND this
+one. JWT authentication is a separate field and still comes from the Gateway.
+
+Keep exactly ONE grant policy per server: two `Require` policies would demand a caller be
+in both lists.
 
 A server with no entry here keeps the Gateway-wide rule, i.e. today's behaviour.
 
@@ -50,10 +55,11 @@ spec:
       name: {{ $server }}
   traffic:
     authorization:
-      # Allow, not Deny: the CRD warns Deny fails OPEN when an expression errors.
-      action: Allow
+      # Require, not Allow (Allow would be ORed with the Gateway rule) and not Deny
+      # (the CRD warns Deny fails OPEN when an expression errors).
+      action: Require
       policy:
-        # ONE expression: matchExpressions are ANDed, so one per agent would require a
+        # ONE expression listing every agent: one expression per agent would require a
         # caller to be every agent at once.
         matchExpressions:
           - {{ printf "jwt.sub in [%s]" (include "agent-gateway.mcpAccessSubjects" (dict "agents" $grant.agents "ns" $grant.namespace)) | squote }}
