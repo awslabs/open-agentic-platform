@@ -300,6 +300,18 @@ template: {
 		autoPromotionSeconds:  *10 | int
 		scaleDownDelaySeconds: *30 | int
 
+		// Isolation
+		// +usage=Run this agent inside a Kata microVM with a hardened securityContext.
+		// Default false renders exactly today's pod. Which Kata VMM delivers the
+		// isolation (kata-clh / kata-qemu / kata-fc) is a PLATFORM choice, set once
+		// per cluster via global.sandboxRuntimeClass, and is deliberately NOT
+		// expressible here: the VMM is ambient environment config, which a portable
+		// OAM Application must never carry (.kiro/steering/oam-authoring.md §1).
+		//
+		// PRECONDITION: the image must run as non-root. This sets runAsNonRoot, so
+		// an image whose USER is root fails to start. See docs/sandbox-agents/DESIGN.md.
+		sandbox: *false | bool
+
 		// AgentGateway registration
 		registerWithGateway: *true | bool
 		gatewayNamespace:    *"agentgateway-system" | string
