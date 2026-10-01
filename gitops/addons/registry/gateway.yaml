@@ -188,7 +188,9 @@ crossplane-keycloak:
   valuesObject:
     exchange:
       # Token-exchange client for MCP (mcp-server.cue, tokenExchange).
-      enabled: true
+      # Disabled: token exchange removed. Step 1 of 2 so Keycloak objects are deleted
+      # while the provider still runs; the addon itself is removed next.
+      enabled: false
       # create on the HUB, adopt on spokes. Every cluster talks to the SAME realm
       # (Keycloak is hub-only), so exactly one may create the client. The others adopt
       # it, which also makes their provider read the client secret from Keycloak and

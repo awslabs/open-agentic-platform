@@ -127,10 +127,3 @@ mcpAuth:
 # default: every MCP server keeps the Gateway-wide rule. Set per environment in
 # gitops/overlays/environments/<env>/agent-gateway/values.yaml.
 mcpAccess: {}
-
-# Copy the caller's token before JWT validation removes it, so the MCP token exchange can
-# read it (templates/token-exchange-subject.yaml). Enable together with
-# oam-agent-components global.agentIdentity.mcpTokenExchange "true" and
-# propagateCallerToken "true".
-tokenExchangeSubject:
-  enabled: false

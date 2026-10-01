@@ -5,49 +5,14 @@ global:
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
   awsAccountId: "*"
-  # Keycloak coordinates for the mcp-server component's token exchange (hop 2:
-  # agent -> MCP server). The component builds the RFC 8693 token endpoint path from
-  # these, so a developer's OAM Application never names a realm or a URL
-  # (oam-authoring.md §1).
-  #
-  # Plain chart defaults rather than cluster-secret annotations, deliberately:
-  # there is no keycloak_realm or keycloak_path_prefix annotation on cluster
-  # secrets (checked on peeks-hub 2026-09-29; what exists is oidc_issuer_url,
-  # e.g. https://<host>/keycloak/realms/platform, which embeds both). The
-  # agent-gateway chart treats these the same way — see its values.yaml, which
-  # hardcodes realm: platform and pathPrefix: "/keycloak" and only sources
-  # issuerUrl/serviceName/namespace from annotations. Keep the two charts'
-  # defaults in step; override here if a cluster uses a different realm.
   # How agents identify themselves to MCP servers. Platform-owned: no developer
-  # Application sets these. Strings, because they are substituted into CUE as text.
+  # Application sets this. A string, because it is substituted into CUE as text.
   agentIdentity:
     # "false": agents present their OWN ServiceAccount identity to MCP servers, so the
-    # gateway knows which agent is calling and mcpAccess grants can restrict by agent.
-    # "true": agents forward the user's Keycloak token (main's behaviour, the token
+    # gateway knows which agent is calling and allowedAgents / mcpAccess can restrict by
+    # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
-    # "true": every MCP server exchanges the incoming token for one audienced to itself
-    # (aud=<server>, user identity kept; verified live against a test server). Requires:
-    # propagateCallerToken "true" (Keycloak cannot exchange a ServiceAccount token),
-    # agent-gateway tokenExchangeSubject.enabled true, and crossplane-keycloak exchange
-    # enabled. Known limit: tool discovery at agent startup presents the agent's SA token
-    # and is not exchanged, so the agent card lists no tools from exchanged servers.
-    mcpTokenExchange: "false"
-  keycloak:
-    realm: platform
-    # Client the GATEWAY authenticates as when exchanging a caller's token for one
-    # audienced to a specific MCP server (mcp-server.cue, tokenExchange). One client
-    # for the whole platform, not one per agent: Keycloak stamps this into `azp`, and
-    # per-agent attribution is not what the exchange is for. Its Secret must be
-    # present in every namespace that runs an MCP server, because the policy's
-    # clientAuth.secretRef has no namespace field.
-    exchangeClientId: agentgateway-exchange
-    exchangeSecretName: agentgateway-exchange-idp
-    # Namespace the crossplane-keycloak chart writes the exchange client's Secret into.
-    # mcp-server replicates it from there into each MCP server's namespace.
-    exchangeSecretNamespace: crossplane-system
-    # HTTP relative path prefix, matching Keycloak's http-relative-path setting.
-    pathPrefix: /keycloak
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using
