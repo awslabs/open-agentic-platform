@@ -16,7 +16,7 @@ enabledAddons:
   prometheus_node_exporter: true
   aws_for_fluentbit: true
   # Platform
-  platform_manifests_bootstrap: true # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
+  platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
   crossplane: true
   crossplane_aws: true
   kubevela: true
@@ -36,11 +36,6 @@ enabledAddons:
   monitoring: true
   agent_core: true
   agent_gateway: true
-  # Crossplane provider-keycloak. Needed on every cluster where MCP servers run,
-  # because each server's audience client and the exchange client's Secret must be
-  # reconciled locally — the exchange policy's clientAuth.secretRef has no namespace
-  # field, so the Secret must exist alongside each MCP server.
-  crossplane_keycloak: true
   oam_components: true
   # Agent Sandbox capability — Kata micro-VM sandboxes + warm pool.
   # Enabled on DEV (where the Dark Factory runs). ArgoCD manages the IN-CLUSTER

@@ -28,11 +28,6 @@ enabledAddons:
   monitoring: true
   agent_core: true
   agent_gateway: true
-  # Crossplane provider-keycloak. Needed on every cluster where MCP servers run,
-  # because each server's audience client and the exchange client's Secret must be
-  # reconciled locally — the exchange policy's clientAuth.secretRef has no namespace
-  # field, so the Secret must exist alongside each MCP server.
-  crossplane_keycloak: false
   oam_components: true
   # Agent Sandbox capability — DISABLED for now (same reason as dev): EKS Auto
   # Mode + Bottlerocket cannot host Kata. Re-enable once Auto Mode integration

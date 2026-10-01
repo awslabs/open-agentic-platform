@@ -18,7 +18,7 @@ enabledAddons:
   aws_efs_csi_driver: false
   image_prepuller: false
   # GitOps
-  argo_events: true # Dark Factory (Flow B) trigger: GitHub-webhook EventSource + Sensor → df-run
+  argo_events: true      # Dark Factory (Flow B) trigger: GitHub-webhook EventSource + Sensor → df-run
   argo_rollouts: true
   argo_workflows: true
   kargo: true
@@ -70,8 +70,8 @@ enabledAddons:
   # The namespace-to-account map is gitops/configs/multi-acct/values.yaml. The chart
   # self-covers the cluster it runs on, so the hub itself needs no entry.
   multi_acct: true
-  platform_manifests_bootstrap: true # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
-  platform_manifests: false # wave 6: Ray-only IAMRoleSelector — inert here (Ray disabled)
+  platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
+  platform_manifests: false            # wave 6: Ray-only IAMRoleSelector — inert here (Ray disabled)
   backstage: true
   kubevela: true
   devlake: false
@@ -140,12 +140,6 @@ enabledAddons:
   monitoring: true
   agent_core: true
   agent_gateway: true
-  # Crossplane provider-keycloak. Provisions the Keycloak clients the MCP token
-  # exchange needs: one client the gateway authenticates as, and one per MCP server
-  # to serve as that server's audience. Credentials arrive via ExternalSecret, so
-  # enabling this is self-sufficient.
-  # See docs/architecture/agent-identity-and-token-exchange.md.
-  crossplane_keycloak: true
   oam_components: true
   # Agent Sandbox capability — Kata micro-VM sandboxes + warm pool (STEP 2 of the
   # move off the spoke; disabled on the dev overlay in the same change).
