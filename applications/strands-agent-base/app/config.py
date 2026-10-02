@@ -28,6 +28,14 @@ For example, always use the time tool when asked about the current time or date.
     # Model configuration
     MODEL_ID: str = os.getenv("MODEL_ID", "claude-sonnet")
     AWS_REGION: str = os.getenv("AWS_REGION", "us-west-2")
+    # Max output tokens per generation. The previous hardcoded value of 1000 was
+    # too low for an agent that reasons *and* calls tools: a long reasoning
+    # preamble could exhaust the budget and raise MaxTokensReachedException
+    # before any tool (e.g. opening a PR/MR) was ever invoked. Configurable via
+    # env, default 4096.
+    MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "4096"))
+    # Sampling temperature, configurable via env (default 0.7).
+    MODEL_TEMPERATURE: float = float(os.getenv("MODEL_TEMPERATURE", "0.7"))
     
     # LLM Gateway configuration (Bifrost, OpenAI-compatible endpoint at /v1)
     LLM_GATEWAY_URL: str = os.getenv(
@@ -94,6 +102,7 @@ For example, always use the time tool when asked about the current time or date.
         return (
             f"Config(agent_name={self.AGENT_NAME}, "
             f"model_id={self.MODEL_ID}, "
+            f"max_tokens={self.MAX_TOKENS}, "
             f"region={self.AWS_REGION}, "
             f"llm_gateway={self.LLM_GATEWAY_URL}, "
             f"mcp_servers={self.MCP_SERVER_NAMES}, "

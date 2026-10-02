@@ -1,7 +1,9 @@
 """Strands agent initialization — per-session agents with AgentCore memory."""
 
+import hashlib
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Optional
@@ -92,7 +94,11 @@ def _get_model() -> OpenAIModel:
                 "default_headers": {"x-bf-vk": vk},
             },
             model_id=config.MODEL_ID,
-            params={"max_tokens": 1000, "temperature": 0.7, "stream": True},
+            params={
+                "max_tokens": config.MAX_TOKENS,
+                "temperature": config.MODEL_TEMPERATURE,
+                "stream": True,
+            },
         )
     return _model
 
@@ -165,6 +171,34 @@ def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
 
 # ── per-session agent creation ───────────────────────────────────────────
 
+# AgentCore Memory constrains sessionId / actorId to
+# ``[a-zA-Z0-9][a-zA-Z0-9-_]*`` with a maximum length of 100. The contextId we
+# receive from the request body is caller-supplied and, for autonomous
+# incidents, is derived from an alert fingerprint (e.g.
+# "PodOOMKilled|spoke-dev|ns|pod|hog") — it contains '|' and can exceed 100
+# characters, so passing it verbatim makes every ListEvents/CreateEvent call
+# fail with a ValidationException and the agent never completes the RCA.
+_AGENTCORE_ID_MAX_LEN = 100
+_AGENTCORE_ID_INVALID = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _sanitize_agentcore_id(value: str) -> str:
+    """Coerce an arbitrary id into a valid AgentCore sessionId / actorId.
+
+    Invalid characters become '-'; the result is guaranteed to start with an
+    alphanumeric character and to be at most ``_AGENTCORE_ID_MAX_LEN`` chars.
+    When truncation is required a short deterministic hash of the original is
+    appended so distinct inputs keep distinct ids (no memory cross-talk).
+    """
+    cleaned = _AGENTCORE_ID_INVALID.sub("-", value or "")
+    if not cleaned or not cleaned[0].isalnum():
+        cleaned = "s-" + cleaned.lstrip("-_")
+    if len(cleaned) > _AGENTCORE_ID_MAX_LEN:
+        digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
+        cleaned = cleaned[: _AGENTCORE_ID_MAX_LEN - 1 - len(digest)] + "-" + digest
+    return cleaned
+
+
 def _build_session_manager(session_id: str, actor_id: str):
     """Build an AgentCoreMemorySessionManager for a specific session."""
     if config.MEMORY_PROVIDER != "agentcore":
@@ -189,16 +223,26 @@ def _build_session_manager(session_id: str, actor_id: str):
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
     from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
+    # Sanitize before handing the ids to AgentCore: the raw contextId may carry
+    # '|' or exceed 100 chars (autonomous-incident fingerprints), which
+    # AgentCore rejects. The raw session_id is still what we cache and echo back
+    # as contextId to the caller; only the memory-backend id is normalized.
+    safe_session_id = _sanitize_agentcore_id(session_id)
+    safe_actor_id = _sanitize_agentcore_id(actor_id)
+
     agentcore_config = AgentCoreMemoryConfig(
         memory_id=memory_id,
-        session_id=session_id,
-        actor_id=actor_id,
+        session_id=safe_session_id,
+        actor_id=safe_actor_id,
     )
     sm = AgentCoreMemorySessionManager(
         agentcore_memory_config=agentcore_config,
         region_name=region,
     )
-    logger.info(f"AgentCore session manager created (memory={memory_id}, session={session_id}, actor={actor_id})")
+    logger.info(
+        f"AgentCore session manager created (memory={memory_id}, "
+        f"session={safe_session_id}, actor={safe_actor_id}, raw_context={session_id!r})"
+    )
     return sm
 
 
