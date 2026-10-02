@@ -18,6 +18,13 @@ spec:
         image: "public.ecr.aws/z0a4o2j5/mcp-time-server:latest"
         port: 8000
         replicas: 1
+        # Path the gateway calls the MCP target at (emitted as the
+        # agentgateway.dev/mcp-path Service annotation). A FastMCP server mounts its
+        # streamable-HTTP app behind a Starlette Mount that 307-redirects /mcp to
+        # /mcp/, and the gateway does not follow that redirect, so the session breaks
+        # and the agent loads 0 tools. Set the trailing slash for FastMCP. Omit this
+        # (default "/mcp") for a server that serves /mcp without redirecting.
+        mcpPath: "/mcp/"
         env:
           - name: LOCAL_TIMEZONE
             value: "UTC"
