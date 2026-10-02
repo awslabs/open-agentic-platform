@@ -106,19 +106,27 @@ redis:
 
 # MinIO (S3-compatible blob storage for Langfuse v3 event upload)
 minio:
-  # Default to quay.io: anonymous Docker Hub pulls (minio/minio, minio/mc) are
-  # rate-limited and break fresh installs behind a shared NAT egress IP with
-  # "toomanyrequests"/"insufficient_scope". quay.io hosts the same official
-  # images without that throttle. Override repository to a private mirror
-  # (e.g. an ECR repo) via a per-cluster overlay when air-gapped.
+  # Default to the seb-demo public ECR mirror with an IMMUTABLE pinned tag.
+  # Why: the upstream community MinIO images are no longer anonymously pullable
+  # (docker.io/minio/minio -> 404; quay.io/minio/minio + mc -> 401 gated), so the
+  # former quay.io/minio/minio:latest default is unpullable -> ImagePullBackOff on
+  # langfuse-minio, which takes down the S3 blob store and blocks trace ingestion.
+  # Tag `mirror-20260921` is immutable and pins digest
+  #   sha256:52dfd5c0bbd38d3219f2058c7af216d9f9a27a994b7b5baad09bbd38866015ff
+  #   (MinIO RELEASE.2025-09-07T16-13-09Z, amd64). The chart builds image refs as
+  #   repository:tag (no @digest support), so the immutable tag IS the digest pin.
+  # Override to another private/ECR mirror via a per-cluster overlay when air-gapped.
+  # INTERIM: seb-demo is a personal namespace; tracked in
+  # awslabs/open-agentic-platform#42 for a durable project-owned registry.
   image:
-    repository: quay.io/minio/minio
-    tag: "latest"
-  # MinIO client (mc) image used by the bucket-init job. Kept as a value so it
-  # can be mirrored/overridden alongside the server image.
+    repository: public.ecr.aws/seb-demo/minio
+    tag: "mirror-20260921"
+  # MinIO client (mc) image used by the bucket-init job. Same seb-demo mirror:
+  # that image bundles the `mc` binary + a shell, which the langfuse-minio-init
+  # job (sh -c 'mc ...') requires.
   mcImage:
-    repository: quay.io/minio/mc
-    tag: "latest"
+    repository: public.ecr.aws/seb-demo/mc
+    tag: "mirror-20260921"
   storage: 10Gi
   rootUser: minio
   rootPassword: miniosecret
