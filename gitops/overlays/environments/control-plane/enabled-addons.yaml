@@ -112,13 +112,7 @@ enabledAddons:
   # cluster may not want. Karpenter is demand-driven so an unused pool holds 0 nodes,
   # but the CRs are still created and reconciled. Set true together with
   # agent_sandbox + agent_sandbox_kata below.
-  #
-  # TEST BRANCH (PR 48 validation): ON. PR 48's `sandbox: true` emits
-  # runtimeClassName: kata-clh, whose RuntimeClass carries nodeSelector
-  # katacontainers.io/kata-runtime=true + toleration kata=true:NoSchedule. Without
-  # this pool there is no node matching that, and the sandboxed agent's pod sits
-  # Pending forever — which is a real outcome but proves nothing about the feature.
-  kata_nodepool: true
+  kata_nodepool: false
   # ACK controllers
   ack_iam: false
   ack_eks: false
@@ -176,28 +170,10 @@ enabledAddons:
   # self-heal. So: dark_factory: true REQUIRES agent_sandbox: true. The Kata flags
   # (agent_sandbox_kata, kata_nodepool) stay optional — they matter only for the
   # Kata path, whose warm pool df-run claims from.
-  #
-  # TEST BRANCH (PR 48 validation): ON. This chart is the SINGLE OWNER of the
-  # kata-clh / kata-qemu / kata-fc RuntimeClasses (10-runtimeclasses.yaml), and
-  # kata-clh is exactly what PR 48's global.sandboxRuntimeClass default names. With
-  # this off there is no such RuntimeClass, so a `sandbox: true` agent is rejected
-  # at pod admission and the feature cannot be exercised at all.
-  #
-  # The Dark Factory coder WARM POOL is turned off separately in
-  # gitops/addons/registry/sandbox.yaml on this branch: it would need a
-  # dark-factory-coder image in this account's ECR (absent → ImagePullBackOff), and
-  # PR 48 needs none of it. Leaving the pool off also makes the sandboxed agent pod
-  # the ONLY demand on the kata NodePool, so a node appearing is direct evidence the
-  # feature's scheduling path works.
-  agent_sandbox: true
+  agent_sandbox: false
   # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
   # Required, or the warm pool's runtimeClassName has no handler on the node.
-  #
-  # TEST BRANCH (PR 48 validation): ON. The RuntimeClass above only NAMES the
-  # handler; kata-deploy is what installs the clh binary + containerd handler on the
-  # node. Without it the pod fails at creation (not at render) with an unknown
-  # runtime handler — so this is required to prove the agent really boots in a VM.
-  agent_sandbox_kata: true
+  agent_sandbox_kata: false
   # Dark Factory / Flow D — OFF BY DEFAULT (explicit opt-in). This ONE label gates
   # the pipeline chart, the Lambda MicroVM substrate (agent-sandbox-lambda) and the
   # pre-GA lambdamicrovms ACK controller — see gitops/addons/registry/sandbox.yaml.

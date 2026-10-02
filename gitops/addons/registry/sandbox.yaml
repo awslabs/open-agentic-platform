@@ -320,18 +320,6 @@ agent-sandbox:
       # does not create the image: if the tag is absent the warm pods report
       # ImagePullBackOff. Bump the tag here when the coder changes.
       image: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/dark-factory-coder:v0.2.5'
-    # TEST BRANCH (PR 48 validation) — warm pool OFF. Not part of PR 48 and not a
-    # prerequisite for it: PR 48 needs only the RuntimeClasses this chart owns, plus
-    # the kata node layer. The pool would clone SandboxTemplate `coder-sandbox` from
-    # the dark-factory-coder image above, which is not built into this account's ECR,
-    # so every idle sandbox would sit in ImagePullBackOff and make the Application
-    # degraded for a reason unrelated to the thing under test.
-    #
-    # Turning it off also sharpens the test: with no warm pool, the sandboxed agent's
-    # pod is the ONLY pending pod tolerating kata=true:NoSchedule, so a kata node
-    # being provisioned at all is direct evidence PR 48's runtimeClassName drove it.
-    warmPool:
-      enabled: false
 
 # Dark Factory — autonomous agent coding controller. Hub-only (consumes the
 # sandbox warm pool via SandboxClaim). Wave 3: after the capability chart
