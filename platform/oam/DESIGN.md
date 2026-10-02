@@ -80,7 +80,14 @@ Agents reference MCP servers by name. The `MCP_SERVERS` env var is constructed f
 1. **`runtimeClassName`**, from the platform value (below). Kubernetes' built-in RuntimeClass admission controller force-merges that class's `nodeSelector` and `tolerations` onto the pod and applies its `overhead.podFixed`, so the component needs no knowledge of the Kata node pool or its taint.
 2. **A hardened `securityContext`** at container and pod level: `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, all capabilities dropped, `RuntimeDefault` seccomp. The microVM constrains what a compromised agent reaches on the host; this constrains what it can do inside the guest. `readOnlyRootFilesystem` is deliberately not set, because agent images write to `/tmp`.
 
-> **⚠️ The image must run as non-root.** `runAsNonRoot: true` means an image whose `USER` is root — or which sets no `USER` and no numeric `runAsUser` — **fails to start** under `sandbox: true`. This is intended (a root process inside a microVM is not isolation) and it is the single way this flag is not purely additive for an existing image. A `CreateContainerConfigError` mentioning `runAsNonRoot` is this, not a Kata fault.
+> **⚠️ The container needs a NUMERIC uid, which `sandboxRunAsUser` supplies (default `1000`).** "the image must be non-root" is **not** the real constraint, and stating it that way sends you looking at the wrong thing. `runAsNonRoot: true` does not ask whether the image is non-root — it asks the kubelet to *prove* the user is non-root, and the kubelet cannot prove that from a named `USER`. Verified against this component's own default image, `public.ecr.aws/z0a4o2j5/strands-agent`, which **is** non-root (`USER appuser`, uid 1000) and still failed:
+>
+> ```
+> CreateContainerConfigError: container has runAsNonRoot and image has
+> non-numeric user (appuser), cannot verify user is non-root
+> ```
+>
+> Isolated with two otherwise identical pods: without `runAsUser` → `CreateContainerConfigError`; with `runAsUser: 1000` → `Running`, `uid=1000(appuser)`. Hence `sandboxRunAsUser`, defaulted to `1000` so the flag stays a one-liner on the stock image; override it for an image on a different uid. It cannot be used to gain root — `runAsNonRoot` stays on and rejects uid 0 at admission, so it only selects *which* non-root user. An image whose `USER` really is root still fails, as intended.
 
 **The VMM is a platform choice, not a developer one.** There is no `sandboxRuntimeClass` parameter. The class comes from `global.sandboxRuntimeClass` on the `oam-agent-components` chart (default `kata-clh`), consumed in `agent.cue` as the CUE **local** `_sandboxRuntimeClass` — a local rather than a parameter precisely so a developer's `properties` block cannot reach it. The VMM is ambient environment config, which a portable OAM Application must never carry (`.kiro/steering/oam-authoring.md` §1).
 

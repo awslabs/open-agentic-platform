@@ -7,9 +7,14 @@
 # workload is still an Argo Rollout in both paths.
 #
 # PRECONDITIONS
-#   1. The image must run as NON-ROOT. sandbox: true sets runAsNonRoot, so an image
-#      whose USER is root (or which sets no USER and no numeric runAsUser) fails to
-#      start. This is the one way the flag is not purely additive.
+#   1. The container needs a NUMERIC uid. sandbox: true sets runAsNonRoot, which makes the
+#      kubelet VERIFY non-rootness -- and it cannot verify that from a named `USER`. Being
+#      non-root is NOT sufficient: the default agent image is non-root (USER appuser,
+#      uid 1000) and still failed with
+#        "image has non-numeric user (appuser), cannot verify user is non-root"
+#      sandboxRunAsUser supplies the uid and defaults to 1000, matching that image, so
+#      nothing extra is needed here. Override it for an image on a different uid. An image
+#      whose USER really is root still fails, as intended.
 #   2. The cluster needs the Kata RuntimeClasses and a matching node pool:
 #      agent_sandbox + agent_sandbox_kata + kata_nodepool (kataNested.enabled).
 #      Without them the pod stays Pending and the Rollout reports not-Ready.
