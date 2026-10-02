@@ -1,0 +1,11 @@
+# Agent -> MCP server grants for the dev environment (templates/mcp-access.yaml).
+#
+# Empty = every agent may call every MCP server (the Gateway-wide rule). To restrict a
+# server to specific agents, add an entry; it takes effect on the next sync with no
+# change to the MCP server or the agent:
+#
+#   mcpAccess:
+#     mcp-time:
+#       namespace: default
+#       agents: [oap-assistant-a, other-ns/other-agent]
+mcpAccess: {}
