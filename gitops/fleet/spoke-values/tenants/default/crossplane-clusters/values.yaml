@@ -43,19 +43,4 @@
 #       # arn:aws:iam::<acct>:role/<resourcePrefix>-cluster-mgmt-*, so it must match
 #       # the hub's prefix, and it tags the VPC platform.gitops.io/prefix.
 #       resourcePrefix: <hub's prefix>
-clusters:
-  spoke-dev:
-    clusterName: spoke-dev
-    vpcCidr: "10.1.0.0/16"
-    kubernetesVersion: "1.35"
-    autoMode: true
-    # Functional, not cosmetic: the composition builds the spoke's ACK capability policy as
-    # sts:AssumeRole on arn:aws:iam::<acct>:role/<resourcePrefix>-cluster-mgmt-*, so it must
-    # match the hub's prefix, and it tags the VPC platform.gitops.io/prefix.
-    resourcePrefix: peeks
-  spoke-prod:
-    clusterName: spoke-prod
-    vpcCidr: "10.2.0.0/16"
-    kubernetesVersion: "1.35"
-    autoMode: true
-    resourcePrefix: peeks
+clusters: {}
