@@ -31,8 +31,17 @@ template: {
 	// override sets global.sandboxRuntimeClass to kata-qemu / kata-fc.
 	//
 	// Deliberate deviation from steering §1: that rule prescribes an OVERRIDABLE
-	// default (`*"{{ ... }}" | string`). A local is non-overridable on purpose,
-	// because the isolation class is a security boundary, not a portability knob.
+	// default -- a starred placeholder disjoined with `string`. A local is
+	// non-overridable on purpose, because the isolation class is a security
+	// boundary, not a portability knob.
+	//
+	// DO NOT write a literal Helm action (a double-brace pair) inside a comment in
+	// this file. `vela def render` copies these comments verbatim into the generated
+	// ComponentDefinition, and Helm parses that whole file as a Go template before
+	// KubeVela ever sees it -- so a brace pair whose contents are not a valid Go
+	// template expression fails the render of the ENTIRE oam-agent-components chart
+	// with `unexpected <.> in operand`, taking every component and trait with it,
+	// not just this one. Describe the pattern in prose instead, as above.
 	_sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
 
 	// FAIL CLOSED. If the platform never configured an isolation runtime and a

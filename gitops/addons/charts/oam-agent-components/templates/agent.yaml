@@ -18,6 +18,48 @@ spec:
         	"list"
         )
 
+        // PLATFORM-OWNED isolation runtime. NOT a parameter: the leading underscore
+        // makes this a CUE local, so it is structurally unreachable from a developer's
+        // `properties` block. That is what enforces "the platform picks the VMM"
+        // rather than a convention a caller could ignore.
+        //
+        // The value is a Helm placeholder substituted when Argo renders the
+        // oam-agent-components chart, BEFORE KubeVela ever parses this CUE -- the same
+        // mechanism .kiro/steering/oam-authoring.md §1 prescribes for region/account,
+        // and the one agentcore-memory.cue and aws-service-identity.cue already use.
+        // The chart's values.yaml carries the fallback (kata-clh); a per-cluster
+        // override sets global.sandboxRuntimeClass to kata-qemu / kata-fc.
+        //
+        // Deliberate deviation from steering §1: that rule prescribes an OVERRIDABLE
+        // default -- a starred placeholder disjoined with `string`. A local is
+        // non-overridable on purpose, because the isolation class is a security
+        // boundary, not a portability knob.
+        //
+        // DO NOT write a literal Helm action (a double-brace pair) inside a comment in
+        // this file. `vela def render` copies these comments verbatim into the generated
+        // ComponentDefinition, and Helm parses that whole file as a Go template before
+        // KubeVela ever sees it -- so a brace pair whose contents are not a valid Go
+        // template expression fails the render of the ENTIRE oam-agent-components chart
+        // with `unexpected <.> in operand`, taking every component and trait with it,
+        // not just this one. Describe the pattern in prose instead, as above.
+        _sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
+
+        // FAIL CLOSED. If the platform never configured an isolation runtime and a
+        // developer asks for one, emitting a pod with no runtimeClassName would
+        // schedule an ordinary runc container: isolation requested, isolation not
+        // delivered, and nothing anywhere reports a problem. Fail the render instead.
+        //
+        // This covers only the UNCONFIGURED-PLATFORM case. A class that is configured
+        // but has no matching node cannot be caught here -- the OAM layer cannot read
+        // node labels at render time -- and surfaces at runtime as Pending pods, which
+        // leave the Rollout un-progressed and therefore not-Ready rather than
+        // fake-green.
+        if parameter.sandbox && _sandboxRuntimeClass == "" {
+        	_|_// "sandbox: true requires global.sandboxRuntimeClass on the
+        	//  oam-agent-components chart; this cluster has no isolation runtime
+        	//  configured."
+        }
+
         // Build memory env vars from config
         let _memoryEnv = [
         	if parameter.memory != _|_ {
@@ -67,6 +109,18 @@ spec:
         			metadata: labels: "app.kubernetes.io/name": context.name
         			spec: {
         				serviceAccountName: context.name
+
+        				// Isolation: this single field is the whole node-placement
+        				// mechanism. Kubernetes' built-in RuntimeClass admission
+        				// controller force-merges the class's scheduling.nodeSelector
+        				// and scheduling.tolerations onto the pod, and applies its
+        				// overhead.podFixed for scheduling and kubelet accounting --
+        				// so nothing here needs to know about the Kata node pool, its
+        				// taint, or the VMM's memory cost.
+        				if parameter.sandbox {
+        					runtimeClassName: _sandboxRuntimeClass
+        				}
+
         				containers: [{
         					name:  context.name
         					image: parameter.image
@@ -144,7 +198,44 @@ spec:
         					if parameter.resources != _|_ {
         						resources: parameter.resources
         					}
+
+        					// The microVM constrains what a compromised agent reaches on
+        					// the HOST; it does nothing about privileges inside the guest.
+        					// agent-sandbox-operator/values.yaml is explicit that the coder
+        					// sandboxes get their isolation from "the Kata micro-VM boundary
+        					// plus the restricted securityContext baked into the
+        					// SandboxTemplate pod spec" -- this component uses no
+        					// SandboxTemplate, so it supplies that second half itself.
+        					// Without this, sandbox: true would wrap a root container with
+        					// full capabilities in a VM and call it isolated.
+        					//
+        					// readOnlyRootFilesystem is deliberately NOT set: agent images
+        					// write to /tmp (model SDK caches, OTel buffers, Python
+        					// bytecode), so enabling it needs an emptyDir mount and
+        					// per-image verification. Tracked as a follow-up.
+        					if parameter.sandbox {
+        						securityContext: {
+        							allowPrivilegeEscalation: false
+        							runAsNonRoot:             true
+        							capabilities: drop: ["ALL"]
+        							seccompProfile: type: "RuntimeDefault"
+        						}
+        					}
         				}]
+
+        				// Pod-level mirror of the container hardening above. Both levels
+        				// are set because they are enforced by different things:
+        				// Pod Security admission evaluates the POD's securityContext when
+        				// deciding whether a namespace at `restricted` admits the pod at
+        				// all, while the container context governs the running process.
+        				// Setting only the container would leave a restricted namespace
+        				// rejecting an otherwise-correct sandboxed agent.
+        				if parameter.sandbox {
+        					securityContext: {
+        						runAsNonRoot: true
+        						seccompProfile: type: "RuntimeDefault"
+        					}
+        				}
         			}
         		}
         	}
@@ -295,6 +386,18 @@ spec:
         	autoPromotionEnabled:  *true | bool
         	autoPromotionSeconds:  *10 | int
         	scaleDownDelaySeconds: *30 | int
+
+        	// Isolation
+        	// +usage=Run this agent inside a Kata microVM with a hardened securityContext.
+        	// Default false renders exactly today's pod. Which Kata VMM delivers the
+        	// isolation (kata-clh / kata-qemu / kata-fc) is a PLATFORM choice, set once
+        	// per cluster via global.sandboxRuntimeClass, and is deliberately NOT
+        	// expressible here: the VMM is ambient environment config, which a portable
+        	// OAM Application must never carry (.kiro/steering/oam-authoring.md §1).
+        	//
+        	// PRECONDITION: the image must run as non-root. This sets runAsNonRoot, so
+        	// an image whose USER is root fails to start. See docs/sandbox-agents/DESIGN.md.
+        	sandbox: *false | bool
 
         	// AgentGateway registration
         	registerWithGateway: *true | bool
