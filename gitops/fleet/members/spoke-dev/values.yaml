@@ -1,0 +1,11 @@
+clusterName: spoke-dev
+labels:
+  environment: dev
+  tenant: default
+  client_provisioner: keycloak
+# TODO(env-isolation): shared "platform" realm — not isolated from prod/hub yet.
+clients:
+  - name: agentgateway          # → clientId "agentgateway-dev"
+    type: confidential
+    flows:
+      - client_credentials
