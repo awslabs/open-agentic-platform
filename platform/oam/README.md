@@ -29,6 +29,7 @@ platform/oam/
 └── examples/
     ├── example-agent-minimal.yaml          Minimal agent
     ├── example-agent-simple.yaml           Agent + LLM gateway
+    ├── example-agent-sandbox.yaml          Agent isolated in a Kata microVM (sandbox: true)
     ├── example-agent-with-mcp.yaml         Agent integrated with an MCP server
     ├── example-agent-agentcore-memory.yaml Agent backed by Bedrock AgentCore Memory
     ├── example-agent-milvus-memory.yaml    Agent backed by Milvus vector store
