@@ -85,6 +85,12 @@ def _get_model() -> OpenAIModel:
         # via the `x-bf-vk` header (Bifrost governance). The OpenAI client also
         # requires a non-empty api_key, so we pass the same value there.
         vk = config.LLM_GATEWAY_API_KEY
+        # Newer Bedrock models (e.g. Claude Sonnet 5 / Opus 4.8) reject `temperature`
+        # with a 400. Include it only when MODEL_TEMPERATURE is set to a number;
+        # set MODEL_TEMPERATURE empty or "none" to omit it for those models.
+        params = {"max_tokens": 1000, "stream": True}
+        if str(config.MODEL_TEMPERATURE).strip().lower() not in ("", "none"):
+            params["temperature"] = float(config.MODEL_TEMPERATURE)
         _model = OpenAIModel(
             client_args={
                 "api_key": vk or "not-used",
@@ -92,7 +98,7 @@ def _get_model() -> OpenAIModel:
                 "default_headers": {"x-bf-vk": vk},
             },
             model_id=config.MODEL_ID,
-            params={"max_tokens": 1000, "temperature": 0.7, "stream": True},
+            params=params,
         )
     return _model
 

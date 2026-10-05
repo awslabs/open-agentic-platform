@@ -27,6 +27,9 @@ For example, always use the time tool when asked about the current time or date.
     
     # Model configuration
     MODEL_ID: str = os.getenv("MODEL_ID", "claude-sonnet")
+    # Sampling temperature. Newer Bedrock models (e.g. Claude Sonnet 5 / Opus 4.8)
+    # reject the `temperature` param; set MODEL_TEMPERATURE empty or "none" to omit it.
+    MODEL_TEMPERATURE: str = os.getenv("MODEL_TEMPERATURE", "0.7")
     AWS_REGION: str = os.getenv("AWS_REGION", "us-west-2")
     
     # LLM Gateway configuration (Bifrost, OpenAI-compatible endpoint at /v1)
