@@ -25,9 +25,9 @@ vars:
   AWS_CONFIG_FILE:
     sh: |
       if curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" >/dev/null 2>&1; then
-        mkdir -p "{{.ROOT_DIR}}/.platform/private"
-        printf '[default]\ncredential_source = Ec2InstanceMetadata\n' > "{{.ROOT_DIR}}/.platform/private/aws-config"
-        echo "{{.ROOT_DIR}}/.platform/private/aws-config"
+        mkdir -p "{{.ROOT_DIR}}/.oap-private"
+        printf '[default]\ncredential_source = Ec2InstanceMetadata\n' > "{{.ROOT_DIR}}/.oap-private/aws-config"
+        echo "{{.ROOT_DIR}}/.oap-private/aws-config"
       else
         echo "${AWS_CONFIG_FILE:-$HOME/.aws/config}"
       fi
