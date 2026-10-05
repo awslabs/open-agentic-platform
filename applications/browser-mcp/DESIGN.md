@@ -54,7 +54,7 @@ do not leak sessions.
 (`linux/arm64` + `linux/amd64`), list digest
 `sha256:2021175e0ea7f6a8811b9899feea0d0722da33c7411df731d5ba1f944b37897d`.
 The published artifact was pulled fresh and re-run: **E2E PASS**.
-Repository `browser-mcp` was created in ECR Public (account 929819487611); it is
+Repository `browser-mcp` was created in ECR Public (account 123456789012); it is
 publicly pullable, consistent with the existing `strands-agent` image there.
 
 Image: `browser-mcp:dev`, Node-only, **184 MB** (was 498 MB with the Python stack),

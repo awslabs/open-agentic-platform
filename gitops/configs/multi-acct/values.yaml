@@ -1,0 +1,26 @@
+# ACK CARM (Cross-Account Resource Management) mapping, consumed by the platform's
+# multi-acct addon as an overlay values file.
+#
+# WHY THIS IS REQUIRED FOR SPOKES
+# The multi-acct chart is the sole owner of IAMRoleSelector. ACK cannot reconcile any
+# resource in a namespace that no selector covers, and it fails in one of two quiet
+# ways: either it creates the CR and never reconciles it at all, or it falls back to
+# the hub's own capability role and gets AccessDenied. Observed here as
+#   UnauthorizedOperation: assumed-role/peeks-hub-ack-capability-role/ACK
+#   is not authorized to perform: ec2:CreateVpc
+# on the oap-dev VPC, because nothing covered the oap-dev namespace.
+#
+# Each entry below becomes a set of IAMRoleSelectors scoped to a namespace of the same
+# name, pointing at arn:aws:iam::<account>:role/<resourcePrefix>-cluster-mgmt-<service>
+# for ec2, eks, iam, ecr and friends. resourcePrefix and accountId are injected by the
+# platform's addon registry from the cluster secret, so only the namespace-to-account
+# mapping belongs here.
+#
+# The key is the SPOKE NAMESPACE, which the clusters-kro ApplicationSet names after the
+# cluster. The chart self-covers the cluster it runs on, so the hub needs no entry.
+clusters:
+  # oap-dev spoke, same account as the hub — no value means the multi-acct chart's
+  # per-entry fallback (`$value | default $.Values.global.accountId`) resolves it
+  # from the hub's own AWS identity at reconcile time, never a committed literal.
+  # Only give this an explicit value for a genuinely cross-account spoke.
+  oap-dev:

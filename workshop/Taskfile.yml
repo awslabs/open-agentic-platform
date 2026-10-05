@@ -1,0 +1,157 @@
+version: '3'
+
+# Install OAP when you own no domain, reaching the platform over HTTPS through a
+# free *.cloudfront.net hostname.
+#
+# This directory owns all CloudFront logic and nothing else. It sets two values,
+# `domain` and `insecure`, then delegates: `task install` at the repo root installs
+# OAP, and that in turn delegates the base platform to appmod-blueprints. Neither
+# of those knows CloudFront exists.
+#
+#   workshop/  reserve a hostname  ->  set domain + insecure  ->  attach the origin
+#   root/      task install        ->  platform + spokes + agentic
+#   platform/  task install        ->  hub cluster + addons
+#
+# Why the hostname must exist first: Keycloak realm URLs, the OIDC issuer, every
+# ingress host rule, and the ArgoCD and Backstage base URLs are all derived from
+# `domain`, and ArgoCD starts deploying addons at the end of the platform install.
+# Installing with an empty domain misconfigures all of them. A CloudFront
+# distribution hands back its hostname immediately and does not validate its origin
+# at creation time, so the name can be reserved against an unresolvable placeholder
+# in about a second, before any load balancer exists.
+#
+# Both CloudFront operations are the platform's own scripts. Nothing here
+# reimplements them.
+#
+# Usage:
+#   cd workshop && task install
+#
+# Every input comes from ../config.local.yaml. Nothing is read from CloudFormation,
+# WS_* variables, or /etc/profile.d. See .kiro/steering/platform-portability.md.
+
+vars:
+  OAP_CONFIG: '{{.OAP_CONFIG | default "../config.local.yaml"}}'
+  # Shared with the root Taskfile's platform:clone, so the platform is never
+  # cloned twice.
+  PLATFORM_DIR: '{{.PLATFORM_DIR | default "../.platform"}}'
+
+  HUB_CLUSTER_NAME:
+    sh: yq -r '.hub.clusterName' {{.OAP_CONFIG}}
+  PLATFORM_REF:
+    sh: yq -r '.platform.ref' {{.OAP_CONFIG}}
+  CLUSTER_PROVIDER:
+    sh: yq -r '.platform.clusterProvider' {{.OAP_CONFIG}}
+env:
+  AWS_PAGER: ""
+
+tasks:
+  default:
+    desc: Show the sequence
+    silent: true
+    cmds:
+      - |
+        printf 'OAP install with no registered domain (CloudFront exposure)\n\n'
+        printf '  task install     reserve -> root install -> attach\n\n'
+        printf '  task reserve     reserve the hostname and write it to %s (~1s)\n' '{{.OAP_CONFIG}}'
+        printf '  task attach      bind CloudFront to the platform ALB (~9 min)\n'
+        printf '  task urls        print the platform URLs\n'
+
+  install:
+    desc: "Reserve a CloudFront hostname, install OAP, then attach the origin"
+    cmds:
+      - task: reserve
+      # A separate `task` process, deliberately. `reserve` rewrites domain and insecure
+      # in ../config.local.yaml, and the root Taskfile resolves those into variables at
+      # startup. Invoking it as a subprocess rather than a task dependency is what makes
+      # it re-read the file and see the values reserve just wrote.
+      - cd .. && task install
+      # After the platform install, because the ALB it binds to does not exist until
+      # then. Nothing in OAP's install reaches the platform through the public
+      # hostname, so this is safe to do last. If a step is ever added that does (IDC
+      # to Keycloak federation would be one), it must run after this, because
+      # CloudFront serves errors until the origin is attached.
+      - task: attach
+      - task: urls
+
+  reserve:
+    desc: "Reserve the *.cloudfront.net hostname and record it in the OAP config"
+    deps: [platform]
+    cmds:
+      - |
+        set -e
+        # Idempotent: the script finds an existing distribution by its Comment
+        # (<clusterName>-platform) and returns that hostname instead of creating a
+        # second one. Progress goes to stderr, the hostname to stdout.
+        DOMAIN=$(HUB_CLUSTER_NAME='{{.HUB_CLUSTER_NAME}}' \
+          "{{.PLATFORM_DIR}}/scripts/cloudfront-reserve-domain.sh" | tail -1)
+        case "$DOMAIN" in
+          *.cloudfront.net) : ;;
+          *) printf '✗ reserve returned "%s", not a *.cloudfront.net hostname\n' "$DOMAIN" >&2; exit 1 ;;
+        esac
+
+        # insecure is what makes the rest work, and is a generic platform contract
+        # rather than a CloudFront one: the load balancer serves plain HTTP because
+        # TLS is terminated upstream. It also makes the platform create the ALB as
+        # `internal` with the predictable name <clusterName>-platform, which is both
+        # what `task attach` looks for and what a CloudFront VPC origin requires.
+        yq -i ".domain = \"${DOMAIN}\" | .insecure = true" '{{.OAP_CONFIG}}'
+        printf '✓ %s: domain=%s insecure=true\n' '{{.OAP_CONFIG}}' "$DOMAIN"
+
+  attach:
+    desc: "Point CloudFront at the platform ALB through a VPC origin (~9 min)"
+    cmds:
+      # Creates a VPC origin bound to the internal ALB and swaps out the placeholder,
+      # so CloudFront reaches the platform privately from inside the VPC rather than
+      # across the internet. Idempotent, and re-running it is the documented remedy
+      # if the ALB is ever replaced and every URL starts hanging with curl 000.
+      # Exit 2 means the VPC origin never reached Deployed inside its budget.
+      - |
+        PLATFORM_CONFIG_FILE="{{.PLATFORM_DIR}}/config.local.yaml" \
+          "{{.PLATFORM_DIR}}/scripts/cloudfront-attach-origin.sh"
+
+  platform:
+    desc: Ensure the platform is cloned and ships the CloudFront scripts
+    cmds:
+      - cd .. && task platform:clone
+      # Fail here rather than after a 30-minute install. These scripts arrived in
+      # appmod-blueprints PR #888 and no release tag contains them yet, so a
+      # platform.ref pinned to a tag will not have them.
+      - |
+        MISSING=""
+        for s in scripts/cloudfront-reserve-domain.sh scripts/cloudfront-attach-origin.sh; do
+          [ -f "{{.PLATFORM_DIR}}/$s" ] || MISSING="$MISSING $s"
+        done
+        if [ -n "$MISSING" ]; then
+          printf '✗ platform.ref "%s" does not ship:%s\n' '{{.PLATFORM_REF}}' "$MISSING" >&2
+          printf '  Set platform.ref in %s to a revision that has them (currently `main`).\n' '{{.OAP_CONFIG}}' >&2
+          exit 1
+        fi
+      # kind-kro-ack is the provider this flow was tested end to end on. kind-crossplane
+      # is expected to work, since nothing here needs a pre-existing VPC, but has not
+      # been verified with CloudFront. A warning rather than a failure, because the
+      # platform's own docs say both should work.
+      - |
+        if [ '{{.CLUSTER_PROVIDER}}' != "kind-kro-ack" ]; then
+          printf '⚠ platform.clusterProvider is "%s". CloudFront exposure was tested on\n' '{{.CLUSTER_PROVIDER}}' >&2
+          printf '  kind-kro-ack; "%s" is unverified for it.\n' '{{.CLUSTER_PROVIDER}}' >&2
+        fi
+
+  urls:
+    desc: Print the platform URLs
+    silent: true
+    cmds:
+      - |
+        DOMAIN=$(yq -r '.domain // ""' '{{.OAP_CONFIG}}')
+        if [ -z "$DOMAIN" ]; then
+          printf 'No domain set yet. Run: task reserve\n'
+          exit 0
+        fi
+        printf '\n'
+        for p in /keycloak /argo-workflows /argocd /backstage /grafana; do
+          printf '  https://%s%s\n' "$DOMAIN" "$p"
+        done
+        case "$DOMAIN" in
+          *.cloudfront.net)
+            printf '\nTLS is terminated by CloudFront. Expect errors until `task attach`\n'
+            printf 'completes and the distribution propagates.\n' ;;
+        esac

@@ -1,21 +1,46 @@
 # Default tenant cluster provisioning values.
-# Consumed by the platform `clusters` ApplicationSet (matrix generator globs
-# fleet/spoke-values/tenants/*/crossplane-clusters/values.yaml). Each key becomes
-# a PlatformCluster claim → Crossplane provisions a spoke EKS cluster.
 #
-# region defaults to the hub region (the ApplicationSet injects
-# global.defaultRegion from the hub cluster secret's aws_region annotation),
-# so it is intentionally omitted here — both spokes run in the hub region.
-clusters:
-  spoke-dev:
-    clusterName: spoke-dev
-    vpcCidr: "10.1.0.0/16"
-    kubernetesVersion: "1.35"
-    autoMode: true
-    resourcePrefix: peeks
-  spoke-prod:
-    clusterName: spoke-prod
-    vpcCidr: "10.2.0.0/16"
-    kubernetesVersion: "1.35"
-    autoMode: true
-    resourcePrefix: peeks
+# Consumed by the platform `clusters` ApplicationSet (matrix generator globs
+# fleet/spoke-values/tenants/*/crossplane-clusters/values.yaml). Each key here
+# becomes a PlatformCluster claim, and Crossplane provisions a spoke EKS cluster
+# from it.
+#
+# Empty by default, so an install provisions the hub only. Spokes are opt-in.
+# This matches appmod-blueprints, which ships fleet/members/ empty with an
+# `_example` and expects a consumer to declare what they actually want.
+#
+# It was previously populated with spoke-dev (10.1.0.0/16) and spoke-prod
+# (10.2.0.0/16) pinned to `resourcePrefix: peeks`. That made two spokes, and the
+# resource prefix of one reference environment, the default for every consumer,
+# regardless of what `spokes` said in their config.local.yaml. Note that this file
+# is the GitOps source of truth for provisioning: the `spokes` map in
+# config.local.yaml drives only the imperative `task spokes:install` path, so the
+# two are independent. Declaring a spoke here is what actually creates it.
+#
+# No spokes on the Crossplane path. oap-dev is declared on the KRO path at
+# tenants/default/kro-clusters/, because KRO is the engine that provisions the hub in
+# this environment and the Crossplane platform-cluster Composition cannot compose on
+# Crossplane v2: its six Usage bases declare protection.crossplane.io/v1beta1 Usage,
+# namespaced in v2, with no namespace, so the composite fails with "an empty
+# namespace may not be set when a resource name is provided" after ~7 of 35
+# resources, before the VPC or cluster exist. ClusterUsage is the correct scope.
+# Tracked in #17.
+#
+# Declare a cluster on ONE path only: the platform's own spokes:enable-kro deletes
+# the crossplane entry for any cluster it moves to kro. To use this path once the
+# Composition is fixed, add an entry below plus a matching fleet member. region is
+# intentionally omitted; the ApplicationSet injects global.defaultRegion from the hub
+# cluster secret's aws_region annotation.
+#
+#   clusters:
+#     example-dev:
+#       clusterName: example-dev
+#       vpcCidr: "10.1.0.0/16"
+#       kubernetesVersion: "1.35"
+#       autoMode: true
+#       # Functional, not cosmetic: the composition builds the spoke's ACK capability
+#       # policy as sts:AssumeRole on
+#       # arn:aws:iam::<acct>:role/<resourcePrefix>-cluster-mgmt-*, so it must match
+#       # the hub's prefix, and it tags the VPC platform.gitops.io/prefix.
+#       resourcePrefix: <hub's prefix>
+clusters: {}

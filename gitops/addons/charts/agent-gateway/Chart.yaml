@@ -2,4 +2,4 @@ apiVersion: v2
 name: agent-gateway
 description: AgentGateway platform resources - Gateway, Backend, Policies with KeyCloak JWT auth
 type: application
-version: 0.1.0
+version: 0.1.1

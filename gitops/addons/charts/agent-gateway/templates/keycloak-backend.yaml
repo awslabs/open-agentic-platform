@@ -1,0 +1,23 @@
+{{- $issuerUrl := .Values.global.keycloak.issuerUrl -}}
+{{- $host := trimPrefix "https://" (trimPrefix "http://" $issuerUrl) -}}
+{{- $host = splitList "/" $host | first -}}
+# Static backend to Keycloak's PUBLIC hostname (parsed from global.keycloak.issuerUrl),
+# used by jwt-policy.yaml and mcp-policy.yaml to fetch the JWKS over HTTPS.
+#
+# Deliberately NOT a Service backendRef to a cluster-internal keycloak Service:
+# Keycloak is hub-only (see OAP steering, project.md), so on a spoke a Service
+# backendRef resolves nothing (no such host) and the JWT policy is permanently
+# stuck PartiallyValid retrying forever. Using the same public URL every
+# JWT-validating workload already authenticates against removes the
+# hub-vs-spoke branch entirely: one code path, works on both.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: keycloak-jwks
+  namespace: agentgateway-system
+spec:
+  static:
+    host: {{ $host | quote }}
+    port: 443
+  policies:
+    tls: {}

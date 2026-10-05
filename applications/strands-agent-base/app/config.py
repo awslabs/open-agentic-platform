@@ -46,6 +46,15 @@ For example, always use the time tool when asked about the current time or date.
     # MCP server names to load via the gateway (comma-separated, maps to /mcp/<name>)
     MCP_SERVER_NAMES_RAW: Optional[str] = os.getenv("MCP_SERVER_NAMES")
 
+    # Forward the caller's bearer token on outbound MCP calls instead of the
+    # agent's own ServiceAccount token. Set false to restore workload-only
+    # identity on every hop.
+    PROPAGATE_CALLER_TOKEN: bool = os.getenv("PROPAGATE_CALLER_TOKEN", "true").lower() not in (
+        "false",
+        "0",
+        "no",
+    )
+
     @property
     def MCP_SERVER_NAMES(self) -> list[str]:
         """Parse MCP server names from comma-separated string."""

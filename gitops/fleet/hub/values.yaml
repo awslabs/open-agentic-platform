@@ -30,13 +30,24 @@ externalSecret:
 # Safe to enable: $overlay becomes a REAL ArgoCD source, and this repo is public
 # and already read by ArgoCD (fleet-secret-hub and clusters-default already carry
 # a `ref: overlay` source pointing at this same URL).
+#
+# WARNING — this also drives SPOKE DISCOVERY. The clusters-kro ApplicationSet
+# resolves its git generator as
+#   repoURL:  or overlay_repo_url  fleetRepoURL
+#   revision: or overlay_repo_revision fleetRepoRevision
+#   basepath: or overlay_repo_basepath fleetRepoBasepath
+# so if these point at a repo or revision that lacks
+# fleet/spoke-values/tenants/*/kro-clusters/clusters/*.json, the appset globs a
+# valid-but-wrong tree, finds no files, and generates ZERO spoke applications with
+# ErrorOccurred=False and no warning anywhere. useFleetRepo below makes that drift
+# impossible by construction: there is only one URL/revision to get wrong.
 overlay:
-  repoURL: https://github.com/aws-samples/sample-open-agentic-platform.git
-  # MUST be a revision that actually CONTAINS the overlay files above. Kept in step
-  # with this cluster secret's fleetRepoRevision — update BOTH when this work
-  # merges (fix/parity-with-peeks -> main), otherwise $overlay resolves to a branch
-  # without overlays/clusters/hub/karpenter/values.yaml and manageAddons silently
-  # stays false.
-  revision: fix/parity-with-peeks
+  # This repo IS the fleet repo, so inherit hub.fleetRepoURL / hub.fleetRepoRevision
+  # rather than restating them. Those trace back to a single source, config.local.yaml's
+  # agenticRepo.url / .revision, so the coordinates are declared exactly once and
+  # cannot drift out of step with the cluster secret's fleetRepo* annotations.
+  # Set repoURL/revision explicitly only for a genuinely separate overlay repo;
+  # an explicit value still wins over this flag.
+  useFleetRepo: true
   # Repo-relative root holding configs/ + overlays/. Matches addonsRepoBasepath.
   basepath: gitops/
