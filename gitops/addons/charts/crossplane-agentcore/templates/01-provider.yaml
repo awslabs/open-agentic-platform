@@ -17,12 +17,40 @@ spec:
           serviceAccountName: {{ .Values.podIdentity.serviceAccountName }}
           containers:
             - name: package-runtime
+              {{- /* Same mechanism as appmod-blueprints crossplane-base (PR #941); see the
+                     provider.resources comment in values.yaml for the measurements.
+                     hasKey, not `| default`, so an explicit "" for goMemLimit/goGC means
+                     "do not set the env var". */}}
+              {{- $r := dict "cpuRequest" "100m" "memoryRequest" "320Mi" "memoryLimit" "512Mi" "goGC" "50" }}
+              {{- range $k, $v := (.Values.provider.resources | default dict) }}{{ $_ := set $r $k $v }}{{ end }}
+              {{- /* GOMEMLIMIT defaults to 90% of the memory limit (Go GC guide: 5-10% headroom
+                     for non-Go memory), so it cannot drift away from the limit it protects. */}}
+              {{- if not (hasKey $r "goMemLimit") }}
+              {{-   $lim := toString $r.memoryLimit }}
+              {{-   $mib := 0 }}
+              {{-   if hasSuffix "Gi" $lim }}{{ $mib = mul (atoi (trimSuffix "Gi" $lim)) 1024 }}
+              {{-   else if hasSuffix "Mi" $lim }}{{ $mib = atoi (trimSuffix "Mi" $lim) }}
+              {{-   else }}{{ fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q must end in Mi or Gi (or set goMemLimit explicitly)" $lim) }}
+              {{-   end }}
+              {{-   $_ := set $r "goMemLimit" (printf "%dMiB" (div (mul $mib 9) 10)) }}
+              {{- end }}
+              {{- if or $r.goMemLimit $r.goGC }}
+              env:
+                {{- if $r.goMemLimit }}
+                - name: GOMEMLIMIT
+                  value: {{ $r.goMemLimit | quote }}
+                {{- end }}
+                {{- if $r.goGC }}
+                - name: GOGC
+                  value: {{ $r.goGC | quote }}
+                {{- end }}
+              {{- end }}
               resources:
                 requests:
-                  cpu: 100m
-                  memory: 256Mi
+                  cpu: {{ $r.cpuRequest }}
+                  memory: {{ $r.memoryRequest }}
                 limits:
-                  memory: 512Mi
+                  memory: {{ $r.memoryLimit }}
 ---
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
