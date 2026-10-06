@@ -8,6 +8,12 @@
 #      (clusterName/region resolved from the env-config EnvironmentConfig — no params)
 #      and attaches the memory policy via accessFor.
 #   3. The gateway-identity trait gives the agent a projected token for AgentGateway/MCP.
+#   4. Long-term memory is per caller: the gateway sets X-Forwarded-User to the caller's
+#      token subject and the agent uses it as the memory actor. The agent finds the
+#      strategies' namespaces from the memory itself, so nothing else is wired.
+#
+# No region anywhere: the memory defaults to the cluster's region and the agent uses
+# the AWS_REGION that aws-service-identity injects, so this Application is portable.
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
@@ -21,9 +27,11 @@ spec:
         - name: memory-id
           valueFrom: output.status.atProvider.id
       properties:
-        region: us-west-2
         description: "Memory for my-agent"
         eventExpiryDuration: 30
+        # Opt-in long-term memory. Omit for short-term only (the conversation within
+        # a session). Pick any of: semantic, userPreference, summary.
+        strategies: [semantic, userPreference]
 
     # Component name (my-agent) is the identity: Rollout/Service/SA/container all
     # named my-agent; the traits attach AWS + gateway identity to that same SA.
@@ -50,7 +58,6 @@ spec:
           provider: agentcore
           config:
             memoryId: "injected-from-agentcore-memory-output"
-            region: us-west-2
       traits:
         # Secretless identity to AgentGateway/MCP.
         - type: gateway-identity
