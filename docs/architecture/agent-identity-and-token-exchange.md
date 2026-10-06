@@ -31,6 +31,21 @@ Keycloak `26.3.3`, Bifrost `2.1.16`, vela CLI `1.10.7`.
 - **Agent ServiceAccount tokens validate on spokes.** The gateway's workload-identity JWT
   provider was missing on spokes because of an annotation-name mismatch.
 - **Agent sessions are isolated per caller**, not per outbound credential.
+- **Caller identity header (optional platform contract).** Every request the gateway
+  forwards carries `X-Forwarded-User`, set by the gateway to the validated token's `sub`
+  and overwritten if the client sent one (`agent-gateway` chart,
+  `caller-identity-policy.yaml`). A Keycloak user arrives as their subject id; an agent
+  calling through the gateway as `system:serviceaccount:<ns>:<name>`. Workloads that need
+  a stable per-caller key read it; others ignore it. No token parsing is required. This is
+  the plain-header half of the usual authenticating-proxy pattern (ALB, IAP, Cloudflare
+  Access); the signed half is the caller's original JWT, which `credentialPassthrough`
+  still forwards for workloads that want to verify it themselves. The header is trustworthy
+  only because pods are reached through the gateway; cross-namespace isolation is the
+  operator's NetworkPolicy. At the agent → MCP hop it names the agent, not the user.
+- **Per-caller long-term memory.** The base agent image uses `X-Forwarded-User` as its
+  AgentCore memory actor, so memories are kept per caller instead of one shared "user".
+  Long-term strategies are opt-in on `agentcore-memory` (`strategies`); see
+  `platform/oam/README.md`.
 
 ### What's next
 

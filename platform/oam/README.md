@@ -148,6 +148,37 @@ Each agent Application creates:
 - Agent Card ConfigMap (for A2A discovery)
 - HTTPRoute against `agentgateway-proxy` (when `registerWithGateway: true`)
 
+## Agent memory (AgentCore)
+
+`examples/example-agent-agentcore-memory.yaml` is the reference. The memory ID is the only
+wired value: the `agentcore-memory` component publishes it as a KubeVela output, and the
+agent takes it as an input with `dependsOn`, so the agent starts after the memory exists.
+Neither component takes a region; both use the cluster's.
+
+| Mode | Set on `agentcore-memory` | What the agent gets |
+|---|---|---|
+| Short-term | nothing (`strategies: []`, default) | the conversation within a session (`contextId`) |
+| Long-term | `strategies: [semantic, userPreference, summary]`, any subset | short-term, plus records recalled across sessions |
+
+Strategy namespaces are platform-owned and keyed by the caller:
+
+| Strategy | AgentCore type | Namespace |
+|---|---|---|
+| `semantic` | `SEMANTIC` | `/facts/{actorId}/` |
+| `userPreference` | `USER_PREFERENCE` | `/preferences/{actorId}/` |
+| `summary` | `SUMMARIZATION` | `/summaries/{actorId}/{sessionId}/` |
+
+`actorId` is the `X-Forwarded-User` header the gateway sets from the caller's token
+`sub`, so one caller's memories are never retrieved for another. Requests that did not
+come through the gateway share the actor `anonymous`. The agent reads the strategies from
+the memory itself at startup (`GetMemory`), so adding a strategy needs no agent change;
+pods pick it up on the next rollout. Retrieval tuning: `retrievalTopK` and
+`retrievalRelevanceScore` in `memory.config` (defaults 10 and 0.2).
+
+Long-term records are extracted asynchronously by AgentCore after a conversation, so a
+fact told in one session is recallable in a new session after extraction completes, not
+immediately.
+
 ## Monitoring rollouts
 
 ```bash
