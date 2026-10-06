@@ -13,6 +13,20 @@ global:
     # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
+  # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
+  # properties.sandbox: true). Platform-owned: an application developer cannot set
+  # this from their OAM, because the VMM is ambient environment config.
+  #
+  # kata-clh is the platform's verified, default-on VMM. kata-qemu is a one-line
+  # change -- it shares clh's node pool, taint and kata-deploy release. kata-fc
+  # needs its node layer enabled FIRST (kata-nodepool kataFc.enabled plus the
+  # agent_sandbox_kata_fc addon), or every sandboxed pod sits Pending forever
+  # because no node carries katacontainers.io/kata-runtime-fc.
+  #
+  # Leaving this EMPTY makes the agent component fail the render on sandbox: true,
+  # rather than silently scheduling an unisolated runc pod.
+  # See docs/sandbox-agents/DESIGN.md.
+  sandboxRuntimeClass: kata-clh
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using
