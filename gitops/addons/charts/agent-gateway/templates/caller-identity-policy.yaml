@@ -1,0 +1,36 @@
+{{- if .Values.callerIdentity.enabled }}
+# Tells every backend who the authenticated caller is, as a plain header.
+#
+# The gateway has already validated the caller's JWT (jwt-policy.yaml), so it sets
+# `X-Forwarded-User` to that token's `sub`. Backends use it as a stable per-caller
+# key, for example an agent's long-term memory actor, without parsing or
+# validating tokens themselves.
+#
+#   Keycloak user          -> the user's subject id
+#   agent ServiceAccount   -> system:serviceaccount:<namespace>:<name>
+#
+# `set`, not `add`: the value is overwritten on every request, so a header a client
+# sends itself never reaches the backend. That is the whole trust contract. A caller
+# that bypasses the gateway and talks to a pod directly can send anything; this
+# platform admits traffic only through the gateway, and cross-namespace isolation is
+# the cluster operator's NetworkPolicy, not this chart's.
+#
+# Scoped to the Gateway, like jwt-policy.yaml, so both hops are covered: client ->
+# agent, and agent -> MCP server or other agent.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: caller-identity-policy
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-proxy
+  traffic:
+    transformation:
+      request:
+        set:
+        - name: {{ .Values.callerIdentity.header | quote }}
+          value: 'jwt.sub'
+{{- end }}
