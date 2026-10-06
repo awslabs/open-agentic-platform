@@ -44,6 +44,13 @@ keycloak:
 
 # Application secrets (override for production)
 nextauthSecret: "changeme-generate-random-secret"
+# SALT is used by Langfuse to hash API keys (createShaHash: sha256(sk || hex(sha256(SALT)))).
+# It MUST be deterministic across every ArgoCD render (no rand*/lookup — those would change
+# the salt on each sync and break the OTEL key auth), and the langfuse deployment (langfuse.yaml
+# -> langfuse-secrets/SALT) and the seed job (seed-job.yaml fast_hashed_secret_key) MUST read the
+# SAME value so the seeded fast-hash matches what Langfuse computes at ingestion time.
+# Override per-env with a secret value; the placeholder below is deterministic and works
+# out of the box, but you should set a unique salt in production deployments.
 salt: "changeme-generate-salt"
 
 resources:

@@ -5,16 +5,17 @@ import (
 // mcp-server ComponentDefinition
 //
 // An MCP server managed by an Argo Rollout (blue-green) that also registers
-// itself with AgentGateway. Aligned with `service-rollout`: it owns a dedicated
+// itself with AgentGateway. Aligned with the platform's `service-rollout`
+// component (defined in appmod-blueprints, not here): it owns a dedicated
 // ServiceAccount (name == context.name) and names its container context.name,
 // so it is the workload's single identity anchor — attach `aws-service-identity`
 // and/or `gateway-identity` traits to grant AWS / AgentGateway identities with
-// no extra wiring. Workload parameters mirror `service-rollout`; the MCP-specific
+// no extra wiring. Workload parameters mirror `service-rollout`'s; the MCP-specific
 // additions are the AgentgatewayBackend, the /mcp/<name> HTTPRoute, and an
 // optional tool-level authorization policy.
 //
-// NOTE: the workload/SA/Service skeleton is intentionally duplicated with
-// `service-rollout` (see decision log): `vela def render` renders each
+// NOTE: the workload/SA/Service skeleton is intentionally duplicated with the
+// platform's `service-rollout` (see decision log): `vela def render` renders each
 // definition from a self-contained file and does not resolve local CUE imports,
 // so shared-template reuse would require a cluster-registered cue.oam.dev
 // Package. The duplication is the accepted, bounded cost of keeping mcp-server a

@@ -277,6 +277,11 @@ The Dark Factory turns a **GitHub issue into a reviewed, merged PR, autonomously
 It is the platform's proof that you can run untrusted, code-writing agents safely alongside a control
 plane. See [`docs/dark-factory/`](docs/dark-factory/) and [`examples/dark-factory/`](examples/dark-factory/).
 
+The same Kata isolation substrate is available to **any** agent, not only the Dark Factory coder, via
+a single opt-in on the OAM `agent` component: `sandbox: true` runs the agent inside a Kata microVM
+with a hardened `securityContext`, while keeping blue-green delivery, `replicas`, Services and gateway
+routing unchanged. See [`docs/sandbox-agents/DESIGN.md`](docs/sandbox-agents/DESIGN.md).
+
 ---
 
 ## Managed or open source — your choice, per capability

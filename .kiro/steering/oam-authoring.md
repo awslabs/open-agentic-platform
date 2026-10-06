@@ -59,8 +59,15 @@ placeholder.
 
 ## 2. CUE is the only source of truth
 
-Every ComponentDefinition and TraitDefinition in the chart MUST have a CUE source
+Every ComponentDefinition and TraitDefinition in THIS chart MUST have a CUE source
 in `platform/oam/definitions/components/` or `.../traits/`.
+
+Exception: definitions owned by the platform repo. `aws-service-identity` and
+`service-rollout` are defined in appmod-blueprints
+(`gitops/addons/charts/kubevela/templates/`) and reach our clusters through the
+`kubevela` addon, which this repo enables. Do not re-add a local copy: two charts
+shipping the same definition name into `vela-system` collide, and whichever
+Application syncs last silently wins. Change them upstream.
 
 - **Never hand-edit the generated YAML.** Those files carry a `DO NOT EDIT`
   header and are overwritten.
