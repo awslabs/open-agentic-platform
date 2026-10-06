@@ -1,5 +1,9 @@
 global:
   awsRegion: ""
+  # insecure=true: ingress serves plain HTTP; TLS is terminated upstream of the
+  # ALB (e.g. by CloudFront). Set from the cluster secret's insecure annotation,
+  # same convention as the keycloak/argo-workflows charts.
+  insecure: "false"
 
 clusterName: ""
 
@@ -27,6 +31,10 @@ ingress:
   enabled: false
   className: platform
   host: ""
+  # ALB rule priority within the shared "platform" ingress group. Langfuse must be
+  # served at "/" (Next.js has no runtime basePath), so this "/" catch-all is given a
+  # high order to be evaluated LAST and avoid shadowing specific-path ingresses.
+  groupOrder: "900"
 
 keycloak:
   clientSecret: ""
@@ -36,6 +44,13 @@ keycloak:
 
 # Application secrets (override for production)
 nextauthSecret: "changeme-generate-random-secret"
+# SALT is used by Langfuse to hash API keys (createShaHash: sha256(sk || hex(sha256(SALT)))).
+# It MUST be deterministic across every ArgoCD render (no rand*/lookup — those would change
+# the salt on each sync and break the OTEL key auth), and the langfuse deployment (langfuse.yaml
+# -> langfuse-secrets/SALT) and the seed job (seed-job.yaml fast_hashed_secret_key) MUST read the
+# SAME value so the seeded fast-hash matches what Langfuse computes at ingestion time.
+# Override per-env with a secret value; the placeholder below is deterministic and works
+# out of the box, but you should set a unique salt in production deployments.
 salt: "changeme-generate-salt"
 
 resources:
@@ -91,8 +106,18 @@ redis:
 
 # MinIO (S3-compatible blob storage for Langfuse v3 event upload)
 minio:
+  # Default to quay.io: anonymous Docker Hub pulls (minio/minio, minio/mc) are
+  # rate-limited and break fresh installs behind a shared NAT egress IP with
+  # "toomanyrequests"/"insufficient_scope". quay.io hosts the same official
+  # images without that throttle. Override repository to a private mirror
+  # (e.g. an ECR repo) via a per-cluster overlay when air-gapped.
   image:
-    repository: minio/minio
+    repository: quay.io/minio/minio
+    tag: "latest"
+  # MinIO client (mc) image used by the bucket-init job. Kept as a value so it
+  # can be mirrored/overridden alongside the server image.
+  mcImage:
+    repository: quay.io/minio/mc
     tag: "latest"
   storage: 10Gi
   rootUser: minio

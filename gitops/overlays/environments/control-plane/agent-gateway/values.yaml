@@ -1,0 +1,28 @@
+# Override MCP backend protocol to StreamableHTTP.
+# The agent-core-mcp proxy image exposes a JSON-RPC POST endpoint at /mcp
+# (StreamableHTTP), not an SSE stream. SSE is the default in the chart but
+# only works with servers that expose a persistent event stream.
+#
+# WHY environments/control-plane AND NOT clusters/<name>
+# agent-gateway is an agentic addon, so it resolves value files from this repo directly
+# and its per-cluster layer is overlays/clusters/<clusterName>/agent-gateway/values.yaml,
+# where <clusterName> is hub.clusterName from config.local.yaml. This file previously
+# lived at overlays/clusters/hub/ and so was never read on any cluster not literally
+# named "hub", meaning the protocol override below has never applied and these backends
+# have been using the chart's SSE default. A missing value file is not an error, so
+# nothing reported it. Keyed on the environment tier instead, it applies to every
+# control-plane cluster and cannot drift from the cluster name in config.local.yaml.
+mcpBackend:
+  targets:
+    - name: code
+      host: execute-code-mcp-v1.agent-core-infra.svc.cluster.local
+      port: 8080
+      protocol: StreamableHTTP
+    - name: browser
+      host: browser-mcp-v1.agent-core-infra.svc.cluster.local
+      port: 8080
+      protocol: StreamableHTTP
+    - name: memory
+      host: memory-mcp-v1.agent-core-infra.svc.cluster.local
+      port: 8080
+      protocol: StreamableHTTP

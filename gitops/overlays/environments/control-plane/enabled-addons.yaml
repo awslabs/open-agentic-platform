@@ -40,13 +40,39 @@ enabledAddons:
   cni_metrics_helper: false
   # Platform
   crossplane: true
+  # KRO CONTROLLER: leave false. On this platform KRO is an EKS managed Capability
+  # (aws eks list-capabilities shows capabilityName kro, type KRO, ACTIVE), so its
+  # controller runs AWS-side and is deliberately NOT visible as pods in the cluster,
+  # exactly like the managed ArgoCD capability. Setting kro: true makes ArgoCD Helm
+  # install a SECOND controller from registry.k8s.io (registry defaultVersion 0.6.1)
+  # alongside the capability's newer build, and the two then fight over CRD ownership:
+  # RGDs go Inactive with "conflict detected: CRD <x>.kro.run has ownership by another
+  # ResourceGraphDefinition". Do not infer KRO is missing from an empty kro-system.
   kro: false
   kro_manifests: false
-  kro_manifests_hub: false
-  multi_acct: false
+  # RGDs are NOT part of the capability and must still be applied. Without them the
+  # clusters-kro ApplicationSet creates an EksclusterWithVpc instance that is accepted
+  # and then never reconciled, with empty STATE/READY. Use the _hub variant: it applies
+  # the manifests tree recursively, whereas kro_manifests excludes cicd-pipeline,
+  # huggingface and ray-service and is the spoke variant per the platform's registry.
+  kro_manifests_hub: true
+  # ACK role selection. Badly named: this addon owns IAMRoleSelector (ACK CARM), which
+  # maps a NAMESPACE to the IAM role ACK assumes for resources in it. It is required
+  # even in a single account, because ACK cannot reconcile resources in a namespace no
+  # selector covers.
+  #
+  # Needed once this hub provisions spokes. peeks-hub-ack-capability-role has no
+  # managed policies and cannot create EC2 resources; it only holds sts:AssumeRole on
+  # <resourcePrefix>-cluster-mgmt-*, and those roles carry the real permissions
+  # (AmazonEC2FullAccess / AmazonVPCFullAccess). With no selector for the spoke
+  # namespace ACK falls back to the capability role and the spoke VPC fails with
+  #   UnauthorizedOperation: ... not authorized to perform: ec2:CreateVpc
+  # The namespace-to-account map is gitops/configs/multi-acct/values.yaml. The chart
+  # self-covers the cluster it runs on, so the hub itself needs no entry.
+  multi_acct: true
   platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
   platform_manifests: false            # wave 6: Ray-only IAMRoleSelector — inert here (Ray disabled)
-  backstage: false
+  backstage: true
   kubevela: true
   devlake: false
   gitlab: false

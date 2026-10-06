@@ -15,8 +15,8 @@ Deploy the AI agent platform on an EKS cluster using the ArgoCD EKS Capability.
 | 5 | bifrost (AI gateway) | Helm: `maximhq/bifrost:2.1.16` | bifrost |
 | 5 | oam-agent-components (KubeVela ComponentDefinitions) | Local chart | vela-system |
 | 7 | gateway-api-crds | Local chart (Job) | agentgateway-system |
-| 7 | agentgateway-crds | OCI: `cr.agentgateway.dev/charts/agentgateway-crds:v1.1.0` | agentgateway-system |
-| 8 | agentgateway (control plane) | OCI: `cr.agentgateway.dev/charts/agentgateway:v1.1.0` | agentgateway-system |
+| 7 | agentgateway-crds | OCI: `cr.agentgateway.dev/charts/agentgateway-crds:v1.4.1` | agentgateway-system |
+| 8 | agentgateway (control plane) | OCI: `cr.agentgateway.dev/charts/agentgateway:v1.4.1` | agentgateway-system |
 | 9 | agent-gateway (Gateway + Policies) | Local chart | agent-core-infra |
 
 ### AgentCore via Crossplane (wave 4)

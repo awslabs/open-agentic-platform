@@ -11,6 +11,7 @@ from strands.multiagent.a2a import A2AServer
 
 from .agent import create_agent, get_or_create_agent, shutdown_mcp
 from .config import config
+from .identity import capture_caller_auth
 
 # ── OpenTelemetry initialization ─────────────────────────────────────────
 # Three modes (mutually exclusive, checked in order):
@@ -81,6 +82,11 @@ a2a_server = A2AServer(
 
 app = a2a_server.to_fastapi_app()
 app.router.lifespan_context = lifespan
+
+# Record the caller's Authorization header so agent construction can forward it
+# to MCP instead of the agent's own ServiceAccount token. Covers every route,
+# including the SDK-owned A2A JSON-RPC endpoint. See app/identity.py.
+app.middleware("http")(capture_caller_auth)
 
 
 @app.get("/health")

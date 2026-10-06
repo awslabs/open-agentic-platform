@@ -76,7 +76,12 @@ spec:
                     '{{ .Values.seed.apiKey.id }}',
                     '{{ .Values.seed.apiKey.publicKey }}',
                     crypt('{{ .Values.seed.apiKey.secretKey }}', gen_salt('bf')),
-                    encode(sha256(convert_to('{{ .Values.seed.apiKey.secretKey }}', 'UTF8')), 'hex'),
+                    -- fast_hashed_secret_key MUST match Langfuse's createShaHash(sk, SALT):
+                    --   sha256( sk || hex(sha256(SALT)) )   (see packages/shared/src/server/auth/apiKeys.ts)
+                    -- A bare sha256(sk) (no salt) never matches Langfuse's OTEL-ingestion fast-hash
+                    -- lookup, so auth falls back to bcrypt and Langfuse backfills the correct value —
+                    -- which this CronJob then overwrites every 5 min, causing a permanent 401 loop.
+                    encode(sha256(convert_to('{{ .Values.seed.apiKey.secretKey }}' || encode(sha256(convert_to('{{ .Values.salt }}', 'UTF8')), 'hex'), 'UTF8')), 'hex'),
                     '{{ .Values.seed.apiKey.publicKey | trunc 8 }}...',
                     '{{ .Values.seed.projectId }}',
                     'Platform OTEL (auto-provisioned)'

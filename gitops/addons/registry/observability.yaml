@@ -17,12 +17,13 @@ langfuse:
   valuesObject:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
+      insecure: '{{default "false" .metadata.annotations.insecure}}'
     clusterName: '{{.metadata.annotations.aws_cluster_name}}'
     ingress:
       enabled: true
       host: '{{.metadata.annotations.ingress_domain_name}}'
     keycloak:
-      issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" .metadata.annotations.ingress_domain_name) (index .metadata.annotations "keycloak_issuer_url")}}'
+      issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" .metadata.annotations.ingress_domain_name) (index .metadata.annotations "oidc_issuer_url")}}'
       secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/keycloak-clients'
   ignoreDifferences:
     - group: external-secrets.io

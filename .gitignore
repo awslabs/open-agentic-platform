@@ -2,6 +2,10 @@
 config.local.yaml
 private/
 .local/
+# Local credential scratch files. `.locals` holds live values (gateway virtual
+# keys and similar); `.env` is what `.env.example` gets copied to.
+.locals
+.env
 
 # Dark Factory IAM terraform working files (committed: iam/*.tf; ignored: state/plugins)
 gitops/addons/charts/dark-factory/iam/.terraform/
@@ -9,3 +13,8 @@ gitops/addons/charts/dark-factory/iam/.terraform.lock.hcl
 gitops/addons/charts/dark-factory/iam/terraform.tfstate
 gitops/addons/charts/dark-factory/iam/terraform.tfstate.backup
 gitops/addons/charts/dark-factory/iam/_provider.tf
+
+# Local session notes. These accumulate live environment detail (account IDs,
+# cluster endpoints, image URIs) and are not meant for a public repo.
+# .kiro/steering/ IS tracked deliberately; only the handoff notes are ignored.
+.kiro/session-handoff*.md

@@ -352,9 +352,9 @@ spec:
         		}
         	}
         	// +usage=Tool-level authorization policy (CEL-based)
-        	authPolicy?: {
+        	authPolicy: {
         		action: *"Allow" | "Deny"
-        		matchExpressions: [...string]
+        		matchExpressions: *[] | [...string]
         	}
         }
   status:

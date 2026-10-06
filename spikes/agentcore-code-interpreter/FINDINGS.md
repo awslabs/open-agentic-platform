@@ -8,7 +8,7 @@ from facts rather than from the browser server's assumptions, which do not all c
 
 ```
 CUSTOM: peeks_hub_agent_core_code_interpreter
-  -> arn:aws:bedrock-agentcore:us-west-2:929819487611:code-interpreter-custom/peeks_hub_agent_core_code_interpreter-S8Z5DTeRiG
+  -> arn:aws:bedrock-agentcore:us-west-2:123456789012:code-interpreter-custom/peeks_hub_agent_core_code_interpreter-S8Z5DTeRiG
 SYSTEM: AgentCore Code Interpreter
   -> arn:aws:bedrock-agentcore:us-west-2:aws:code-interpreter/aws.codeinterpreter.v1
 ```
