@@ -120,9 +120,66 @@ actions actually needed. `"Action": ["service:*"]` on `"Resource": "*"` is not
 acceptable in new work; the existing AgentCore components do this and should be
 tightened.
 
+## 5. MCP backend path (the /mcp vs /mcp/ trap)
+
+The path AgentGateway uses when it **calls** an MCP backend is not the gateway's
+inbound HTTPRoute path and is not a container env. It comes from the
+`agentgateway.dev/mcp-path` annotation on the target **Service** (default `/mcp`
+for StreamableHTTP, `/sse` for SSE).
+
+- On a **selector** target (what `mcp-server` emits, required for stateful session
+  affinity), this Service annotation is the ONLY way to set the backend-call path.
+  The AgentgatewayBackend CRD allows a `path` field only on **static** targets, and
+  a container `MCP_PATH` env never reaches the gateway. The `mcp-server` component
+  exposes this as the `mcpPath` parameter and stamps it on both the stable and
+  preview Services.
+- The value MUST match the path the server actually serves. A **FastMCP** server
+  (`mcp.run(transport="http", ...)`) mounts its streamable-HTTP app behind a
+  Starlette `Mount` that issues a 307 redirect from `/mcp` to `/mcp/`. AgentGateway
+  does not follow that redirect, so the MCP session breaks with a 422 and the agent
+  loads **0 tools**. Set `mcpPath: "/mcp/"` (trailing slash) for a FastMCP backend.
+- The `/mcp` default is correct for servers that serve `/mcp` without redirecting,
+  including the Express-based Node servers under `applications/` (Express default
+  non-strict routing treats `/mcp` and `/mcp/` as the same route).
+
+When you change `mcpPath`, keep the stable and preview Services identical so a
+blue-green promotion never changes the path the gateway calls.
+
+## 6. Per-agent Bifrost VK minting is fleet-impacting
+
+The `agent` component mints a per-agent Bifrost Virtual Key by default
+(`modelConfig.mintVirtualKey: true`) and the platform runs with enforcement on
+(`client.enforceAuthOnInference` and `governance.is_vk_mandatory` both true in
+`gitops/addons/configs/bifrost/values.yaml`). Treat changes here as fleet-wide, not
+local to one agent:
+
+- **Enforcement is mandatory.** With `is_vk_mandatory` on, any agent reaching
+  Bedrock must either be onboarded through the `agent` component (which mints a VK)
+  or carry a hand-issued key via `modelConfig.llmGatewayApiKey` with
+  `mintVirtualKey: false`. An agent with neither gets `401 virtual_key_required`.
+  Do not flip enforcement off to "fix" a single misconfigured agent — that removes
+  identity, budget, and rate limits for the whole fleet.
+- **The mint Job must fail closed.** The mint script (`_vkMintScript` in
+  `agent.cue`) runs under `set -eu`; a failed VK lookup must abort the Job (which
+  retries via `backoffLimit`), never fall through and POST a duplicate key. Do not
+  reintroduce `|| echo ''` or any fallback that swallows a lookup error.
+- **The Job name carries a settings hash.** A Job's `spec.template` is immutable, so
+  the Job name includes a short hash of the VK settings (`_vkMintJobName`). Changing
+  a `vk*` parameter yields a new Job; an unchanged redeploy reuses the name and the
+  idempotent script no-ops. Keep that hash covering every setting that changes the
+  minted key, or a settings change will fail on the immutable template of the old
+  Job.
+- **Admin credentials are chart-provisioned.** The `bifrost-admin` Secret is
+  rendered by the bifrost chart's `templates/admin-secret.yaml` from `adminAuth.*`
+  values when `authConfig.isEnabled` is true. Override `adminAuth.password` via the
+  fleet-config overlay for any shared deploy; the default is a workshop placeholder.
+  See `gitops/addons/charts/bifrost/DESIGN.md`.
+
 ## Review checklist
 
 - [ ] No region, account id, or cluster name required in the example OAM app
+- [ ] For an MCP server behind the gateway, `mcpPath` matches what the server serves
+      (`/mcp/` for FastMCP, `/mcp` for servers that don't redirect)
 - [ ] Every new or changed definition has a CUE source, and `generate.sh` output
       is committed
 - [ ] `generate.sh` produced no unintended diffs in other definitions

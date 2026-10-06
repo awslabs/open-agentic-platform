@@ -60,11 +60,29 @@ bifrost:
       command: ['sh', '-c', 'until nc -z bifrost-postgresql 5432; do sleep 2; done']
 
   bifrost:
+    # Admin authentication on the Bifrost dashboard and management API (including
+    # POST /api/governance/virtual-keys, which was open before). Credentials come
+    # from the bifrost-admin Secret created once at bootstrap (not per-workload);
+    # the per-agent VK mint Job reads the same Secret to authenticate. Keys default
+    # to username/password.
+    authConfig:
+      isEnabled: true
+      existingSecret: bifrost-admin
+      usernameKey: username
+      passwordKey: password
+      # Admin auth guards the API/dashboard; virtual-key enforcement on inference is
+      # governed separately by client.enforceAuthOnInference below.
+      disableAuthOnInference: false
+
     client:
       initialPoolSize: 100
-      # TODO(llm-as-a-service): re-enable with VK enforcement once per-workload
-      # VK minting is implemented. See DESIGN.md.
-      enforceAuthOnInference: false
+      # Require a valid virtual key on every inference request. Safe now that the
+      # agent ComponentDefinition mints a per-agent VK at deploy time (mint Job ->
+      # <agent>-llm-vk Secret -> x-bf-vk header). Without a VK, inference is
+      # rejected with 401 virtual_key_required — so this MUST stay in lockstep with
+      # minting: every agent that reaches Bedrock has to be onboarded through the
+      # agent component (or carry a hand-issued key) or it loses LLM access.
+      enforceAuthOnInference: true
 
     providers:
       bedrock:
@@ -84,13 +102,14 @@ bifrost:
         maxAgentDepth: 10
 
     plugins:
-      # TODO(llm-as-a-service): Re-enable governance with per-workload VK minting.
-      # See gitops/addons/charts/bifrost/DESIGN.md for the target architecture.
-      # is_vk_mandatory is disabled until per-workload VK minting is implemented.
+      # Per-workload VK minting is now wired into agent onboarding (the agent
+      # ComponentDefinition's mint Job), so virtual keys are mandatory. This makes
+      # the platform budgets and rate limits below actually enforced rather than
+      # cosmetic. Kept in lockstep with client.enforceAuthOnInference above.
       governance:
         enabled: true
         config:
-          is_vk_mandatory: false
+          is_vk_mandatory: true
       telemetry:
         enabled: true
       logging:
