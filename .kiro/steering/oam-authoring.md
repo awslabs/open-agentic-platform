@@ -145,6 +145,36 @@ for StreamableHTTP, `/sse` for SSE).
 When you change `mcpPath`, keep the stable and preview Services identical so a
 blue-green promotion never changes the path the gateway calls.
 
+## 6. Per-agent Bifrost VK minting is fleet-impacting
+
+The `agent` component mints a per-agent Bifrost Virtual Key by default
+(`modelConfig.mintVirtualKey: true`) and the platform runs with enforcement on
+(`client.enforceAuthOnInference` and `governance.is_vk_mandatory` both true in
+`gitops/addons/configs/bifrost/values.yaml`). Treat changes here as fleet-wide, not
+local to one agent:
+
+- **Enforcement is mandatory.** With `is_vk_mandatory` on, any agent reaching
+  Bedrock must either be onboarded through the `agent` component (which mints a VK)
+  or carry a hand-issued key via `modelConfig.llmGatewayApiKey` with
+  `mintVirtualKey: false`. An agent with neither gets `401 virtual_key_required`.
+  Do not flip enforcement off to "fix" a single misconfigured agent — that removes
+  identity, budget, and rate limits for the whole fleet.
+- **The mint Job must fail closed.** The mint script (`_vkMintScript` in
+  `agent.cue`) runs under `set -eu`; a failed VK lookup must abort the Job (which
+  retries via `backoffLimit`), never fall through and POST a duplicate key. Do not
+  reintroduce `|| echo ''` or any fallback that swallows a lookup error.
+- **The Job name carries a settings hash.** A Job's `spec.template` is immutable, so
+  the Job name includes a short hash of the VK settings (`_vkMintJobName`). Changing
+  a `vk*` parameter yields a new Job; an unchanged redeploy reuses the name and the
+  idempotent script no-ops. Keep that hash covering every setting that changes the
+  minted key, or a settings change will fail on the immutable template of the old
+  Job.
+- **Admin credentials are chart-provisioned.** The `bifrost-admin` Secret is
+  rendered by the bifrost chart's `templates/admin-secret.yaml` from `adminAuth.*`
+  values when `authConfig.isEnabled` is true. Override `adminAuth.password` via the
+  fleet-config overlay for any shared deploy; the default is a workshop placeholder.
+  See `gitops/addons/charts/bifrost/DESIGN.md`.
+
 ## Review checklist
 
 - [ ] No region, account id, or cluster name required in the example OAM app

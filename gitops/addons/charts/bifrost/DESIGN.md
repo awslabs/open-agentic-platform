@@ -15,12 +15,16 @@ Config (`gitops/addons/configs/bifrost/values.yaml`, under `bifrost.bifrost`):
 - `authConfig.isEnabled: true` with `existingSecret: bifrost-admin` — the dashboard
   and management API require admin credentials.
 
-**Prerequisite (one-time, at bootstrap):** the `bifrost-admin` Secret (keys
-`username`, `password`) must exist in the `bifrost` namespace before Bifrost starts,
-and the per-agent mint Job reads the same Secret to authenticate. Create it in
-`task ...:bootstrap` alongside the other platform credentials (do not commit
-credentials to git). If the Secret is absent, admin auth has no credentials and the
-mint Job cannot authenticate.
+**Admin credentials (`bifrost-admin` Secret).** The chart provisions this Secret
+itself: `templates/admin-secret.yaml` renders it (keys `username`, `password`) in
+the release namespace whenever `bifrost.bifrost.authConfig.isEnabled` is true, with
+an `argocd.argoproj.io/sync-wave: "-5"` so it lands before the Bifrost workload
+starts. Both the Bifrost dashboard/management API and the per-agent mint Job read
+it. Values come from `adminAuth.username` / `adminAuth.password` (defaults `admin` /
+`bifrost-admin`, a placeholder for local/workshop use). Override `adminAuth.password`
+per environment via the fleet-config overlay for any shared or non-ephemeral deploy;
+do not rely on the default. The values are read deterministically (not randomly
+generated) so ArgoCD stays Synced instead of churning the Secret on every diff.
 
 > **Deploy ordering / blast radius.** Because a VK is now mandatory, any agent that
 > reaches Bedrock must be onboarded through the `agent` component (which mints one)
@@ -59,8 +63,8 @@ without affecting others.
 
 4. **Admin credentials** (implemented) — the management API is behind admin auth
    (`bifrost.bifrost.authConfig`, `isEnabled: true`, `existingSecret: bifrost-admin`).
-   The mint Job authenticates with the same `bifrost-admin` Secret. Create that
-   Secret once at bootstrap (not per-workload); see Current state.
+   The mint Job authenticates with the same `bifrost-admin` Secret, which the chart
+   provisions from `adminAuth.*` values (not per-workload); see Current state.
 
 5. **Enforcement** (implemented) — `client.enforceAuthOnInference: true` and
    `plugins.governance.config.is_vk_mandatory: true` are both set, so a VK is
@@ -77,8 +81,10 @@ without affecting others.
 
 - The mint step is a sidecar-style Job (shell + `wget`), not a KubeVela `http`
   workflow step — simpler, and no CUE HTTP complexity.
-- The `bifrost-admin` Secret must be created by the bootstrap task (one-time, same
-  pattern as other platform bootstrap credentials). It is not committed to git.
+- The `bifrost-admin` Secret is provisioned by the chart's
+  `templates/admin-secret.yaml` (rendered when `authConfig.isEnabled` is true) from
+  the `adminAuth.*` values, not by a separate bootstrap task. Override
+  `adminAuth.password` via the fleet-config overlay; the default is a placeholder.
 - Budget and rate limits are parameterised per agent via the `modelConfig.vk*`
   fields, so different agent tiers can get different limits.
 

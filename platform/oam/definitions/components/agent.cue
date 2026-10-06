@@ -2,6 +2,8 @@
 import (
 	"strings"
 	"encoding/json"
+	"encoding/hex"
+	"crypto/sha256"
 	"list"
 )
 
@@ -33,10 +35,11 @@ template: {
 	let _vkMintScript = """
 		set -eu
 		VK_API="$BIFROST_URL/api/governance/virtual-keys"
-		AUTH="$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASS"
 
 		echo "Looking up existing virtual key named $AGENT_NAME"
-		LIST=$(wget -q -O- --auth-no-challenge --user="$BIFROST_ADMIN_USER" --password="$BIFROST_ADMIN_PASS" "$VK_API" || echo '')
+		# Fail closed: a failed GET must abort the Job (set -e), not fall through to
+		# "no existing VK" and POST a duplicate. The Job retries via backoffLimit.
+		LIST=$(wget -q -O- --auth-no-challenge --user="$BIFROST_ADMIN_USER" --password="$BIFROST_ADMIN_PASS" "$VK_API")
 
 		# Extract the token ("value") of the VK whose "name" equals AGENT_NAME.
 		# kubectl's bundled jq is not present, so parse with a small sed/grep pass
@@ -68,7 +71,7 @@ template: {
 		}
 		JSON
 		)
-			RESP=$(printf '%s' "$BODY" | wget -q -O- --auth-no-challenge \\
+			RESP=$(wget -q -O- --auth-no-challenge \\
 				--user="$BIFROST_ADMIN_USER" --password="$BIFROST_ADMIN_PASS" \\
 				--header="Content-Type: application/json" --post-data="$BODY" "$VK_API")
 			VK=$(printf '%s' "$RESP" | sed -n 's/.*"value":"\\([^"]*\\)".*/\\1/p' | head -n1)
@@ -261,11 +264,31 @@ template: {
 
 		// ── Per-agent Bifrost Virtual Key minting ───────────────────────────────
 		// Every agent gets its own VK (identity + budget + rate limit) with no
-		// operator action. The Job is idempotent: it GETs the VK by id first and
-		// only POSTs when absent, so a redeploy reuses the existing key. It writes
-		// the token into <name>-llm-vk, which the Rollout mounts as
-		// LLM_GATEWAY_API_KEY. See gitops/addons/charts/bifrost/DESIGN.md.
+		// operator action. The Job is idempotent: it lists VKs and matches the one
+		// named after this agent, reusing its token and only POSTing when absent, so
+		// a redeploy reuses the existing key. It writes the token into <name>-llm-vk,
+		// which the Rollout mounts as LLM_GATEWAY_API_KEY. See
+		// gitops/addons/charts/bifrost/DESIGN.md.
 		if parameter.modelConfig.mintVirtualKey {
+			// A Job's spec.template is immutable, so re-applying a Job of the same name
+			// with changed VK settings (budget, rate limit, image, allowed models)
+			// fails, and ttlSecondsAfterFinished only garbage-collects a *finished*
+			// Job after the window. Fold the mint-relevant parameters into a short
+			// hash suffixed onto the Job name: an unchanged redeploy keeps the name
+			// (and the idempotent script no-ops), while a settings change yields a new
+			// Job name and a fresh Job instead of an immutable-field apply error.
+			_vkMintSpec: json.Marshal({
+				image:         parameter.modelConfig.mintJobImage
+				provider:      parameter.modelConfig.vkProvider
+				allowedModels: parameter.modelConfig.vkAllowedModels
+				budgetMax:     parameter.modelConfig.vkBudgetMaxUsd
+				budgetReset:   parameter.modelConfig.vkBudgetResetDuration
+				reqMax:        parameter.modelConfig.vkRequestMaxLimit
+				tokenMax:      parameter.modelConfig.vkTokenMaxLimit
+				rlReset:       parameter.modelConfig.vkRateLimitResetDuration
+			})
+			_vkMintHash: strings.ToLower(hex.Encode(sha256.Sum256(_vkMintSpec)))[0:8]
+			_vkMintJobName: context.name + "-vk-mint-" + _vkMintHash
 			// Dedicated SA for the Job, distinct from the agent SA, so its Secret-write
 			// permission does not widen the agent's own identity.
 			vkMintServiceAccount: {
@@ -325,17 +348,24 @@ template: {
 
 			// The mint Job. Shell + wget approach (per DESIGN.md) — no CUE HTTP
 			// complexity. Idempotent, and safe to re-run on every redeploy.
+			// The name carries a hash of the VK settings (see _vkMintJobName) so a
+			// settings change creates a new Job rather than failing on the immutable
+			// template of the old one.
 			vkMintJob: {
 				apiVersion: "batch/v1"
 				kind:       "Job"
 				metadata: {
-					name:      context.name + "-vk-mint"
+					name:      _vkMintJobName
 					namespace: context.namespace
-					labels: "app.kubernetes.io/name": context.name
+					labels: {
+						"app.kubernetes.io/name": context.name
+						"agent.dev/vk-mint-for":  context.name
+					}
 				}
 				spec: {
-					// Let a redeploy re-run the (idempotent) Job rather than erroring on an
-					// immutable completed Job with the same name.
+					// Garbage-collect a finished Job after the window so stale hashed Jobs
+					// from prior settings do not accumulate. A redeploy with unchanged
+					// settings reuses the same name and the idempotent script no-ops.
 					ttlSecondsAfterFinished: 600
 					backoffLimit:            6
 					template: {

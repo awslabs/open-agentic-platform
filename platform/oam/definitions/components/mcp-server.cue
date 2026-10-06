@@ -209,7 +209,8 @@ template: {
 			}
 		}
 
-		// AgentgatewayBackend — static target pointing at the stable service.
+		// AgentgatewayBackend — a selector target matching the stable Service's
+		// agentgateway.dev/target label (not a static host; see the body comment).
 		mcpBackend: {
 			apiVersion: "agentgateway.dev/v1alpha1"
 			kind:       "AgentgatewayBackend"
@@ -329,7 +330,9 @@ template: {
 		// Starlette Mount that 307-redirects /mcp to /mcp/, and the gateway does not
 		// follow that redirect, so the session breaks (422) and the agent loads 0 tools.
 		// Servers that serve /mcp without a redirect (e.g. the Express-based Node servers
-		// here) work with the "/mcp" default.
+		// here) work with the "/mcp" default. For an SSE server (mcpProtocol: SSE) set
+		// this to the SSE route the server serves, commonly "/sse" — the default "/mcp"
+		// is for StreamableHTTP and is wrong for SSE.
 		mcpPath: *"/mcp" | string
 		// +usage=Service port exposed by the stable/preview Services
 		servicePort: *80 | int
@@ -355,7 +358,12 @@ template: {
 		autoPromotionEnabled:   *true | bool
 		autoPromotionSeconds?:  int
 		scaleDownDelaySeconds?: int
-		// +usage=MCP transport protocol advertised to AgentGateway
+		// +usage=MCP transport the server speaks. NOTE: this is advisory only in the
+		// rendered output — the backend uses a selector target whose transport comes
+		// from the Service appProtocol (hardcoded agentgateway.dev/mcp), so this value
+		// is not emitted anywhere today. It is kept to document intent and for a future
+		// static-target fallback. For an SSE server, also set mcpPath to the SSE route
+		// the server serves (commonly "/sse"); mcpPath is NOT derived from this field.
 		mcpProtocol: *"StreamableHTTP" | "SSE"
 		// +usage=Register an HTTPRoute on the gateway at /mcp/<name>
 		registerWithGateway: *true | bool
