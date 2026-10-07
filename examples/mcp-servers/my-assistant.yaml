@@ -9,7 +9,7 @@ spec:
       type: agent
       properties:
         description: "General purpose AI assistant with A2A protocol support"
-        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.3-strategy-refresh
+        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.4-task-owner
         replicas: 3
         registerWithGateway: true
         modelConfig:
