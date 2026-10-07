@@ -6,43 +6,93 @@ the cached agent carries the first caller's memory actor and MCP connections, so
 second caller who sends the same `contextId` would get the first caller's
 conversation and long-term memory. Verified live on oap-dev before this fix.
 
-This executor keys the cache on (caller, context_id) instead, using the same caller
-key as the /chat route (identity.caller_key). The factory still receives the plain
-context id, so AgentCore session ids are unchanged; AgentCore already separates
-sessions by actor.
+The fix scopes the executor's context map itself: every lookup by context id
+(building an agent, reusing it, cooperative cancel) resolves to the entry for
+(caller, context_id), using the same caller key as the /chat route
+(identity.caller_key). The factory still receives the plain context id, so
+AgentCore session ids are unchanged; AgentCore already separates sessions by actor.
 
-Overrides `_acquire_context_agent`, a private method of strands-agents. It is
-pinned (pyproject.toml) and covered by tests/unit/test_a2a_isolation.py, which fails
-if the SDK stops calling this method or changes the cache it uses.
+Tasks get the same treatment. a2a-sdk 0.3.x (strands-agents 1.57 requires <0.4) has
+an InMemoryTaskStore keyed by task id only, so tasks/get, tasks/cancel,
+tasks/resubscribe and push-config calls would hand one caller another's task.
+a2a-sdk main scopes tasks by an owner resolved from the call context; CallerScopedTaskStore
+is the same idea for the pinned version, owned by caller_key().
+
+Replaces `_contexts`, a private attribute of strands-agents. The version is pinned
+(pyproject.toml) and tests/unit/test_a2a_isolation.py checks the SDK still keeps
+its per-context agents there and looks them up by context id.
 """
 
-import asyncio
+from collections import OrderedDict
 
-from strands.multiagent.a2a.executor import StrandsA2AExecutor, _ContextEntry
+from a2a.server.tasks import InMemoryTaskStore
 
 from .identity import caller_key
 
 
-class CallerScopedA2AExecutor(StrandsA2AExecutor):
-    async def _acquire_context_agent(self, context_id: str):
-        key = f"{caller_key()}\x00{context_id}"
-        async with self._contexts_lock:
-            entry = self._contexts.get(key)
-            if entry is None:
-                entry = _ContextEntry(agent=self._agent_factory(context_id), lock=asyncio.Lock())
-                self._contexts[key] = entry
-                self._evict_excess_contexts()
-            else:
-                self._contexts.move_to_end(key)
-            return entry.agent, entry.lock
+def _scoped(context_id: str) -> str:
+    return f"{caller_key()}\x00{context_id}"
+
+
+class CallerScopedContexts(OrderedDict):
+    """OrderedDict whose context-id keys are qualified by the current caller.
+
+    Only the operations the SDK performs with a context id are overridden.
+    Eviction (popitem) works on the stored keys and needs no translation.
+    """
+
+    def get(self, context_id, default=None):
+        return super().get(_scoped(context_id), default)
+
+    def __getitem__(self, context_id):
+        return super().__getitem__(_scoped(context_id))
+
+    def __setitem__(self, context_id, value):
+        super().__setitem__(_scoped(context_id), value)
+
+    def __contains__(self, context_id):
+        return super().__contains__(_scoped(context_id))
+
+    def __delitem__(self, context_id):
+        super().__delitem__(_scoped(context_id))
+
+    def pop(self, context_id, *default):
+        return super().pop(_scoped(context_id), *default)
+
+    def move_to_end(self, context_id, last=True):
+        super().move_to_end(_scoped(context_id), last)
 
 
 def scope_a2a_contexts_to_caller(a2a_server) -> None:
-    """Replace the A2A server's executor with the caller-scoped one, same settings."""
-    handler = a2a_server.request_handler
-    current = handler.agent_executor
-    handler.agent_executor = CallerScopedA2AExecutor(
-        agent_factory=current._agent_factory,
-        enable_a2a_compliant_streaming=current.enable_a2a_compliant_streaming,
-        max_contexts=current._max_contexts,
-    )
+    """Make the A2A server's per-context agent cache per caller."""
+    executor = a2a_server.request_handler.agent_executor
+    if getattr(executor, "_agent_factory", None) is None or not isinstance(getattr(executor, "_contexts", None), dict):
+        raise RuntimeError("A2A executor is not in agent_factory mode; per-caller contexts cannot be enforced")
+    if executor._contexts:
+        raise RuntimeError("A2A executor already holds contexts; scope it before serving requests")
+    executor._contexts = CallerScopedContexts()
+
+
+class CallerScopedTaskStore(InMemoryTaskStore):
+    """InMemoryTaskStore whose entries belong to the caller that created them.
+
+    A task id from another caller is indistinguishable from an unknown id. The
+    request handler looks a task up here before every tasks/* and push-config
+    operation, so scoping the store covers all of them.
+    """
+
+    @staticmethod
+    def _key(task_id: str) -> str:
+        return f"{caller_key()}\x00{task_id}"
+
+    async def save(self, task, context=None):
+        async with self.lock:
+            self.tasks[self._key(task.id)] = task
+
+    async def get(self, task_id, context=None):
+        async with self.lock:
+            return self.tasks.get(self._key(task_id))
+
+    async def delete(self, task_id, context=None):
+        async with self.lock:
+            self.tasks.pop(self._key(task_id), None)

@@ -32,6 +32,9 @@ spec:
               {{-   end }}
               {{-   $mib := atoi (trimSuffix "Mi" (trimSuffix "Gi" $lim)) }}
               {{-   if hasSuffix "Gi" $lim }}{{ $mib = mul $mib 1024 }}{{ end }}
+              {{-   if lt $mib 128 }}
+              {{-     fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q is below 128Mi; the provider's live heap alone peaks near 190MB" $lim) }}
+              {{-   end }}
               {{-   $_ := set $r "goMemLimit" (printf "%dMiB" (div (mul $mib 9) 10)) }}
               {{- end }}
               {{- if or $r.goMemLimit $r.goGC }}

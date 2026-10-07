@@ -11,7 +11,7 @@ from strands.multiagent.a2a import A2AServer
 
 from .agent import create_agent, get_or_create_agent, shutdown_mcp
 from .config import config
-from .a2a_isolation import scope_a2a_contexts_to_caller
+from .a2a_isolation import CallerScopedTaskStore, scope_a2a_contexts_to_caller
 from .identity import capture_caller_auth
 
 # ── OpenTelemetry initialization ─────────────────────────────────────────
@@ -80,6 +80,7 @@ a2a_server = A2AServer(
     port=config.PORT,
     version="1.0.0",
     enable_a2a_compliant_streaming=True,
+    task_store=CallerScopedTaskStore(),
 )
 
 # The SDK caches agents by client-supplied context id alone; scope them to the caller
