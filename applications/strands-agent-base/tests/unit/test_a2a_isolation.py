@@ -116,3 +116,24 @@ def test_task_store_is_what_the_request_handler_consults():
 
     src = inspect.getsource(h.DefaultRequestHandler)
     assert src.count("await self.task_store.get(") >= 5
+
+
+def test_task_owner_survives_a_token_refresh_but_not_a_different_subject():
+    from a2a.types import Task, TaskState, TaskStatus
+    from app.identity import inbound_actor
+
+    store = a2a_isolation.CallerScopedTaskStore()
+    task = Task(id="t1", context_id="c1", status=TaskStatus(state=TaskState.working))
+
+    def run(actor, auth, coro_fn):
+        a = inbound_actor.set(actor)
+        try:
+            return _as(auth, lambda: asyncio.run(coro_fn()))
+        finally:
+            inbound_actor.reset(a)
+
+    run("alice", "Bearer old", lambda: store.save(task))
+    assert run("alice", "Bearer refreshed", lambda: store.get("t1")) is task
+    assert run("bob", "Bearer old", lambda: store.get("t1")) is None
+    # Without the gateway header, ownership falls back to the token.
+    assert run(None, "Bearer old", lambda: store.get("t1")) is None

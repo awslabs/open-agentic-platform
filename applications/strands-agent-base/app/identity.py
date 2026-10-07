@@ -120,3 +120,16 @@ def caller_key() -> str:
     client-supplied context id can never select another caller's agent.
     """
     return outbound(True)[1]
+
+
+def task_owner() -> str:
+    """Owner key for A2A tasks: the gateway-validated caller when known.
+
+    Unlike caller_key(), which hashes the bearer token (an agent and its MCP
+    connections are bound to one token), this survives a token refresh, so a user
+    can still read, cancel or resume their own task after refreshing. Without the
+    gateway header (a request that bypassed the gateway) it falls back to the
+    token hash.
+    """
+    actor = (inbound_actor.get() or "").strip()
+    return f"sub:{actor}" if actor else f"tok:{caller_key()}"

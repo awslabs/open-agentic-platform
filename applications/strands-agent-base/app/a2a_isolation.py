@@ -16,7 +16,9 @@ Tasks get the same treatment. a2a-sdk 0.3.x (strands-agents 1.57 requires <0.4) 
 an InMemoryTaskStore keyed by task id only, so tasks/get, tasks/cancel,
 tasks/resubscribe and push-config calls would hand one caller another's task.
 a2a-sdk main scopes tasks by an owner resolved from the call context; CallerScopedTaskStore
-is the same idea for the pinned version, owned by caller_key().
+is the same idea for the pinned version. Tasks are owned by task_owner() (the gateway-validated
+subject, stable across token refresh); agents stay keyed by caller_key() because each holds MCP
+connections bound to one token.
 
 Replaces `_contexts`, a private attribute of strands-agents. The version is pinned
 (pyproject.toml) and tests/unit/test_a2a_isolation.py checks the SDK still keeps
@@ -27,7 +29,7 @@ from collections import OrderedDict
 
 from a2a.server.tasks import InMemoryTaskStore
 
-from .identity import caller_key
+from .identity import caller_key, task_owner
 
 
 def _scoped(context_id: str) -> str:
@@ -83,7 +85,7 @@ class CallerScopedTaskStore(InMemoryTaskStore):
 
     @staticmethod
     def _key(task_id: str) -> str:
-        return f"{caller_key()}\x00{task_id}"
+        return f"{task_owner()}\x00{task_id}"
 
     async def save(self, task, context=None):
         async with self.lock:

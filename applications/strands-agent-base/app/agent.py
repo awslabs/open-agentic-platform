@@ -171,19 +171,24 @@ def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
 # Such requests did not come through the gateway, so they share one actor.
 DEFAULT_ACTOR = "anonymous"
 
-# AgentCore actorId pattern, from the CreateEvent API model in botocore:
+# AgentCore accepts actor ids matching (CreateEvent model in botocore):
 #   [a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*, max 255
-# Keycloak subjects (UUIDs) and ServiceAccount subjects
-# (system:serviceaccount:<ns>:<name>) already match and pass through unchanged.
+# This is narrower on purpose: "/" is excluded. Long-term retrieval matches
+# namespaces by prefix (RetrieveMemoryRecords namespacePath), and namespaces embed
+# the actor as /facts/{actorId}/, so an actor "a" would also match the records of
+# an actor "a/b". Keycloak subjects (UUIDs) and ServiceAccount subjects
+# (system:serviceaccount:<ns>:<name>) match and pass through unchanged.
 # Anything else, such as an e-mail-shaped subject from another identity provider,
 # becomes "h:<sha256>". Hashing keeps the mapping one-to-one: replacing characters
 # would let distinct subjects (a@b.c, a_b.c) share one actor and its memories.
-_ACTOR_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9\-_/]*(?::[a-zA-Z0-9\-_/]+)*[a-zA-Z0-9\-_/]*")
+# The reserved values (the hash prefix and the anonymous actor) are hashed too, so
+# a caller cannot choose a subject that equals another actor.
+_ACTOR_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9\-_]*(?::[a-zA-Z0-9\-_]+)*[a-zA-Z0-9\-_]*")
 
 
 def memory_actor(raw: str) -> str:
     """Map a caller id onto a valid AgentCore actorId, one-to-one."""
-    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw):
+    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw) and not raw.startswith("h:") and raw != DEFAULT_ACTOR:
         return raw
     return "h:" + hashlib.sha256(raw.encode()).hexdigest()
 

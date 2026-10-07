@@ -60,7 +60,6 @@ def test_authorization_is_not_used_as_identity():
     [
         ("3f18797a-3f7e-40ea-8335-0fcab88e7466", "3f18797a-3f7e-40ea-8335-0fcab88e7466"),
         ("system:serviceaccount:default:oap-assistant-a", "system:serviceaccount:default:oap-assistant-a"),
-        ("anonymous", "anonymous"),
     ],
 )
 def test_valid_subjects_pass_through_unchanged(raw, expected):
@@ -84,6 +83,18 @@ def test_other_subjects_are_mapped_onto_the_api_pattern(raw):
 def test_mapping_is_one_to_one(a, b):
     # Distinct subjects must never share an actor, or they would share memories.
     assert agent_mod.memory_actor(a) != agent_mod.memory_actor(b)
+
+
+def test_subject_with_slash_cannot_prefix_match_another_actor():
+    # Retrieval matches namespaces by prefix: /facts/a/ would also match /facts/a/b/.
+    assert "/" not in agent_mod.memory_actor("a/b")
+    assert agent_mod.memory_actor("a/b") != agent_mod.memory_actor("a")
+
+
+def test_reserved_actor_values_cannot_be_claimed_by_a_subject():
+    hashed = agent_mod.memory_actor("user@example.com")
+    assert agent_mod.memory_actor(hashed) != hashed  # a subject shaped like a hash
+    assert agent_mod.memory_actor(agent_mod.DEFAULT_ACTOR) != agent_mod.DEFAULT_ACTOR
 
 
 def test_mapping_is_stable():
