@@ -394,7 +394,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.1-a2a-caller-scope" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.2-a2a-task-scope" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
