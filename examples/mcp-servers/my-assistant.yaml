@@ -9,7 +9,7 @@ spec:
       type: agent
       properties:
         description: "General purpose AI assistant with A2A protocol support"
-        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.0-long-term-memory
+        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.1-a2a-caller-scope
         replicas: 3
         registerWithGateway: true
         modelConfig:
