@@ -110,3 +110,13 @@ def caller_actor(default: str) -> str:
     """
     value = (inbound_actor.get() or "").strip()
     return value or default
+
+
+def caller_key() -> str:
+    """Key identifying the inbound caller, for caches that hold per-caller agents.
+
+    Derived from the inbound credential, whatever goes outbound, so it matches the
+    MCP connections a cached agent holds. Used by both /chat and A2A, so a
+    client-supplied context id can never select another caller's agent.
+    """
+    return outbound(True)[1]

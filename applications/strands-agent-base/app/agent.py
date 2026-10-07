@@ -1,5 +1,6 @@
 """Strands agent initialization — per-session agents with AgentCore memory."""
 
+import hashlib
 import logging
 import os
 import re
@@ -27,7 +28,7 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
-from .identity import WORKLOAD_KEY, HeadersProvider, caller_actor, outbound
+from .identity import WORKLOAD_KEY, HeadersProvider, caller_actor, caller_key, outbound
 
 logger = logging.getLogger(__name__)
 
@@ -173,19 +174,18 @@ DEFAULT_ACTOR = "anonymous"
 # AgentCore actorId pattern, from the CreateEvent API model in botocore:
 #   [a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*, max 255
 # Keycloak subjects (UUIDs) and ServiceAccount subjects
-# (system:serviceaccount:<ns>:<name>) already match. Anything else, such as an
-# e-mail-shaped subject from another identity provider, is mapped onto it instead
-# of failing every memory write.
-_ACTOR_DISALLOWED = re.compile(r"[^a-zA-Z0-9\-_/:]")
+# (system:serviceaccount:<ns>:<name>) already match and pass through unchanged.
+# Anything else, such as an e-mail-shaped subject from another identity provider,
+# becomes "h:<sha256>". Hashing keeps the mapping one-to-one: replacing characters
+# would let distinct subjects (a@b.c, a_b.c) share one actor and its memories.
+_ACTOR_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9\-_/]*(?::[a-zA-Z0-9\-_/]+)*[a-zA-Z0-9\-_/]*")
 
 
 def memory_actor(raw: str) -> str:
-    """Map a caller id onto a valid AgentCore actorId."""
-    actor = _ACTOR_DISALLOWED.sub("_", raw)
-    actor = re.sub(r":{2,}", ":", actor).strip(":")
-    if not actor or not actor[0].isalnum():
-        actor = "a" + actor
-    return actor[:255]
+    """Map a caller id onto a valid AgentCore actorId, one-to-one."""
+    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw):
+        return raw
+    return "h:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
 # Retrieval defaults per long-term namespace, overridable through MEMORY_CONFIG
@@ -348,7 +348,7 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: Optional[str
     # PROPAGATE_CALLER_TOKEN=false the outbound key is the constant workload key,
     # so keying on it let two users who send the same contextId share one agent
     # and its conversation history.
-    _, caller = outbound(True)
+    caller = caller_key()
 
     if session_id and (caller, session_id) in _agents:
         return _agents[(caller, session_id)], session_id

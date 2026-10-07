@@ -77,6 +77,19 @@ def test_other_subjects_are_mapped_onto_the_api_pattern(raw):
     assert len(actor) <= 255
 
 
+@pytest.mark.parametrize(
+    "a, b",
+    [("alice@x.com", "alice_x.com"), ("_x", "a_x"), ("a::b", "a:b"), ("x" * 300, "x" * 301)],
+)
+def test_mapping_is_one_to_one(a, b):
+    # Distinct subjects must never share an actor, or they would share memories.
+    assert agent_mod.memory_actor(a) != agent_mod.memory_actor(b)
+
+
+def test_mapping_is_stable():
+    assert agent_mod.memory_actor("user@example.com") == agent_mod.memory_actor("user@example.com")
+
+
 # ── strategy discovery and retrieval config ─────────────────────────────
 
 class _FakeClient:
@@ -161,7 +174,8 @@ def test_session_manager_uses_the_mapped_actor_and_agent_region(agentcore, monke
     monkeypatch.setattr(config, "AWS_REGION", "eu-west-1")
     agent_mod._build_session_manager("ctx-1", "user@example.com")
     cfg = agentcore["config"]
-    assert cfg.actor_id == "user_example_com"
+    assert cfg.actor_id == agent_mod.memory_actor("user@example.com")
+    assert cfg.actor_id.startswith("h:")
     assert cfg.session_id == "ctx-1"
     assert agentcore["region"] == "eu-west-1"  # no region in MEMORY_CONFIG -> the agent's own
     assert cfg.retrieval_config is None

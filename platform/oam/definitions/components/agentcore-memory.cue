@@ -39,8 +39,10 @@ template: {
 	// Long-term memory strategies, opt-in. Each emits a MemoryStrategy bound to the
 	// Memory above by memoryIdRef, so no id is copied anywhere. The namespace
 	// templates are platform-owned and keyed by {actorId}, the caller identity the
-	// agent takes from the gateway's X-Forwarded-User header, so one caller's
-	// memories are never retrieved for another. The agent discovers these
+	// agent takes from the gateway's X-Forwarded-User header, so through the gateway
+	// one caller's memories are never retrieved for another. A workload that reaches
+	// agent pods directly, bypassing the gateway, can set that header; isolating pods
+	// from such traffic is the operator's NetworkPolicy. The agent discovers these
 	// namespaces from the memory itself (GetMemory) and needs no extra config.
 	let _strategyTypes = {
 		semantic: {type: "SEMANTIC", namespaces: ["/facts/{actorId}/"]}

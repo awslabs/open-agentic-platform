@@ -11,6 +11,7 @@ from strands.multiagent.a2a import A2AServer
 
 from .agent import create_agent, get_or_create_agent, shutdown_mcp
 from .config import config
+from .a2a_isolation import scope_a2a_contexts_to_caller
 from .identity import capture_caller_auth
 
 # ── OpenTelemetry initialization ─────────────────────────────────────────
@@ -71,9 +72,8 @@ async def lifespan(app):
 # instead of all A2A callers sharing a single memory-less agent. create_agent's
 # signature (session_id, actor_id=None) matches (context_id) -> Agent when
 # called positionally; the actor then comes from the request's caller identity
-# header (app/identity.py caller_actor), so A2A callers get per-caller memory too.
-# called positionally. The factory is invoked once up front (with a placeholder
-# context id) purely to derive agent-card metadata.
+# header (app/identity.py caller_actor). The factory is invoked once up front (with
+# a placeholder context id) purely to derive agent-card metadata.
 a2a_server = A2AServer(
     agent_factory=create_agent,
     host=config.HOST,
@@ -81,6 +81,10 @@ a2a_server = A2AServer(
     version="1.0.0",
     enable_a2a_compliant_streaming=True,
 )
+
+# The SDK caches agents by client-supplied context id alone; scope them to the caller
+# so one caller cannot attach to another's conversation and memory. See app/a2a_isolation.py.
+scope_a2a_contexts_to_caller(a2a_server)
 
 app = a2a_server.to_fastapi_app()
 app.router.lifespan_context = lifespan

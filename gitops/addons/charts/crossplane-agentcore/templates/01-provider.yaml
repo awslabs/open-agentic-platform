@@ -27,11 +27,11 @@ spec:
                      for non-Go memory), so it cannot drift away from the limit it protects. */}}
               {{- if not (hasKey $r "goMemLimit") }}
               {{-   $lim := toString $r.memoryLimit }}
-              {{-   $mib := 0 }}
-              {{-   if hasSuffix "Gi" $lim }}{{ $mib = mul (atoi (trimSuffix "Gi" $lim)) 1024 }}
-              {{-   else if hasSuffix "Mi" $lim }}{{ $mib = atoi (trimSuffix "Mi" $lim) }}
-              {{-   else }}{{ fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q must end in Mi or Gi (or set goMemLimit explicitly)" $lim) }}
+              {{-   if not (regexMatch "^[1-9][0-9]*(Mi|Gi)$" $lim) }}
+              {{-     fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q must be a whole number of Mi or Gi (or set goMemLimit explicitly)" $lim) }}
               {{-   end }}
+              {{-   $mib := atoi (trimSuffix "Mi" (trimSuffix "Gi" $lim)) }}
+              {{-   if hasSuffix "Gi" $lim }}{{ $mib = mul $mib 1024 }}{{ end }}
               {{-   $_ := set $r "goMemLimit" (printf "%dMiB" (div (mul $mib 9) 10)) }}
               {{- end }}
               {{- if or $r.goMemLimit $r.goGC }}
