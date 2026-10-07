@@ -138,7 +138,7 @@ def test_retrieval_tuning_comes_from_memory_config(fake_client):
     assert rc["/facts/{actorId}/"].top_k == 3 and rc["/facts/{actorId}/"].relevance_score == 0.5
 
 
-def test_strategies_are_read_once_per_memory(fake_client):
+def test_strategies_are_cached_within_the_ttl(fake_client):
     fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
     agent_mod._retrieval_config("mem-1", "us-west-2", {})
     agent_mod._retrieval_config("mem-1", "us-west-2", {})
@@ -203,3 +203,26 @@ def test_create_agent_without_header_uses_the_shared_default(monkeypatch):
     monkeypatch.setattr(agent_mod, "_construct_agent", lambda sid, actor: seen.setdefault("actor", actor))
     agent_mod.create_agent("ctx-9")
     assert seen["actor"] == agent_mod.DEFAULT_ACTOR
+
+
+def test_strategies_added_after_startup_are_picked_up_after_the_ttl(fake_client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: now[0])
+    fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    assert set(agent_mod._retrieval_config("mem-1", "us-west-2", {})) == {"/facts/{actorId}/"}
+
+    fake_client.strategies.append({"strategyId": "pref-1", "namespaces": ["/preferences/{actorId}/"]})
+    now[0] += agent_mod._NAMESPACES_TTL - 1
+    assert set(agent_mod._retrieval_config("mem-1", "us-west-2", {})) == {"/facts/{actorId}/"}
+    now[0] += 2
+    assert set(agent_mod._retrieval_config("mem-1", "us-west-2", {})) == {"/facts/{actorId}/", "/preferences/{actorId}/"}
+
+
+def test_a_failed_refresh_keeps_the_last_good_namespaces(fake_client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: now[0])
+    fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    agent_mod._retrieval_config("mem-1", "us-west-2", {})
+    fake_client.strategies = RuntimeError("throttled")
+    now[0] += agent_mod._NAMESPACES_TTL + 1
+    assert set(agent_mod._retrieval_config("mem-1", "us-west-2", {})) == {"/facts/{actorId}/"}

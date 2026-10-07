@@ -171,8 +171,8 @@ Strategy namespaces are platform-owned and keyed by the caller:
 `actorId` is the `X-Forwarded-User` header the gateway sets from the caller's token
 `sub`, so one caller's memories are never retrieved for another. Requests that did not
 come through the gateway share the actor `anonymous`. The agent reads the strategies from
-the memory itself at startup (`GetMemory`), so adding a strategy needs no agent change;
-pods pick it up on the next rollout. Retrieval tuning: `retrievalTopK` and
+the memory itself (`GetMemory`, refreshed every 5 minutes), so adding a strategy needs no
+agent change and no rollout. Retrieval tuning: `retrievalTopK` and
 `retrievalRelevanceScore` in `memory.config` (defaults 10 and 0.2).
 
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a

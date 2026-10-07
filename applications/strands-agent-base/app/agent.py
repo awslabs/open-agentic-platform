@@ -195,9 +195,12 @@ _RETRIEVAL_RELEVANCE = 0.2
 
 # Strategy namespaces per memory id. Strategies belong to the memory resource, not
 # to this agent, so they are read from the service (GetMemory) rather than
-# configured twice. Read once per process: a strategy added later is picked up on
-# the next rollout.
-_namespaces: dict[str, list[tuple[str, Optional[str]]]] = {}
+# configured twice. Cached for _NAMESPACES_TTL seconds: strategies are created one
+# at a time after the memory (AgentCore allows a single update in flight), so an
+# agent that starts mid-provisioning must notice the rest a few minutes later
+# without a restart.
+_NAMESPACES_TTL = 300.0
+_namespaces: dict[str, tuple[float, list[tuple[str, Optional[str]]]]] = {}
 
 
 def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[str]]]:
@@ -206,8 +209,9 @@ def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[
     Empty when the memory has no long-term strategies, or when they cannot be
     read: the agent then keeps short-term memory only instead of failing.
     """
-    if memory_id in _namespaces:
-        return _namespaces[memory_id]
+    cached = _namespaces.get(memory_id)
+    if cached and time.monotonic() - cached[0] < _NAMESPACES_TTL:
+        return cached[1]
     found: list[tuple[str, Optional[str]]] = []
     try:
         from bedrock_agentcore.memory import MemoryClient
@@ -217,9 +221,10 @@ def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[
                 found.append((ns, strategy.get("strategyId")))
     except Exception as e:  # noqa: BLE001 — degrade to short-term memory
         logger.warning("Could not read strategies for memory %s, long-term retrieval off: %s", memory_id, e)
-        return found  # not cached, so the next session retries
-    _namespaces[memory_id] = found
-    logger.info("Memory %s long-term namespaces: %s", memory_id, [ns for ns, _ in found] or "none")
+        return cached[1] if cached else found  # keep the last good answer; retry next session
+    _namespaces[memory_id] = (time.monotonic(), found)
+    if not cached or cached[1] != found:
+        logger.info("Memory %s long-term namespaces: %s", memory_id, [ns for ns, _ in found] or "none")
     return found
 
 
