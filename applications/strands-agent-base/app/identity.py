@@ -75,6 +75,61 @@ async def capture_caller_auth(request, call_next):
     Register on every route, including framework-owned endpoints such as the
     Strands A2A JSON-RPC handler, so agent construction can forward the caller's
     credential rather than the agent's own ServiceAccount token.
+
+    Also records the caller identity header; see caller_actor.
     """
     inbound_auth.set(request.headers.get("authorization"))
+    inbound_actor.set(request.headers.get(CALLER_IDENTITY_HEADER))
     return await call_next(request)
+
+
+# ── caller identity ──────────────────────────────────────────────────────
+#
+# Optional platform contract: the gateway validates the caller's JWT and sets this
+# header to its `sub` on every request it forwards, overwriting any value the client
+# sent (gitops/addons/charts/agent-gateway/templates/caller-identity-policy.yaml).
+#
+#   Keycloak user        -> the user's subject id
+#   agent via gateway    -> system:serviceaccount:<namespace>:<name>
+#
+# The header is trusted as-is and no token is parsed: pods are reachable only
+# through the gateway. This module uses it as the AgentCore memory actor, so
+# long-term memories are kept per caller. An image that does not need a per-caller
+# key can ignore it.
+
+CALLER_IDENTITY_HEADER = os.getenv("CALLER_IDENTITY_HEADER", "x-forwarded-user")
+
+inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=None)
+
+
+def caller_actor(default: str) -> str:
+    """Return the authenticated caller's id for this request, or *default*.
+
+    *default* applies when no gateway-set header arrived: the A2A agent-card
+    bootstrap at startup, or a request that did not come through the gateway.
+    """
+    value = (inbound_actor.get() or "").strip()
+    return value or default
+
+
+def caller_key() -> str:
+    """Key identifying the inbound caller, for caches that hold per-caller agents.
+
+    Derived from the inbound credential, whatever goes outbound, so it matches the
+    MCP connections a cached agent holds. Used by both /chat and A2A, so a
+    client-supplied context id can never select another caller's agent.
+    """
+    return outbound(True)[1]
+
+
+def task_owner() -> str:
+    """Owner key for A2A tasks: the gateway-validated caller when known.
+
+    Unlike caller_key(), which hashes the bearer token (an agent and its MCP
+    connections are bound to one token), this survives a token refresh, so a user
+    can still read, cancel or resume their own task after refreshing. Without the
+    gateway header (a request that bypassed the gateway) it falls back to the
+    token hash.
+    """
+    actor = (inbound_actor.get() or "").strip()
+    return f"sub:{actor}" if actor else f"tok:{caller_key()}"

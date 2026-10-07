@@ -149,6 +149,10 @@ template: {
 							{name: "PORT", value: "8083"},
 							{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
 							{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
+							// Platform-owned, not a parameter. "false": the agent presents its OWN ServiceAccount
+							// identity to MCP servers, which mcpAccess grants match on. "true": it forwards the
+							// user's token (main's behaviour, the passthrough the MCP spec forbids).
+							{name: "PROPAGATE_CALLER_TOKEN", value: "{{ .Values.global.agentIdentity.propagateCallerToken }}"},
 							// Observability env vars — mode-dependent
 							{name: "OTEL_SERVICE_NAME", value: context.name},
 							{name: "OTEL_TRACES_EXPORTER", value: "otlp"},
@@ -390,7 +394,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:latest" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.4-task-owner" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an

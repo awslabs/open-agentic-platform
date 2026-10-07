@@ -15,6 +15,67 @@ Keycloak `26.3.3`, Bifrost `2.1.16`, vela CLI `1.10.7`.
 
 ---
 
+## Current state (2026-10) and what's next
+
+### Built and verified
+
+- **Agents present their own identity to MCP servers.** The agent sends its projected
+  ServiceAccount token on every MCP call; the user's token stops at the agent. On main the
+  user's token was forwarded to every MCP server, which the MCP spec forbids. Platform
+  setting `global.agentIdentity.propagateCallerToken` (oam-agent-components chart), default
+  `"false"`; developers set nothing.
+- **Restrict which agents may call an MCP server.** `allowedAgents` on the `mcp-server`
+  component, plus platform-owned `mcpAccess` grants in the agent-gateway chart that need no
+  redeploy of the server or the agent. Both are route-level `Require` rules: `Allow` would
+  be ORed with the Gateway-wide `Allow` and restrict nothing (verified live).
+- **Agent ServiceAccount tokens validate on spokes.** The gateway's workload-identity JWT
+  provider was missing on spokes because of an annotation-name mismatch.
+- **Agent sessions are isolated per caller**, not per outbound credential.
+- **Caller identity header (optional platform contract).** Every request the gateway
+  forwards carries `X-Forwarded-User`, set by the gateway to the validated token's `sub`
+  and overwritten if the client sent one (`agent-gateway` chart,
+  `caller-identity-policy.yaml`). A Keycloak user arrives as their subject id; an agent
+  calling through the gateway as `system:serviceaccount:<ns>:<name>`. Workloads that need
+  a stable per-caller key read it; others ignore it. No token parsing is required. This is
+  the plain-header half of the usual authenticating-proxy pattern (ALB, IAP, Cloudflare
+  Access); the signed half is the caller's original JWT, which `credentialPassthrough`
+  still forwards for workloads that want to verify it themselves. The header is trustworthy
+  only because pods are reached through the gateway; cross-namespace isolation is the
+  operator's NetworkPolicy. At the agent → MCP hop it names the agent, not the user.
+- **Per-caller long-term memory.** The base agent image uses `X-Forwarded-User` as its
+  AgentCore memory actor, so memories are kept per caller instead of one shared "user".
+  Long-term strategies are opt-in on `agentcore-memory` (`strategies`); see
+  `platform/oam/README.md`.
+
+### What's next
+
+1. **User identity at the MCP server (on-behalf-of).** Today the server knows the agent,
+   not the user. RFC 8693 exchange at the gateway was built and then removed. Findings for
+   the next attempt:
+   - Keycloak exchanges only tokens it issued. An agent's EKS ServiceAccount token cannot
+     be the subject ("invalid_request - Invalid token"), so autonomous runs and tool
+     listing at startup need a **Keycloak identity per agent** (client-credentials client).
+     Check first whether Keycloak's Kubernetes identity provider can replace that client's
+     secret with the ServiceAccount token.
+   - With one `Authorization` header, agent identity and user identity are exclusive. Send
+     both: agent token in `Authorization`, user token in a second header used as the
+     exchange subject and stripped at the gateway backend.
+   - The gateway's `jwtAuthentication` removes `Authorization` after validating it, so the
+     exchange must read its subject from another header (OSS has no `preserveToken`).
+   - Requester and target prerequisites in Keycloak: the exchange client must be in the
+     subject token's `aud` (audience mapper on caller clients), and each target audience
+     must be resolvable from the exchange client.
+   - `backend.auth` cannot be conditional, and `mcp.methodName` is not available to policy,
+     so listing and calling tools cannot be treated differently on one route.
+2. **Restrict users at the MCP server together with agents.** Needs the user's token
+   validated at the gateway in addition to the agent's. Untested option: validate the two
+   tokens in different policy phases (PreRouting and PostRouting).
+3. **Agent-to-agent authorization.** No per-agent rule exists for calls between agents;
+   any authenticated caller reaches any agent, as on main.
+4. **GitOps for the examples.** `examples/mcp-servers` is applied by hand today.
+
+---
+
 ## Goal
 
 Every agent gets a **secretless identity**. Two trust domains:
