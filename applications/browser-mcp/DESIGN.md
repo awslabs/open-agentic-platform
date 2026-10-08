@@ -69,11 +69,10 @@ Two things found and fixed during validation, worth remembering:
 
 ## Verified facts (do not re-litigate)
 
-- **Spike PASS (host):** `chrome-devtools-mcp@1.6.0` with `--wsEndpoint`/`--wsHeaders`
+- **CDP path proven (host):** `chrome-devtools-mcp@1.6.0` with `--wsEndpoint`/`--wsHeaders`
   connects to an AgentCore browser session over CDP and `navigate_page` +
-  `take_snapshot` return real page content. Lives in
-  `spikes/agentcore-browser-mcp-cdp/` with a pinned tool schema `schema-1.6.0.json`
-  (29 tools).
+  `take_snapshot` return real page content. Its tool list at that version is 29
+  tools, all of which `tools/list` returns with no browser attached.
 - **AgentCore browser model:** a Browser *Tool* (built-in `aws.browser.v1` or a
   custom one) is a shared, long-lived *definition*. *Sessions* are ephemeral and
   isolated (own cookies/state), default 900s, configurable. Multiple sessions per
@@ -745,10 +744,10 @@ design below is IMPLEMENTED and verified.
   - **Tool discovery without a browser:** spawn one browser-less
     `chrome-devtools-mcp` at boot purely to read its tool list, cache it, and let it
     exit; serve `tools/list` from that cache thereafter (proven: browser-less
-    `tools/list` returns all 29 tools instantly). Static
-    `spikes/.../schema-1.6.0.json` is the fallback / drift reference. This keeps the
-    advertised schema self-maintaining against the pinned version with zero idle
-    processes and zero AgentCore cost.
+    `tools/list` returns all 29 tools instantly). There is no static schema
+    fallback: the pinned `chrome-devtools-mcp` version in `package.json` is the only
+    drift anchor, so the advertised schema is self-maintaining against it with zero
+    idle processes and zero AgentCore cost.
   - **Lifecycle per MCP session:** first `tools/call` → resolve browser id → mint
     session → SigV4-sign CDP endpoint → spawn child → forward call. Subsequent calls
     reuse it.
@@ -810,9 +809,6 @@ Remaining:
 
 ## Where things live
 
-- Spike (proven CDP path, pinned schema): `spikes/agentcore-browser-mcp-cdp/`
-  (untracked; has `README.md` with the recorded PASS, `mint_session.py`,
-  `run_spike.py`, `capture_schema.py`, `schema-1.6.0.json`).
 - browser-mcp server (Node, implemented): `applications/browser-mcp/`
   - `src/server.js` — StreamableHTTP endpoint, per-MCP-session Server + routing,
     concurrency limiter, health endpoints, abandoned-session reaper, graceful stop.

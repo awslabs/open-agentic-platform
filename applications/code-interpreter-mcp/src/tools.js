@@ -3,7 +3,7 @@
  *
  * Hand-authored, unlike browser-mcp which discovers its 29 tools from the
  * chrome-devtools-mcp child at boot. The shapes come from the SDK's ToolArguments type and
- * were confirmed against the live service in spikes/agentcore-code-interpreter.
+ * were confirmed against the live service; see DESIGN.md, Tools.
  *
  * Descriptions carry more weight here than tool count does. Two pairs overlap, and the
  * descriptions are where that gets resolved:

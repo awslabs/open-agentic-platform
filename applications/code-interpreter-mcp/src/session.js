@@ -6,8 +6,9 @@
  * merely knows about these tools costs nothing and a pod at rest holds no sessions.
  *
  * Each MCP session gets its OWN AgentCore session, because a session is a live interpreter:
- * variables persist between calls and so does its filesystem (both verified in
- * spikes/agentcore-code-interpreter). Two conversations must never share that.
+ * variables persist between calls and so does its filesystem (both verified against the live
+ * service; see DESIGN.md, "What the service actually is"). Two conversations must never
+ * share that.
  *
  * No child process, unlike the browser server: the SDK is the whole client.
  */

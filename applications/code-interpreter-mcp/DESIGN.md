@@ -33,8 +33,7 @@ Remaining verification.
 
 ## What the service actually is
 
-Established by probing the live service. Raw output is in
-`spikes/agentcore-code-interpreter/FINDINGS.md`.
+Established by probing the live service.
 
 - A **session is a live interpreter**. Variables persist between calls and so does its
   filesystem. Setting `x = 6 * 7` in one call and printing it in the next returned

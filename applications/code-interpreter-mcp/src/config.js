@@ -30,7 +30,7 @@ export const config = {
    * OAM app refers to a stable name rather than a generated id.
    *
    * Leave the name empty to use the AWS built-in `aws.codeinterpreter.v1`, which needs no
-   * provisioning. Verified working in spikes/agentcore-code-interpreter.
+   * provisioning. Verified working against the live service; see DESIGN.md, Provisioning.
    */
   interpreterName: process.env.AGENTCORE_CODE_INTERPRETER_NAME || '',
   builtinInterpreterId: process.env.AGENTCORE_BUILTIN_ID || 'aws.codeinterpreter.v1',
@@ -53,7 +53,7 @@ export const config = {
    * that build up state across long gaps.
    *
    * Eviction is suppressed while a session has an outstanding async task, because
-   * stopping the session would take the task with it (see the spike findings).
+   * stopping the session would take the task with it (see DESIGN.md, Design).
    */
   sessionIdleSeconds: int('SESSION_IDLE_SECONDS', 300),
 
