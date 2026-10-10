@@ -28,7 +28,32 @@ For example, always use the time tool when asked about the current time or date.
     # Model configuration
     MODEL_ID: str = os.getenv("MODEL_ID", "claude-sonnet")
     AWS_REGION: str = os.getenv("AWS_REGION", "us-west-2")
-    
+    # Max output tokens per generation. The previous hardcoded value of 1000 was
+    # too low for an agent that reasons *and* calls tools: a long reasoning
+    # preamble could exhaust the budget and raise MaxTokensReachedException
+    # before any tool (e.g. opening a PR/MR) was ever invoked. Configurable via
+    # env, default 4096.
+    MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "4096"))
+    # Sampling temperature, configurable via env (default 0.7).
+    MODEL_TEMPERATURE: float = float(os.getenv("MODEL_TEMPERATURE", "0.7"))
+
+    # When the model hits MAX_TOKENS mid-answer, Strands raises
+    # MaxTokensReachedException. Left unhandled the A2A task goes to `failed`
+    # (the chat shows an opaque "Agent execution failed" with the answer cut off
+    # and no explanation). With this enabled, the agent instead finishes the
+    # turn gracefully: it streams the partial answer it already produced, then
+    # appends MAX_TOKENS_NOTICE so the user sees *why* it stopped. Disable to
+    # restore the raise-and-fail behaviour.
+    MAX_TOKENS_NOTICE_ENABLED: bool = os.getenv(
+        "MAX_TOKENS_NOTICE_ENABLED", "true"
+    ).lower() not in ("false", "0", "no")
+    MAX_TOKENS_NOTICE: str = os.getenv(
+        "MAX_TOKENS_NOTICE",
+        "⚠️ Response truncated — the per-request output limit "
+        "(MAX_TOKENS) was reached. Ask me to continue, or narrow the "
+        "request for a shorter answer.",
+    )
+
     # LLM Gateway configuration (Bifrost, OpenAI-compatible endpoint at /v1)
     LLM_GATEWAY_URL: str = os.getenv(
         "LLM_GATEWAY_URL",
@@ -94,6 +119,7 @@ For example, always use the time tool when asked about the current time or date.
         return (
             f"Config(agent_name={self.AGENT_NAME}, "
             f"model_id={self.MODEL_ID}, "
+            f"max_tokens={self.MAX_TOKENS}, "
             f"region={self.AWS_REGION}, "
             f"llm_gateway={self.LLM_GATEWAY_URL}, "
             f"mcp_servers={self.MCP_SERVER_NAMES}, "

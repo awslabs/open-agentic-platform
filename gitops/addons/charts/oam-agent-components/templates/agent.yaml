@@ -189,11 +189,14 @@ spec:
         					}
         					readinessProbe: {
         						httpGet: {
-        							path: "/health"
+        							path: "/ready"
         							port: 8083
         						}
         						initialDelaySeconds: 5
         						periodSeconds:       10
+        						// /ready connects any not-yet-connected MCP server
+        						// (blocking, in a worker thread), so allow headroom.
+        						timeoutSeconds: 10
         					}
         					if parameter.resources != _|_ {
         						resources: parameter.resources

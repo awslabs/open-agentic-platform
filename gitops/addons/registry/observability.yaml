@@ -18,6 +18,10 @@ langfuse:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
       insecure: '{{default "false" .metadata.annotations.insecure}}'
+      # Used by push-otel-secret.yaml to name the OTEL SM secret
+      # <resourcePrefix>-hub/langfuse-otel (prefix-scoped so two events in one account
+      # don't collide; must match the otel-collector secretManagerKey above).
+      resourcePrefix: '{{.metadata.annotations.resource_prefix}}'
     clusterName: '{{.metadata.annotations.aws_cluster_name}}'
     ingress:
       enabled: true
@@ -79,8 +83,18 @@ otel-collector:
       awsRegion: '{{.metadata.annotations.aws_region}}'
     langfuse:
       enabled: true
-      endpoint: 'https://{{.metadata.annotations.ingress_domain_name}}/api/public/otel'
-      secretManagerKey: 'hub/langfuse-otel'
+      # Single hub Langfuse for the whole fleet. The hub sets ingress_domain_name
+      # (its CloudFront host) and uses it directly. A spoke has an EMPTY
+      # ingress_domain_name and no public domain of its own, so it falls back to
+      # the host of oidc_issuer_url (every spoke carries it, pointing at the hub
+      # domain) -> spoke ADOT collectors export traces to the hub Langfuse.
+      # No-op on the hub (ingress_domain_name non-empty takes the first branch).
+      endpoint: 'https://{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ if $d }}{{ $d }}{{ else }}{{ (splitList "/" (trimPrefix "https://" (index .metadata.annotations "oidc_issuer_url"))) | first }}{{ end }}/api/public/otel'
+      # Resource-prefixed so two events with different prefixes in the SAME AWS account
+      # do not collide on one SM secret. resource_prefix is present+identical on hub and
+      # all spokes (spokes read the hub's secret), and <resource_prefix>-hub == the hub
+      # cluster name. Must match the langfuse push-otel-keys Job SECRET_ID exactly.
+      secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}-hub/langfuse-otel'
     bifrost:
       enabled: true
       scrapeEndpoint: 'bifrost.bifrost.svc.cluster.local:8080'
