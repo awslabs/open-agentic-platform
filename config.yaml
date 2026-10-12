@@ -4,7 +4,7 @@
 # Platform base (appmod-blueprints)
 platform:
   repo: "https://github.com/aws-samples/appmod-blueprints.git"
-  ref: "feature/agent-platform"                          # Tag or branch (e.g., "v1.0.0")
+  ref: "main"                          # Tag or branch (e.g., "v1.0.0")
   clusterProvider: "kind-crossplane"
 
 # AWS
@@ -16,7 +16,7 @@ aws:
 # Hub cluster
 hub:
   clusterName: ""
-  kubernetesVersion: "1.35"
+  kubernetesVersion: "1.37"
 
 # Domain and networking
 domain: ""
@@ -41,7 +41,7 @@ spokes: {}
   # spoke-dev:
   #   region: us-west-2
   #   environment: dev
-  #   kubernetesVersion: "1.35"
+  #   kubernetesVersion: "1.37"
   #   vpcCidr: "10.1.0.0/16"
   #   autoMode: true
 

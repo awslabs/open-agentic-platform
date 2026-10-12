@@ -38,7 +38,7 @@ clusters:
     # identity associations the EksCluster RGD has already created.
     provider: "kro-ack"
     region: us-west-2
-    k8sVersion: "1.35"
+    k8sVersion: "1.37"
     # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
     # kro-clusters chart resolves both via `default $.Values.global.accountId`
     # (clusters.yaml), and clusters-kro.yaml's ApplicationSet template already

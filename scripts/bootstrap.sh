@@ -14,7 +14,7 @@ REPO_REVISION="${REPO_REVISION:-main}"
 # Reference model: the appset-chart generator is pulled from the platform repo
 # (appmod-blueprints), not vendored in this repo.
 PLATFORM_REPO_URL="${PLATFORM_REPO_URL:-https://github.com/aws-samples/appmod-blueprints}"
-PLATFORM_REPO_REVISION="${PLATFORM_REPO_REVISION:-feature/agent-platform}"
+PLATFORM_REPO_REVISION="${PLATFORM_REPO_REVISION:-main}"
 PROJECT_NAME="${PROJECT_NAME:-agent-core}"
 TOFU_ROLE_ARN="${TOFU_CONTROLLER_ROLE_ARN:-}"
 MCP_IMAGE="${AGENT_CORE_MCP_IMAGE:-}"
