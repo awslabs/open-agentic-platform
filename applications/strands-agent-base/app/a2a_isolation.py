@@ -9,31 +9,50 @@ conversation and long-term memory. Verified live on oap-dev before this fix.
 The fix scopes the executor's context map itself: every lookup by context id
 (building an agent, reusing it, cooperative cancel) resolves to the entry for
 (caller, context_id), using the same caller key as the /chat route
-(identity.caller_key). The factory still receives the plain context id, so
+(identity.caller_key: the gateway subject, plus the token hash only when the agent
+forwards the caller's token). The factory still receives the plain context id, so
 AgentCore session ids are unchanged; AgentCore already separates sessions by actor.
 
 Tasks get the same treatment. a2a-sdk 0.3.x (strands-agents 1.57 requires <0.4) has
 an InMemoryTaskStore keyed by task id only, so tasks/get, tasks/cancel,
 tasks/resubscribe and push-config calls would hand one caller another's task.
 a2a-sdk main scopes tasks by an owner resolved from the call context; CallerScopedTaskStore
-is the same idea for the pinned version. Tasks are owned by task_owner() (the gateway-validated
-subject, stable across token refresh); agents stay keyed by caller_key() because each holds MCP
-connections bound to one token.
+is the same idea for the pinned version, owned by identity.task_owner(context): the
+gateway subject, read from the ServerCallContext that a2a-sdk passes to every store
+call, so it also holds for saves made after the HTTP response.
 
-Replaces `_contexts`, a private attribute of strands-agents. The version is pinned
-(pyproject.toml) and tests/unit/test_a2a_isolation.py checks the SDK still keeps
-its per-context agents there and looks them up by context id.
+Both stores are in process memory, so a task or context lives on the pod that served
+it. With more than one replica, a follow-up request that lands on another pod gets
+"not found", the same answer as another caller's id. Run A2A agents that rely on
+tasks/* or context reuse with one replica.
+
+Replaces `_contexts`, a private attribute of strands-agents, and subclasses
+InMemoryTaskStore using its `tasks` and `lock` attributes. Both versions are pinned
+(pyproject.toml), and tests/unit/test_a2a_isolation.py checks that the SDKs still
+use exactly the surface overridden here.
 """
 
 from collections import OrderedDict
 
 from a2a.server.tasks import InMemoryTaskStore
 
+from .config import config
 from .identity import caller_key, task_owner
 
 
 def _scoped(context_id: str) -> str:
-    return f"{caller_key()}\x00{context_id}"
+    return f"{caller_key(config.PROPAGATE_CALLER_TOKEN)}\x00{context_id}"
+
+
+def _unsupported(name):
+    def method(self, *args, **kwargs):
+        raise NotImplementedError(
+            f"CallerScopedContexts.{name} is not caller-scoped; add a scoped override "
+            "before the SDK starts using it"
+        )
+
+    method.__name__ = name
+    return method
 
 
 class CallerScopedContexts(OrderedDict):
@@ -64,6 +83,15 @@ class CallerScopedContexts(OrderedDict):
     def move_to_end(self, context_id, last=True):
         super().move_to_end(_scoped(context_id), last)
 
+    # Methods that take or add keys but are not translated above. Raising beats
+    # silently storing or reading an unscoped key if a future SDK starts using one.
+    setdefault = _unsupported("setdefault")
+    update = _unsupported("update")
+    __ior__ = _unsupported("__ior__")
+    __or__ = _unsupported("__or__")
+    __ror__ = _unsupported("__ror__")
+    copy = _unsupported("copy")
+
 
 def scope_a2a_contexts_to_caller(a2a_server) -> None:
     """Make the A2A server's per-context agent cache per caller."""
@@ -84,17 +112,17 @@ class CallerScopedTaskStore(InMemoryTaskStore):
     """
 
     @staticmethod
-    def _key(task_id: str) -> str:
-        return f"{task_owner()}\x00{task_id}"
+    def _key(task_id: str, context) -> str:
+        return f"{task_owner(context)}\x00{task_id}"
 
     async def save(self, task, context=None):
         async with self.lock:
-            self.tasks[self._key(task.id)] = task
+            self.tasks[self._key(task.id, context)] = task
 
     async def get(self, task_id, context=None):
         async with self.lock:
-            return self.tasks.get(self._key(task_id))
+            return self.tasks.get(self._key(task_id, context))
 
     async def delete(self, task_id, context=None):
         async with self.lock:
-            self.tasks.pop(self._key(task_id), None)
+            self.tasks.pop(self._key(task_id, context), None)

@@ -26,11 +26,11 @@ class _Req:
 
 
 def _through_middleware(headers):
-    """Run capture_caller_auth and return caller_actor as seen inside the request."""
+    """Run capture_caller_auth and return caller_subject as seen inside the request."""
     seen = {}
 
     async def call_next(_request):
-        seen["actor"] = identity.caller_actor("fallback")
+        seen["actor"] = identity.caller_subject()
         return "ok"
 
     asyncio.run(identity.capture_caller_auth(_Req(headers), call_next))
@@ -43,14 +43,14 @@ def test_header_is_the_actor():
     )
 
 
-def test_missing_or_blank_header_uses_default():
-    assert _through_middleware({}) == "fallback"
-    assert _through_middleware({"x-forwarded-user": "   "}) == "fallback"
+def test_missing_or_blank_header_means_no_caller():
+    assert _through_middleware({}) is None
+    assert _through_middleware({"x-forwarded-user": "   "}) is None
 
 
 def test_authorization_is_not_used_as_identity():
     # A token alone must not become the actor; only the gateway-set header does.
-    assert _through_middleware({"authorization": "Bearer abc.def.ghi"}) == "fallback"
+    assert _through_middleware({"authorization": "Bearer abc.def.ghi"}) is None
 
 
 # ── actor id mapping ─────────────────────────────────────────────────────
@@ -91,10 +91,12 @@ def test_subject_with_slash_cannot_prefix_match_another_actor():
     assert agent_mod.memory_actor("a/b") != agent_mod.memory_actor("a")
 
 
-def test_reserved_actor_values_cannot_be_claimed_by_a_subject():
+@pytest.mark.parametrize("case", [str.lower, str.upper])
+def test_a_subject_cannot_claim_a_hashed_actor_in_any_case(case):
     hashed = agent_mod.memory_actor("user@example.com")
-    assert agent_mod.memory_actor(hashed) != hashed  # a subject shaped like a hash
-    assert agent_mod.memory_actor(agent_mod.DEFAULT_ACTOR) != agent_mod.DEFAULT_ACTOR
+    claimed = "h:" + hashed[2:]
+    claimed = case(claimed[:2]) + claimed[2:]
+    assert agent_mod.memory_actor(claimed) != hashed
 
 
 def test_mapping_is_stable():
@@ -156,11 +158,43 @@ def test_strategies_are_cached_within_the_ttl(fake_client):
     assert fake_client.calls == 1
 
 
-def test_unreadable_strategies_degrade_to_short_term_and_retry(fake_client):
+def test_unreadable_strategies_degrade_to_short_term_and_back_off(fake_client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: now[0])
     fake_client.strategies = RuntimeError("AccessDenied")
     assert agent_mod._retrieval_config("mem-1", "us-west-2", {}) is None
+    calls = fake_client.calls
     fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    assert agent_mod._retrieval_config("mem-1", "us-west-2", {}) is None  # within the back-off
+    assert fake_client.calls == calls
+    now[0] += agent_mod._NAMESPACES_RETRY + 1
     assert agent_mod._retrieval_config("mem-1", "us-west-2", {}) is not None
+
+
+def test_last_good_namespaces_expire_after_the_staleness_bound(fake_client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: now[0])
+    fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    agent_mod._retrieval_config("mem-1", "us-west-2", {})
+    fake_client.strategies = RuntimeError("throttled")
+    now[0] += agent_mod._NAMESPACES_MAX_STALE + 1
+    assert agent_mod._retrieval_config("mem-1", "us-west-2", {}) is None
+
+
+@pytest.mark.parametrize("cfg", [{"retrievalTopK": "ten"}, {"retrievalRelevanceScore": "0,5"}, {"retrievalTopK": ""}])
+def test_a_typo_in_retrieval_settings_falls_back_to_defaults(fake_client, cfg):
+    fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    rc = agent_mod._retrieval_config("mem-1", "us-west-2", cfg)
+    assert rc["/facts/{actorId}/"].top_k == 10 and rc["/facts/{actorId}/"].relevance_score == 0.2
+
+
+def test_summary_namespace_resolves_both_placeholders(fake_client):
+    # The SDK fills each namespace with namespace.format(actorId=, sessionId=, ...)
+    # (bedrock_agentcore session_manager.retrieve_customer_context); summary's
+    # template is the one with two placeholders.
+    fake_client.strategies = [{"strategyId": "sum-1", "namespaces": ["/summaries/{actorId}/{sessionId}/"]}]
+    (ns,) = agent_mod._retrieval_config("mem-1", "us-west-2", {})
+    assert ns.format(actorId="u1", sessionId="s1", memoryStrategyId="sum-1") == "/summaries/u1/s1/"
 
 
 # ── session manager construction ─────────────────────────────────────────
@@ -209,11 +243,18 @@ def test_create_agent_takes_the_actor_from_the_request(monkeypatch):
     assert seen["actor"] == "user-7"
 
 
-def test_create_agent_without_header_uses_the_shared_default(monkeypatch):
+def test_create_agent_without_header_has_no_actor(monkeypatch):
     seen = {}
     monkeypatch.setattr(agent_mod, "_construct_agent", lambda sid, actor: seen.setdefault("actor", actor))
     agent_mod.create_agent("ctx-9")
-    assert seen["actor"] == agent_mod.DEFAULT_ACTOR
+    assert seen["actor"] is None
+
+
+def test_no_caller_means_no_memory(agentcore, fake_client):
+    # Fail closed: requests without the gateway header must not share an actor.
+    fake_client.strategies = [{"strategyId": "sem-1", "namespaces": ["/facts/{actorId}/"]}]
+    assert agent_mod._build_session_manager("ctx-1", None) is None
+    assert "config" not in agentcore
 
 
 def test_strategies_added_after_startup_are_picked_up_after_the_ttl(fake_client, monkeypatch):

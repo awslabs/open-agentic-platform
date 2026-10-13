@@ -14,6 +14,7 @@ before it reaches us, we propagate the result unchanged.
 import hashlib
 import logging
 import os
+import uuid
 from contextvars import ContextVar
 from typing import Callable, Optional, Tuple
 
@@ -76,60 +77,89 @@ async def capture_caller_auth(request, call_next):
     Strands A2A JSON-RPC handler, so agent construction can forward the caller's
     credential rather than the agent's own ServiceAccount token.
 
-    Also records the caller identity header; see caller_actor.
+    Also records the caller identity header (see caller_subject) and a per-request id.
     """
     inbound_auth.set(request.headers.get("authorization"))
     inbound_actor.set(request.headers.get(CALLER_IDENTITY_HEADER))
+    request_id.set(uuid.uuid4().hex)
     return await call_next(request)
 
 
 # ── caller identity ──────────────────────────────────────────────────────
 #
-# Optional platform contract: the gateway validates the caller's JWT and sets this
-# header to its `sub` on every request it forwards, overwriting any value the client
-# sent (gitops/addons/charts/agent-gateway/templates/caller-identity-policy.yaml).
+# Platform contract: the gateway validates the caller's JWT and sets this header to
+# its `sub` on every request it forwards, overwriting any value the client sent
+# (gitops/addons/charts/agent-gateway/templates/caller-identity-policy.yaml).
 #
 #   Keycloak user        -> the user's subject id
 #   agent via gateway    -> system:serviceaccount:<namespace>:<name>
 #
 # The header is trusted as-is and no token is parsed: pods are reachable only
-# through the gateway. This module uses it as the AgentCore memory actor, so
-# long-term memories are kept per caller. An image that does not need a per-caller
-# key can ignore it.
+# through the gateway. The name is fixed, not configurable, so the gateway and the
+# image cannot drift apart. An image that needs no per-caller key can ignore it.
+#
+# Without the header (a request that bypassed the gateway) there is no caller to
+# key on, so this module fails closed: nothing is shared between such requests, and
+# the agent attaches no memory (agent._build_session_manager).
 
-CALLER_IDENTITY_HEADER = os.getenv("CALLER_IDENTITY_HEADER", "x-forwarded-user")
+CALLER_IDENTITY_HEADER = "x-forwarded-user"
 
 inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=None)
 
-
-def caller_actor(default: str) -> str:
-    """Return the authenticated caller's id for this request, or *default*.
-
-    *default* applies when no gateway-set header arrived: the A2A agent-card
-    bootstrap at startup, or a request that did not come through the gateway.
-    """
-    value = (inbound_actor.get() or "").strip()
-    return value or default
+# Unique per request, set by the middleware. Keys a request that carries no identity
+# at all, so it is consistent within the request and never matches another one.
+request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 
 
-def caller_key() -> str:
-    """Key identifying the inbound caller, for caches that hold per-caller agents.
+def caller_subject() -> Optional[str]:
+    """The gateway-validated caller (`sub`) for this request, or None."""
+    return (inbound_actor.get() or "").strip() or None
 
-    Derived from the inbound credential, whatever goes outbound, so it matches the
-    MCP connections a cached agent holds. Used by both /chat and A2A, so a
+
+def _token_hash(header: Optional[str]) -> Optional[str]:
+    if header and header[:7].lower() == "bearer " and header[7:].strip():
+        return hashlib.sha256(header.encode()).hexdigest()[:16]
+    return None
+
+
+def _no_identity_key() -> str:
+    return f"none:{request_id.get() or uuid.uuid4().hex}"
+
+
+def caller_key(propagate: bool) -> str:
+    """Key for caches that hold per-caller agents (/chat and A2A contexts).
+
+    The gateway subject when present, so a token refresh keeps the same agent. When
+    the agent forwards the caller's token (*propagate*), the token hash is added,
+    because the cached agent's MCP connections are bound to that token. Without a
+    subject: the token hash, and with no credential at all a per-request key, so a
     client-supplied context id can never select another caller's agent.
     """
-    return outbound(True)[1]
+    pool = outbound(propagate)[1]
+    sub = caller_subject()
+    if sub:
+        return f"sub:{sub}" if pool == WORKLOAD_KEY else f"sub:{sub}|{pool}"
+    tok = _token_hash(inbound_auth.get())
+    return f"tok:{tok}" if tok else _no_identity_key()
 
 
-def task_owner() -> str:
-    """Owner key for A2A tasks: the gateway-validated caller when known.
+def task_owner(context=None) -> str:
+    """Owner key for A2A tasks: the gateway subject, stable across token refresh.
 
-    Unlike caller_key(), which hashes the bearer token (an agent and its MCP
-    connections are bound to one token), this survives a token refresh, so a user
-    can still read, cancel or resume their own task after refreshing. Without the
-    gateway header (a request that bypassed the gateway) it falls back to the
-    token hash.
+    Resolved from the request's a2a ServerCallContext when one is passed: a2a-sdk
+    builds it per request with the request headers (DefaultCallContextBuilder,
+    state["headers"]), and hands it to every task_store call, including saves made
+    after the HTTP response for non-blocking and streamed tasks. Falls back to this
+    request's context variables. Without a subject: the token hash, else a key no
+    later request can match.
     """
-    actor = (inbound_actor.get() or "").strip()
-    return f"sub:{actor}" if actor else f"tok:{caller_key()}"
+    headers = (getattr(context, "state", None) or {}).get("headers") if context is not None else None
+    if headers is not None:
+        sub = (headers.get(CALLER_IDENTITY_HEADER) or "").strip()
+        tok = _token_hash(headers.get("authorization"))
+    else:
+        sub = caller_subject() or ""
+        tok = _token_hash(inbound_auth.get())
+    if sub:
+        return f"sub:{sub}"
+    return f"tok:{tok}" if tok else _no_identity_key()

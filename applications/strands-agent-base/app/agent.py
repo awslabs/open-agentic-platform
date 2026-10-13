@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Optional
 
@@ -37,7 +38,7 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
-from .identity import WORKLOAD_KEY, HeadersProvider, caller_actor, caller_key, outbound
+from .identity import CALLER_IDENTITY_HEADER, WORKLOAD_KEY, HeadersProvider, caller_key, caller_subject, outbound
 
 logger = logging.getLogger(__name__)
 
@@ -332,10 +333,6 @@ def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
 
 # ── per-session agent creation ───────────────────────────────────────────
 
-# Memory actor when no caller identity header arrived (see identity.caller_actor).
-# Such requests did not come through the gateway, so they share one actor.
-DEFAULT_ACTOR = "anonymous"
-
 # AgentCore accepts actor ids matching (CreateEvent model in botocore):
 #   [a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*, max 255
 # This is narrower on purpose: "/" is excluded. Long-term retrieval matches
@@ -346,14 +343,14 @@ DEFAULT_ACTOR = "anonymous"
 # Anything else, such as an e-mail-shaped subject from another identity provider,
 # becomes "h:<sha256>". Hashing keeps the mapping one-to-one: replacing characters
 # would let distinct subjects (a@b.c, a_b.c) share one actor and its memories.
-# The reserved values (the hash prefix and the anonymous actor) are hashed too, so
-# a caller cannot choose a subject that equals another actor.
+# A subject that itself starts with the hash prefix (in any case) is hashed too, so
+# no caller can choose a subject equal to another caller's hashed actor.
 _ACTOR_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9\-_]*(?::[a-zA-Z0-9\-_]+)*[a-zA-Z0-9\-_]*")
 
 
 def memory_actor(raw: str) -> str:
     """Map a caller id onto a valid AgentCore actorId, one-to-one."""
-    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw) and not raw.startswith("h:") and raw != DEFAULT_ACTOR:
+    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw) and not raw.lower().startswith("h:"):
         return raw
     return "h:" + hashlib.sha256(raw.encode()).hexdigest()
 
@@ -369,8 +366,16 @@ _RETRIEVAL_RELEVANCE = 0.2
 # at a time after the memory (AgentCore allows a single update in flight), so an
 # agent that starts mid-provisioning must notice the rest a few minutes later
 # without a restart.
+#
+# When a refresh fails, the last good answer is kept for up to _NAMESPACES_MAX_STALE
+# (a strategy deleted meanwhile drops out once that runs out), and the next attempt
+# waits _NAMESPACES_RETRY, so a sustained AgentCore error costs one call per
+# interval rather than one per agent construction.
 _NAMESPACES_TTL = 300.0
-_namespaces: dict[str, tuple[float, list[tuple[str, Optional[str]]]]] = {}
+_NAMESPACES_RETRY = 30.0
+_NAMESPACES_MAX_STALE = 3600.0
+# memory id -> (fetched_at, namespaces, next_attempt_at)
+_namespaces: dict[str, tuple[float, list[tuple[str, Optional[str]]], float]] = {}
 
 
 def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[str]]]:
@@ -379,9 +384,14 @@ def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[
     Empty when the memory has no long-term strategies, or when they cannot be
     read: the agent then keeps short-term memory only instead of failing.
     """
+    now = time.monotonic()
     cached = _namespaces.get(memory_id)
-    if cached and time.monotonic() - cached[0] < _NAMESPACES_TTL:
-        return cached[1]
+
+    def last_good() -> list[tuple[str, Optional[str]]]:
+        return cached[1] if cached and now - cached[0] < _NAMESPACES_MAX_STALE else []
+
+    if cached and (now - cached[0] < _NAMESPACES_TTL or now < cached[2]):
+        return last_good()
     found: list[tuple[str, Optional[str]]] = []
     try:
         from bedrock_agentcore.memory import MemoryClient
@@ -390,19 +400,37 @@ def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[
             for ns in strategy.get("namespaces") or []:
                 found.append((ns, strategy.get("strategyId")))
     except Exception as e:  # noqa: BLE001 — degrade to short-term memory
-        logger.warning("Could not read strategies for memory %s, long-term retrieval off: %s", memory_id, e)
-        return cached[1] if cached else found  # keep the last good answer; retry next session
-    _namespaces[memory_id] = (time.monotonic(), found)
+        keep = last_good()
+        logger.warning(
+            "Could not read strategies for memory %s (retry in %ds), using %s: %s",
+            memory_id, _NAMESPACES_RETRY, [ns for ns, _ in keep] or "none (long-term retrieval off)", e,
+        )
+        _namespaces[memory_id] = (cached[0] if cached else 0.0, cached[1] if cached else [], now + _NAMESPACES_RETRY)
+        return keep
+    _namespaces[memory_id] = (now, found, 0.0)
     if not cached or cached[1] != found:
         logger.info("Memory %s long-term namespaces: %s", memory_id, [ns for ns, _ in found] or "none")
     return found
 
 
+def _knob(mem_config: dict, key: str, kind, default):
+    """A retrieval setting from MEMORY_CONFIG. A typo falls back to the default with a
+    warning instead of failing agent construction (the A2A factory runs at startup)."""
+    raw = mem_config.get(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return kind(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r in MEMORY_CONFIG, using %r", key, raw, default)
+        return default
+
+
 def _retrieval_config(memory_id: str, region: str, mem_config: dict) -> Optional[dict]:
     from bedrock_agentcore.memory.integrations.strands.config import RetrievalConfig
 
-    top_k = int(mem_config.get("retrievalTopK", _RETRIEVAL_TOP_K))
-    relevance = float(mem_config.get("retrievalRelevanceScore", _RETRIEVAL_RELEVANCE))
+    top_k = _knob(mem_config, "retrievalTopK", int, _RETRIEVAL_TOP_K)
+    relevance = _knob(mem_config, "retrievalRelevanceScore", float, _RETRIEVAL_RELEVANCE)
     namespaces = _memory_namespaces(memory_id, region)
     if not namespaces:
         return None
@@ -445,12 +473,16 @@ def _sanitize_agentcore_id(value: str) -> str:
     return cleaned
 
 
-def _build_session_manager(session_id: str, actor_id: str):
+def _build_session_manager(session_id: str, actor_id: Optional[str]):
     """Build an AgentCoreMemorySessionManager for a specific session.
 
-    Short-term memory (the conversation, keyed by session) is always on when a
-    memory is configured. Long-term retrieval is on when the memory resource has
-    strategies; the developer opts in on the agentcore-memory component.
+    Short-term memory (the conversation, keyed by session) is on when a memory is
+    configured and the caller is known. Long-term retrieval is on when the memory
+    resource has strategies; the developer opts in on the agentcore-memory component.
+
+    No caller (no gateway identity header) means no memory at all: such requests did
+    not come through the gateway, and pooling them under one actor would share their
+    memories with each other.
     """
     if config.MEMORY_PROVIDER != "agentcore":
         return None
@@ -469,6 +501,13 @@ def _build_session_manager(session_id: str, actor_id: str):
 
     if not memory_id:
         logger.warning("MEMORY_PROVIDER=agentcore but no memoryId in MEMORY_CONFIG")
+        return None
+
+    if not actor_id:
+        logger.warning(
+            "No caller identity (%s header) on this request; memory is off for session %r",
+            CALLER_IDENTITY_HEADER, session_id,
+        )
         return None
 
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
@@ -626,10 +665,11 @@ def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = Non
     Args:
         session_id: Conversation session id. A new UUID is generated when None.
         actor_id: Memory actor. Defaults to the caller identity the gateway set on
-            this request (identity.caller_actor), so long-term memory is per caller.
+            this request (identity.caller_subject), so memory is per caller. None
+            when the request carries no identity: the agent then has no memory.
     """
     session_id = session_id or str(uuid.uuid4())
-    actor_id = actor_id or caller_actor(DEFAULT_ACTOR)
+    actor_id = actor_id or caller_subject()
     agent = _construct_agent(session_id, actor_id)
     logger.info(f"Agent created: {config.AGENT_NAME} session={session_id}")
     return agent
@@ -637,7 +677,11 @@ def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = Non
 
 # ── session cache ────────────────────────────────────────────────────────
 
-_agents: dict[tuple, Agent] = {}
+# Bounded LRU, like the A2A executor's own context cache (same default bound). An
+# evicted agent is only dropped from this cache: its conversation is in AgentCore
+# when memory is on, and its MCP connections live in the separate, bounded pools.
+_MAX_AGENTS = int(os.getenv("MAX_CACHED_AGENTS", "1000"))
+_agents: "OrderedDict[tuple, Agent]" = OrderedDict()
 
 
 def get_or_create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> tuple[Agent, str]:
@@ -650,18 +694,21 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: Optional[str
 
     Returns (agent, session_id).
     """
-    # Key on the INBOUND caller, whatever credential goes OUTBOUND. With
-    # PROPAGATE_CALLER_TOKEN=false the outbound key is the constant workload key,
-    # so keying on it let two users who send the same contextId share one agent
-    # and its conversation history.
-    caller = caller_key()
+    # Key on the INBOUND caller (identity.caller_key), never on the outbound
+    # credential alone: with PROPAGATE_CALLER_TOKEN=false that is the constant
+    # workload key, which would let two users who send the same contextId share one
+    # agent and its conversation history.
+    caller = caller_key(config.PROPAGATE_CALLER_TOKEN)
 
     if session_id and (caller, session_id) in _agents:
+        _agents.move_to_end((caller, session_id))
         return _agents[(caller, session_id)], session_id
 
     sid = session_id or str(uuid.uuid4())
     agent = create_agent(session_id=sid, actor_id=actor_id)
     _agents[(caller, sid)] = agent
+    while len(_agents) > _MAX_AGENTS:
+        _agents.popitem(last=False)
     return agent, sid
 
 

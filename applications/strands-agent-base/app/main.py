@@ -167,7 +167,7 @@ async def lifespan(app):
 # instead of all A2A callers sharing a single memory-less agent. create_agent's
 # signature (session_id, actor_id=None) matches (context_id) -> Agent when
 # called positionally; the actor then comes from the request's caller identity
-# header (app/identity.py caller_actor). The factory is invoked once up front (with
+# header (app/identity.py caller_subject). The factory is invoked once up front (with
 # a placeholder context id) purely to derive agent-card metadata.
 a2a_server = A2AServer(
     agent_factory=create_agent,

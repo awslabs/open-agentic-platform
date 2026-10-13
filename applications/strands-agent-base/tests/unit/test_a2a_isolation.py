@@ -137,3 +137,43 @@ def test_task_owner_survives_a_token_refresh_but_not_a_different_subject():
     assert run("bob", "Bearer old", lambda: store.get("t1")) is None
     # Without the gateway header, ownership falls back to the token.
     assert run(None, "Bearer old", lambda: store.get("t1")) is None
+
+
+@pytest.mark.parametrize("name", ["setdefault", "update", "copy"])
+def test_unscoped_dict_methods_raise_rather_than_bypass_the_caller(name):
+    ex, _ = _scoped_executor()
+    with pytest.raises(NotImplementedError):
+        getattr(ex._contexts, name)("ctx")
+    with pytest.raises(NotImplementedError):
+        ex._contexts |= {"ctx": object()}
+
+
+def test_task_owner_comes_from_the_call_context_not_the_worker():
+    # a2a-sdk passes the request's ServerCallContext (with its headers) to every
+    # store call, including saves after the HTTP response for non-blocking and
+    # streamed tasks. The owner must follow that context even when the coroutine
+    # runs with another request's (or no) context variables.
+    from a2a.server.context import ServerCallContext
+    from a2a.types import Task, TaskState, TaskStatus
+
+    store = a2a_isolation.CallerScopedTaskStore()
+    task = Task(id="t1", context_id="c1", status=TaskStatus(state=TaskState.completed))
+    alice = ServerCallContext(state={"headers": {"x-forwarded-user": "alice", "authorization": "Bearer a"}})
+    bob = ServerCallContext(state={"headers": {"x-forwarded-user": "bob", "authorization": "Bearer b"}})
+
+    asyncio.run(store.save(task, alice))  # no context variables set: a pooled worker
+    assert asyncio.run(store.get("t1", alice)) is task
+    assert asyncio.run(store.get("t1", bob)) is None
+
+
+def test_sdk_task_store_surface_is_what_the_subclass_overrides():
+    # CallerScopedTaskStore overrides save/get/delete and uses `tasks` and `lock`.
+    # A new public method or a renamed attribute in a2a-sdk must fail here first.
+    from a2a.server.tasks import InMemoryTaskStore, TaskStore
+
+    public = {n for n, v in vars(InMemoryTaskStore).items() if callable(v) and not n.startswith("_")}
+    abstract = set(getattr(TaskStore, "__abstractmethods__", ()))
+    assert public == {"save", "get", "delete"}
+    assert abstract == {"save", "get", "delete"}
+    src = inspect.getsource(InMemoryTaskStore.__init__)
+    assert "self.tasks" in src and "self.lock" in src
