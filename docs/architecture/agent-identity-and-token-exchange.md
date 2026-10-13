@@ -27,7 +27,11 @@ Keycloak `26.3.3`, Bifrost `2.1.16`, vela CLI `1.10.7`.
 - **Restrict which agents may call an MCP server.** `allowedAgents` on the `mcp-server`
   component, plus platform-owned `mcpAccess` grants in the agent-gateway chart that need no
   redeploy of the server or the agent. Both are route-level `Require` rules: `Allow` would
-  be ORed with the Gateway-wide `Allow` and restrict nothing (verified live).
+  be ORed with the Gateway-wide `Allow` and restrict nothing (verified live). A caller must
+  be in both lists, so `mcpAccess` can only narrow a server's own `allowedAgents`.
+- **An agent's identity is bound to its issuer.** The Gateway rule accepts a
+  ServiceAccount-shaped `sub` only from the cluster's OIDC issuer (`jwt.iss`), and the
+  Keycloak branch never admits one, so a `sub` alone cannot claim to be an agent.
 - **Agent ServiceAccount tokens validate on spokes.** The gateway's workload-identity JWT
   provider was missing on spokes because of an annotation-name mismatch.
 - **Agent sessions are isolated per caller**, not per outbound credential.
@@ -416,7 +420,9 @@ Two supporting changes were required rather than optional:
   connections carry that caller's credential. Note the A2A JSON-RPC path caches inside
   the Strands SDK and is **not** fixed by this; see open questions.
 
-`PROPAGATE_CALLER_TOKEN=false` restores workload-only identity on every hop.
+Agents present their own ServiceAccount identity unless `PROPAGATE_CALLER_TOKEN` is
+`true`; unset or any other value means workload identity, and the agent logs the active
+mode at startup.
 
 #### `delegated-identity` trait (design, not implemented)
 
