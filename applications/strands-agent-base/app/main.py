@@ -7,13 +7,110 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 import uvicorn
+from fastapi.responses import JSONResponse
 from strands.multiagent.a2a import A2AServer
 
-from .agent import create_agent, get_or_create_agent, shutdown_mcp
+from .agent import create_agent, get_or_create_agent, mcp_readiness, shutdown_mcp
 from .config import config
 from .identity import capture_caller_auth
 
 # ── OpenTelemetry initialization ─────────────────────────────────────────
+# A tracer provider whose sampler drops high-frequency a2a-sdk event-queue
+# plumbing spans while keeping everything useful (request-handler root span,
+# agent, LLM generations, tool calls). The a2a-sdk traces every method of its
+# EventQueue/EventConsumer/QueueManager classes (@trace_class), emitting tens of
+# thousands of enqueue/dequeue/task_done spans per turn under names like
+# "a2a.server.events.event_queue.EventQueueLegacy.dequeue_event" — they bury the
+# real tree in Langfuse. Their span names all share the module prefix
+# "a2a.server.events." (span name = "<module>.<Class>.<method>"), whereas the
+# useful root span lives under "a2a.server.request_handlers.", so a name-prefix
+# drop is surgical and version-robust. The a2a-sdk also @trace-decorates its
+# module-level helpers under "a2a.utils." (e.g.
+# "a2a.utils.helpers.append_artifact_to_task"), emitted once per artifact/event
+# — pure plumbing that likewise buries the tree — so that prefix is dropped too.
+# Overridable via OTEL_DROP_SPAN_NAME_PREFIXES (comma-separated); empty disables
+# filtering.
+#
+# We can't set this via OTEL_TRACES_SAMPLER (no built-in name filter) so we
+# build the provider and hand it to StrandsTelemetry(tracer_provider=...).
+# StrandsTelemetry only globalizes + sets propagators when it creates the
+# provider itself, so when we pass our own we must replicate both here.
+def _build_filtered_tracer_provider():
+    """SDK TracerProvider that drops noisy a2a event-queue spans.
+
+    Returns the provider (already set as global, with W3C propagators) or None
+    if the OTEL SDK isn't importable, so callers fall back to the default
+    StrandsTelemetry provider.
+    """
+    try:
+        from opentelemetry import propagate as _propagate
+        from opentelemetry import trace as _trace_api
+        from opentelemetry.baggage.propagation import W3CBaggagePropagator
+        from opentelemetry.propagators.composite import CompositePropagator
+        from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
+        from opentelemetry.sdk.trace.sampling import (
+            ALWAYS_ON,
+            Decision,
+            Sampler,
+            SamplingResult,
+        )
+        from opentelemetry.trace import get_current_span
+        from opentelemetry.trace.propagation.tracecontext import (
+            TraceContextTextMapPropagator,
+        )
+        from strands.telemetry.config import get_otel_resource
+    except Exception:
+        return None
+
+    prefixes = tuple(
+        p.strip()
+        for p in os.getenv(
+            "OTEL_DROP_SPAN_NAME_PREFIXES", "a2a.server.events.,a2a.utils."
+        ).split(",")
+        if p.strip()
+    )
+    if not prefixes:
+        return None
+
+    class _DropNoisySpans(Sampler):
+        # Delegate to ALWAYS_ON (not ParentBased) for kept spans so a useful
+        # span is never dropped as a side effect of its parent being dropped:
+        # dropped event-queue spans thus don't cascade to any child that isn't
+        # itself event-queue.
+        def should_sample(
+            self, parent_context, trace_id, name, kind=None,
+            attributes=None, links=None, trace_state=None,
+        ):
+            if name.startswith(prefixes):
+                ts = get_current_span(parent_context).get_span_context().trace_state
+                return SamplingResult(Decision.DROP, None, ts)
+            return ALWAYS_ON.should_sample(
+                parent_context, trace_id, name, kind, attributes, links, trace_state
+            )
+
+        def get_description(self):
+            return f"DropNoisySpans(prefixes={prefixes})"
+
+    provider = SDKTracerProvider(resource=get_otel_resource(), sampler=_DropNoisySpans())
+    _trace_api.set_tracer_provider(provider)
+    _propagate.set_global_textmap(
+        CompositePropagator([W3CBaggagePropagator(), TraceContextTextMapPropagator()])
+    )
+    return provider
+
+
+def _setup_otlp_telemetry():
+    """Configure the OTLP exporter on a noise-filtered provider when possible,
+    else fall back to StrandsTelemetry's default provider."""
+    from strands.telemetry import StrandsTelemetry
+
+    provider = _build_filtered_tracer_provider()
+    if provider is not None:
+        StrandsTelemetry(tracer_provider=provider).setup_otlp_exporter()
+    else:
+        StrandsTelemetry().setup_otlp_exporter()
+
+
 # Three modes (mutually exclusive, checked in order):
 # 1. Decentralized (OTEL_PYTHON_DISTRO=aws_distro) — ADOT handles everything,
 #    agent exports directly to CloudWatch. No manual init needed.
@@ -25,7 +122,6 @@ if os.getenv("OTEL_PYTHON_DISTRO") == "aws_distro":
 elif os.getenv("LANGFUSE_BASE_URL"):
     try:
         import base64
-        from strands.telemetry import StrandsTelemetry
 
         auth_str = f"{os.getenv('LANGFUSE_PUBLIC_KEY', '')}:{os.getenv('LANGFUSE_SECRET_KEY', '')}"
         auth_bytes = base64.b64encode(auth_str.encode()).decode()
@@ -33,13 +129,12 @@ elif os.getenv("LANGFUSE_BASE_URL"):
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = os.getenv("LANGFUSE_BASE_URL") + "/api/public/otel"
         os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {auth_bytes},x-langfuse-ingestion-version=4"
 
-        strands_telemetry = StrandsTelemetry().setup_otlp_exporter()
+        _setup_otlp_telemetry()
     except ImportError:
         pass
 elif os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     try:
-        from strands.telemetry import StrandsTelemetry
-        strands_telemetry = StrandsTelemetry().setup_otlp_exporter()
+        _setup_otlp_telemetry()
     except ImportError:
         pass
 
@@ -97,6 +192,25 @@ async def health() -> Dict[str, str]:
         "agent": config.AGENT_NAME,
         "a2a_protocol": "compatible",
     }
+
+
+# Deliberately a plain `def`, not `async def`: mcp_readiness opens MCP
+# connections, which blocks. FastAPI runs sync endpoints in a worker thread, so
+# the blocking connect never stalls the asyncio event loop (an `async def` here
+# would). The Kubernetes readiness probe calls this every periodSeconds; while
+# any configured MCP server is not connected it retries the missing ones (one
+# attempt per probe) and returns 503, so the pod is kept out of the Service
+# until its toolset is complete. /health stays always-200 for liveness, so a
+# transiently-not-ready pod is not restarted — only kept un-Ready.
+@app.get("/ready")
+def ready():
+    ok, reasons = mcp_readiness()
+    if ok:
+        return {"status": "ready", "agent": config.AGENT_NAME}
+    return JSONResponse(
+        status_code=503,
+        content={"status": "not-ready", "agent": config.AGENT_NAME, "missing": reasons},
+    )
 
 
 @app.post("/chat")

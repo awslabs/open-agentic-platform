@@ -1,4 +1,13 @@
-{{- if .Values.ingress.enabled }}
+{{- /*
+  Gate the whole ingress block on BOTH enabled AND a non-empty host. Clusters
+  with their own public domain (the hub, fronted by CloudFront) set
+  ingress.host and get the ALB ingress. A spoke has an EMPTY host (no CloudFront
+  / ExternalDNS of its own): rendering an ingress there would provision a
+  dangling wildcard ALB that nothing fronts. Agents on the spoke reach the
+  gateway in-cluster (Gateway API agentgateway-proxy + the agentgateway-proxy
+  svc in agentgateway-system), so the external ingress is unnecessary there.
+*/}}
+{{- if and .Values.ingress.enabled .Values.ingress.host }}
 ---
 # Separate ClusterIP service for ALB ingress routing.
 # The agentgateway-proxy service is a LoadBalancer (NLB) managed by the

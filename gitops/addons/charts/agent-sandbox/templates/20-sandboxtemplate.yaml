@@ -73,7 +73,9 @@ spec:
               mountPath: /workspace
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.coderTemplate.secretsMount.enabled }}
+            {{- /* Same gate as 05-externalsecret-github.yaml: without the warm pool the
+                   ExternalSecret is not rendered, so mounting it here would dangle. */}}
+            {{- if and .Values.coderTemplate.secretsMount.enabled .Values.warmPool.enabled }}
             # Short-TTL GitHub token (+ optional Bifrost key) the coder reads at
             # /etc/secrets — mode 0400, never in env. The coder uses gh-token to
             # clone/push + open the PR; Bifrost auth is optional on this platform.
@@ -93,7 +95,7 @@ spec:
             sizeLimit: {{ .Values.coderTemplate.workspaceSizeGi }}Gi
         - name: tmp
           emptyDir: {}
-        {{- if .Values.coderTemplate.secretsMount.enabled }}
+        {{- if and .Values.coderTemplate.secretsMount.enabled .Values.warmPool.enabled }}
         - name: coder-secrets
           secret:
             secretName: {{ .Values.coderTemplate.secretsMount.secretName }}

@@ -3,10 +3,10 @@
 apiVersion: iam.aws.upbound.io/v1beta1
 kind: Role
 metadata:
-  name: hub-langfuse-seed-role
+  name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
   annotations:
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-    crossplane.io/external-name: hub-langfuse-seed-role
+    crossplane.io/external-name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
 spec:
   forProvider:
     assumeRolePolicy: |
@@ -31,7 +31,7 @@ spec:
                 "secretsmanager:DescribeSecret",
                 "secretsmanager:GetSecretValue"
               ],
-              "Resource": "arn:aws:secretsmanager:*:*:secret:hub/langfuse-*"
+              "Resource": "arn:aws:secretsmanager:*:*:secret:{{ include "langfuse.resourcePrefix" . }}-hub/langfuse-*"
             }]
           }
 ---
@@ -48,6 +48,6 @@ spec:
     namespace: {{ .Release.Namespace }}
     region: {{ .Values.global.awsRegion | default "us-west-2" }}
     roleArnRef:
-      name: hub-langfuse-seed-role
+      name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
     serviceAccount: langfuse-seed
 {{- end }}
