@@ -71,13 +71,16 @@ For example, always use the time tool when asked about the current time or date.
     # MCP server names to load via the gateway (comma-separated, maps to /mcp/<name>)
     MCP_SERVER_NAMES_RAW: Optional[str] = os.getenv("MCP_SERVER_NAMES")
 
-    # Forward the caller's bearer token on outbound MCP calls instead of the
-    # agent's own ServiceAccount token. Set false to restore workload-only
-    # identity on every hop.
-    PROPAGATE_CALLER_TOKEN: bool = os.getenv("PROPAGATE_CALLER_TOKEN", "true").lower() not in (
-        "false",
-        "0",
-        "no",
+    # Which credential outbound MCP calls carry. Default (unset or any value other
+    # than true/1/yes): the agent's own ServiceAccount token, so the gateway knows
+    # which agent is calling. "true" forwards the caller's bearer token instead,
+    # the passthrough the MCP spec forbids. The platform chart always sets this
+    # (global.agentIdentity.propagateCallerToken); the safe default covers images
+    # run without it. main.py logs the active mode at startup.
+    PROPAGATE_CALLER_TOKEN: bool = os.getenv("PROPAGATE_CALLER_TOKEN", "false").strip().lower() in (
+        "true",
+        "1",
+        "yes",
     )
 
     @property

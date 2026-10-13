@@ -265,10 +265,14 @@ spec:
         	// an Allow here would be ORed with the Gateway's own Allow (any authenticated caller)
         	// and restrict nothing (verified live). Require rules must ALL match, so this narrows.
         	// The platform's mcpAccess grant (agent-gateway chart) is also a Require on this
-        	// route; with both set, a caller must be in BOTH lists.
+        	// route; with both set, a caller must be in BOTH lists. So mcpAccess can only narrow
+        	// this list: if it is set, the platform cannot add an agent that is not in it.
         	//
         	// Matches the agent's ServiceAccount subject, so it needs agents to present their own
         	// identity (the platform default, global.agentIdentity.propagateCallerToken "false").
+        	// It need not check the issuer: being a Require, it ANDs with the Gateway rule
+        	// (agent-gateway jwt-policy.yaml), which accepts a ServiceAccount-shaped `sub` only
+        	// from the cluster's OIDC issuer.
         	if parameter.registerWithGateway && len(_agentSubjects) > 0 {
         		agentAccessPolicy: {
         			apiVersion: "agentgateway.dev/v1alpha1"
@@ -378,7 +382,7 @@ spec:
         			memory?: string
         		}
         	}
-        	// +usage=Agents allowed to call this server, e.g. ["oap-assistant-a", "other-ns/agent-b"]. Empty (default) allows every agent. The platform can restrict further with mcpAccess in the agent-gateway chart; a caller must then be in both lists.
+        	// +usage=Agents allowed to call this server, e.g. ["oap-assistant-a", "other-ns/agent-b"]. Empty (default) allows every agent. The platform can restrict further with mcpAccess in the agent-gateway chart; a caller must then be in both lists, so once this is set the platform can only narrow it, not add agents.
         	allowedAgents: *[] | [...string]
         	// +usage=Tool-level authorization policy (CEL-based)
         	authPolicy?: {

@@ -262,6 +262,12 @@ def main():
     logger.info(f"Model: {config.MODEL_ID}")
     logger.info(f"LLM Gateway: {config.LLM_GATEWAY_URL}")
     logger.info(f"Memory: {config.MEMORY_PROVIDER or 'none'}")
+    logger.info(
+        "MCP identity: %s",
+        "caller token forwarded (PROPAGATE_CALLER_TOKEN=true)"
+        if config.PROPAGATE_CALLER_TOKEN
+        else "agent ServiceAccount token",
+    )
     logger.info("=" * 60)
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level=config.LOG_LEVEL.lower())
 
