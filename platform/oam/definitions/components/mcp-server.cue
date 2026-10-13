@@ -406,12 +406,16 @@ template: {
 		// +usage=Agents allowed to call this server, e.g. ["oap-assistant-a", "other-ns/agent-b"]. Empty (default) allows every agent. The platform can restrict further with mcpAccess in the agent-gateway chart; a caller must then be in both lists, so once this is set the platform can only narrow it, not add agents.
 		allowedAgents: *[] | [...string]
 		// +usage=Tool-level authorization policy (CEL-based)
-		authPolicy?: {
+		// Concrete with defaults, not optional: with `authPolicy?:`, an Application that
+		// omits it and uses the aws-service-identity trait is rejected with "cannot
+		// reference optional field: authPolicy" (issue #61, fixed in #62). The policy is
+		// still emitted only when matchExpressions is non-empty.
+		authPolicy: {
 			// The CRD enum is Allow | Deny | Require. Prefer Allow or Require: the CRD
 			// warns "Deny is not recommended because expression failures fail to deny",
 			// i.e. a CEL evaluation error in a Deny rule fails OPEN.
 			action:           *"Allow" | "Deny" | "Require"
-			matchExpressions: [...string]
+			matchExpressions: *[] | [...string]
 		}
 	}
 }
