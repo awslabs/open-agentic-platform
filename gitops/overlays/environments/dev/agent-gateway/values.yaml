@@ -2,7 +2,9 @@
 #
 # Empty = every agent may call every MCP server (the Gateway-wide rule). To restrict a
 # server to specific agents, add an entry; it takes effect on the next sync with no
-# change to the MCP server or the agent:
+# change to the MCP server or the agent. If the server's Application sets its own
+# allowedAgents, a caller must be in both lists, so an entry here can only narrow that
+# list; adding an agent the server did not list needs a change to the server.
 #
 #   mcpAccess:
 #     mcp-time:

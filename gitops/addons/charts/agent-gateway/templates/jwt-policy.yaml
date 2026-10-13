@@ -3,9 +3,21 @@
 {{- $pathPrefix := .Values.global.keycloak.pathPrefix | default "" -}}
 {{- $jwksPath := printf "%s/realms/%s/protocol/openid-connect/certs" $pathPrefix $realm -}}
 {{- $wi := .Values.workloadIdentity -}}
-{{- $authz := .Values.jwtAuth.allowExpression -}}
+{{- /*
+"Which agent is calling" is the token's `sub`, which per-server rules match
+(allowedAgents on mcp-server, mcpAccess here). A `sub` is only a claim, so bind it to
+the issuer that minted it:
+  - a ServiceAccount-shaped subject (allowedSubjectPrefix) is accepted only from the
+    cluster's OIDC issuer (workloadIdentity.issuer);
+  - the human branch can never admit one, even if Keycloak were to mint such a `sub`.
+Per-server rules are `Require`, so they AND with this Gateway rule and inherit the
+binding without repeating the issuer. `has()` keeps the human branch unchanged for a
+token without `sub`.
+*/ -}}
+{{- $saSub := printf "has(jwt.sub) && jwt.sub.startsWith(%q)" $wi.allowedSubjectPrefix -}}
+{{- $authz := printf "(%s) && !(%s)" .Values.jwtAuth.allowExpression $saSub -}}
 {{- if $wi.issuer -}}
-{{- $authz = printf "(%s) || jwt.sub.startsWith(%q)" .Values.jwtAuth.allowExpression $wi.allowedSubjectPrefix -}}
+{{- $authz = printf "(%s) || (jwt.iss == %q && %s)" $authz $wi.issuer $saSub -}}
 {{- end -}}
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
