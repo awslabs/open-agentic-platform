@@ -9,7 +9,7 @@ provider:
   version: "v2.5.3"
   # Pod resources for the bedrockagentcore provider. Any key overrides the default in
   # templates/01-provider.yaml. Same contract as appmod-blueprints crossplane-base
-  # (PR #941), which measured this provider:
+  # (merged to appmod main), which measured this provider:
   #
   #   provider-aws-bedrockagentcore v2.5.3, kind with the hub's 790 CRDs,
   #   GODEBUG=gctrace=1: live heap peaks ~190MB at controller start and does not
@@ -23,7 +23,7 @@ provider:
   # Defaults:
   #   cpuRequest    100m
   #   memoryRequest 320Mi  expected steady usage with GOGC=50 (to be confirmed on a cluster)
-  #   memoryLimit   512Mi  OOM safety
+  #   memoryLimit   512Mi  OOM safety; the chart rejects a limit below 288Mi
   #   goGC          "50"   GC runs at 1.5x live instead of 2x
   #   goMemLimit    90% of memoryLimit unless set; "" disables the env var
   resources: {}

@@ -17,7 +17,8 @@ spec:
           serviceAccountName: {{ .Values.podIdentity.serviceAccountName }}
           containers:
             - name: package-runtime
-              {{- /* Same mechanism as appmod-blueprints crossplane-base (PR #941); see the
+              {{- /* Same mechanism as appmod-blueprints crossplane-base
+                     (gitops/addons/charts/crossplane-base/templates/provider-config.yaml); see the
                      provider.resources comment in values.yaml for the measurements.
                      hasKey, not `| default`, so an explicit "" for goMemLimit/goGC means
                      "do not set the env var". */}}
@@ -32,8 +33,8 @@ spec:
               {{-   end }}
               {{-   $mib := atoi (trimSuffix "Mi" (trimSuffix "Gi" $lim)) }}
               {{-   if hasSuffix "Gi" $lim }}{{ $mib = mul $mib 1024 }}{{ end }}
-              {{-   if lt $mib 128 }}
-              {{-     fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q is below 128Mi; the provider's live heap alone peaks near 190MB" $lim) }}
+              {{-   if lt $mib 288 }}
+              {{-     fail (printf "crossplane-agentcore: provider.resources.memoryLimit %q is below 288Mi, the smallest limit measured to survive startup (see values.yaml)" $lim) }}
               {{-   end }}
               {{-   $_ := set $r "goMemLimit" (printf "%dMiB" (div (mul $mib 9) 10)) }}
               {{- end }}
