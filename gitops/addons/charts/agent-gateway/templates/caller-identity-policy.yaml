@@ -17,12 +17,22 @@
 #
 # Scoped to the Gateway, like jwt-policy.yaml, so both hops are covered: client ->
 # agent, and agent -> MCP server or other agent.
+#
+# `inheritance: Override` keeps this authoritative: traffic policies merge field by
+# field with the more specific attachment winning, so without it a route-level
+# `traffic.transformation` would replace this one and silently drop the header that
+# agents use as their memory actor.
+#
+# The header name is fixed (agents read `x-forwarded-user`, app/identity.py), so the
+# gateway and the image cannot drift apart.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
   name: caller-identity-policy
   namespace: agentgateway-system
 spec:
+  strategy:
+    inheritance: Override
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: Gateway
@@ -31,6 +41,6 @@ spec:
     transformation:
       request:
         set:
-        - name: {{ .Values.callerIdentity.header | quote }}
+        - name: X-Forwarded-User
           value: 'jwt.sub'
 {{- end }}

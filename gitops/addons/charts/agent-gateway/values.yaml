@@ -102,7 +102,6 @@ credentialPassthrough:
 # long-term memory actor.
 callerIdentity:
   enabled: true
-  header: X-Forwarded-User
 
 # MCP authentication configuration
 # Disabled by default — Gateway-level JWT auth (jwt-policy.yaml) handles
