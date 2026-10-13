@@ -6,7 +6,12 @@ import "strings"
 	attributes: {
 		workload: type: "autodetects.core.oam.dev"
 		status: {
-			healthPolicy: "isHealth: *( context.output.status.atProvider.id != \"\" ) | false"
+			// Healthy once the Memory AND every MemoryStrategy exist, so an agent that
+			// dependsOn this component starts with all long-term strategies in place.
+			healthPolicy: #"""
+				_pending: [for k, v in context.outputs if v.kind == "MemoryStrategy" && v.status.atProvider.id == _|_ {k}]
+				isHealth: *(context.output.status.atProvider.id != "" && len(_pending) == 0) | false
+				"""#
 			customStatus: #"""
 				message: *("memoryId: " + context.output.status.atProvider.id) | "provisioning"
 				memoryId: *context.output.status.atProvider.id | ""
@@ -20,11 +25,15 @@ import "strings"
 
 template: {
 	let _autoName = strings.Replace(context.namespace + "_" + context.name, "-", "_", -1)
+	// Memory, MemoryStrategy and Policy here are the cluster-scoped Upbound kinds
+	// (*.aws.upbound.io), so their object names carry the namespace to stay unique
+	// across namespaces (oam-authoring.md section 3).
+	let _objName = context.namespace + "-" + context.name
 
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
 		kind:       "Memory"
-		metadata: name: context.name
+		metadata: name: _objName
 		spec: {
 			forProvider: {
 				name:                parameter.memoryName
@@ -54,7 +63,7 @@ template: {
 			"\(context.name)-strategy-\(strings.ToLower(s))": {
 				apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
 				kind:       "MemoryStrategy"
-				metadata: name: "\(context.name)-\(strings.ToLower(s))"
+				metadata: name: "\(_objName)-\(strings.ToLower(s))"
 				spec: {
 					forProvider: {
 						// Must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ (CreateMemory API model).
@@ -62,7 +71,7 @@ template: {
 						region:     parameter.region
 						type:       _strategyTypes[s].type
 						namespaces: _strategyTypes[s].namespaces
-						memoryIdRef: name: context.name
+						memoryIdRef: name: _objName
 					}
 					providerConfigRef: name: "default"
 				}
@@ -70,6 +79,11 @@ template: {
 		}
 	}
 
+	// Only what the agent's AgentCore session manager calls (bedrock_agentcore
+	// MemoryClient: get_memory for strategies, create/list/get/delete_event,
+	// retrieve_memory_records), on this memory only. AgentCore ids are
+	// "<memoryName>-<suffix>" and memoryName cannot contain "-", so the "-*" suffix
+	// matches this memory and no other.
 	outputs: "\(context.name)-iam-policy": {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
@@ -83,8 +97,15 @@ template: {
 					  "Statement": [
 					    {
 					      "Effect": "Allow",
-					      "Action": ["bedrock-agentcore:*"],
-					      "Resource": "*"
+					      "Action": [
+					        "bedrock-agentcore:GetMemory",
+					        "bedrock-agentcore:CreateEvent",
+					        "bedrock-agentcore:ListEvents",
+					        "bedrock-agentcore:GetEvent",
+					        "bedrock-agentcore:DeleteEvent",
+					        "bedrock-agentcore:RetrieveMemoryRecords"
+					      ],
+					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:memory/\(parameter.memoryName)-*"
 					    },
 					    {
 					      "Effect": "Allow",
@@ -112,7 +133,7 @@ template: {
 		description: *"AgentCore Memory" | string
 		// +usage=Number of days after which events expire (3-365)
 		eventExpiryDuration: *30 | int
-		// +usage=Long-term memory strategies to enable. Empty (default) keeps short-term memory only: the conversation within a session. semantic stores facts, userPreference stores preferences, summary stores per-session summaries; all are kept per caller.
+		// +usage=Long-term memory strategies to enable. Empty (default) keeps short-term memory only: the conversation within a session. semantic stores facts, userPreference stores preferences, summary stores per-session summaries; all are kept per caller. Removing a strategy from this list deletes that strategy in AgentCore (its MemoryStrategy is garbage-collected), and the agent stops retrieving its namespace.
 		strategies: *[] | [...("semantic" | "userPreference" | "summary")]
 	}
 }

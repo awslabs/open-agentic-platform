@@ -169,12 +169,22 @@ Strategy namespaces are platform-owned and keyed by the caller:
 | `summary` | `SUMMARIZATION` | `/summaries/{actorId}/{sessionId}/` |
 
 `actorId` is the `X-Forwarded-User` header the gateway sets from the caller's token
-`sub`, so one caller's memories are never retrieved for another. Requests that did not
-come through the gateway share the actor `anonymous`. The agent reads the strategies from
-the memory itself (`GetMemory`, refreshed every 5 minutes), so adding a strategy needs no
-agent change and no rollout. Sessions that are already open keep the strategies they
-started with; new sessions use the current ones. Retrieval tuning: `retrievalTopK` and
-`retrievalRelevanceScore` in `memory.config` (defaults 10 and 0.2).
+`sub`, so one caller's memories are never retrieved for another. A request without that
+header did not come through the gateway, and the agent gives it no memory at all rather
+than pooling such callers together. The agent reads the strategies from the memory itself
+(`GetMemory`, refreshed every 5 minutes), so adding a strategy needs no agent change and no
+rollout. Sessions that are already open keep the strategies they started with; new
+sessions use the current ones. Retrieval tuning: `retrievalTopK` and
+`retrievalRelevanceScore` in `memory.config`, as strings (`"5"`, `"0.3"`); defaults 10 and
+0.2, and an unparsable value falls back to the default with a warning.
+
+The `summary` namespace includes `{sessionId}`, so summaries are recalled within the
+session that produced them, not across sessions. Use `semantic` or `userPreference` for
+recall across sessions.
+
+The `agentcore-memory` component reports healthy only once the memory and all its
+strategies exist, so an agent that `dependsOn` it starts with every strategy in place.
+Removing a strategy from the list deletes it in AgentCore.
 
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not
