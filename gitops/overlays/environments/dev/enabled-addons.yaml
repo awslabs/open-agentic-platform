@@ -19,6 +19,13 @@ enabledAddons:
   platform_manifests_bootstrap: true   # wave -1: creates the system-<prefix> Karpenter NodePool that system pods pin to
   crossplane: true
   crossplane_aws: true
+  # Crossplane abstractions (XRDs + Compositions). On a spoke this deploys every
+  # abstraction except platform-cluster (which provisions clusters and stays on the
+  # hub). PodIdentity is one of them, so this is what lets the aws-service-identity
+  # OAM trait resolve its platform.gitops.io PodIdentity claim here. Requires
+  # crossplane: true above. Emits the cluster-secret label enable_abstractions, which
+  # the appmod abstractions ApplicationSet selects on (merged to appmod main).
+  abstractions: true
   kubevela: true
   argo_rollouts: true
   # Self-managed Karpenter (platform-repo addon), running ALONGSIDE Auto Mode to

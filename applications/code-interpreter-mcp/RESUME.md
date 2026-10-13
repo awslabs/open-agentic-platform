@@ -73,8 +73,8 @@ MATRIX PASS, and a real agent executing code whose output could not be guessed.
 
 An earlier version of this document said the `crossplane-agentcore` chart's provisioning
 "already works, do not rebuild it." **That was wrong at the Crossplane layer.** The
-interpreters do exist in AWS and report `READY`, which is what the spike observed through the
-AWS API, but the chart's managed resource has been failing since 2026-05-27 with
+interpreters do exist in AWS and report `READY`, which is what direct probing of the
+AWS API observed, but the chart's managed resource has been failing since 2026-05-27 with
 `ConflictException: CodeInterpreter with name 'peeks_hub_agent_core_code_interpreter' already
 exists in this account`, and its `atProvider` is empty. The chart's browser resource is stuck
 the same way. See the Provisioning section of `DESIGN.md`.

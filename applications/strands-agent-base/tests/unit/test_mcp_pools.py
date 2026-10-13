@@ -1,7 +1,12 @@
-"""Unit tests for per-caller MCP connection pooling.
+"""Unit tests for per-caller MCP connection pooling and the /ready probe.
 
-The behaviour under test is isolation: an MCP connection binds its credential
-when it opens, so two callers must never share one.
+Two behaviours under test:
+  * isolation — an MCP connection binds its credential when it opens, so two
+    callers must never share one;
+  * readiness — connecting is a single non-blocking attempt that never raises;
+    recovery from a not-yet-ready backend is delegated to the /ready probe
+    (mcp_readiness), which reconnects missing servers until the toolset is
+    complete.
 """
 
 import pytest
@@ -111,8 +116,13 @@ def test_workload_pool_recycles_and_rereads_the_rotated_token(isolated_agent_sta
 
     _tools_for(None)
 
-    assert client.stops == 1 and client.starts == 2, "recycled in place"
-    assert isolated_agent_state["clients"].instances == [client], "same instance reused"
+    instances = isolated_agent_state["clients"].instances
+    # Recycle restarts the SAME client in place (MCPClient is restartable):
+    # stop() then start() on the same instance, which re-invokes the transport
+    # and re-reads the rotated token. Object identity is preserved so no new
+    # client is created — tool objects held by callers stay valid.
+    assert client.stops == 1 and client.starts == 2, "same client restarted in place"
+    assert len(instances) == 1 and instances[0] is client, "no new client object"
     _, headers = isolated_agent_state["calls"][-1]
     assert headers["Authorization"] == "Bearer sa-token-v2"
 
@@ -162,11 +172,73 @@ def test_shutdown_closes_every_pool(isolated_agent_state):
     assert all(c.stops == 1 for c in isolated_agent_state["clients"].instances)
 
 
-def test_connect_failure_is_contained(monkeypatch, isolated_agent_state):
+def test_connect_failure_is_contained_without_blocking_or_raising(monkeypatch, isolated_agent_state):
+    """A down backend must NOT block, retry in-process, or raise: _open makes
+    exactly ONE fast attempt, the agent gets no tools from it and does not fail;
+    recovery is left to the /ready probe (see the readiness test below)."""
+
     class Failing(isolated_agent_state["clients"]):
         def start(self):
+            super().start()
             raise RuntimeError("connect refused")
 
     monkeypatch.setattr(agent_mod, "MCPClient", Failing)
     _, tools = _tools_for("Bearer alice.jwt")
+
     assert tools == []
+    instances = isolated_agent_state["clients"].instances
+    assert len(instances) == 1, "exactly one synchronous attempt, no background retry"
+    assert instances[0].stops == 1, "the half-started client is closed"
+
+
+# ── /ready probe (mcp_readiness) ──────────────────────────────────────────
+
+def test_ready_is_true_when_no_servers_are_configured(monkeypatch, isolated_agent_state):
+    monkeypatch.setattr(config, "MCP_SERVER_NAMES_RAW", None)
+    ready, reasons = agent_mod.mcp_readiness()
+    assert ready is True and reasons == {}
+
+
+def test_ready_reconnects_until_the_toolset_is_complete(monkeypatch, isolated_agent_state):
+    """Mikhail's case: the first connect fails with a transient 404 (gateway
+    route not registered yet) and a later probe succeeds. The readiness probe
+    must report not-ready first (503 body names the server) then ready, with the
+    tools attached to the workload pool — no in-process retry/warm-up involved."""
+
+    class FlakyThenOk(isolated_agent_state["clients"]):
+        attempts = 0
+
+        def start(self):
+            super().start()
+            FlakyThenOk.attempts += 1
+            if FlakyThenOk.attempts < 2:  # first probe 404s, second serves
+                raise RuntimeError("gateway 404: route not registered yet")
+
+    monkeypatch.setattr(agent_mod, "MCPClient", FlakyThenOk)
+
+    # First probe: the single configured server is down -> not ready, named.
+    ready, reasons = agent_mod.mcp_readiness()
+    assert ready is False
+    assert "mcp-time" in reasons and "404" in reasons["mcp-time"]
+    key = WORKLOAD_KEY
+    assert agent_mod._pools[key].tools == [], "no tools until the server is up"
+
+    # Second probe: the backend now serves -> ready, tools attached.
+    ready, reasons = agent_mod.mcp_readiness()
+    assert ready is True and reasons == {}
+    assert agent_mod._pools[key].tools, "tools attached to the workload pool once up"
+    assert len(agent_mod._pools[key].clients) == 1, "exactly one live client pooled"
+    assert FlakyThenOk.attempts == 2, "one failed attempt, then one that succeeded"
+
+
+def test_ready_reuses_the_workload_pool_the_autonomous_path_reads(isolated_agent_state):
+    """The probe populates the WORKLOAD pool, so a subsequent autonomous
+    (workload-keyed) _get_mcp_tools reuses it without reconnecting."""
+    ready, _ = agent_mod.mcp_readiness()
+    assert ready is True
+    calls_after_probe = len(isolated_agent_state["calls"])
+
+    key, tools = _tools_for(None)  # None caller -> WORKLOAD_KEY
+    assert key == WORKLOAD_KEY
+    assert tools, "autonomous path sees the probe-connected tools"
+    assert len(isolated_agent_state["calls"]) == calls_after_probe, "no reconnect"

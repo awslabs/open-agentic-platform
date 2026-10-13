@@ -113,14 +113,22 @@ spec:
           # under load — with the 1s default the livenessProbe timed out, failed 3x,
           # and the pod was SIGKILLed (exitCode 137) mid-boot, crash-looping and
           # leaving the Service with no endpoints (UI 502). 5s gives real headroom.
+          #
+          # startupProbe is sized for the ONE-TIME cold init on a fresh cluster:
+          # /api/public/health responds only after Prisma + ClickHouse migrations and
+          # the init scripts complete, which on a cold ClickHouse exceeded the previous
+          # ~315s budget (30×10s). The pod was SIGTERM'd mid-init and restarted before
+          # the one-time init ever finished, so it never converged (observed 11 restarts).
+          # 60×10s = ~600s window + 10s per-attempt timeout tolerates the slow first boot;
+          # liveness below stays strict so a genuinely hung pod is still restarted later.
           startupProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
+            timeoutSeconds: 10
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /api/public/health

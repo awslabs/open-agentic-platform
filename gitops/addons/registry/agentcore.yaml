@@ -58,3 +58,13 @@ oam-agent-components:
       # Ported from gitops/addons/bootstrap/default/addons.yaml, which this registry
       # layer replaced — that file's edit on main has nowhere else to land.
       awsAccountId: '{{.metadata.annotations.aws_account_id}}'
+      # Kata RuntimeClass a sandboxed agent selects (agent component,
+      # properties.sandbox: true). Pinned here rather than left to the chart
+      # default so the class a cluster hands out is visible in the GitOps layer
+      # alongside its other ambient values, not only in chart defaults.
+      #
+      # Matches the chart default. Change it ONLY for a cluster whose matching
+      # node layer is provisioned: kata-qemu needs nothing extra (same pool as
+      # clh), kata-fc needs kata-nodepool kataFc.enabled plus the
+      # agent_sandbox_kata_fc addon, or sandboxed pods stay Pending.
+      sandboxRuntimeClass: kata-clh

@@ -18,3 +18,4 @@ gitops/addons/charts/dark-factory/iam/_provider.tf
 # cluster endpoints, image URIs) and are not meant for a public repo.
 # .kiro/steering/ IS tracked deliberately; only the handoff notes are ignored.
 .kiro/session-handoff*.md
+.oap-private/

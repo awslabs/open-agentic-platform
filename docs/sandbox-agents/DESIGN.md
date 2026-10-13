@@ -1,8 +1,26 @@
 # Sandbox-Isolated Agents — Kata MicroVM Isolation for the OAM `agent` Component
 
-> **Status:** Design, approved for implementation. One opt-in boolean runs an OAM `agent` inside a
-> Kata microVM with a hardened `securityContext`. The workload stays an Argo Rollout in both paths,
-> so blue-green, `replicas`, Services, gateway routing and health gating are unchanged.
+> **Status:** Implemented **and verified on a live EKS cluster**. One opt-in boolean runs an OAM
+> `agent` inside a Kata microVM with a hardened `securityContext`. The workload stays an Argo
+> Rollout in both paths, so blue-green, `replicas`, Services and gateway routing are unchanged.
+>
+> Both previously-outstanding steps are done. (1)
+> `gitops/addons/charts/oam-agent-components/templates/agent.yaml` **is** regenerated on this branch
+> via `platform/oam/generate.sh` (`vela` CLI 1.10.4 — it renders offline; the
+> `Failed to load external packages for cuex default compiler` line is a non-fatal warning). Source
+> and generated output are in sync: re-rendering the committed CUE reproduces the committed
+> ComponentDefinition byte-for-byte. (2) The §8 validation plan has been run — see
+> **§8.1 Validation results**.
+>
+> **Proof of isolation:** a sandboxed agent's pod reports guest kernel `6.18.35` against host
+> `6.12.110-135.201.amzn2023.x86_64`. A pod cannot have a different kernel from its host, so this is
+> a real microVM rather than a shared-kernel container.
+>
+> Two defects were found by that validation and fixed on this branch: a literal Helm action inside a
+> CUE comment (which broke the render of the **entire** `oam-agent-components` chart once the
+> template was regenerated), and a missing numeric `runAsUser` (which prevented `sandbox: true` from
+> starting *any* image whose `USER` is a name — including this component's own default image). See
+> §8.1.
 
 ## 1. Problem and contract
 
@@ -309,3 +327,52 @@ Steps 1–3 need no cluster.
 7. **Negative:** a root-`USER` image + `sandbox: true` → clear startup failure, not a privileged pod;
    `sandbox: true` on a non-Kata cluster → pods `Pending`, Rollout not-Ready.
 8. **`kubectl apply --dry-run=server`** on the regenerated ComponentDefinition.
+
+### 8.1 Validation results
+
+Run on a live platform deployment: EKS 1.35 Auto Mode hub plus two spokes, `us-west-2`, prefix
+`peeks`, `agent_sandbox` + `agent_sandbox_kata` + `kata_nodepool` enabled, `vela` CLI 1.10.4,
+Crossplane 2.2.1, kata-deploy 4.0.0. 7 of the 8 checks pass; one is **superseded** by a fix this
+branch now carries.
+
+| § | Check | Result |
+|---|---|---|
+| 1 | Zero-regression | **PASS.** Every hunk in the regenerated ComponentDefinition sits inside `if parameter.sandbox`, and the other 9 templates are byte-identical. Live: `example-agent-simple.yaml` renders **no** `runtimeClassName` and **no** `securityContext` at either level. |
+| 2 | Value flows | **PASS.** `--set global.sandboxRuntimeClass=kata-fc` → `_sandboxRuntimeClass: "kata-fc"`; default → `"kata-clh"`. |
+| 3 | Fail-closed | **PASS, and stricter than designed.** Empty class + `sandbox: true` is rejected at *admission* by the KubeVela validating webhook (`explicit error (_|_ literal) in source`), so the Application is never persisted — no Rollout, no unisolated runc pod. |
+| 4 | Non-sandbox e2e | **PASS.** Rollout Healthy 3/3 on ordinary Auto Mode nodes. |
+| 5 | Sandbox e2e on a Kata cluster | **PASS.** Karpenter provisioned a `kata-nested` node on demand (0 → 1, `c8i.2xlarge`); both replicas Running; **guest kernel `6.18.35` vs host `6.12.110-135.201.amzn2023.x86_64`**; the agent serves its A2A card over HTTP 200 from inside the microVM, reached from an ordinary pod via the ClusterIP Service. |
+| 6 | Blue-green e2e in the sandbox path | **PASS.** A `properties` change drove revision 1 → 2: `Progressing` → `Paused` (preview gate) → `Healthy 2/2`. Both Services kept, and isolation survived promotion — new pods still `kata-clh`, still guest kernel `6.18.35`, still uid 1000. |
+| 7 | Negative: root-`USER` image | **SUPERSEDED — see below.** |
+| 8 | `kubectl apply --dry-run=server` | **PASS.** `componentdefinition.core.oam.dev/agent configured (server dry run)`. |
+
+**Why §7 is superseded.** The plan expected a root-`USER` image to produce a clear startup failure.
+That was correct when `sandbox: true` set `runAsNonRoot` with no `runAsUser`. It no longer holds:
+because the component now supplies a numeric `sandboxRunAsUser` (default `1000`), a root-`USER`
+image **starts successfully as uid 1000** rather than being rejected. Verified directly — a root
+image under the rendered `securityContext` reported `uid=1000`, container Running.
+
+That is the intended trade: the flag became purely additive for root images instead of refusing
+them, and `runAsNonRoot` still rejects an explicit uid 0 at admission, so root is still
+unreachable. The residual risk moves from "won't start" to "may misbehave": an image that genuinely
+needs to write to root-owned paths at startup will now fail in its own way rather than with a clear
+`runAsNonRoot` message. Note also that the group is not forced — the root image reported
+`gid=0(root)` — which PSS `restricted` permits; adding `runAsGroup`/`fsGroup` is a possible
+follow-up.
+
+**Two defects found by this validation, fixed on this branch.**
+
+1. A literal Helm action inside a CUE comment. `vela def render` copies comments verbatim into the
+   generated ComponentDefinition, and Helm parses that file as a Go template before KubeVela sees
+   it, so the comment was evaluated and failed with
+   `parse error ...: unexpected <.> in operand`. That breaks the render of the **entire**
+   `oam-agent-components` chart — all six ComponentDefinitions and all three TraitDefinitions — and
+   was latent only because the generated template had not been regenerated.
+2. The missing numeric `runAsUser` described above. Its severity was that this component's **own
+   default image** (`public.ecr.aws/z0a4o2j5/strands-agent`, `USER appuser`, uid 1000) could not
+   start under `sandbox: true`, and the component exposed no `securityContext`/`runAsUser`
+   parameter, so an application developer had no way to work around it.
+
+**Not covered.** Firecracker (`kata-fc`) was rendered but not run — its node layer is off on this
+platform, as §7 of this document already records. `overhead.podFixed` was observed applied
+(`{"cpu":"250m","memory":"130Mi"}`) but its effect on scheduling density was not load-tested.
