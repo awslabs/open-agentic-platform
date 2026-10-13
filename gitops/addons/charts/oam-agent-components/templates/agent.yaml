@@ -141,6 +141,9 @@ spec:
         						{name: "AGENT_NAME", value: context.name},
         						{name: "AGENT_DESCRIPTION", value: parameter.description},
         						{name: "MODEL_ID", value: parameter.modelConfig.modelId},
+        						if parameter.modelConfig.temperature != _|_ {
+        							{name: "MODEL_TEMPERATURE", value: "\(parameter.modelConfig.temperature)"}
+        						},
         						{name: "SYSTEM_PROMPT", value: parameter.systemMessage},
         						{name: "PORT", value: "8083"},
         						{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
@@ -446,6 +449,8 @@ spec:
         		modelId:          *"claude-sonnet" | string
         		llmGatewayUrl:    *"http://bifrost.bifrost.svc.cluster.local:8080/v1" | string
         		llmGatewayApiKey: *"" | string
+        		// Omitted unless set; newer models reject non-default values.
+        		temperature?: number & >=0 & <=1
         	}
 
         	// Langfuse direct OTLP (Strands StrandsTelemetry sends traces directly)
