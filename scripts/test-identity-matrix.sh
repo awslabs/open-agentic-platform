@@ -23,7 +23,7 @@ REALM="${REALM:-platform}" CLIENT="${CLIENT:-mcp-client}" USERNAME="${USERNAME:-
 AGENT="${AGENT:-oap-assistant-a}" AGENT_NS="${AGENT_NS:-default}" MCP="${MCP:-mcp-time}"
 OTHER_SA="${OTHER_SA:-default}" AUDIENCE="${AUDIENCE:-agentgateway}"
 GW=http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
-POD=identity-matrix-probe
+POD="identity-matrix-probe-$(date +%s)"  # unique per run: a previous run's probe may still be terminating
 FAILS=0
 
 ks() { KUBECONFIG="$SPOKE_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
@@ -54,9 +54,8 @@ OTHER_TOKEN=$(ks create token "$OTHER_SA" -n "$AGENT_NS" --audience "$AUDIENCE" 
 WRONG_AUD_TOKEN=$(ks create token "$AGENT" -n "$AGENT_NS" --audience not-the-gateway --duration 10m)
 ISSUER=$(python3 -c 'import sys,json,base64;p=sys.argv[1].split(".")[1];p+="="*(-len(p)%4);print(json.loads(base64.urlsafe_b64decode(p))["iss"])' "$AGENT_TOKEN")
 
-ks get pod "$POD" -n "$AGENT_NS" >/dev/null 2>&1 || {
-  ks run "$POD" -n "$AGENT_NS" --restart=Never --image=curlimages/curl:8.10.1 --command -- sleep 900 >/dev/null
-  ks wait --for=condition=Ready "pod/$POD" -n "$AGENT_NS" --timeout=120s >/dev/null; }
+ks run "$POD" -n "$AGENT_NS" --restart=Never --image=curlimages/curl:8.10.1 --command -- sleep 900 >/dev/null
+ks wait --for=condition=Ready "pod/$POD" -n "$AGENT_NS" --timeout=120s >/dev/null
 trap 'ks delete pod "$POD" -n "$AGENT_NS" --ignore-not-found --wait=false >/dev/null 2>&1' EXIT
 
 TOOLS='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"identity-matrix","version":"1"}}}'
@@ -88,8 +87,18 @@ for _ in 1 2; do
 done
 row E1 "user asks the agent; agent calls the MCP tool as $SUB" yes "$([ "$(gw_hit)" -gt "$BASE" ] && echo yes || echo no)"
 echo "      reply: $(echo "$R" | head -c 200)"
-LOG=$(ks logs -n "$AGENT_NS" -l "app.kubernetes.io/name=$AGENT" --tail=-1 2>/dev/null)
-row E2 "agent logs its MCP identity mode at startup" yes "$(echo "$LOG" | grep -q 'MCP identity: agent ServiceAccount token' && echo yes || echo no)"
+LOG=$(for p in $(ks get pods -n "$AGENT_NS" -l "app.kubernetes.io/name=$AGENT" -o name); do
+  ks logs -n "$AGENT_NS" "$p" -c "$AGENT" --tail=-1; done 2>/dev/null)
+PODS=$(ks get pods -n "$AGENT_NS" -l "app.kubernetes.io/name=$AGENT" -o name | grep -c .)
+row E2 "every agent pod logs its MCP identity mode at startup" "$PODS" "$(echo "$LOG" | grep -c 'MCP identity: agent ServiceAccount token')"
+
+echo "=== MCP server definition ==="
+# Issue #61: an MCP server Application that omits authPolicy and uses the
+# aws-service-identity trait was rejected at admission. Server-side dry run goes through
+# the KubeVela webhook, the same path ArgoCD and kubectl apply take.
+EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/platform/oam/examples/example-browser-mcp.yaml"
+row D1 "shipped browser MCP example passes KubeVela admission" yes \
+  "$(ks apply --dry-run=server -f "$EX" >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "NOT RUN  K1   Keycloak-issued token with a ServiceAccount-shaped sub -> MCP server: 403 expected."
 echo "             Needs Keycloak to mint such a sub (e.g. a protocol mapper); I1/I2 check the rule instead."
