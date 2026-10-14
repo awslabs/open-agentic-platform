@@ -65,13 +65,18 @@ RULE=$(ks get agentgatewaypolicy jwt-auth-policy -n agentgateway-system -o jsonp
 row I1 "workload branch pins jwt.iss to the cluster issuer" yes "$(echo "$RULE" | grep -qF "jwt.iss == \"$ISSUER\"" && echo yes || echo no)"
 row I2 "human branch excludes ServiceAccount-shaped subjects" yes "$(echo "$RULE" | grep -qF '&& !(has(jwt.sub) && jwt.sub.startsWith("system:serviceaccount:"))' && echo yes || echo no)"
 
+echo "=== platform grant (dev overlay mcpAccess) ==="
+row G1 "mcpAccess grant for $MCP is a Require on its route, listing $AGENT" yes \
+  "$(ks get agentgatewaypolicy "$MCP-access" -n "$AGENT_NS" -o json 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); a=d["spec"]["traffic"]["authorization"]
+print("yes" if a["action"]=="Require" and "system:serviceaccount:'"$AGENT_NS:$AGENT"'" in a["policy"]["matchExpressions"][0] else "no")' 2>/dev/null || echo no)"
 echo "=== who may reach what ==="
 row U1 "user -> agent route" 200 "$(code "$USER_TOKEN" POST "/$AGENT/chat" '{"message":"Say hi."}')"
 row U2 "no token -> agent route" 401 "$(code - POST "/$AGENT/chat" '{"message":"Say hi."}')"
 row U3 "user -> MCP server with allowedAgents (not an agent)" 403 "$(code "$USER_TOKEN" POST "/mcp/$MCP" "$TOOLS")"
 row W1 "listed agent's ServiceAccount token -> that MCP server" 200 "$(code "$AGENT_TOKEN" POST "/mcp/$MCP" "$TOOLS")"
 row W2 "unlisted ServiceAccount token -> that MCP server" 403 "$(code "$OTHER_TOKEN" POST "/mcp/$MCP" "$TOOLS")"
-row W3 "unlisted ServiceAccount token -> agent route (Gateway rule only)" 200 "$(code "$OTHER_TOKEN" POST "/$AGENT/chat" '{"message":"Say hi."}')"
+row W3 "unlisted ServiceAccount token -> agent route (by design: agents serve any authenticated caller)" 200 "$(code "$OTHER_TOKEN" POST "/$AGENT/chat" '{"message":"Say hi."}')"
 row W4 "ServiceAccount token with the wrong audience -> agent route" 401 "$(code "$WRONG_AUD_TOKEN" POST "/$AGENT/chat" '{"message":"Say hi."}')"
 
 echo "=== end to end ==="
