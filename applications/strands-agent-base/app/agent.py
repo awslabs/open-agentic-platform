@@ -468,7 +468,7 @@ def _sanitize_agentcore_id(value: str) -> str:
         cleaned = "s-" + cleaned.lstrip("-_")
         changed = True
     if changed or len(cleaned) > _AGENTCORE_ID_MAX_LEN:
-        digest = hashlib.sha1(original.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
         cleaned = cleaned[: _AGENTCORE_ID_MAX_LEN - 1 - len(digest)].rstrip("-_") + "-" + digest
     return cleaned
 
