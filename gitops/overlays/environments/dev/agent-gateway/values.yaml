@@ -6,8 +6,12 @@
 # allowedAgents, a caller must be in both lists, so an entry here can only narrow that
 # list; adding an agent the server did not list needs a change to the server.
 #
-#   mcpAccess:
-#     mcp-time:
-#       namespace: default
-#       agents: [oap-assistant-a, other-ns/other-agent]
-mcpAccess: {}
+# Shape: <mcp-server component name>: {namespace, agents: [<agent> | <ns>/<agent>]}.
+#
+# The grant below covers the time server from examples/mcp-servers/, which the identity
+# matrix (scripts/test-identity-matrix.sh, row G1) checks, so this config path is
+# exercised by the repo. It is inert until that example is applied.
+mcpAccess:
+  mcp-time:
+    namespace: default
+    agents: [oap-assistant-a]

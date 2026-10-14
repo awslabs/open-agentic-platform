@@ -319,7 +319,7 @@ template: {
 		}
 
 		// Optional: AgentgatewayPolicy for tool-level authorization (CEL).
-		if parameter.authPolicy != _|_ && len(parameter.authPolicy.matchExpressions) > 0 {
+		if len(parameter.authPolicy.matchExpressions) > 0 {
 			toolAccessPolicy: {
 				apiVersion: "agentgateway.dev/v1alpha1"
 				kind:       "AgentgatewayPolicy"

@@ -29,9 +29,18 @@ Keycloak `26.3.3`, Bifrost `2.1.16`, vela CLI `1.10.7`.
   redeploy of the server or the agent. Both are route-level `Require` rules: `Allow` would
   be ORed with the Gateway-wide `Allow` and restrict nothing (verified live). A caller must
   be in both lists, so `mcpAccess` can only narrow a server's own `allowedAgents`.
+- **MCP grants authorize the agent, not its callers.** An agent that is granted an MCP
+  server calls it for whoever the agent is serving, including when it runs autonomously;
+  that is the design. Who may call an agent is a separate control: today any
+  authenticated caller (a Keycloak user with the platform role, or any workload
+  ServiceAccount token with the gateway audience). An agent's system prompt shapes when it
+  uses a tool but is not access control. A per-agent caller allow-list would be a
+  separate feature.
 - **An agent's identity is bound to its issuer.** The Gateway rule accepts a
   ServiceAccount-shaped `sub` only from the cluster's OIDC issuer (`jwt.iss`), and the
-  Keycloak branch never admits one, so a `sub` alone cannot claim to be an agent.
+  Keycloak branch excludes one. The rule text is checked live (identity matrix I1/I2);
+  the Keycloak exclusion is not exercised end to end, because that needs Keycloak to
+  mint a ServiceAccount-shaped `sub` (row K1, not run).
 - **Agent ServiceAccount tokens validate on spokes.** The gateway's workload-identity JWT
   provider was missing on spokes because of an annotation-name mismatch.
 - **Agent sessions are isolated per caller**, not per outbound credential.
