@@ -131,7 +131,7 @@ spec:
       message: *("memoryId: " + context.output.status.atProvider.id) | "provisioning"
       memoryId: *context.output.status.atProvider.id | ""
     healthPolicy: |-
-      _pending: [for k, v in context.outputs if v.kind == "MemoryStrategy" && v.status.atProvider.id == _|_ {k}]
+      _pending: [for k, v in context.outputs if v.kind == "MemoryStrategy" && v.status.atProvider.memoryStrategyId == _|_ {k}]
       isHealth: *(context.output.status.atProvider.id != "" && len(_pending) == 0) | false
   workload:
     type: autodetects.core.oam.dev

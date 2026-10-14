@@ -8,8 +8,10 @@ import "strings"
 		status: {
 			// Healthy once the Memory AND every MemoryStrategy exist, so an agent that
 			// dependsOn this component starts with all long-term strategies in place.
+			// A MemoryStrategy reports its id as status.atProvider.memoryStrategyId (not
+			// `id`, unlike the Memory), set once AgentCore has created it.
 			healthPolicy: #"""
-				_pending: [for k, v in context.outputs if v.kind == "MemoryStrategy" && v.status.atProvider.id == _|_ {k}]
+				_pending: [for k, v in context.outputs if v.kind == "MemoryStrategy" && v.status.atProvider.memoryStrategyId == _|_ {k}]
 				isHealth: *(context.output.status.atProvider.id != "" && len(_pending) == 0) | false
 				"""#
 			customStatus: #"""
