@@ -55,6 +55,9 @@ All configuration via environment variables:
 | `MCP_SERVERS` | None | Comma-separated URLs |
 | `PORT` | `8083` | Server port |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `PROPAGATE_CALLER_TOKEN` | `false` | `true` forwards the caller's token to MCP servers instead of the agent's own ServiceAccount token |
+| `MEMORY_PROVIDER` / `MEMORY_CONFIG` | none | Memory backend; set by the OAM component. With `agentcore`, memory is per caller (gateway `X-Forwarded-User` header) and off when the header is missing |
+| `MAX_CACHED_AGENTS` | `1000` | Per-session agents kept in memory (least recently used evicted) |
 
 ## API Endpoints
 
@@ -115,50 +118,16 @@ The A2A protocol manages sessions through:
 
 ## Deployment
 
-### Kubernetes with kgateway Consistent Hashing (Recommended)
+### Kubernetes (OAM `agent` component)
 
-The agent uses kgateway's consistent hashing to enable multi-replica deployments with in-memory TaskStore. Requests with the same contextId are routed to the same pod.
+Deploy through the platform's OAM `agent` component; see `platform/oam/README.md` and
+`platform/oam/examples/`. The component wires the gateway route, identity and memory.
 
-```bash
-# Deploy with consistent hashing (3 replicas)
-kubectl apply -f deployment/kgateway-session-affinity.yaml
-```
-
-This deployment includes:
-- **BackendConfigPolicy**: Configures Ringhash/Maglev for consistent hashing
-- **HTTPRoute**: Routes traffic through kgateway
-- **Service**: Exposes agent with `appProtocol: kgateway.dev/a2a`
-- **Deployment**: 3 replicas with in-memory TaskStore
-
-**Client Requirements**: Clients must add `X-Context-ID` header extracted from A2A contextId:
-
-```python
-import requests
-
-# First request
-response = requests.post(
-    "http://agents.example.com/strands-agent/message",
-    json={"message": {"role": "ROLE_USER", "parts": [{"text": "Hello"}]}}
-)
-
-# Extract contextId from response
-context_id = response.json()["task"]["contextId"]
-
-# Follow-up request with header for consistent hashing
-response = requests.post(
-    "http://agents.example.com/strands-agent/message",
-    json={
-        "message": {
-            "role": "ROLE_USER",
-            "parts": [{"text": "Continue"}],
-            "contextId": context_id  # In body (A2A protocol)
-        }
-    },
-    headers={"X-Context-ID": context_id}  # In header (for kgateway)
-)
-```
-
-See `CONSISTENT_HASHING.md` for complete implementation guide.
+Run **one replica** (the component's default). Per-session agents and A2A tasks
+(`tasks/get`, `tasks/cancel`, `tasks/resubscribe`) live in pod memory, and the gateway
+does not pin a conversation to a pod, so with more replicas a follow-up request can land
+on a pod that never saw it and get "not found". With AgentCore memory the conversation
+itself is restored on any pod, but A2A tasks still are not.
 
 ### ECR Push
 
@@ -220,44 +189,13 @@ curl -X POST http://localhost:8083/message \
 
 See `TESTING.md` for detailed testing documentation including integration tests.
 
-## Scaling with Consistent Hashing
+## Scaling
 
-The agent uses kgateway's consistent hashing to enable multi-replica deployments:
-
-- ✅ **Multiple replicas supported** (3+ pods)
-- ✅ **Same contextId routes to same pod** (via X-Context-ID header)
-- ✅ **In-memory TaskStore** (no database needed)
-- ⚠️ **Affinity lost on pod changes** (scaling, restarts)
-
-**How it works**:
-1. Client extracts contextId from A2A response
-2. Client adds `X-Context-ID` header to subsequent requests
-3. kgateway hashes header and routes to same pod
-4. Pod serves request from in-memory TaskStore
-
-**Deployment**:
-```bash
-kubectl apply -f deployment/kgateway-session-affinity.yaml
-```
-
-See `CONSISTENT_HASHING.md` for:
-- Complete implementation guide
-- Client examples (Python, curl)
-- Algorithm comparison (Ringhash vs Maglev)
-- Hash policy options
-- Troubleshooting
-
-**When to use**:
-- Development/staging with multiple replicas
-- Production with stable pod count
-- Short-lived conversations (minutes to hours)
-
-**When NOT to use**:
-- Long-lived conversations (days to weeks)
-- Frequent scaling up/down
-- Critical conversations that cannot be lost
-
-**Alternative**: For production robustness, implement persistent TaskStore or use Bedrock AgentCore Runtime (see CONSISTENT_HASHING.md).
+See the replica guidance under Deployment. Multi-replica A2A would need a shared
+TaskStore (a2a-sdk ships `DatabaseTaskStore`) scoped per caller like
+`app/a2a_isolation.py`'s `CallerScopedTaskStore`; that is not implemented.
+`CONSISTENT_HASHING.md` describes an earlier kgateway-based approach that this
+platform no longer deploys.
 
 ## Podman Support
 
@@ -320,5 +258,5 @@ curl http://localhost:4000/v1/chat/completions \
 ## Documentation
 
 - `ARCHITECTURE.md` - System architecture and request flow
-- `CONSISTENT_HASHING.md` - Multi-replica scaling with kgateway
+- `CONSISTENT_HASHING.md` - Earlier kgateway consistent-hashing approach (not deployed by this platform)
 - `TESTING.md` - Testing guide and integration tests
