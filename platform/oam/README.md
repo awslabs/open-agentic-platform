@@ -186,6 +186,15 @@ The `agentcore-memory` component reports healthy only once the memory and all it
 strategies exist, so an agent that `dependsOn` it starts with every strategy in place.
 Removing a strategy from the list deletes it in AgentCore.
 
+Upgrading from an earlier version of this component renames the Memory object to
+`<namespace>-<component>`, so the AWS memory is recreated with a new memoryId and its
+stored events are lost.
+
+The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. A
+workload that calls an agent's Service directly can set it to any caller; restrict agent
+ingress to `agentgateway-system` with a NetworkPolicy if other workloads share the
+cluster.
+
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not
 immediately.

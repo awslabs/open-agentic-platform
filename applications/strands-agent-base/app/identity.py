@@ -94,9 +94,10 @@ async def capture_caller_auth(request, call_next):
 #   Keycloak user        -> the user's subject id
 #   agent via gateway    -> system:serviceaccount:<namespace>:<name>
 #
-# The header is trusted as-is and no token is parsed: pods are reachable only
-# through the gateway. The name is fixed, not configurable, so the gateway and the
-# image cannot drift apart. An image that needs no per-caller key can ignore it.
+# The header is trusted as-is and no token is parsed. That is safe for traffic through
+# the gateway; a workload calling the pod's Service directly can set any value, which
+# the cluster operator closes with a NetworkPolicy (caller-identity-policy.yaml).
+# The name is fixed, not configurable, so the gateway and the image cannot drift apart. An image that needs no per-caller key can ignore it.
 #
 # Without the header (a request that bypassed the gateway) there is no caller to
 # key on, so this module fails closed: nothing is shared between such requests, and

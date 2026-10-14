@@ -1,6 +1,6 @@
 # Strands Agent with A2A Protocol
 
-Minimal Strands agent with FastAPI, A2A protocol, and kgateway consistent hashing for multi-replica scaling.
+Minimal Strands agent with FastAPI and the A2A protocol, deployed through the platform's OAM `agent` component.
 
 ## Quick Start
 
@@ -58,6 +58,7 @@ All configuration via environment variables:
 | `PROPAGATE_CALLER_TOKEN` | `false` | `true` forwards the caller's token to MCP servers instead of the agent's own ServiceAccount token |
 | `MEMORY_PROVIDER` / `MEMORY_CONFIG` | none | Memory backend; set by the OAM component. With `agentcore`, memory is per caller (gateway `X-Forwarded-User` header) and off when the header is missing |
 | `MAX_CACHED_AGENTS` | `1000` | Per-session agents kept in memory (least recently used evicted) |
+| `MCP_MAX_POOLS` | `16` | MCP connection pools kept open, one per outbound credential (least recently used closed) |
 
 ## API Endpoints
 

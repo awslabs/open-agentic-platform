@@ -15,9 +15,15 @@ spec:
 
         let _autoName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
 
-        // Memory, MemoryStrategy and Policy here are the cluster-scoped Upbound kinds
+        // Memory and MemoryStrategy here are the cluster-scoped Upbound kinds
         // (*.aws.upbound.io), so their object names carry the namespace to stay unique
-        // across namespaces (oam-authoring.md section 3).
+        // across namespaces (oam-authoring.md section 3). The IAM Policy keeps
+        // <appName>-<component>-iam-policy: aws-service-identity's accessFor looks it up by
+        // exactly that name, so it changes only together with that trait (appmod).
+        //
+        // Upgrading from a version that named the Memory <component>: the object name
+        // changes, so KubeVela deletes the old Memory and creates a new one. The AWS memory
+        // and its stored events are deleted with it and a new memoryId is issued.
         let _objName = context.namespace + "-" + context.name
 
         output: {
