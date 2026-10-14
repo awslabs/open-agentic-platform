@@ -9,7 +9,7 @@ spec:
       type: agent
       properties:
         description: "General purpose AI assistant with A2A protocol support"
-        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.6-review-fixes
+        image: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.7-sha256
         # One replica (the default): A2A tasks and per-session agents live in pod memory,
         # so with more pods a follow-up request can land on a pod that never saw them.
         registerWithGateway: true

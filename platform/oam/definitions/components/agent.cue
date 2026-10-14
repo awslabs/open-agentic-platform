@@ -397,7 +397,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.6-review-fixes" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.7-sha256" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
