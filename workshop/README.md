@@ -9,7 +9,9 @@ cd workshop && task install
 
 ## What this directory owns
 
-CloudFront, and nothing else. It sets two values in `../config.local.yaml`, `domain` and
+Two things: CloudFront exposure for an install with no domain, and the sample
+applications used by the workshop (see [Sample applications](#sample-applications)).
+For CloudFront: It sets two values in `../config.local.yaml`, `domain` and
 `insecure`, and calls the two CloudFront scripts the platform already ships. Everything else
 is delegated:
 
@@ -135,3 +137,15 @@ trusting the exit code.
   --password-stdin public.ecr.aws`.
 - With no Docker daemon, `kind` needs `KIND_EXPERIMENTAL_PROVIDER=podman`. The platform
   Taskfiles do not set it.
+
+## Sample applications
+
+`applications/` holds sample apps for the Platform Engineering on Amazon EKS workshop.
+Each subfolder with a `deployment/` directory is one app. Today there is one,
+`agents`: an agent and an MCP server, both from prebuilt images, so nothing is built.
+
+`task -d applications seed` creates a GitLab project per app, pushes the folder into
+it when the project is empty, optionally clones it, and applies two Argo CD
+Applications on the hub (`<app>-dev-cd`, `<app>-prod-cd`) that sync
+`deployment/dev` and `deployment/prod` to the dev and prod spokes. Every input is a
+variable; see the header of `applications/Taskfile.yml`.
