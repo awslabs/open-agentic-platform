@@ -130,10 +130,11 @@ class CallerScopedTaskStore(InMemoryTaskStore):
     operation, so scoping the store covers all of them.
 
     A task saved by a request with no identity is owned by a key unique to that
-    request (identity.task_owner), so no later request can read it. Those tasks are
-    still stored, because the SDK reads the task back while the same request runs,
-    but only the newest MAX_UNOWNED_TASKS of them are kept, so requests that bypass
-    the gateway cannot grow the store without bound.
+    request (identity.task_owner), so no later request can read it. Storing it at all
+    only keeps save/get consistent within that request; the SDK's TaskManager holds
+    the running task itself, so an evicted entry does not break the request. Only the
+    newest MAX_UNOWNED_TASKS (default 100) are kept, so requests that bypass the
+    gateway cannot grow the store without bound.
     """
 
     def __init__(self, *args, **kwargs):

@@ -58,7 +58,8 @@ All configuration via environment variables:
 | `PROPAGATE_CALLER_TOKEN` | `false` | `true` forwards the caller's token to MCP servers instead of the agent's own ServiceAccount token |
 | `MEMORY_PROVIDER` / `MEMORY_CONFIG` | none | Memory backend; set by the OAM component. With `agentcore`, memory is per caller (gateway `X-Forwarded-User` header) and off when the header is missing |
 | `MAX_CACHED_AGENTS` | `1000` | Per-session agents kept in memory (least recently used evicted) |
-| `MCP_MAX_POOLS` | `16` | MCP connection pools kept open, one per outbound credential (least recently used closed) |
+| `MAX_UNOWNED_TASKS` | `100` | A2A tasks kept for requests without a caller identity (no later request can read them; oldest evicted) |
+| `MCP_MAX_POOLS` | `16` | MCP connection pools kept open, one per outbound credential (least recently used closed); an agent whose pool was closed is rebuilt on its next request |
 
 ## API Endpoints
 

@@ -233,3 +233,21 @@ def test_task_store_keeps_only_the_newest_tasks_without_an_identity(monkeypatch)
             request_id.reset(t)
     assert len(store.tasks) == 3  # alice's task + the 2 newest unowned
     assert asyncio.run(store.get("ta", alice)) is not None
+
+
+def test_deleting_an_unowned_task_frees_its_slot(monkeypatch):
+    from a2a.server.context import ServerCallContext
+    from a2a.types import Task, TaskState, TaskStatus
+
+    from app.identity import request_id
+
+    monkeypatch.setenv("MAX_UNOWNED_TASKS", "2")
+    store = a2a_isolation.CallerScopedTaskStore()
+    anon = ServerCallContext(state={"headers": {}})
+    t = request_id.set("anon-x")
+    try:
+        asyncio.run(store.save(Task(id="t", context_id="c", status=TaskStatus(state=TaskState.completed)), anon))
+        asyncio.run(store.delete("t", anon))
+    finally:
+        request_id.reset(t)
+    assert not store.tasks and not store._unowned
