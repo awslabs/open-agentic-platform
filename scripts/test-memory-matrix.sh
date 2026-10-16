@@ -86,12 +86,31 @@ print(max(t) if len(t)==2 else "")')
   POD_CREATED=$(ks get pods -n $NS -l app.kubernetes.io/name=$AGENT -o jsonpath='{.items[0].metadata.creationTimestamp}')
   row P6 "agent pod created only after both strategies were Ready (healthPolicy)" yes "$([ -n "$STRAT_READY" ] && [[ "$POD_CREATED" > "$STRAT_READY" ]] && echo yes || echo no)"
   echo "      strategies Ready at $STRAT_READY, pod created at $POD_CREATED"
+  POL=$(ks get policies.iam.aws.upbound.io -o json | python3 -c 'import json,sys
+for i in json.load(sys.stdin)["items"]:
+    if i["metadata"]["name"].endswith("-agentcore-short-memory-iam-policy"): print(i["spec"]["forProvider"]["policy"])')
+  row P7 "memory IAM policy: AgentCore actions only, no bedrock:InvokeModel" "yes no" "$(yn "$(echo "$POL" | grep RetrieveMemoryRecords)") $(yn "$(echo "$POL" | grep InvokeModel)")"
   echo "=== no caller identity (bypassing the gateway) ==="
   ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \
     -H 'Content-Type: application/json' -d "{\"message\":\"Say hi.\",\"contextId\":\"nohdr$RUN\"}"
   NOLOG=$(ks logs -n $NS -l app.kubernetes.io/name=$AGENT --since-time="$START" --tail=-1 --max-log-requests=10 2>/dev/null)
   row N1 "request without X-Forwarded-User gets no memory (fail closed)" yes "$(echo "$NOLOG" | grep -q "memory is off for session 'nohdr$RUN'" && echo yes || echo no)"
   row N2 "and no session manager was built for it" no "$(echo "$NOLOG" | grep -q "session manager created.*session=nohdr$RUN" && echo yes || echo no)"
+  # Requests without an identity are served but never cached (their key is unique to
+  # the request). Several in a row, on /chat and A2A, must all still answer.
+  NH=""; for i in 1 2 3; do
+    NH="$NH $(ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \
+      -H 'Content-Type: application/json' -d "{\"message\":\"Say hi.\",\"contextId\":\"nohdr$RUN\"}")"; done
+  NH="$NH $(ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/" \
+      -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"messageId\":\"m$RUN\",\"contextId\":\"nohdr$RUN\",\"parts\":[{\"kind\":\"text\",\"text\":\"Say hi.\"}]}}}")"
+  row N3 "repeated requests without identity (/chat x3, A2A) are all served" "200 200 200 200" "${NH# }"
+  echo "=== parameter validation at admission (server dry-run, as ArgoCD applies) ==="
+  # adm <properties> -> "accepted" or the webhook's last error line
+  adm() { printf 'apiVersion: core.oam.dev/v1beta1\nkind: Application\nmetadata: {name: ltm-param-probe, namespace: %s}\nspec:\n  components:\n  - name: probe\n    type: agentcore-memory\n    properties: %s\n' "$NS" "$1" |
+    ks apply --dry-run=server -f - 2>&1 | grep -q 'created (server dry run)' && echo accepted || echo rejected; }
+  row V1 "memoryName containing '-' is rejected" rejected "$(adm '{memoryName: bad-name}')"
+  row V2 "eventExpiryDuration 2 and 400 are rejected" "rejected rejected" "$(adm '{eventExpiryDuration: 2}') $(adm '{eventExpiryDuration: 400}')"
+  row V3 "defaults and in-range overrides are accepted" "accepted accepted" "$(adm '{}') $(adm '{memoryName: ok_name, eventExpiryDuration: 365}')"
   echo "=== short-term (user1, session A) ==="
   R=$(chat "$U1" "ltmA$RUN" "Remember this about me: my favourite colour is teal and I prefer answers in French.")
   row S1 "user1 states facts: HTTP 200, no error" "200 no" "$(echo "$R" | cut -d' ' -f1) $(has "$R" 'ERROR:')"

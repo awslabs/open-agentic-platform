@@ -197,7 +197,7 @@ Application name and component name collide on it. Until that convention changes
 upstream, keep that pair unique per account.
 
 `memoryName` must match `^[a-zA-Z][a-zA-Z0-9_]{0,47}$` and `eventExpiryDuration` must
-be 3 to 365 days; the component rejects other values before anything reaches AWS. The
+be 3 to 365 days; KubeVela rejects other values when the Application is applied. The
 default name is `<namespace>_<component>` with `-` replaced by `_`, so a namespace that
 starts with a digit, or a pair longer than 48 characters, needs an explicit `memoryName`.
 

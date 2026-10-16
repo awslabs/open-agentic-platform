@@ -132,7 +132,8 @@ template: {
 	parameter: {
 		// +usage=Memory name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$). Defaults to <namespace>_<componentName> with "-" replaced by "_"
 		// The constraint applies to the default too, so the IAM "<memoryName>-*" scoping
-		// holds by construction and a bad name fails at render, not at the AWS call.
+		// holds by construction and KubeVela's admission webhook rejects a bad name
+		// when the Application is applied, before anything reaches AWS.
 		memoryName: (*_autoName | string) & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
 		// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
 		// is portable across regions; override only for a cross-region memory store.
