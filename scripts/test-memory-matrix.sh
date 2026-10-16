@@ -17,7 +17,7 @@ SPOKE_KUBECONFIG="${SPOKE_KUBECONFIG:-${KUBECONFIG:?set SPOKE_KUBECONFIG or KUBE
 HUB_KUBECONFIG="${HUB_KUBECONFIG:-$SPOKE_KUBECONFIG}"
 ks() { KUBECONFIG="$SPOKE_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
 kh() { KUBECONFIG="$HUB_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
-NS=agents; AGENT=my-agent; MEM=agents-agentcore-short-memory  # <namespace>-<component>
+NS=agents; AGENT=my-agent; MEM=agents.agentcore-short-memory  # <namespace>.<component>
 GW=http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
 STATE="${STATE:-${TMPDIR:-/tmp}/memory-matrix.env}"; FAILS=0
 row() { if [ "$3" = "$4" ]; then printf 'PASS  %-4s %-66s %s\n' "$1" "$2" "$3"; else printf 'FAIL  %-4s %-66s expected=%s actual=%s\n' "$1" "$2" "$3" "$4"; FAILS=$((FAILS+1)); fi; }
@@ -117,8 +117,8 @@ except Exception: print("non-json")')
     ks apply --dry-run=server -f - 2>&1 | python3 -c 'import sys
 o=sys.stdin.read()
 if "created (server dry run)" in o: print("accepted")
-elif "conflicting values" in o: print("rejected:conflict")
 elif "out of bound" in o: print("rejected:bound")
+elif "conflicting values" in o: print("rejected:conflict")
 else: print("other:", o.strip().splitlines()[-1][:80] if o.strip() else "empty")'; }
   row V1 "memoryName cannot be overridden (IAM scope stays on own memory)" rejected:conflict "$(adm probe '{memoryName: agents_agentcore_short_memory}')"
   row V2 "eventExpiryDuration 2 and 400 are rejected" "rejected:bound rejected:bound" "$(adm probe '{eventExpiryDuration: 2}') $(adm probe '{eventExpiryDuration: 400}')"

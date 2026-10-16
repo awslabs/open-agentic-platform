@@ -187,8 +187,9 @@ strategies exist, so an agent that `dependsOn` it starts with every strategy in 
 Removing a strategy from the list deletes it in AgentCore.
 
 Upgrading from an earlier version of this component renames the Memory object to
-`<namespace>-<component>`, so the AWS memory is recreated with a new memoryId and its
-stored events are lost.
+`<namespace>.<component>`, so the AWS memory is recreated with a new memoryId and its
+stored events are lost. An Application that set `memoryName` must drop it: the field
+is no longer accepted (see below), and the memory is recreated under the derived name.
 
 The component's IAM Policy is still named `<appName>-<component>-iam-policy`, without the
 namespace, because `aws-service-identity`'s `accessFor` finds it by that name. IAM
@@ -196,14 +197,14 @@ policy names are global to the AWS account, so two namespaces deploying the same
 Application name and component name collide on it. Until that convention changes
 upstream, keep that pair unique per account.
 
-The AWS memory name is derived, not set: `<namespace>_<component>` with `-` replaced by
-`_`. A pair that starts with a digit or is longer than 48 characters (AgentCore's limit)
-gets `m<first 30 characters>_<8-character hash>` instead, so the same Application deploys
-in any namespace. `memoryName` cannot be overridden, because the IAM policy grants
-`memory/<memoryName>-*`: an override could name another namespace's memory. Two pairs
-that differ only in where a `-` sits (`a-b`/`c` and `a`/`b-c`) map to the same name; they
-already collide on the Memory object name, so avoid them. `eventExpiryDuration` must be 3
-to 365 days. KubeVela rejects other values when the Application is applied.
+The AWS memory name is derived, not set, and is one-to-one with the namespace and
+component: `<namespace>_<component>` with `-` replaced by `_` when the namespace has no
+`-`, otherwise `M<first 30 characters>_<16-character hash>`. The second form is also used
+when the first would start with a digit or exceed AgentCore's 48 characters, so the same
+Application deploys in any namespace. `memoryName` cannot be overridden: the IAM policy
+grants `memory/<memoryName>-*`, so a chosen or colliding name could reach another
+namespace's memory. `eventExpiryDuration` must be 3 to 365 days. KubeVela rejects other
+values when the Application is applied.
 
 Run the agent with **one replica** (the `agent` component's default), with or without memory,
 and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the

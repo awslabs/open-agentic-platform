@@ -17,30 +17,41 @@ spec:
         	"strings"
         )
 
-        // AgentCore memory names must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$. Namespace and
-        // component names are [a-z0-9-], so "-" -> "_" is the only rewrite most names need,
-        // and those keep the plain <namespace>_<component> name existing memories use. A
-        // pair that starts with a digit or is longer than 48 characters gets a name that
-        // always validates: "m", the first 30 characters, "_" and 8 hex characters of a
-        // hash of namespace/component, so the same OAM deploys unchanged in any namespace.
+        // AWS memory name. It must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ and must be one-to-one
+        // with (namespace, component): the IAM policy grants memory/<name>-*, so two pairs
+        // sharing a name would share a memory.
+        //
+        // Plain form <namespace>_<component> with "-" -> "_", used only when the namespace
+        // has no "-": namespaces and components never contain "_", so the first "_" then
+        // separates the two and the mapping is one-to-one. Without that condition team/a-memory
+        // and team-a/memory would both be team_a_memory. Existing memories in such namespaces
+        // keep their names.
+        //
+        // Otherwise, or when the plain form is too long or starts with a digit: "M", the
+        // first 30 characters of the plain form, "_", and 16 hex characters of
+        // sha256(namespace/component). The upper-case "M" cannot occur in a plain name
+        // (Kubernetes names are lower case), so the two forms never meet, and the 64-bit hash
+        // separates fallback names. At most 48 characters.
         let _rawName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
-        let _nameOK = (_rawName =~ "^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
-        let _hash = strings.SliceRunes(hex.Encode(sha256.Sum256(context.namespace+"/"+context.name)), 0, 8)
+        let _plainOK = !strings.Contains(context.namespace, "-") && (_rawName =~ "^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
+        let _hash = strings.SliceRunes(hex.Encode(sha256.Sum256(context.namespace+"/"+context.name)), 0, 16)
         let _head = [if len(_rawName) > 30 {strings.SliceRunes(_rawName, 0, 30)}, _rawName][0]
-        let _autoName = [if _nameOK {_rawName}, "m" + _head + "_" + _hash][0]
+        let _autoName = [if _plainOK {_rawName}, "M" + _head + "_" + _hash][0]
 
         // Memory and MemoryStrategy here are the cluster-scoped Upbound kinds
         // (*.aws.upbound.io), so their object names carry the namespace to stay unique
-        // across namespaces (oam-authoring.md section 3). The IAM Policy keeps
-        // <appName>-<component>-iam-policy: aws-service-identity's accessFor looks it up by
-        // exactly that name, so it changes only together with that trait (appmod). IAM
-        // policy names are account-global, so the same appName and component in two
-        // namespaces collide on that Policy until the convention changes upstream.
+        // across namespaces (oam-authoring.md section 3). "." separates the two because
+        // neither a namespace nor a component name can contain one, so <namespace>.<component>
+        // is one-to-one; "-" would let team/a-memory take team-a/memory's object. The IAM
+        // Policy keeps <appName>-<component>-iam-policy: aws-service-identity's accessFor
+        // looks it up by exactly that name, so it changes only together with that trait
+        // (appmod). IAM policy names are account-global, so the same appName and component
+        // in two namespaces collide on that Policy until the convention changes upstream.
         //
         // Upgrading from a version that named the Memory <component>: the object name
         // changes, so KubeVela deletes the old Memory and creates a new one. The AWS memory
         // and its stored events are deleted with it and a new memoryId is issued.
-        let _objName = context.namespace + "-" + context.name
+        let _objName = context.namespace + "." + context.name
 
         output: {
         	apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
@@ -95,9 +106,9 @@ spec:
         // MemoryClient: get_memory for strategies, create/list/get/delete_event,
         // retrieve_memory_records), on this memory only. AgentCore ids are
         // "<memoryName>-<suffix>" and memoryName never contains "-", so the "-*" suffix
-        // matches this memory and no other. memoryName is always derived from the
-        // namespace and component (it cannot be overridden), so an Application cannot
-        // name, and so be granted, another namespace's memory.
+        // matches this memory and no other. memoryName is always derived, one-to-one, from
+        // the namespace and component (see _autoName; it cannot be overridden), so an
+        // Application cannot name, and so be granted, another namespace's memory.
         //
         // No bedrock:InvokeModel: the strategies emitted here are AgentCore built-ins,
         // whose extraction AgentCore runs itself, and the agent's model calls go to the
@@ -134,7 +145,7 @@ spec:
         }
 
         parameter: {
-        	// +usage=Memory name in AWS. Derived from the namespace and component (<namespace>_<component>, "-" replaced by "_") and cannot be overridden: any other value is rejected
+        	// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. <namespace>_<component> ("-" replaced by "_") when the namespace has no "-", else M<first 30 characters>_<16-character hash>
         	// Fixed rather than overridable because the IAM policy grants memory/<memoryName>-*:
         	// an override could name another namespace's memory and be granted access to it.
         	memoryName: _autoName & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
