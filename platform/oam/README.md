@@ -201,9 +201,9 @@ be 3 to 365 days; KubeVela rejects other values when the Application is applied.
 default name is `<namespace>_<component>` with `-` replaced by `_`, so a namespace that
 starts with a digit, or a pair longer than 48 characters, needs an explicit `memoryName`.
 
-Run an agent that uses memory with **one replica** (the `agent` component's default),
-and do not add an `hpa` or `cpuscaler` trait to it. AgentCore restores the conversation
-on any pod, but A2A tasks and contexts live in the memory of the pod that served them, so
+Run the agent with **one replica** (the `agent` component's default), with or without memory,
+and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the
+conversation on any pod, but A2A tasks and contexts live in the memory of the pod that served them, so
 a follow-up that lands on another pod gets "not found".
 
 Requests that reach the agent's Service without passing the gateway, such as an
