@@ -9,6 +9,7 @@ only thing you change is the deployment manifest.
 | Path | What it is |
 |---|---|
 | `deployment/templates/application.yaml` | Starting manifest: one agent, no tools |
+| `deployment/templates/time-server.yaml` | MCP server component the workshop merges into the Application (amd64 image, pinned by digest) |
 | `deployment/dev/` | Synced by Argo CD application `agents-dev-cd` to the dev spoke |
 | `deployment/prod/` | Synced by Argo CD application `agents-prod-cd` to the prod spoke |
 | `oap-curl.sh` | Sends a message to an agent and prints the reply |
