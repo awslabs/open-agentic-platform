@@ -1,0 +1,27 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: mcp-time-server
+  namespace: default
+spec:
+  components:
+    - name: mcp-time
+      type: mcp-server
+      properties:
+        description: "MCP server that provides current time tools"
+        image: public.ecr.aws/z0a4o2j5/mcp-time-server:latest
+        port: 8000
+        replicas: 1
+        autoPromotionEnabled: true
+        autoPromotionSeconds: 10
+        scaleDownDelaySeconds: 30
+        registerWithGateway: true
+        env:
+          - name: LOCAL_TIMEZONE
+            value: UTC
+        # Security demo: only these agents may call this server. Everyone else, including
+        # other agents and users calling the server directly, gets 403. Remove the field
+        # to allow every agent. The platform can restrict further (mcpAccess); a caller
+        # must then be in both lists.
+        allowedAgents:
+          - oap-assistant-a
