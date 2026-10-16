@@ -1,0 +1,17 @@
+# Agent -> MCP server grants for the dev environment (templates/mcp-access.yaml).
+#
+# Empty = every agent may call every MCP server (the Gateway-wide rule). To restrict a
+# server to specific agents, add an entry; it takes effect on the next sync with no
+# change to the MCP server or the agent. If the server's Application sets its own
+# allowedAgents, a caller must be in both lists, so an entry here can only narrow that
+# list; adding an agent the server did not list needs a change to the server.
+#
+# Shape: <mcp-server component name>: {namespace, agents: [<agent> | <ns>/<agent>]}.
+#
+# The grant below covers the time server from examples/mcp-servers/, which the identity
+# matrix (scripts/test-identity-matrix.sh, row G1) checks, so this config path is
+# exercised by the repo. It is inert until that example is applied.
+mcpAccess:
+  mcp-time:
+    namespace: default
+    agents: [oap-assistant-a]

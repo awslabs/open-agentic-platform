@@ -5,6 +5,14 @@ global:
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
   awsAccountId: "*"
+  # How agents identify themselves to MCP servers. Platform-owned: no developer
+  # Application sets this. A string, because it is substituted into CUE as text.
+  agentIdentity:
+    # "false": agents present their OWN ServiceAccount identity to MCP servers, so the
+    # gateway knows which agent is calling and allowedAgents / mcpAccess can restrict by
+    # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
+    # passthrough the MCP spec forbids).
+    propagateCallerToken: "false"
   # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
   # properties.sandbox: true). Platform-owned: an application developer cannot set
   # this from their OAM, because the VMM is ambient environment config.

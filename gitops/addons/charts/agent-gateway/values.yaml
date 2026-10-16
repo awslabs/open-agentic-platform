@@ -122,3 +122,8 @@ mcpAuth:
       - header
       - body
       - query
+
+# Which agents may call which MCP servers (templates/mcp-access.yaml). Empty by
+# default: every MCP server keeps the Gateway-wide rule. Set per environment in
+# gitops/overlays/environments/<env>/agent-gateway/values.yaml.
+mcpAccess: {}
