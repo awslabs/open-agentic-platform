@@ -32,6 +32,7 @@ InMemoryTaskStore using its `tasks` and `lock` attributes. Both versions are pin
 use exactly the surface overridden here.
 """
 
+import os
 from collections import OrderedDict
 
 from a2a.server.tasks import InMemoryTaskStore
@@ -72,6 +73,10 @@ class CallerScopedContexts(OrderedDict):
         key = _scoped(context_id)
         entry = super().get(key)
         if entry is not None and agent_is_stale(getattr(entry, "agent", None)):
+            # The next request gets a new agent and a new per-context lock, so a turn
+            # still running on the old agent is no longer serialized with it, and a
+            # cancel cannot reach it. That agent's MCP clients are already stopped, so
+            # its turn fails on its next tool call either way.
             super().__delitem__(key)
             return default
         return default if entry is None else entry
@@ -123,20 +128,39 @@ class CallerScopedTaskStore(InMemoryTaskStore):
     A task id from another caller is indistinguishable from an unknown id. The
     request handler looks a task up here before every tasks/* and push-config
     operation, so scoping the store covers all of them.
+
+    A task saved by a request with no identity is owned by a key unique to that
+    request (identity.task_owner), so no later request can read it. Those tasks are
+    still stored, because the SDK reads the task back while the same request runs,
+    but only the newest MAX_UNOWNED_TASKS of them are kept, so requests that bypass
+    the gateway cannot grow the store without bound.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._unowned: "OrderedDict[str, None]" = OrderedDict()
+        self._max_unowned = int(os.getenv("MAX_UNOWNED_TASKS", "100"))
 
     @staticmethod
     def _key(task_id: str, context) -> str:
         return f"{task_owner(context)}\x00{task_id}"
 
     async def save(self, task, context=None):
+        key = self._key(task.id, context)
         async with self.lock:
-            self.tasks[self._key(task.id, context)] = task
+            self.tasks[key] = task
+            if is_no_identity_key(key):
+                self._unowned[key] = None
+                self._unowned.move_to_end(key)
+                while len(self._unowned) > self._max_unowned:
+                    self.tasks.pop(self._unowned.popitem(last=False)[0], None)
 
     async def get(self, task_id, context=None):
         async with self.lock:
             return self.tasks.get(self._key(task_id, context))
 
     async def delete(self, task_id, context=None):
+        key = self._key(task_id, context)
         async with self.lock:
-            self.tasks.pop(self._key(task_id, context), None)
+            self.tasks.pop(key, None)
+            self._unowned.pop(key, None)

@@ -208,3 +208,28 @@ def test_agent_whose_mcp_pool_was_closed_is_rebuilt():
     assert second is not first
     assert len(built) == 2
     assert _acquire(ex, "Bearer user-one", "ctx") is second
+
+
+def test_task_store_keeps_only_the_newest_tasks_without_an_identity(monkeypatch):
+    # Unowned tasks are readable within their own request, but no later request can
+    # reach them, so the store keeps a bounded number. Owned tasks are untouched.
+    from a2a.server.context import ServerCallContext
+    from a2a.types import Task, TaskState, TaskStatus
+
+    monkeypatch.setenv("MAX_UNOWNED_TASKS", "2")
+    from app.identity import request_id
+
+    store = a2a_isolation.CallerScopedTaskStore()
+    alice = ServerCallContext(state={"headers": {"x-forwarded-user": "alice"}})
+    mk = lambda i: Task(id=f"t{i}", context_id="c", status=TaskStatus(state=TaskState.completed))
+    asyncio.run(store.save(mk("a"), alice))
+    anon = ServerCallContext(state={"headers": {}})
+    for i in range(5):
+        t = request_id.set(f"anon-{i}")
+        try:
+            asyncio.run(store.save(mk(i), anon))
+            assert asyncio.run(store.get(f"t{i}", anon)) is not None  # same request reads it back
+        finally:
+            request_id.reset(t)
+    assert len(store.tasks) == 3  # alice's task + the 2 newest unowned
+    assert asyncio.run(store.get("ta", alice)) is not None
