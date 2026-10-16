@@ -109,40 +109,43 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
-          # but /api/public/health checks Postgres + ClickHouse and can exceed 1s
-          # under load — with the 1s default the livenessProbe timed out, failed 3x,
-          # and the pod was SIGKILLed (exitCode 137) mid-boot, crash-looping and
-          # leaving the Service with no endpoints (UI 502). 5s gives real headroom.
+          # but /api/public/health does DEEP dependency checks (Postgres + ClickHouse
+          # + Redis) that intermittently spike well past 5s under load. With a 5s
+          # liveness timeout + failureThreshold 3 the kubelet SIGKILLed a HEALTHY,
+          # already-serving pod (exitCode 137), which flapped the Service endpoints to
+          # empty and surfaced as a 503 at the ALB. Give every probe a 20s timeout and
+          # make liveness tolerant of sustained slow responses (20×30s ≈ 10 min) so a
+          # genuinely hung pod is still restarted, but transient dependency latency is
+          # not mistaken for a crash.
           #
           # startupProbe is sized for the ONE-TIME cold init on a fresh cluster:
           # /api/public/health responds only after Prisma + ClickHouse migrations and
           # the init scripts complete, which on a cold ClickHouse exceeded the previous
           # ~315s budget (30×10s). The pod was SIGTERM'd mid-init and restarted before
           # the one-time init ever finished, so it never converged (observed 11 restarts).
-          # 60×10s = ~600s window + 10s per-attempt timeout tolerates the slow first boot;
-          # liveness below stays strict so a genuinely hung pod is still restarted later.
+          # 60×10s = ~600s window + 20s per-attempt timeout tolerates the slow first boot.
           startupProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 10
-            timeoutSeconds: 10
+            timeoutSeconds: 20
             failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 20
+            failureThreshold: 20
           readinessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 20
+            failureThreshold: 6
 ---
 apiVersion: v1
 kind: Service

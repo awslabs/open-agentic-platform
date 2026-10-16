@@ -61,7 +61,7 @@ vars:
   IDC_ADMIN_GROUP_ID:
     sh: yq -r '.identityCenter.adminGroupId' {{.CONFIG_FILE}}
   K8S_VERSION:
-    sh: yq -r '.hub.kubernetesVersion // "1.35"' {{.CONFIG_FILE}}
+    sh: yq -r '.hub.kubernetesVersion // "1.37"' {{.CONFIG_FILE}}
   AGENTIC_REPO_URL:
     sh: yq -r '.agenticRepo.url' {{.CONFIG_FILE}}
   AGENTIC_REPO_REVISION:
@@ -199,7 +199,7 @@ tasks:
         CTX="kind-{{.HUB_CLUSTER_NAME}}-bootstrap"
         for SPOKE in $(yq -r '.spokes | keys | .[]' {{.CONFIG_FILE}}); do
           REGION=$(yq -r ".spokes.${SPOKE}.region // \"{{.AWS_REGION}}\"" {{.CONFIG_FILE}})
-          K8S_VER=$(yq -r ".spokes.${SPOKE}.kubernetesVersion // \"1.35\"" {{.CONFIG_FILE}})
+          K8S_VER=$(yq -r ".spokes.${SPOKE}.kubernetesVersion // \"1.37\"" {{.CONFIG_FILE}})
           VPC_CIDR=$(yq -r ".spokes.${SPOKE}.vpcCidr // \"10.1.0.0/16\"" {{.CONFIG_FILE}})
           AUTO_MODE=$(yq -r ".spokes.${SPOKE}.autoMode // true" {{.CONFIG_FILE}})
           kubectl --context "$CTX" apply -f - <<EOF

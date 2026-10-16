@@ -63,10 +63,14 @@ nextauthSecret: "changeme-generate-random-secret"
 # the API key, so the seed job and the langfuse deployment must be re-rendered together.
 salt: "langfuse-otel-salt-v1"
 
+# Langfuse v3's Next.js boot is CPU- and memory-heavy and /api/public/health does
+# deep dependency checks. Request 2Gi (not 1Gi) so EKS Auto Mode places the web pod
+# on a node with real headroom instead of a tightly-packed small instance where the
+# boot was starved; the limit stays 4Gi.
 resources:
   requests:
     cpu: 500m
-    memory: 1Gi
+    memory: 2Gi
   limits:
     cpu: 2000m
     memory: 4Gi
