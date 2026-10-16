@@ -1,0 +1,52 @@
+{{- if .Values.callerIdentity.enabled }}
+# Tells every backend who the authenticated caller is, as a plain header.
+#
+# The gateway has already validated the caller's JWT (jwt-policy.yaml), so it sets
+# `X-Forwarded-User` to that token's `sub`. Backends use it as a stable per-caller
+# key, for example an agent's long-term memory actor, without parsing or
+# validating tokens themselves.
+#
+#   Keycloak user          -> the user's subject id
+#   agent ServiceAccount   -> system:serviceaccount:<namespace>:<name>
+#
+# `set`, not `add`: the value is overwritten on every request, so a header a client
+# sends itself never reaches the backend. That is the whole trust contract, and it
+# holds only for traffic through the gateway. Pods are reachable in-cluster by their
+# Service, and nothing in this chart blocks that, so a workload that calls an agent
+# directly can send any value (scripts/test-memory-matrix.sh row N1 does exactly
+# that). Restricting agent ingress to agentgateway-system is the cluster operator's
+# NetworkPolicy; this platform does not ship one yet.
+#
+# Scoped to the Gateway, like jwt-policy.yaml, so both hops are covered: client ->
+# agent, and agent -> MCP server or other agent.
+#
+# `inheritance: Override` keeps this authoritative: traffic policies merge field by
+# field with the more specific attachment winning, so without it a route-level
+# `traffic.transformation` would replace this one and silently drop the header that
+# agents use as their memory actor. Override applies per field, and this policy sets
+# only `transformation`, so route-level `authorization` rules (allowedAgents,
+# mcpAccess) still apply; verified by scripts/test-identity-matrix.sh. The cost: a
+# route-level `traffic.transformation` on this Gateway is ignored. Add request
+# transformations here, not on routes.
+#
+# The header name is fixed (agents read `x-forwarded-user`, app/identity.py), so the
+# gateway and the image cannot drift apart.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: caller-identity-policy
+  namespace: agentgateway-system
+spec:
+  strategy:
+    inheritance: Override
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-proxy
+  traffic:
+    transformation:
+      request:
+        set:
+        - name: X-Forwarded-User
+          value: 'jwt.sub'
+{{- end }}
