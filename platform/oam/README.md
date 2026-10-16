@@ -196,10 +196,14 @@ policy names are global to the AWS account, so two namespaces deploying the same
 Application name and component name collide on it. Until that convention changes
 upstream, keep that pair unique per account.
 
-`memoryName` must match `^[a-zA-Z][a-zA-Z0-9_]{0,47}$` and `eventExpiryDuration` must
-be 3 to 365 days; KubeVela rejects other values when the Application is applied. The
-default name is `<namespace>_<component>` with `-` replaced by `_`, so a namespace that
-starts with a digit, or a pair longer than 48 characters, needs an explicit `memoryName`.
+The AWS memory name is derived, not set: `<namespace>_<component>` with `-` replaced by
+`_`. A pair that starts with a digit or is longer than 48 characters (AgentCore's limit)
+gets `m<first 30 characters>_<8-character hash>` instead, so the same Application deploys
+in any namespace. `memoryName` cannot be overridden, because the IAM policy grants
+`memory/<memoryName>-*`: an override could name another namespace's memory. Two pairs
+that differ only in where a `-` sits (`a-b`/`c` and `a`/`b-c`) map to the same name; they
+already collide on the Memory object name, so avoid them. `eventExpiryDuration` must be 3
+to 365 days. KubeVela rejects other values when the Application is applied.
 
 Run the agent with **one replica** (the `agent` component's default), with or without memory,
 and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the

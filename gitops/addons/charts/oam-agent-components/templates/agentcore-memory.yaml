@@ -11,9 +11,23 @@ spec:
   schematic:
     cue:
       template: |
-        import "strings"
+        import (
+        	"crypto/sha256"
+        	"encoding/hex"
+        	"strings"
+        )
 
-        let _autoName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
+        // AgentCore memory names must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$. Namespace and
+        // component names are [a-z0-9-], so "-" -> "_" is the only rewrite most names need,
+        // and those keep the plain <namespace>_<component> name existing memories use. A
+        // pair that starts with a digit or is longer than 48 characters gets a name that
+        // always validates: "m", the first 30 characters, "_" and 8 hex characters of a
+        // hash of namespace/component, so the same OAM deploys unchanged in any namespace.
+        let _rawName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
+        let _nameOK = (_rawName =~ "^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
+        let _hash = strings.SliceRunes(hex.Encode(sha256.Sum256(context.namespace+"/"+context.name)), 0, 8)
+        let _head = [if len(_rawName) > 30 {strings.SliceRunes(_rawName, 0, 30)}, _rawName][0]
+        let _autoName = [if _nameOK {_rawName}, "m" + _head + "_" + _hash][0]
 
         // Memory and MemoryStrategy here are the cluster-scoped Upbound kinds
         // (*.aws.upbound.io), so their object names carry the namespace to stay unique
@@ -80,8 +94,10 @@ spec:
         // Only what the agent's AgentCore session manager calls (bedrock_agentcore
         // MemoryClient: get_memory for strategies, create/list/get/delete_event,
         // retrieve_memory_records), on this memory only. AgentCore ids are
-        // "<memoryName>-<suffix>" and the memoryName parameter is constrained to exclude
-        // "-", so the "-*" suffix matches this memory and no other.
+        // "<memoryName>-<suffix>" and memoryName never contains "-", so the "-*" suffix
+        // matches this memory and no other. memoryName is always derived from the
+        // namespace and component (it cannot be overridden), so an Application cannot
+        // name, and so be granted, another namespace's memory.
         //
         // No bedrock:InvokeModel: the strategies emitted here are AgentCore built-ins,
         // whose extraction AgentCore runs itself, and the agent's model calls go to the
@@ -118,11 +134,10 @@ spec:
         }
 
         parameter: {
-        	// +usage=Memory name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$). Defaults to <namespace>_<componentName> with "-" replaced by "_"
-        	// The constraint applies to the default too, so the IAM "<memoryName>-*" scoping
-        	// holds by construction and KubeVela's admission webhook rejects a bad name
-        	// when the Application is applied, before anything reaches AWS.
-        	memoryName: (*_autoName | string) & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
+        	// +usage=Memory name in AWS. Derived from the namespace and component (<namespace>_<component>, "-" replaced by "_") and cannot be overridden: any other value is rejected
+        	// Fixed rather than overridable because the IAM policy grants memory/<memoryName>-*:
+        	// an override could name another namespace's memory and be granted access to it.
+        	memoryName: _autoName & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
         	// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
         	// is portable across regions; override only for a cross-region memory store.
         	region: *"{{ .Values.global.awsRegion }}" | string
