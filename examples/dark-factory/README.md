@@ -72,7 +72,7 @@ to be solved to make `claude -p` work inside the locked-down VM (see the commit 
 2. **Writable HOME** — `readOnlyRootFilesystem` makes `$HOME` read-only, so Claude Code can't create
    `~/.claude` (shell snapshots its Bash tool needs). `HOME`/`CLAUDE_CONFIG_DIR`/XDG are pointed at
    the writable `/tmp` tmpfs.
-3. **Model alias** — use `ANTHROPIC_MODEL=claude-sonnet` (a Bifrost alias → `us.anthropic.claude-sonnet-4-5`).
+3. **Model alias** — use `ANTHROPIC_MODEL=claude-sonnet` (a Bifrost alias → `us.anthropic.claude-sonnet-5-5`).
    Do **not** set `CLAUDE_CODE_USE_BEDROCK` (that bypasses the base URL and needs in-VM AWS creds).
 4. **`git push --force`** (not `--force-with-lease`) — the depth-1 clone can't satisfy the lease
    check; `df/issue-N` is bot-owned + single-writer (per-issue workflow mutex), so `--force` is safe.

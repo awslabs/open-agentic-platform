@@ -73,7 +73,7 @@ bifrost:
             models: ["*"]
             weight: 1
             aliases:
-              claude-sonnet: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+              claude-sonnet: us.anthropic.claude-sonnet-5-5
             bedrock_key_config:
               region: us-west-2
 
