@@ -1,0 +1,145 @@
+version: '3'
+
+# Seed workshop sample applications into a GitLab instance and wire them to
+# Argo CD. Each subfolder here that has a deployment/ directory is one app.
+#
+# For every app, `task seed`:
+#   1. creates the GitLab project <GIT_USERNAME>/<app> (skipped if it exists)
+#   2. pushes this folder's content to main, only if the project is empty
+#   3. clones it into CLONE_DIR/<app> (only when CLONE_DIR is set)
+#   4. applies two Argo CD Applications on the hub: <app>-dev-cd and
+#      <app>-prod-cd, syncing deployment/dev and deployment/prod to the spokes
+#
+# Nothing is built: these apps use prebuilt images, so there is no CI pipeline.
+# Every step is idempotent and never overwrites commits already in GitLab.
+#
+# Every input is a variable. Nothing is read from CloudFormation, WS_* variables,
+# or fixed IDE paths. See .kiro/steering/platform-portability.md.
+#
+# Usage:
+#   task -d workshop/applications seed \
+#     GIT_URL=https://<gitlab-host> GIT_TOKEN=<token> \
+#     [GIT_USERNAME=user1] [CLONE_DIR=~/environment/applications] \
+#     [RESOURCE_PREFIX=peeks] [KUBE_CONTEXT=<hub context>]
+
+vars:
+  GIT_USERNAME: '{{.GIT_USERNAME | default "user1"}}'
+  RESOURCE_PREFIX: '{{.RESOURCE_PREFIX | default "peeks"}}'
+  DEV_CLUSTER: '{{.DEV_CLUSTER | default (printf "%s-spoke-dev" .RESOURCE_PREFIX)}}'
+  PROD_CLUSTER: '{{.PROD_CLUSTER | default (printf "%s-spoke-prod" .RESOURCE_PREFIX)}}'
+  ARGO_NAMESPACE: '{{.ARGO_NAMESPACE | default "argocd"}}'
+  ARGO_PROJECT: '{{.ARGO_PROJECT | default "spoke-workloads"}}'
+  APPS:
+    sh: for d in */deployment; do [ -d "$d" ] && echo "${d%/deployment}"; done | tr '\n' ' '
+
+tasks:
+  default:
+    desc: Show usage
+    silent: true
+    cmds:
+      - sed -n '3,23p' Taskfile.yml | sed 's/^# \{0,1\}//'
+
+  seed:
+    desc: Create, push, clone and wire every sample app (idempotent)
+    # silent: the commands carry the GitLab token, keep them out of logs
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        [ -n "{{.GIT_URL}}" ]   || { echo "GIT_URL is required (https://<gitlab-host>)" >&2; exit 1; }
+        [ -n "{{.GIT_TOKEN}}" ] || { echo "GIT_TOKEN is required" >&2; exit 1; }
+        GIT_URL="{{.GIT_URL}}"; GIT_URL="${GIT_URL%/}"
+        HOST="${GIT_URL#https://}"; HOST="${HOST#http://}"
+        SCHEME="${GIT_URL%%://*}"
+        USER_NAME="{{.GIT_USERNAME}}"
+        TOKEN="{{.GIT_TOKEN}}"
+        KUBECTL="kubectl{{if .KUBE_CONTEXT}} --context {{.KUBE_CONTEXT}}{{end}}"
+        for APP in {{.APPS}}; do
+          echo "▸ $APP"
+          REPO_URL="${SCHEME}://${USER_NAME}:${TOKEN}@${HOST}/${USER_NAME}/${APP}.git"
+
+          # 1. Project. 201 = created, 400 "has already been taken" = exists.
+          CODE=$(curl -s -o /tmp/seed-$APP.json -w '%{http_code}' -X POST \
+            "${GIT_URL}/api/v4/projects" -H "PRIVATE-TOKEN: ${TOKEN}" \
+            --data-urlencode "name=${APP}" --data-urlencode "path=${APP}" \
+            --data-urlencode "visibility=private" --data-urlencode "initialize_with_readme=false")
+          case "$CODE" in
+            201) echo "  ✓ project created" ;;
+            400) grep -q 'has already been taken' /tmp/seed-$APP.json \
+                   && echo "  project exists" \
+                   || { echo "  ✗ create failed: $(cat /tmp/seed-$APP.json)" >&2; exit 1; } ;;
+            *)   echo "  ✗ create failed (HTTP $CODE): $(cat /tmp/seed-$APP.json)" >&2; exit 1 ;;
+          esac
+          rm -f /tmp/seed-$APP.json
+
+          # 2. Content, only into an empty project.
+          if [ -z "$(git ls-remote "$REPO_URL" HEAD 2>/dev/null)" ]; then
+            TMP=$(mktemp -d)
+            cp -R "$APP/." "$TMP/"
+            git -C "$TMP" init -q -b main
+            git -C "$TMP" add -A
+            git -C "$TMP" -c user.name="oap-workshop" -c user.email="oap-workshop@workshop.local" \
+              commit -qm "feat: seed $APP sample application"
+            git -C "$TMP" push -q "$REPO_URL" main
+            rm -rf "$TMP"
+            echo "  ✓ content pushed"
+          else
+            echo "  project has content, not pushing"
+          fi
+          # Pushes by the participant must work: drop any protection on main.
+          curl -s -o /dev/null -X DELETE -H "PRIVATE-TOKEN: ${TOKEN}" \
+            "${GIT_URL}/api/v4/projects/${USER_NAME}%2F${APP}/protected_branches/main" || true
+
+          # 3. Local clone for the participant.
+          {{if .CLONE_DIR}}
+          DEST="{{.CLONE_DIR}}/$APP"
+          if [ -d "$DEST/.git" ]; then
+            git -C "$DEST" pull --ff-only -q 2>/dev/null || echo "  local clone not updated (local changes)"
+          else
+            mkdir -p "{{.CLONE_DIR}}"
+            git clone -q "$REPO_URL" "$DEST"
+            echo "  ✓ cloned to $DEST"
+          fi
+          {{end}}
+
+          # 4. Argo CD Applications on the hub, one per environment.
+          for ENV in dev prod; do
+            if [ "$ENV" = dev ]; then CLUSTER="{{.DEV_CLUSTER}}"; else CLUSTER="{{.PROD_CLUSTER}}"; fi
+            $KUBECTL apply -f - >/dev/null <<APPEOF
+        apiVersion: argoproj.io/v1alpha1
+        kind: Application
+        metadata:
+          name: ${APP}-${ENV}-cd
+          namespace: {{.ARGO_NAMESPACE}}
+          labels:
+            app.kubernetes.io/name: ${APP}
+            app.kubernetes.io/component: argocd-application
+            app.kubernetes.io/managed-by: oap-workshop
+          finalizers:
+            - resources-finalizer.argocd.argoproj.io
+        spec:
+          project: {{.ARGO_PROJECT}}
+          destination:
+            name: ${CLUSTER}
+            namespace: team-${APP}
+          source:
+            repoURL: ${SCHEME}://${HOST}/${USER_NAME}/${APP}.git
+            targetRevision: main
+            path: deployment/${ENV}
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+              - ApplyOutOfSyncOnly=true
+            retry:
+              limit: 5
+              backoff:
+                duration: 5s
+                factor: 2
+                maxDuration: 3m
+        APPEOF
+            echo "  ✓ Argo CD app ${APP}-${ENV}-cd -> ${CLUSTER}"
+          done
+        done
