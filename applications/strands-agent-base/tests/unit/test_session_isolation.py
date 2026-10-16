@@ -99,3 +99,39 @@ def test_cache_is_bounded(monkeypatch, fake_create):
     _as("c", None)  # evicts b
     assert len(agent_mod._agents) == 2
     assert _as("a", None) is first
+
+
+def test_no_identity_agents_are_not_cached(monkeypatch, fake_create):
+    # A none:<request> key can never be looked up again, so caching it would only
+    # push out the agents of callers who have an identity (review of PR #66).
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", False)
+    monkeypatch.setattr(agent_mod, "_MAX_AGENTS", 2)
+    alice = _as("alice", None)
+    for i in range(10):
+        _as(None, None, req=f"anon-{i}")
+    assert list(agent_mod._agents) == [("sub:alice", "ctx")]
+    assert _as("alice", None) is alice
+
+
+def test_agent_whose_mcp_pool_was_closed_is_rebuilt(monkeypatch):
+    class _Pool:
+        closed = False
+
+    pool = _Pool()
+    built = []
+
+    def fake_create_agent(session_id=None, actor_id=None):
+        a = type("A", (), {})()
+        a._oap_mcp_pool = pool
+        built.append(a)
+        return a
+
+    monkeypatch.setattr(agent_mod, "create_agent", fake_create_agent)
+    monkeypatch.setattr(agent_mod, "_agents", OrderedDict())
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", True)
+    first = _as("alice", "Bearer t")
+    assert _as("alice", "Bearer t") is first
+    pool.closed = True  # evicted from the MCP pool LRU
+    second = _as("alice", "Bearer t")
+    assert second is not first
+    assert list(agent_mod._agents.values()) == [second]

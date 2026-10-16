@@ -36,8 +36,9 @@ from collections import OrderedDict
 
 from a2a.server.tasks import InMemoryTaskStore
 
+from .agent import agent_is_stale
 from .config import config
-from .identity import caller_key, task_owner
+from .identity import caller_key, is_no_identity_key, task_owner
 
 
 def _scoped(context_id: str) -> str:
@@ -60,16 +61,29 @@ class CallerScopedContexts(OrderedDict):
 
     Only the operations the SDK performs with a context id are overridden.
     Eviction (popitem) works on the stored keys and needs no translation.
+
+    Two entries are never kept: one for a request with no identity (its key is
+    unique to that request, so storing it would only evict callers who have one),
+    and one whose agent's MCP pool was closed (agent.agent_is_stale). The executor
+    builds a fresh agent for a miss, so both are rebuilt, not lost mid-request.
     """
 
     def get(self, context_id, default=None):
-        return super().get(_scoped(context_id), default)
+        key = _scoped(context_id)
+        entry = super().get(key)
+        if entry is not None and agent_is_stale(getattr(entry, "agent", None)):
+            super().__delitem__(key)
+            return default
+        return default if entry is None else entry
 
     def __getitem__(self, context_id):
         return super().__getitem__(_scoped(context_id))
 
     def __setitem__(self, context_id, value):
-        super().__setitem__(_scoped(context_id), value)
+        key = _scoped(context_id)
+        if is_no_identity_key(key):
+            return
+        super().__setitem__(key, value)
 
     def __contains__(self, context_id):
         return super().__contains__(_scoped(context_id))

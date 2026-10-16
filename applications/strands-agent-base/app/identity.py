@@ -123,8 +123,16 @@ def _token_hash(header: Optional[str]) -> Optional[str]:
     return None
 
 
+_NO_IDENTITY_PREFIX = "none:"
+
+
 def _no_identity_key() -> str:
-    return f"none:{request_id.get() or uuid.uuid4().hex}"
+    return f"{_NO_IDENTITY_PREFIX}{request_id.get() or uuid.uuid4().hex}"
+
+
+def is_no_identity_key(key: str) -> bool:
+    """True for a caller_key that no later request can match, so caches skip it."""
+    return key.startswith(_NO_IDENTITY_PREFIX)
 
 
 def caller_key(propagate: bool) -> str:

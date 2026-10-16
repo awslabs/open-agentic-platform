@@ -177,3 +177,34 @@ def test_sdk_task_store_surface_is_what_the_subclass_overrides():
     assert abstract == {"save", "get", "delete"}
     src = inspect.getsource(InMemoryTaskStore.__init__)
     assert "self.tasks" in src and "self.lock" in src
+
+
+def test_requests_with_no_identity_are_served_but_not_kept():
+    from app.identity import request_id
+
+    ex, built = _scoped_executor(max_contexts=2)
+    mine = _acquire(ex, "Bearer user-one", "ctx")
+    for i in range(5):
+        t = request_id.set(f"anon-{i}")
+        try:
+            assert _acquire(ex, None, "ctx") is not None
+        finally:
+            request_id.reset(t)
+    assert len(built) == 6
+    assert len(ex._contexts) == 1
+    assert _acquire(ex, "Bearer user-one", "ctx") is mine
+
+
+def test_agent_whose_mcp_pool_was_closed_is_rebuilt():
+    ex, built = _scoped_executor()
+
+    class _Pool:
+        closed = False
+
+    first = _acquire(ex, "Bearer user-one", "ctx")
+    first._oap_mcp_pool = _Pool()
+    first._oap_mcp_pool.closed = True
+    second = _acquire(ex, "Bearer user-one", "ctx")
+    assert second is not first
+    assert len(built) == 2
+    assert _acquire(ex, "Bearer user-one", "ctx") is second

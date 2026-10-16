@@ -242,3 +242,20 @@ def test_ready_reuses_the_workload_pool_the_autonomous_path_reads(isolated_agent
     assert key == WORKLOAD_KEY
     assert tools, "autonomous path sees the probe-connected tools"
     assert len(isolated_agent_state["calls"]) == calls_after_probe, "no reconnect"
+
+
+def test_evicting_a_pool_marks_agents_built_on_it_stale(monkeypatch):
+    # The pool cap (MCP_MAX_POOLS) is smaller than the agent caches, so a cached
+    # agent can outlive its pool; agent_is_stale tells the caches to rebuild it.
+    monkeypatch.setattr(agent_mod, "_MAX_MCP_POOLS", 1)
+    inbound_auth.set("Bearer one")
+    provider, key = outbound(True)
+    first = agent_mod._get_mcp_pool(key, provider)
+    agent = type("A", (), {"_oap_mcp_pool": first})()
+    assert not agent_mod.agent_is_stale(agent)
+    inbound_auth.set("Bearer two")
+    provider, key = outbound(True)
+    agent_mod._get_mcp_pool(key, provider)
+    assert first.closed
+    assert agent_mod.agent_is_stale(agent)
+    assert not agent_mod.agent_is_stale(type("B", (), {})())

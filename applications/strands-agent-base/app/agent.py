@@ -38,7 +38,15 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
-from .identity import CALLER_IDENTITY_HEADER, WORKLOAD_KEY, HeadersProvider, caller_key, caller_subject, outbound
+from .identity import (
+    CALLER_IDENTITY_HEADER,
+    WORKLOAD_KEY,
+    HeadersProvider,
+    caller_key,
+    caller_subject,
+    is_no_identity_key,
+    outbound,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +101,9 @@ class _McpPool:
         # /ready probe (mcp_readiness) checks this against the configured set.
         self.connected_urls: set = set()
         self.connected_at: float = 0.0
+        # Set by _close. A cached agent still holds this pool's tool objects, so
+        # agent_is_stale() tells the caches to rebuild it rather than reuse it.
+        self.closed = False
         # Guards clients/tools mutation (the /ready probe thread may run
         # concurrently with the request path).
         self.lock = threading.Lock()
@@ -212,6 +223,7 @@ def _open(pool: "_McpPool", urls: list) -> None:
 
 
 def _close(pool: _McpPool) -> None:
+    pool.closed = True
     for client in pool.clients:
         try:
             # Detach so the session-teardown DELETE is not parented to the
@@ -288,9 +300,15 @@ def mcp_readiness() -> tuple[bool, dict]:
 
 def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
     """Tools from the MCP pool for *key*, connecting or recycling as needed."""
+    pool = _get_mcp_pool(key, headers)
+    return pool.tools if pool is not None else []
+
+
+def _get_mcp_pool(key: str, headers: HeadersProvider) -> Optional[_McpPool]:
+    """The MCP pool for *key*, connecting or recycling as needed. None without MCP servers."""
     urls = config.MCP_SERVER_URLS
     if not urls:
-        return []
+        return None
 
     pool = _pools.pop(key, None)
     if pool is None:
@@ -328,7 +346,7 @@ def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
     # the /ready probe (mcp_readiness) keeps the pod out of the Service until the
     # workload pool has every configured server, so an autonomous request only
     # reaches a pod whose toolset is complete. Chat pools degrade gracefully.
-    return pool.tools
+    return pool
 
 
 # ── per-session agent creation ───────────────────────────────────────────
@@ -549,6 +567,13 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 # reliable, transport-agnostic discriminator. This lets Langfuse filter
 # tags=source:rca vs source:chat in one click, which neither session_id nor
 # name filtering could do before (session_id was empty and untagged).
+#
+# Memory for that autonomous path: the bridge posts to the agent's Service
+# directly (see the readiness note near _mcp_server_name), not through the gateway,
+# so it carries no X-Forwarded-User. Such a request fails closed: no long-term
+# memory, and no agent kept across turns even with a stable incident-<fingerprint>
+# contextId. A bridge that needs either must call through the gateway with its own
+# ServiceAccount token, which the gateway turns into a stable subject.
 def _trace_attributes(session_id: str, actor_id: str) -> dict:
     source = "rca" if (session_id or "").startswith("incident-") else "chat"
     tags = [f"source:{source}", config.AGENT_NAME]
@@ -642,7 +667,8 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     """
     session_manager = _build_session_manager(session_id, actor_id)
     headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
-    tools = _get_mcp_tools(key, headers) or None
+    pool = _get_mcp_pool(key, headers)
+    tools = (pool.tools if pool is not None else None) or None
     agent = Agent(
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT,
@@ -654,7 +680,21 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
         trace_attributes=_trace_attributes(session_id, actor_id),
     )
     _install_truncation_guard(agent)
+    agent._oap_mcp_pool = pool
     return agent
+
+
+def agent_is_stale(agent) -> bool:
+    """True when the MCP pool this agent's tools belong to has been closed.
+
+    Pools are capped (MCP_MAX_POOLS) separately from the agent caches
+    (MAX_CACHED_AGENTS, the A2A executor's max_contexts). When the caller's token is
+    forwarded, each caller has its own pool, so a pool can be evicted while an agent
+    built on it is still cached; reusing that agent would call stopped clients. Both
+    caches check this on a hit and rebuild instead, which also reopens the pool.
+    """
+    pool = getattr(agent, "_oap_mcp_pool", None)
+    return pool is not None and pool.closed
 
 
 def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> Agent:
@@ -680,6 +720,8 @@ def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = Non
 # Bounded LRU, like the A2A executor's own context cache (same default bound). An
 # evicted agent is only dropped from this cache: its conversation is in AgentCore
 # when memory is on, and its MCP connections live in the separate, bounded pools.
+# Requests with no identity are never cached (their key is unique to the request),
+# and an agent whose MCP pool was closed is rebuilt on its next hit (agent_is_stale).
 _MAX_AGENTS = int(os.getenv("MAX_CACHED_AGENTS", "1000"))
 _agents: "OrderedDict[tuple, Agent]" = OrderedDict()
 
@@ -701,11 +743,18 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: Optional[str
     caller = caller_key(config.PROPAGATE_CALLER_TOKEN)
 
     if session_id and (caller, session_id) in _agents:
-        _agents.move_to_end((caller, session_id))
-        return _agents[(caller, session_id)], session_id
+        cached = _agents[(caller, session_id)]
+        if not agent_is_stale(cached):
+            _agents.move_to_end((caller, session_id))
+            return cached, session_id
+        del _agents[(caller, session_id)]
 
     sid = session_id or str(uuid.uuid4())
     agent = create_agent(session_id=sid, actor_id=actor_id)
+    if is_no_identity_key(caller):
+        # The key is unique to this request, so no later request can look it up.
+        # Caching it would only evict the agents of callers who do have an identity.
+        return agent, sid
     _agents[(caller, sid)] = agent
     while len(_agents) > _MAX_AGENTS:
         _agents.popitem(last=False)
