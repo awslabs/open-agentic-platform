@@ -190,6 +190,27 @@ Upgrading from an earlier version of this component renames the Memory object to
 `<namespace>-<component>`, so the AWS memory is recreated with a new memoryId and its
 stored events are lost.
 
+The component's IAM Policy is still named `<appName>-<component>-iam-policy`, without the
+namespace, because `aws-service-identity`'s `accessFor` finds it by that name. IAM
+policy names are global to the AWS account, so two namespaces deploying the same
+Application name and component name collide on it. Until that convention changes
+upstream, keep that pair unique per account.
+
+`memoryName` must match `^[a-zA-Z][a-zA-Z0-9_]{0,47}$` and `eventExpiryDuration` must
+be 3 to 365 days; the component rejects other values before anything reaches AWS. The
+default name is `<namespace>_<component>` with `-` replaced by `_`, so a namespace that
+starts with a digit, or a pair longer than 48 characters, needs an explicit `memoryName`.
+
+Run an agent that uses memory with **one replica** (the `agent` component's default),
+and do not add an `hpa` or `cpuscaler` trait to it. AgentCore restores the conversation
+on any pod, but A2A tasks and contexts live in the memory of the pod that served them, so
+a follow-up that lands on another pod gets "not found".
+
+Requests that reach the agent's Service without passing the gateway, such as an
+incident bridge posting to it directly, carry no `X-Forwarded-User`, so they get no
+memory and no agent kept between turns. Route such a caller through the gateway with its
+own ServiceAccount token if it needs either.
+
 The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. A
 workload that calls an agent's Service directly can set it to any caller; restrict agent
 ingress to `agentgateway-system` with a NetworkPolicy if other workloads share the

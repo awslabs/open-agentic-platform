@@ -31,7 +31,9 @@ template: {
 	// (*.aws.upbound.io), so their object names carry the namespace to stay unique
 	// across namespaces (oam-authoring.md section 3). The IAM Policy keeps
 	// <appName>-<component>-iam-policy: aws-service-identity's accessFor looks it up by
-	// exactly that name, so it changes only together with that trait (appmod).
+	// exactly that name, so it changes only together with that trait (appmod). IAM
+	// policy names are account-global, so the same appName and component in two
+	// namespaces collide on that Policy until the convention changes upstream.
 	//
 	// Upgrading from a version that named the Memory <component>: the object name
 	// changes, so KubeVela deletes the old Memory and creates a new one. The AWS memory
@@ -90,8 +92,12 @@ template: {
 	// Only what the agent's AgentCore session manager calls (bedrock_agentcore
 	// MemoryClient: get_memory for strategies, create/list/get/delete_event,
 	// retrieve_memory_records), on this memory only. AgentCore ids are
-	// "<memoryName>-<suffix>" and memoryName cannot contain "-", so the "-*" suffix
-	// matches this memory and no other.
+	// "<memoryName>-<suffix>" and the memoryName parameter is constrained to exclude
+	// "-", so the "-*" suffix matches this memory and no other.
+	//
+	// No bedrock:InvokeModel: the strategies emitted here are AgentCore built-ins,
+	// whose extraction AgentCore runs itself, and the agent's model calls go to the
+	// LLM gateway, not to Bedrock under this role.
 	outputs: "\(context.name)-iam-policy": {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
@@ -114,14 +120,6 @@ template: {
 					        "bedrock-agentcore:RetrieveMemoryRecords"
 					      ],
 					      "Resource": "arn:aws:bedrock-agentcore:\(parameter.region):{{ .Values.global.awsAccountId }}:memory/\(parameter.memoryName)-*"
-					    },
-					    {
-					      "Effect": "Allow",
-					      "Action": [
-					        "bedrock:InvokeModel",
-					        "bedrock:InvokeModelWithResponseStream"
-					      ],
-					      "Resource": "*"
 					    }
 					  ]
 					}
@@ -132,15 +130,17 @@ template: {
 	}
 
 	parameter: {
-		// +usage=Memory name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$). Defaults to <namespace>_<componentName>
-		memoryName: *_autoName | string
+		// +usage=Memory name in AWS (must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$). Defaults to <namespace>_<componentName> with "-" replaced by "_"
+		// The constraint applies to the default too, so the IAM "<memoryName>-*" scoping
+		// holds by construction and a bad name fails at render, not at the AWS call.
+		memoryName: (*_autoName | string) & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
 		// +usage=AWS region. Defaults to the cluster's region so the same OAM Application
 		// is portable across regions; override only for a cross-region memory store.
 		region: *"{{ .Values.global.awsRegion }}" | string
 		// +usage=Description of the memory
 		description: *"AgentCore Memory" | string
 		// +usage=Number of days after which events expire (3-365)
-		eventExpiryDuration: *30 | int
+		eventExpiryDuration: *30 | int & >=3 & <=365
 		// +usage=Long-term memory strategies to enable. Empty (default) keeps short-term memory only: the conversation within a session. semantic stores facts, userPreference stores preferences, summary stores per-session summaries; all are kept per caller. Removing a strategy from this list deletes that strategy in AgentCore (its MemoryStrategy is garbage-collected), and the agent stops retrieving its namespace.
 		strategies: *[] | [...("semantic" | "userPreference" | "summary")]
 	}
