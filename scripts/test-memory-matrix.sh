@@ -35,6 +35,7 @@ PROBE="ltm-probe-$(date +%s)"
 ks run $PROBE -n default --restart=Never --image=curlimages/curl:8.10.1 --command -- sleep 900 >/dev/null
 ks wait --for=condition=Ready pod/$PROBE -n default --timeout=90s >/dev/null
 trap 'ks delete pod $PROBE -n default --ignore-not-found --wait=false >/dev/null 2>&1' EXIT
+echo "agent image: $(ks get pods -n $NS -l app.kubernetes.io/name=$AGENT -o jsonpath='{.items[0].spec.containers[0].image}')"
 # chat <token> <contextId> <message> [extra curl args] -> prints "<http code> <response text>"
 chat() { local t=$1 c=$2 m=$3; shift 3
   ks exec $PROBE -n default -- curl -s -m 180 -w '\n%{http_code}' -X POST "$GW/$AGENT/chat" \
@@ -96,21 +97,33 @@ for i in json.load(sys.stdin)["items"]:
   NOLOG=$(ks logs -n $NS -l app.kubernetes.io/name=$AGENT --since-time="$START" --tail=-1 --max-log-requests=10 2>/dev/null)
   row N1 "request without X-Forwarded-User gets no memory (fail closed)" yes "$(echo "$NOLOG" | grep -q "memory is off for session 'nohdr$RUN'" && echo yes || echo no)"
   row N2 "and no session manager was built for it" no "$(echo "$NOLOG" | grep -q "session manager created.*session=nohdr$RUN" && echo yes || echo no)"
-  # Requests without an identity are served but never cached (their key is unique to
-  # the request). Several in a row, on /chat and A2A, must all still answer.
+  # Requests without an identity are served (not cached: that part is unit-tested,
+  # tests/unit/test_session_isolation.py and test_a2a_isolation.py). /chat three times
+  # and A2A once; A2A errors also come back as HTTP 200, so check for a JSON-RPC result.
   NH=""; for i in 1 2 3; do
     NH="$NH $(ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \
       -H 'Content-Type: application/json' -d "{\"message\":\"Say hi.\",\"contextId\":\"nohdr$RUN\"}")"; done
-  NH="$NH $(ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/" \
-      -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"messageId\":\"m$RUN\",\"contextId\":\"nohdr$RUN\",\"parts\":[{\"kind\":\"text\",\"text\":\"Say hi.\"}]}}}")"
-  row N3 "repeated requests without identity (/chat x3, A2A) are all served" "200 200 200 200" "${NH# }"
+  NHA=$(ks exec $PROBE -n default -- curl -s -m 120 -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/" \
+      -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"messageId\":\"m$RUN\",\"contextId\":\"nohdr$RUN\",\"parts\":[{\"kind\":\"text\",\"text\":\"Say hi.\"}]}}}" |
+    python3 -c 'import json,sys
+try: d=json.load(sys.stdin); print("result" if "result" in d and "error" not in d else "error")
+except Exception: print("non-json")')
+  row N3 "requests without identity are served (/chat x3 HTTP, A2A result)" "200 200 200 result" "${NH# } $NHA"
   echo "=== parameter validation at admission (server dry-run, as ArgoCD applies) ==="
-  # adm <properties> -> "accepted" or the webhook's last error line
-  adm() { printf 'apiVersion: core.oam.dev/v1beta1\nkind: Application\nmetadata: {name: ltm-param-probe, namespace: %s}\nspec:\n  components:\n  - name: probe\n    type: agentcore-memory\n    properties: %s\n' "$NS" "$1" |
-    ks apply --dry-run=server -f - 2>&1 | grep -q 'created (server dry run)' && echo accepted || echo rejected; }
-  row V1 "memoryName containing '-' is rejected" rejected "$(adm '{memoryName: bad-name}')"
-  row V2 "eventExpiryDuration 2 and 400 are rejected" "rejected rejected" "$(adm '{eventExpiryDuration: 2}') $(adm '{eventExpiryDuration: 400}')"
-  row V3 "defaults and in-range overrides are accepted" "accepted accepted" "$(adm '{}') $(adm '{memoryName: ok_name, eventExpiryDuration: 365}')"
+  # adm <component name> <properties> -> "accepted", "rejected:<constraint>" when the
+  # KubeVela webhook reports a CUE constraint, else "other: <error>" (RBAC, webhook
+  # down, missing CRD), which no row expects.
+  adm() { printf 'apiVersion: core.oam.dev/v1beta1\nkind: Application\nmetadata: {name: ltm-param-probe, namespace: %s}\nspec:\n  components:\n  - name: %s\n    type: agentcore-memory\n    properties: %s\n' "$NS" "$1" "$2" |
+    ks apply --dry-run=server -f - 2>&1 | python3 -c 'import sys
+o=sys.stdin.read()
+if "created (server dry run)" in o: print("accepted")
+elif "conflicting values" in o: print("rejected:conflict")
+elif "out of bound" in o: print("rejected:bound")
+else: print("other:", o.strip().splitlines()[-1][:80] if o.strip() else "empty")'; }
+  row V1 "memoryName cannot be overridden (IAM scope stays on own memory)" rejected:conflict "$(adm probe '{memoryName: agents_agentcore_short_memory}')"
+  row V2 "eventExpiryDuration 2 and 400 are rejected" "rejected:bound rejected:bound" "$(adm probe '{eventExpiryDuration: 2}') $(adm probe '{eventExpiryDuration: 400}')"
+  row V3 "default and in-range expiry are accepted" "accepted accepted" "$(adm probe '{}') $(adm probe '{eventExpiryDuration: 365}')"
+  row V4 "namespace+component over 48 chars still gets a valid default name" accepted "$(adm a-component-name-long-enough-to-exceed-the-limit '{}')"
   echo "=== short-term (user1, session A) ==="
   R=$(chat "$U1" "ltmA$RUN" "Remember this about me: my favourite colour is teal and I prefer answers in French.")
   row S1 "user1 states facts: HTTP 200, no error" "200 no" "$(echo "$R" | cut -d' ' -f1) $(has "$R" 'ERROR:')"
