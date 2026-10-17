@@ -30,7 +30,7 @@ def test_strands_agent():
             "default_headers": {"x-bf-vk": BIFROST_VK},
         },
         model_id=MODEL_ID,
-        params={"max_tokens": 256, "temperature": 0.7},
+        params={"max_tokens": 256},
     )
 
     agent = Agent(model=model, system_prompt="You are a helpful assistant.")

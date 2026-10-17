@@ -49,6 +49,7 @@ All configuration via environment variables:
 | `AGENT_NAME` | `strands-agent` | Agent identifier |
 | `SYSTEM_PROMPT` | Default prompt | Agent behavior |
 | `MODEL_ID` | `claude-sonnet` | Model name for LLM Gateway |
+| `MODEL_TEMPERATURE` | unset | Sampling temperature (0-1). Omitted when unset or `none`; newer models (e.g. Claude Sonnet 5) reject non-default values |
 | `AWS_REGION` | `us-west-2` | AWS region |
 | `LLM_GATEWAY_URL` | `http://litellm-proxy.agentgateway-system.svc.cluster.local:4000` | LiteLLM proxy URL |
 | `LLM_GATEWAY_API_KEY` | `sk-1234` | Gateway API key (optional) |
