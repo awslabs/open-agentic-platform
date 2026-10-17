@@ -264,8 +264,8 @@ function runCoder(repoDir) {
       ...baseEnv,
       CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_REGION: process.env.AWS_REGION || process.env.CODER_REGION || "us-west-2",
-      ANTHROPIC_MODEL: process.env.CODER_MODEL || "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-      ANTHROPIC_SMALL_FAST_MODEL: process.env.CODER_SMALL_MODEL || process.env.CODER_MODEL || "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      ANTHROPIC_MODEL: process.env.CODER_MODEL || "us.anthropic.claude-sonnet-5-5",
+      ANTHROPIC_SMALL_FAST_MODEL: process.env.CODER_SMALL_MODEL || process.env.CODER_MODEL || "us.anthropic.claude-sonnet-5-5",
     };
     fs.mkdirSync("/tmp/coder-home/.claude", { recursive: true });
     console.log(`[coder] LLM: Bedrock-direct region=${env.AWS_REGION} model=${env.ANTHROPIC_MODEL}`);
@@ -282,7 +282,7 @@ function runCoder(repoDir) {
       // Bifrost maps model ALIASES → Bedrock model IDs. Claude Code's default
       // model name (e.g. claude-sonnet-4) isn't a Bifrost alias and returns
       // "provided model identifier is invalid" (400). Use the platform's Bifrost
-      // alias (verified: 'claude-sonnet' → us.anthropic.claude-sonnet-4-5).
+      // alias (verified: 'claude-sonnet' → us.anthropic.claude-sonnet-5-5).
       ANTHROPIC_MODEL: process.env.CODER_MODEL || "claude-sonnet",
       ANTHROPIC_SMALL_FAST_MODEL: process.env.CODER_MODEL || "claude-sonnet",
     };
