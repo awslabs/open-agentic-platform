@@ -75,7 +75,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          command: ['sh', '-c', 'until nc -z langfuse-postgres 5432; do sleep 2; done']
+          command: ['sh', '-c', 'until nc -z langfuse-postgres.langfuse.svc.cluster.local. 5432; do sleep 2; done']
           securityContext:
             allowPrivilegeEscalation: false
             runAsUser: 65534
