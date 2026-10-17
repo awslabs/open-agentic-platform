@@ -19,7 +19,9 @@ replicas: 1
 
 image:
   repository: langfuse/langfuse
-  tag: "3"
+  # Pinned to a concrete 3.x (was a floating "3", so each fresh install could pull
+  # a different 3.x image, making the init-time/CPU behaviour non-reproducible). #1057
+  tag: "3.225.11"
   pullPolicy: IfNotPresent
 
 worker:
@@ -65,8 +67,13 @@ salt: "langfuse-otel-salt-v1"
 
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    # cpu 500m->1 and memory 1Gi->1536Mi (#1057): the web init is CPU-bound and at a
+    # 500m request the container was CFS-throttled ~44s in its first ~2min on a busy
+    # node, slowing /api/public/health past the liveness timeout and crash-looping it.
+    # Real memory peak is ~1.3GiB (> the old 1Gi request), so the scheduler under-counted
+    # it. The 4Gi limit is unchanged and ample (no OOMKill — the kill was reason=Error).
+    cpu: "1"
+    memory: 1536Mi
   limits:
     cpu: 2000m
     memory: 4Gi

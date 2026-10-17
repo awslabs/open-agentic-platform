@@ -134,8 +134,16 @@ spec:
               path: /api/public/health
               port: 3000
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+            # timeoutSeconds raised 5->10 and failureThreshold 3->6 (#1057): on a
+            # busy fresh node the web container is CPU-throttled during its
+            # CPU-bound init, so /api/public/health intermittently answers slower
+            # than the old 5s probe timeout. At 5s/3 the kubelet SIGKILLed the pod
+            # (exitCode 137, reason=Error — NOT OOMKilled) ~90s into a slow window,
+            # crash-looping it forever. 10s/6 = ~3min of consecutive failures before
+            # a restart, covering the measured slow window with margin while still
+            # restarting a genuinely hung pod.
+            timeoutSeconds: 10
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /api/public/health
