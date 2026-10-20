@@ -38,6 +38,12 @@ clusters:
     # identity associations the EksCluster RGD has already created.
     provider: "kro-ack"
     region: us-west-2
+    # Kept at 1.35 intentionally: this value feeds ACK Cluster.spec.version under
+    # adopt-or-create (appmod rg-eks.yaml), and EKS upgrades only ONE minor per call,
+    # so bumping a live 1.35 spoke straight to 1.37 (two minors) parks it in error.
+    # The spoke upgrade is staged separately (1.35 -> 1.36 -> 1.37); this PR bumps
+    # only the hub/config. A fresh spoke created from here comes up at 1.35 to match
+    # the running fleet; re-stage when upgrading the spoke in place.
     k8sVersion: "1.35"
     # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
     # kro-clusters chart resolves both via `default $.Values.global.accountId`

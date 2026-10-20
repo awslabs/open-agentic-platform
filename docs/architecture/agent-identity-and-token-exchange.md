@@ -5,7 +5,7 @@ workload-identity model and the roadmap to user-delegated (on-behalf-of) access.
 
 Repos / branches:
 - OAP (this repo): `aws-samples/sample-open-agentic-platform` — branch `feature/oam-for-agents` (PR #33 → `main`).
-- Platform: `aws-samples/appmod-blueprints` — branch `feature/agent-platform-shapirov`.
+- Platform: `aws-samples/appmod-blueprints` — branch `main`.
 
 Reference environment: cluster `peeks-hub`, account `123456789012`, `us-west-2`.
 EKS OIDC issuer: `https://oidc.eks.us-west-2.amazonaws.com/id/1BABC5C7BFD3BFE9636A486678E1D6F6`.
