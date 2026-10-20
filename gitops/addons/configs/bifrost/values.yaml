@@ -54,10 +54,26 @@ bifrost:
     enabled: false
 
   # Wait for Postgres to accept connections before starting Bifrost.
+  # FQDN with a trailing dot = single absolute DNS query that bypasses the CoreDNS
+  # search list (a name under ndots:5 is otherwise tried against every search-domain
+  # suffix first). The loop is bounded (cap + nc -w) and echoes each attempt, so a
+  # real dependency failure exits non-zero and the init restarts visibly instead of
+  # stalling silently. Namespace is 'bifrost' (see podIdentity.namespace above).
   initContainers:
     - name: wait-for-postgres
       image: busybox:1.36
-      command: ['sh', '-c', 'until nc -z bifrost-postgresql 5432; do sleep 2; done']
+      command:
+        - sh
+        - -c
+        - |
+          host="bifrost-postgresql.bifrost.svc.cluster.local."
+          for i in $(seq 1 60); do
+            if nc -z -w 2 "$host" 5432; then
+              echo "postgres reachable on attempt $i"; exit 0
+            fi
+            echo "attempt $i/60: $host:5432 not reachable yet"; sleep 2
+          done
+          echo "postgres still unreachable after 60 attempts; failing init"; exit 1
 
   bifrost:
     client:
