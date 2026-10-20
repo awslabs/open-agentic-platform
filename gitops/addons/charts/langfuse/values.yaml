@@ -19,7 +19,9 @@ replicas: 1
 
 image:
   repository: langfuse/langfuse
-  tag: "3"
+  # Pinned to a concrete 3.x (was a floating "3", so each fresh install could pull a
+  # different 3.x image, making the init-time/CPU behaviour non-reproducible). #1057
+  tag: "3.225.11"
   pullPolicy: IfNotPresent
 
 worker:
@@ -67,9 +69,12 @@ salt: "langfuse-otel-salt-v1"
 # deep dependency checks. Request 2Gi (not 1Gi) so EKS Auto Mode places the web pod
 # on a node with real headroom instead of a tightly-packed small instance where the
 # boot was starved; the limit stays 4Gi.
+# cpu request raised 500m->1 (#1057): the web init is CPU-bound and at a 500m request
+# the container got too few CPU shares on a busy node, slowing /api/public/health past
+# the liveness timeout and crash-looping it (exitCode 137, reason=Error — NOT OOMKilled).
 resources:
   requests:
-    cpu: 500m
+    cpu: "1"
     memory: 2Gi
   limits:
     cpu: 2000m
