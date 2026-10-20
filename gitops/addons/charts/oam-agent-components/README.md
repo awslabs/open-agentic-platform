@@ -12,7 +12,7 @@ The CUE source for these definitions lives at `platform/oam/definitions/componen
 
 ## Role in the platform
 
-This is a **wave-5 declarative consumer**. The convention, documented in [appmod-blueprints/gitops/addons/registry/README.md](https://github.com/aws-samples/appmod-blueprints/blob/feature/agent-platform-shapirov/gitops/addons/registry/README.md), is that a chart's sync-wave reflects the highest wave it consumes — not the resources it emits. Adding new ComponentDefinitions here does not change the wave; only changes to the set of consumed addons do.
+This is a **wave-5 declarative consumer**. The convention, documented in [appmod-blueprints/gitops/addons/registry/README.md](https://github.com/aws-samples/appmod-blueprints/blob/main/gitops/addons/registry/README.md), is that a chart's sync-wave reflects the highest wave it consumes — not the resources it emits. Adding new ComponentDefinitions here does not change the wave; only changes to the set of consumed addons do.
 
 ```
 wave 3   argo-rollouts          (Rollout CRD)

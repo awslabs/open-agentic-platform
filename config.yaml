@@ -4,7 +4,7 @@
 # Platform base (appmod-blueprints)
 platform:
   repo: "https://github.com/aws-samples/appmod-blueprints.git"
-  ref: "main"                          # Tag or branch (e.g., "v1.0.0")
+  ref: "main"                          # Branch or tag (e.g., "main" or "v1.0.0"). A moving branch like "main" tracks latest; pin a tag for reproducibility.
   clusterProvider: "kind-crossplane"
 
 # AWS
