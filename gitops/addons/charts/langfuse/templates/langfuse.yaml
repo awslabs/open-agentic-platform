@@ -23,11 +23,11 @@ data:
   AUTH_KEYCLOAK_ISSUER: "{{ .Values.keycloak.issuerUrl }}"
   AUTH_KEYCLOAK_ALLOW_ACCOUNT_LINKING: "true"
   AUTH_DISABLE_SIGNUP: "{{ .Values.keycloak.disableSignup | default "false" }}"
-  CLICKHOUSE_URL: "http://langfuse-clickhouse:8123"
-  CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse:9000"
+  CLICKHOUSE_URL: "http://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:8123"
+  CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:9000"
   CLICKHOUSE_USER: "default"
   CLICKHOUSE_CLUSTER_ENABLED: "false"
-  REDIS_CONNECTION_STRING: "redis://langfuse-redis:6379"
+  REDIS_CONNECTION_STRING: "redis://langfuse-redis.{{ .Release.Namespace }}.svc.cluster.local.:6379"
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "{{ .Values.minio.bucket }}"
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ .Values.global.awsRegion }}"
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://langfuse-minio:9000"
@@ -41,7 +41,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 type: Opaque
 stringData:
-  DATABASE_URL: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@langfuse-postgres:5432/langfuse"
+  DATABASE_URL: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@langfuse-postgres.{{ .Release.Namespace }}.svc.cluster.local.:5432/langfuse"
   POSTGRES_PASSWORD: "{{ .Values.postgres.password }}"
   NEXTAUTH_SECRET: "{{ .Values.nextauthSecret }}"
   SALT: "{{ .Values.salt }}"
@@ -75,17 +75,30 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          # Use the fully-qualified service name so the lookup is a single absolute
-          # query. With the short name `langfuse-postgres`, CoreDNS `ndots:5` expands
-          # it through every search-domain suffix first; on EKS Auto Mode this
-          # cross-node lookup can hang on a fresh first provision, leaving `nc -z`
-          # running with no output and the pod stuck Init:0/1 (#1057 langfuse chain).
-          # The FQDN (trailing dot) is resolved directly and avoids the search-list
-          # fallback. NOTE: on the warm live rc2 event the bare name still inited in
-          # ~40s, so this premise is UNPROVEN — it is staged so the next FRESH
-          # first-provision e2e (which reproduces the cold-start hang) can validate
-          # whether the FQDN form clears it.
-          command: ['sh', '-c', 'until nc -z langfuse-postgres.langfuse.svc.cluster.local. 5432; do sleep 2; done']
+          # Resolve postgres by its fully-qualified name with a TRAILING DOT so the
+          # lookup is a single absolute query that bypasses the CoreDNS search list.
+          # Any name under `ndots:5` (the short name, or even the 4-dot
+          # `*.svc.cluster.local` form WITHOUT the trailing dot) is first tried
+          # against every search-domain suffix; while postgres is still absent each
+          # probe emits extra NXDOMAINs, and on EKS Auto Mode a cold first-provision
+          # cross-node lookup can hang, leaving `nc -z` with no output and the pod
+          # stuck Init:0/1 (#1057 langfuse chain). The namespace comes from
+          # .Release.Namespace so the FQDN follows the chart wherever it is installed.
+          # The loop is bounded (cap + `nc -w`) and echoes every attempt, so a real
+          # dependency failure exits non-zero and the init restarts visibly instead
+          # of stalling silently.
+          command:
+            - sh
+            - -c
+            - |
+              host="langfuse-postgres.{{ .Release.Namespace }}.svc.cluster.local."
+              for i in $(seq 1 60); do
+                if nc -z -w 2 "$host" 5432; then
+                  echo "postgres reachable on attempt $i"; exit 0
+                fi
+                echo "attempt $i/60: $host:5432 not reachable yet"; sleep 2
+              done
+              echo "postgres still unreachable after 60 attempts; failing init"; exit 1
           securityContext:
             allowPrivilegeEscalation: false
             runAsUser: 65534
