@@ -400,7 +400,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.3.2-safe-identity-default" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.3.3-main" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
