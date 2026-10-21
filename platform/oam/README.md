@@ -148,6 +148,89 @@ Each agent Application creates:
 - Agent Card ConfigMap (for A2A discovery)
 - HTTPRoute against `agentgateway-proxy` (when `registerWithGateway: true`)
 
+## Agent memory (AgentCore)
+
+`examples/example-agent-agentcore-memory.yaml` is the reference. The memory ID is the only
+wired value: the `agentcore-memory` component publishes it as a KubeVela output, and the
+agent takes it as an input with `dependsOn`, so the agent starts after the memory exists.
+Neither component takes a region; both use the cluster's.
+
+| Mode | Set on `agentcore-memory` | What the agent gets |
+|---|---|---|
+| Short-term | nothing (`strategies: []`, default) | the conversation within a session (`contextId`) |
+| Long-term | `strategies: [semantic, userPreference, summary]`, any subset | short-term, plus records recalled across sessions |
+
+Strategy namespaces are platform-owned and keyed by the caller:
+
+| Strategy | AgentCore type | Namespace |
+|---|---|---|
+| `semantic` | `SEMANTIC` | `/facts/{actorId}/` |
+| `userPreference` | `USER_PREFERENCE` | `/preferences/{actorId}/` |
+| `summary` | `SUMMARIZATION` | `/summaries/{actorId}/{sessionId}/` |
+
+`actorId` is the `X-Forwarded-User` header the gateway sets from the caller's token
+`sub`, so one caller's memories are never retrieved for another. A request without that
+header did not come through the gateway, and the agent gives it no memory at all rather
+than pooling such callers together. The agent reads the strategies from the memory itself
+(`GetMemory`, refreshed every 5 minutes), so adding a strategy needs no agent change and no
+rollout. Sessions that are already open keep the strategies they started with; new
+sessions use the current ones. Retrieval tuning: `retrievalTopK` and
+`retrievalRelevanceScore` in `memory.config`, as strings (`"5"`, `"0.3"`); defaults 10 and
+0.2, and an unparsable value falls back to the default with a warning.
+
+The `summary` namespace includes `{sessionId}`, so summaries are recalled within the
+session that produced them, not across sessions. Use `semantic` or `userPreference` for
+recall across sessions.
+
+The `agentcore-memory` component reports healthy only once the memory and all its
+strategies exist, so an agent that `dependsOn` it starts with every strategy in place.
+Removing a strategy from the list deletes it in AgentCore.
+
+Upgrading from an earlier version of this component renames the Memory object to
+`<namespace>.<component>`, so the AWS memory is recreated with a new memoryId and its
+stored events are lost. An Application that set `memoryName` must drop it: the field
+is no longer accepted (see below), and the memory is recreated under the derived name.
+
+The component's IAM Policy is still named `<appName>-<component>-iam-policy`, without the
+namespace, because `aws-service-identity`'s `accessFor` finds it by that name. IAM
+policy names are global to the AWS account, so two namespaces deploying the same
+Application name and component name collide on it. Until that convention changes
+upstream, keep that pair unique per account.
+
+The AWS memory name is derived, not set, and is one-to-one with the namespace and
+component: `<namespace>_<component>` with `-` replaced by `_` when the namespace has no
+`-`, otherwise `M<first 30 characters>_<16-character hash>`. The second form is also used
+when the first would start with a digit or exceed AgentCore's 48 characters, so the same
+Application deploys in any namespace. `memoryName` cannot be overridden: the IAM policy
+grants `memory/<memoryName>-*`, so a chosen or colliding name could reach another
+namespace's memory. `eventExpiryDuration` must be 3 to 365 days. KubeVela rejects other
+values when the Application is applied.
+
+Run the agent with **one replica** (the `agent` component's default), with or without memory,
+and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the
+conversation on any pod, but A2A tasks and contexts live in the memory of the pod that served them, so
+a follow-up that lands on another pod gets "not found".
+
+Requests that reach the agent's Service without passing the gateway, such as an
+incident bridge posting to it directly, carry no `X-Forwarded-User`, so they get no
+memory and no agent kept between turns. Route such a caller through the gateway with its
+own ServiceAccount token if it needs either. The A2A tasks such requests create can never
+be read back, so the agent keeps only the newest `MAX_UNOWNED_TASKS` of them (agent env,
+default `100`).
+
+The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. A
+workload that calls an agent's Service directly can set it to any caller; restrict agent
+ingress to `agentgateway-system` with a NetworkPolicy if other workloads share the
+cluster (enforcing this by default is tracked in #86).
+
+Long-term records are extracted asynchronously by AgentCore after a conversation, so a
+fact told in one session is recallable in a new session after extraction completes, not
+immediately.
+
+Live check: `scripts/test-memory-matrix.sh` (provisioning, fail-closed, per-caller
+recall, A2A context and task isolation). Run `PHASE=write`, wait for extraction, then
+`PHASE=read`. The gateway side is `scripts/test-identity-matrix.sh`.
+
 ## Monitoring rollouts
 
 ```bash
