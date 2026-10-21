@@ -16,7 +16,8 @@ spec:
   components:
     - name: deleg-supervisor
       type: agent
-      # Start after the sub-agent it can reach, so its first card fetch succeeds.
+      # Created after the sub-agent. dependsOn orders creation, not pod readiness, so the
+      # first card fetch can still miss it; failed cards are retried every 30s.
       dependsOn: [deleg-math]
       properties:
         description: "Supervisor that answers questions by delegating to other agents"

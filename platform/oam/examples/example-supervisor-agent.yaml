@@ -25,6 +25,8 @@ spec:
   components:
     - name: supervisor-agent
       type: agent
+      # Created after its sub-agents. A sub-agent that is not ready yet when the supervisor
+      # starts is picked up by the card refresh (failed cards are retried every 30s).
       dependsOn: [math-agent, writer-agent]
       properties:
         description: "Answers requests by delegating calculation and writing to other agents"

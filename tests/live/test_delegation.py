@@ -45,6 +45,19 @@ def deployed(kubectl):
             time.sleep(5)
         else:
             pytest.fail(f"{name} not Ready within 240s")
+    # The supervisor fetched cards at startup, possibly before deleg-math was Ready
+    # (dependsOn orders creation, not readiness); it retries a failed card every 30s.
+    # Wait for that retry to succeed so the rows see the full roster.
+    ok = f'/{MATH}/.well-known/agent-card.json "HTTP/1.1 200 OK"'
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        # Agents are Argo Rollouts, so read the pods by label, not deploy/<name>.
+        log = kubectl("logs", "-n", NS, "-l", f"app.kubernetes.io/name={SUP}", "-c", SUP, "--tail=-1").stdout
+        if ok in log:
+            break
+        time.sleep(5)
+    else:
+        pytest.fail(f"supervisor did not fetch the {MATH} card within 120s")
     yield
     if os.getenv("KEEP", "1") == "0":
         kubectl("delete", "-f", str(FIXTURE), "--wait=false")
