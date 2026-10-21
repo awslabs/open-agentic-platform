@@ -81,6 +81,8 @@ async def capture_caller_auth(request, call_next):
     """
     inbound_auth.set(request.headers.get("authorization"))
     inbound_actor.set(request.headers.get(CALLER_IDENTITY_HEADER))
+    inbound_agent.set(request.headers.get(CALLER_AGENT_HEADER))
+    inbound_depth_raw.set(request.headers.get(DELEGATION_DEPTH_HEADER))
     request_id.set(uuid.uuid4().hex)
     return await call_next(request)
 
@@ -104,6 +106,32 @@ async def capture_caller_auth(request, call_next):
 # the agent attaches no memory (agent._build_session_manager).
 
 CALLER_IDENTITY_HEADER = "x-forwarded-user"
+
+# Set by the gateway to the calling agent's ServiceAccount subject; empty for a user.
+# Informational (logs, traces): authorization is the gateway's, keys use the user above.
+CALLER_AGENT_HEADER = "x-forwarded-agent"
+
+# Sent by a supervisor on calls to other agents (app/delegation.py). The gateway turns
+# X-Delegated-User into the sub-agent's X-Forwarded-User for agents allowed to delegate,
+# and removes it otherwise. The depth header is the agent's own loop guard.
+DELEGATED_USER_HEADER = "x-delegated-user"
+DELEGATION_DEPTH_HEADER = "x-delegation-depth"
+
+inbound_agent: ContextVar[Optional[str]] = ContextVar("inbound_agent", default=None)
+inbound_depth_raw: ContextVar[Optional[str]] = ContextVar("inbound_depth_raw", default=None)
+
+
+def caller_agent() -> Optional[str]:
+    """The agent that called on behalf of the user, when the call was delegated."""
+    return (inbound_agent.get() or "").strip() or None
+
+
+def inbound_depth() -> int:
+    """Delegation depth of the request in flight: 0 for a direct call."""
+    try:
+        return max(0, int((inbound_depth_raw.get() or "0").strip()))
+    except ValueError:
+        return 0
 
 inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=None)
 

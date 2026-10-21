@@ -38,10 +38,12 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
+from .delegation import delegation_tools, prompt_addendum
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
     HeadersProvider,
+    caller_agent,
     caller_key,
     caller_subject,
     is_no_identity_key,
@@ -669,11 +671,14 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     session_manager = _build_session_manager(session_id, actor_id)
     headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
     pool = _get_mcp_pool(key, headers)
-    tools = (pool.tools if pool is not None else None) or None
+    tools = list(pool.tools) if pool is not None else []
+    # Sub-agents (OAM `agents`): one tool per agent whose card could be fetched.
+    sub_tools, available, unavailable = delegation_tools(session_id)
+    tools += sub_tools
     agent = Agent(
         model=_get_model(),
-        system_prompt=config.SYSTEM_PROMPT,
-        tools=tools,
+        system_prompt=config.SYSTEM_PROMPT + prompt_addendum(available, unavailable),
+        tools=tools or None,
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
         description=config.AGENT_DESCRIPTION,
@@ -712,7 +717,11 @@ def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = Non
     session_id = session_id or str(uuid.uuid4())
     actor_id = actor_id or caller_subject()
     agent = _construct_agent(session_id, actor_id)
-    logger.info(f"Agent created: {config.AGENT_NAME} session={session_id}")
+    via = caller_agent()
+    logger.info(
+        f"Agent created: {config.AGENT_NAME} session={session_id}"
+        + (f" delegated_by={via} user={actor_id}" if via else "")
+    )
     return agent
 
 
