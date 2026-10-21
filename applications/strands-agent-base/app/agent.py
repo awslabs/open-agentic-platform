@@ -39,6 +39,7 @@ except ImportError:
 
 from .config import config
 from .delegation import delegation_tools, prompt_addendum
+from .delegation import generation as delegation_generation
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
@@ -687,11 +688,15 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     )
     _install_truncation_guard(agent)
     agent._oap_mcp_pool = pool
+    agent._oap_delegation = tuple(available)
     return agent
 
 
 def agent_is_stale(agent) -> bool:
-    """True when the MCP pool this agent's tools belong to has been closed.
+    """True when this agent must be rebuilt before reuse.
+
+    Either the MCP pool its tools belong to has been closed, or the set of reachable
+    sub-agents changed since it was built.
 
     Pools are capped (MCP_MAX_POOLS) separately from the agent caches
     (MAX_CACHED_AGENTS, the A2A executor's max_contexts). When the caller's token is
@@ -700,7 +705,12 @@ def agent_is_stale(agent) -> bool:
     caches check this on a hit and rebuild instead, which also reopens the pool.
     """
     pool = getattr(agent, "_oap_mcp_pool", None)
-    return pool is not None and pool.closed
+    if pool is not None and pool.closed:
+        return True
+    # The reachable sub-agents changed since this agent was built: its tools and its
+    # prompt list the old set (app/delegation.py).
+    built = getattr(agent, "_oap_delegation", None)
+    return built is not None and built != delegation_generation()
 
 
 def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> Agent:

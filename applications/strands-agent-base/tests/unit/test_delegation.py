@@ -37,6 +37,9 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "AGENT_NAME", "supervisor-agent")
     monkeypatch.setattr(delegation, "_cards", {})
     monkeypatch.setattr(delegation, "_counts", delegation.OrderedDict())
+    # The first delegation_tools() call fetches synchronously; no background loop here.
+    monkeypatch.setattr(delegation, "_refresher_started", False)
+    monkeypatch.setattr(delegation, "_refresh_loop", lambda: None)
     tokens = [inbound_actor.set(None), inbound_depth_raw.set(None), request_id.set("req-1")]
     yield
     for var, t in zip((inbound_actor, inbound_depth_raw, request_id), tokens):
@@ -99,8 +102,8 @@ def test_agent_names_dedupes_and_skips_itself(monkeypatch):
 
 def test_card_url_and_credential_are_the_gateway_route_and_own_token(monkeypatch):
     calls = _cards(monkeypatch, {"math-agent": CARD})
-    delegation.card("math-agent")
-    assert calls == [("math-agent", {"Authorization": "Bearer sa-token"})]
+    delegation.refresh(force=True)
+    assert ("math-agent", {"Authorization": "Bearer sa-token"}) in calls
     assert delegation.agent_url("math-agent") == f"{config.GATEWAY_URL}/math-agent/"
 
 
@@ -114,14 +117,53 @@ def test_one_tool_per_available_agent_and_unavailable_ones_are_reported(monkeypa
     assert "unavailable: poet-agent" in delegation.prompt_addendum(available, unavailable)
 
 
-def test_cards_are_cached_and_a_failed_refresh_keeps_the_last_good_card(monkeypatch):
+def test_building_tools_reads_the_cache_and_never_fetches(monkeypatch):
     calls = _cards(monkeypatch, {"math-agent": CARD})
-    delegation.card("math-agent")
-    delegation.card("math-agent")
-    assert len(calls) == 1  # cached
+    delegation.delegation_tools("s1")  # first call: one synchronous refresh
+    n = len(calls)
+    for _ in range(3):
+        delegation.delegation_tools("s1")
+    assert len(calls) == n
+
+
+def test_refresh_fetches_only_due_cards_and_keeps_the_last_good_card(monkeypatch):
+    calls = _cards(monkeypatch, {"math-agent": CARD})
+    delegation.refresh(force=True)
+    n = len(calls)
+    delegation.refresh()  # nothing due yet
+    assert len(calls) == n
     monkeypatch.setattr(delegation, "_CARD_TTL", 0.0)
     _cards(monkeypatch, {"math-agent": 503})
+    delegation.refresh()
     assert delegation.card("math-agent")[0] == CARD
+
+
+def test_generation_changes_when_a_sub_agent_appears(monkeypatch):
+    _cards(monkeypatch, {"math-agent": CARD, "poet-agent": 404})
+    delegation.refresh(force=True)
+    before = delegation.generation()
+    assert before == ("math-agent",)
+    _cards(monkeypatch, {"math-agent": CARD, "poet-agent": CARD})
+    delegation.refresh(force=True)
+    assert delegation.generation() == ("math-agent", "poet-agent") != before
+
+
+def test_agent_built_on_an_old_sub_agent_set_is_stale(monkeypatch):
+    _cards(monkeypatch, {"math-agent": CARD, "poet-agent": 404})
+    delegation.refresh(force=True)
+    built = type("A", (), {"_oap_delegation": delegation.generation()})()
+    assert not agent_mod.agent_is_stale(built)
+    _cards(monkeypatch, {"math-agent": CARD, "poet-agent": CARD})
+    delegation.refresh(force=True)
+    assert agent_mod.agent_is_stale(built)
+
+
+def test_missing_gateway_token_is_an_error_at_startup(monkeypatch, caplog):
+    monkeypatch.delenv("WORKLOAD_TOKEN_PATH")
+    _cards(monkeypatch, {})
+    with caplog.at_level("ERROR"):
+        delegation.ensure_refresher()
+    assert "gateway-identity" in caplog.text
 
 
 def test_outbound_headers_name_the_user_and_the_next_depth():
@@ -157,6 +199,11 @@ def test_call_sends_a2a_message_with_a_stable_context_and_returns_the_text(monke
         (_Resp(200, {"error": {"code": -32001, "message": "nope"}}), "A2A error -32001"),
         (_Resp(200, {"result": {"status": {"state": "failed"}}}), "ended failed"),
         (_Resp(200, ValueError("bad")), "not JSON"),
+        (_Resp(200, ["not", "an", "object"]), "not a JSON-RPC object"),
+        (_Resp(200, {"result": "x"}), "no result"),
+        (_Resp(200, {"result": {"status": {"state": "input-required",
+                                           "message": {"parts": [{"kind": "text", "text": "which unit?"}]}}}}),
+         "needs input it cannot get through delegation: which unit?"),
         (httpx.ReadTimeout("slow"), "did not answer"),
         (httpx.ConnectError("down"), "could not be reached"),
     ],
@@ -219,3 +266,9 @@ def test_agent_without_sub_agents_is_unchanged(monkeypatch):
     monkeypatch.setattr(config, "MCP_SERVER_NAMES_RAW", None)
     agent_mod._construct_agent("s1", None)
     assert captured["tools"] is None and captured["system_prompt"] == config.SYSTEM_PROMPT
+
+
+def test_status_message_text_is_used_when_there_are_no_artifacts():
+    ok, text = delegation._reply_text({"result": {"status": {"state": "completed",
+                                                             "message": {"parts": [{"kind": "text", "text": "42"}]}}}})
+    assert (ok, text) == (True, "42")

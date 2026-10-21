@@ -17,10 +17,17 @@ Identity on the delegated call:
                       isolation stay per user. Omitted when this request has no user.
   X-Delegation-Depth  this call's depth, so a chain of agents stops at MAX_DELEGATION_DEPTH
 
-A sub-agent whose card cannot be fetched (not deployed, not ready, or denied by
-agentAccess) is left out and logged; the agent still starts, and the next refresh adds
-it back. Outbound HTTP goes through httpx, which main.py instruments, so the trace
-context reaches the sub-agent and the traces join.
+Cards are fetched off the request path: once synchronously when the first agent is
+built (at import, before the server takes requests), then by a background thread every
+DELEGATION_CARD_TTL_SECONDS (failed ones every 30s). Building an agent only reads that
+cache, so a slow or missing sub-agent never blocks a request. A sub-agent whose card
+cannot be fetched (not deployed, not ready, or denied by agentAccess) is left out and
+logged; the agent still starts. When the set of reachable sub-agents changes, agents
+built on the old set are stale (agent.agent_is_stale) and are rebuilt on their next
+request, so a sub-agent that comes up later reaches existing sessions too.
+
+Outbound HTTP goes through httpx, which main.py instruments, so the trace context
+reaches the sub-agent and the traces join.
 """
 
 import logging
@@ -100,15 +107,27 @@ def _fetch_card(name: str) -> tuple[Optional[dict], str]:
     return card, ""
 
 
-def card(name: str) -> tuple[Optional[dict], str]:
-    """The sub-agent's card, cached; (None, reason) when it cannot be fetched."""
+def _due(name: str, now: float) -> bool:
+    with _cards_lock:
+        hit = _cards.get(name)
+    if hit is None:
+        return True
+    fetched_at, cached, _ = hit
+    return now - fetched_at >= (_CARD_TTL if cached is not None else _CARD_RETRY)
+
+
+def refresh(force: bool = False) -> None:
+    """Fetch every configured card that is due (all of them when *force*)."""
+    now = time.monotonic()
+    for name in agent_names():
+        if force or _due(name, now):
+            _refresh_one(name)
+
+
+def _refresh_one(name: str) -> None:
     now = time.monotonic()
     with _cards_lock:
         hit = _cards.get(name)
-    if hit is not None:
-        fetched_at, cached, reason = hit
-        if now - fetched_at < (_CARD_TTL if cached is not None else _CARD_RETRY):
-            return cached, reason
     fetched, reason = _fetch_card(name)
     if fetched is None and hit is not None and hit[1] is not None:
         # Keep the last good card through a transient failure: the call itself will
@@ -119,7 +138,49 @@ def card(name: str) -> tuple[Optional[dict], str]:
         _cards[name] = (now, fetched, reason)
     if fetched is None:
         logger.warning("Sub-agent %s left out: agent card unavailable (%s)", name, reason)
-    return fetched, reason
+
+
+_refresher_lock = threading.Lock()
+_refresher_started = False
+
+
+def _refresh_loop() -> None:
+    while True:
+        time.sleep(min(_CARD_RETRY, _CARD_TTL))
+        try:
+            refresh()
+        except Exception:  # never let the refresher die
+            logger.exception("Agent card refresh failed")
+
+
+def ensure_refresher() -> None:
+    """First call: fetch all cards now, then keep them fresh in a daemon thread."""
+    global _refresher_started
+    if not agent_names():
+        return
+    with _refresher_lock:
+        if _refresher_started:
+            return
+        _refresher_started = True
+    if not os.getenv("WORKLOAD_TOKEN_PATH"):
+        logger.error(
+            "A2A_AGENT_NAMES is set but the agent has no gateway token (WORKLOAD_TOKEN_PATH): "
+            "add the gateway-identity trait, or every sub-agent card fetch is rejected"
+        )
+    refresh(force=True)
+    threading.Thread(target=_refresh_loop, name="agent-card-refresh", daemon=True).start()
+
+
+def card(name: str) -> tuple[Optional[dict], str]:
+    """The cached card for *name*; (None, reason) when it has not been fetched."""
+    with _cards_lock:
+        hit = _cards.get(name)
+    return (hit[1], hit[2]) if hit is not None else (None, "not fetched yet")
+
+
+def generation() -> tuple:
+    """Identifies the set of reachable sub-agents; changes when one appears or goes."""
+    return tuple(n for n in agent_names() if card(n)[0] is not None)
 
 
 def tool_name(name: str) -> str:
@@ -163,20 +224,34 @@ def outbound_headers() -> dict:
     return headers
 
 
-def _reply_text(body: dict) -> tuple[bool, str]:
-    """(ok, text) from an A2A JSON-RPC message/send response."""
+def _texts(parts) -> list[str]:
+    return [p.get("text") or "" for p in parts or [] if isinstance(p, dict) and p.get("kind") == "text"]
+
+
+def _reply_text(body) -> tuple[bool, str]:
+    """(ok, text) from an A2A JSON-RPC message/send response (a Task or a Message)."""
+    if not isinstance(body, dict):
+        return False, "the agent's reply was not a JSON-RPC object"
     if body.get("error"):
-        err = body["error"]
+        err = body["error"] if isinstance(body["error"], dict) else {"message": str(body["error"])}
         return False, f"A2A error {err.get('code')}: {err.get('message')}"
-    result = body.get("result") or {}
+    result = body.get("result")
+    if not isinstance(result, dict):
+        return False, "the agent returned no result"
     texts = []
     for artifact in result.get("artifacts") or []:
-        texts += [p.get("text", "") for p in artifact.get("parts") or [] if p.get("kind") == "text"]
-    texts += [p.get("text", "") for p in result.get("parts") or [] if p.get("kind") == "text"]
-    state = (result.get("status") or {}).get("state")
+        if isinstance(artifact, dict):
+            texts += _texts(artifact.get("parts"))
+    texts += _texts(result.get("parts"))  # a Message result
+    status = result.get("status") if isinstance(result.get("status"), dict) else {}
+    message = status.get("message") if isinstance(status.get("message"), dict) else {}
+    status_text = "".join(_texts(message.get("parts")))
+    state = status.get("state")
+    text = "".join(t for t in texts if t) or status_text
     if state in ("failed", "rejected", "canceled"):
-        return False, f"the agent's task ended {state}" + (f": {''.join(texts)}" if texts else "")
-    text = "".join(t for t in texts if t)
+        return False, f"the agent's task ended {state}" + (f": {text}" if text else "")
+    if state in ("input-required", "auth-required"):
+        return False, f"the agent needs {state.split('-')[0]} it cannot get through delegation" + (f": {text}" if text else "")
     return (True, text) if text else (False, "the agent returned no text")
 
 
@@ -249,7 +324,11 @@ def _make_tool(name: str, card_: dict, session_id: str) -> PythonAgentTool:
 
 
 def delegation_tools(session_id: str) -> tuple[list, list[str], list[str]]:
-    """(tools, available names, unavailable names) for an agent serving *session_id*."""
+    """(tools, available names, unavailable names) for an agent serving *session_id*.
+
+    Reads the card cache only; never fetches on the request path.
+    """
+    ensure_refresher()
     tools, available, unavailable = [], [], []
     for name in agent_names():
         card_, _ = card(name)

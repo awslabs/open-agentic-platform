@@ -140,9 +140,30 @@ inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=N
 request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 
 
+def unattributed_delegation(sub: Optional[str], agent: Optional[str], depth: Optional[str]) -> bool:
+    """A delegated call whose user the gateway did not set.
+
+    The gateway sets X-Forwarded-User to the delegated user only for agents in
+    delegation.agents; otherwise it is the calling agent itself. Keying on that would
+    let every user of that supervisor share one memory actor and one set of contexts at
+    this agent, so such a call is treated as having no identity (fail closed, like a
+    request without the header). Depth comes from the caller, but setting it only ever
+    costs the caller its own memory.
+    """
+    try:
+        delegated = int((depth or "0").strip()) > 0
+    except ValueError:
+        delegated = False
+    sub, agent = (sub or "").strip(), (agent or "").strip()
+    return delegated and bool(sub) and sub == agent
+
+
 def caller_subject() -> Optional[str]:
     """The gateway-validated caller (`sub`) for this request, or None."""
-    return (inbound_actor.get() or "").strip() or None
+    sub = (inbound_actor.get() or "").strip() or None
+    if unattributed_delegation(sub, inbound_agent.get(), inbound_depth_raw.get()):
+        return None
+    return sub
 
 
 def _token_hash(header: Optional[str]) -> Optional[str]:
@@ -176,6 +197,9 @@ def caller_key(propagate: bool) -> str:
     sub = caller_subject()
     if sub:
         return f"sub:{sub}" if pool == WORKLOAD_KEY else f"sub:{sub}|{pool}"
+    if unattributed_delegation(inbound_actor.get(), inbound_agent.get(), inbound_depth_raw.get()):
+        # Not the supervisor's token hash either: that is shared by all its users.
+        return _no_identity_key()
     tok = _token_hash(inbound_auth.get())
     return f"tok:{tok}" if tok else _no_identity_key()
 
@@ -194,9 +218,12 @@ def task_owner(context=None) -> str:
     if headers is not None:
         sub = (headers.get(CALLER_IDENTITY_HEADER) or "").strip()
         tok = _token_hash(headers.get("authorization"))
+        if unattributed_delegation(sub, headers.get(CALLER_AGENT_HEADER), headers.get(DELEGATION_DEPTH_HEADER)):
+            sub, tok = "", None
     else:
         sub = caller_subject() or ""
-        tok = _token_hash(inbound_auth.get())
+        tok = None if unattributed_delegation(inbound_actor.get(), inbound_agent.get(), inbound_depth_raw.get()) \
+            else _token_hash(inbound_auth.get())
     if sub:
         return f"sub:{sub}"
     return f"tok:{tok}" if tok else _no_identity_key()
