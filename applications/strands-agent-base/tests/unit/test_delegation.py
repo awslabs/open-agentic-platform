@@ -1,6 +1,7 @@
 """Delegation to sub-agents (app/delegation.py, docs/agent-delegation/DESIGN.md)."""
 
 import asyncio
+import time
 
 import httpx
 import pytest
@@ -126,16 +127,80 @@ def test_building_tools_reads_the_cache_and_never_fetches(monkeypatch):
     assert len(calls) == n
 
 
-def test_refresh_fetches_only_due_cards_and_keeps_the_last_good_card(monkeypatch):
-    calls = _cards(monkeypatch, {"math-agent": CARD})
+def _age_cards(seconds):
+    """Pretend every cached card was fetched *seconds* earlier."""
+    for name, (at, card_, reason) in list(delegation._cards.items()):
+        delegation._cards[name] = (at - seconds, card_, reason)
+
+
+def test_refresh_fetches_only_due_cards(monkeypatch):
+    calls = _cards(monkeypatch, {"math-agent": CARD, "poet-agent": 503})
     delegation.refresh(force=True)
     n = len(calls)
     delegation.refresh()  # nothing due yet
     assert len(calls) == n
-    monkeypatch.setattr(delegation, "_CARD_TTL", 0.0)
-    _cards(monkeypatch, {"math-agent": 503})
+    _age_cards(delegation._CARD_RETRY + 1)  # failed cards are due, good ones are not
     delegation.refresh()
+    assert [c[0] for c in calls[n:]] == ["poet-agent"]
+    _age_cards(delegation._CARD_TTL + 1)
+    delegation.refresh()
+    assert {c[0] for c in calls[n + 1:]} == {"math-agent", "poet-agent"}
+
+
+def test_a_transient_failure_keeps_the_last_good_card(monkeypatch):
+    _cards(monkeypatch, {"math-agent": CARD})
+    delegation.refresh(force=True)
+    _cards(monkeypatch, {"math-agent": 503})
+    delegation.refresh(force=True)
     assert delegation.card("math-agent")[0] == CARD
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_revoked_or_removed_agent_is_dropped(monkeypatch, status):
+    _cards(monkeypatch, {"math-agent": CARD})
+    delegation.refresh(force=True)
+    assert delegation.generation() == ("math-agent",)
+    _cards(monkeypatch, {"math-agent": status})
+    delegation.refresh(force=True)
+    assert delegation.card("math-agent")[0] is None
+    assert delegation.generation() == ()
+
+
+def test_building_tools_never_fetches_even_when_cards_are_due(monkeypatch):
+    calls = _cards(monkeypatch, {"math-agent": CARD})
+    delegation.delegation_tools("s1")  # first call starts the refresher
+    n = len(calls)
+    _age_cards(delegation._CARD_TTL + 1)
+    delegation.delegation_tools("s1")
+    assert len(calls) == n
+
+
+def test_refresher_thread_is_started_once(monkeypatch):
+    started = []
+    monkeypatch.setattr(delegation.threading, "Thread", lambda *a, **k: type("T", (), {
+        "start": lambda self: started.append(k.get("name")), "join": lambda self, t=None: None,
+        "is_alive": lambda self: False})())
+    _cards(monkeypatch, {})
+    delegation.ensure_refresher()
+    delegation.ensure_refresher()
+    assert started == ["agent-card-first", "agent-card-refresh"]
+
+
+def test_slow_first_fetch_does_not_hold_startup(monkeypatch):
+    import threading as _t
+
+    release = _t.Event()
+
+    def slow_get(url, headers=None, timeout=None):
+        release.wait(5)
+        return _Resp(200, CARD)
+
+    monkeypatch.setattr(delegation.httpx, "get", slow_get)
+    monkeypatch.setattr(delegation, "_STARTUP_BUDGET", 0.2)
+    t0 = time.monotonic()
+    delegation.ensure_refresher()
+    assert time.monotonic() - t0 < 2
+    release.set()
 
 
 def test_generation_changes_when_a_sub_agent_appears(monkeypatch):

@@ -55,9 +55,14 @@ from .identity import (
 logger = logging.getLogger(__name__)
 
 _CARD_PATH = "/.well-known/agent-card.json"  # a2a-sdk AGENT_CARD_WELL_KNOWN_PATH
-_CARD_TTL = float(os.getenv("DELEGATION_CARD_TTL_SECONDS", "300"))
+_CARD_TTL = max(5.0, float(os.getenv("DELEGATION_CARD_TTL_SECONDS", "300")))
 _CARD_RETRY = 30.0  # a failed fetch is retried sooner than a good card is refreshed
-_CARD_TIMEOUT = 10.0
+# connect is short so a gateway that is down fails fast; the first refresh at startup
+# is also bounded as a whole (_STARTUP_BUDGET), well inside the liveness probe window.
+_CARD_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+_STARTUP_BUDGET = 15.0
+# Statuses that mean the card is gone for us, not a transient failure: drop a cached card.
+_GONE = {401, 403, 404}
 MAX_DEPTH = int(os.getenv("MAX_DELEGATION_DEPTH", "3"))
 _CALL_TIMEOUT = float(os.getenv("DELEGATION_TIMEOUT_SECONDS", "120"))
 _MAX_PER_REQUEST = int(os.getenv("MAX_DELEGATIONS_PER_REQUEST", "10"))
@@ -90,21 +95,22 @@ def agent_url(name: str) -> str:
     return f"{config.GATEWAY_URL}/{name}/"
 
 
-def _fetch_card(name: str) -> tuple[Optional[dict], str]:
+def _fetch_card(name: str) -> tuple[Optional[dict], str, bool]:
+    """(card, reason, gone): *gone* when the agent is denied or no longer routed."""
     try:
         resp = httpx.get(agent_url(name).rstrip("/") + _CARD_PATH, headers=workload_headers(), timeout=_CARD_TIMEOUT)
     except httpx.HTTPError as exc:
-        return None, f"{type(exc).__name__}: {exc}"[:200]
+        return None, f"{type(exc).__name__}: {exc}"[:200], False
     if resp.status_code != 200:
-        # 403: agentAccess does not list this agent; 404/503: not deployed or not ready.
-        return None, f"HTTP {resp.status_code}"
+        # 403: agentAccess does not list this agent; 404: not deployed; 503: not ready.
+        return None, f"HTTP {resp.status_code}", resp.status_code in _GONE
     try:
         card = resp.json()
     except ValueError:
-        return None, "card is not JSON"
+        return None, "card is not JSON", False
     if not isinstance(card, dict):
-        return None, "card is not a JSON object"
-    return card, ""
+        return None, "card is not a JSON object", False
+    return card, "", False
 
 
 def _due(name: str, now: float) -> bool:
@@ -117,26 +123,32 @@ def _due(name: str, now: float) -> bool:
 
 
 def refresh(force: bool = False) -> None:
-    """Fetch every configured card that is due (all of them when *force*)."""
+    """Fetch every configured card that is due (all of them when *force*), in parallel."""
     now = time.monotonic()
-    for name in agent_names():
-        if force or _due(name, now):
-            _refresh_one(name)
+    due = [n for n in agent_names() if force or _due(n, now)]
+    threads = [threading.Thread(target=_refresh_one, args=(n,), daemon=True) for n in due]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 def _refresh_one(name: str) -> None:
     now = time.monotonic()
     with _cards_lock:
         hit = _cards.get(name)
-    fetched, reason = _fetch_card(name)
-    if fetched is None and hit is not None and hit[1] is not None:
-        # Keep the last good card through a transient failure: the call itself will
-        # report the error if the agent is really gone.
+    fetched, reason, gone = _fetch_card(name)
+    had = hit is not None and hit[1] is not None
+    if fetched is None and had and not gone:
+        # Keep the last good card through a transient failure (timeout, 5xx), so a
+        # flapping agent does not rebuild every session. Denied or removed (401/403/404)
+        # drops it: access was revoked or the agent is gone.
         logger.warning("Agent card refresh for %s failed (%s); keeping the previous card", name, reason)
         fetched, reason = hit[1], ""
     with _cards_lock:
         _cards[name] = (now, fetched, reason)
-    if fetched is None:
+    if fetched is None and (had or hit is None or hit[2] != reason):
+        # Logged when an agent is first left out or its reason changes, not every retry.
         logger.warning("Sub-agent %s left out: agent card unavailable (%s)", name, reason)
 
 
@@ -167,7 +179,14 @@ def ensure_refresher() -> None:
             "A2A_AGENT_NAMES is set but the agent has no gateway token (WORKLOAD_TOKEN_PATH): "
             "add the gateway-identity trait, or every sub-agent card fetch is rejected"
         )
-    refresh(force=True)
+    # First fetch in the background thread too, joined for at most _STARTUP_BUDGET: this
+    # runs at import (A2AServer builds one agent for its card), before the server
+    # answers probes. Cards not back in time are picked up by the next refresh.
+    first = threading.Thread(target=refresh, kwargs={"force": True}, name="agent-card-first", daemon=True)
+    first.start()
+    first.join(_STARTUP_BUDGET)
+    if first.is_alive():
+        logger.warning("Agent cards not all fetched within %.0fs at startup; continuing", _STARTUP_BUDGET)
     threading.Thread(target=_refresh_loop, name="agent-card-refresh", daemon=True).start()
 
 

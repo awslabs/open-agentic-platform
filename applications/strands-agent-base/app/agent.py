@@ -46,6 +46,7 @@ from .identity import (
     HeadersProvider,
     caller_agent,
     caller_key,
+    inbound_depth,
     caller_subject,
     is_no_identity_key,
     outbound,
@@ -526,10 +527,21 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
         return None
 
     if not actor_id:
-        logger.warning(
-            "No caller identity (%s header) on this request; memory is off for session %r",
-            CALLER_IDENTITY_HEADER, session_id,
-        )
+        via = caller_agent()
+        if via and inbound_depth() > 0:
+            # identity.unattributed_delegation: the caller delegated but the gateway did
+            # not name a user, so it is not in delegation.agents (or this is an
+            # autonomous run with no user).
+            logger.warning(
+                "Delegated call from %s names no user (is it in the gateway's delegation.agents?); "
+                "memory is off for session %r",
+                via, session_id,
+            )
+        else:
+            logger.warning(
+                "No caller identity (%s header) on this request; memory is off for session %r",
+                CALLER_IDENTITY_HEADER, session_id,
+            )
         return None
 
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig

@@ -85,11 +85,13 @@ No URLs, regions or cluster names appear in the Application, so it stays portabl
 ### 2. Capabilities: agent cards become tools
 
 The supervisor fetches `<GATEWAY_URL>/<name>/.well-known/agent-card.json` for each
-listed name, presenting its own ServiceAccount token: once when its first agent is built
-(at import, before it serves requests), then from a background thread every
-`DELEGATION_CARD_TTL_SECONDS` (default 300; a failed card is retried every 30 seconds).
-Building an agent for a request only reads that cache, so a slow or missing sub-agent
-never blocks a request. Each card becomes one tool:
+listed name, presenting its own ServiceAccount token. The first fetch starts when its
+first agent is built (at import) and runs in parallel in a background thread; startup
+waits for it at most 15 seconds, so a slow gateway cannot outlast the liveness probe.
+After that a background thread refreshes every `DELEGATION_CARD_TTL_SECONDS` (default
+300, at least 5); a failed card is retried every 30 seconds. Building an agent for a
+request only reads that cache, so a slow or missing sub-agent never blocks a request.
+Each card becomes one tool:
 
 - name: `ask_<name>` (normalised to the tool-name pattern);
 - description: the card's description plus its skills (names, descriptions, examples);
@@ -99,9 +101,12 @@ never blocks a request. Each card becomes one tool:
 
 A card that cannot be fetched (agent missing, not ready, or denied by `agentAccess`) is
 logged with the reason and the tool is left out. The supervisor still starts, the same
-way caller MCP pools degrade today. When the set of reachable sub-agents changes, agents
+way caller MCP pools degrade today. On a transient failure (timeout, 5xx) the last good
+card is kept, so a flapping sub-agent does not rebuild every session; on 401, 403 or 404
+(access revoked, agent removed) it is dropped. When the set of reachable sub-agents changes, agents
 built on the old set are stale and are rebuilt on their next request (the same mechanism
 as a closed MCP pool), so a sub-agent that appears later reaches existing sessions too.
+For an agent without memory, that rebuild drops its in-process conversation once.
 A supervisor without the `gateway-identity` trait has no token to present; it logs an
 error at startup naming the trait.
 Readiness gating on sub-agents, like `/ready` does for the workload MCP pool, is not in
@@ -157,15 +162,14 @@ identity: no memory, nothing cached (`identity.unattributed_delegation`). Depth 
 from the caller, but setting it only costs the caller its own memory.
 
 An agent called by a supervisor and itself delegating passes `X-Delegated-User` on, so
-the user survives more than one hop.
+the user survives more than one hop, provided every agent in the chain is in
+`delegation.agents`. If a middle agent is not, the next agent sees no user and turns
+memory off, logging that the delegated call named no user.
 
 Checked (step 1) against agentgateway v1.4.1: a request transformation evaluates CEL
 over the incoming request, so it can read `request.headers[...]` and branch on `jwt.sub`;
 `default(...)` covers a missing header, `set` runs before `remove`, and a `set` whose
 expression fails removes the header rather than passing a client value through.
-`caller-identity-policy.yaml` today sets a header from a CEL expression (`jwt.sub`). If
-conditional expressions or header reads are not supported, this section needs another
-mechanism before anything else is built.
 
 ### 5. Trust model
 
