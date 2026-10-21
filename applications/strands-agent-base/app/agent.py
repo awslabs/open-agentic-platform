@@ -131,8 +131,9 @@ def _get_model() -> OpenAIModel:
             model_id=config.MODEL_ID,
             params={
                 "max_tokens": config.MAX_TOKENS,
-                "temperature": config.MODEL_TEMPERATURE,
                 "stream": True,
+                **({"temperature": config.MODEL_TEMPERATURE}
+                   if config.MODEL_TEMPERATURE is not None else {}),
             },
         )
     return _model

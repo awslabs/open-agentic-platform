@@ -170,8 +170,8 @@ enabledAddons:
 
 ```yaml
 spokes:
-  dev:  { region: us-west-2, kubernetesVersion: "1.35", vpcCidr: "10.1.0.0/16", autoMode: true }
-  prod: { region: us-west-2, kubernetesVersion: "1.35", vpcCidr: "10.2.0.0/16", autoMode: true }
+  dev:  { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.1.0.0/16", autoMode: true }
+  prod: { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.2.0.0/16", autoMode: true }
 ```
 
 Spokes are provisioned via Crossplane from the hub. Fleet member definitions in `gitops/fleet/members/`

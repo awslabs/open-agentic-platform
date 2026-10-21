@@ -36,7 +36,7 @@
 #     example-dev:
 #       clusterName: example-dev
 #       vpcCidr: "10.1.0.0/16"
-#       kubernetesVersion: "1.35"
+#       kubernetesVersion: "1.37"
 #       autoMode: true
 #       # Functional, not cosmetic: the composition builds the spoke's ACK capability
 #       # policy as sts:AssumeRole on

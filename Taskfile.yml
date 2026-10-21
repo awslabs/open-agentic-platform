@@ -61,7 +61,7 @@ vars:
   IDC_ADMIN_GROUP_ID:
     sh: yq -r '.identityCenter.adminGroupId' {{.CONFIG_FILE}}
   K8S_VERSION:
-    sh: yq -r '.hub.kubernetesVersion // "1.35"' {{.CONFIG_FILE}}
+    sh: yq -r '.hub.kubernetesVersion // "1.37"' {{.CONFIG_FILE}}
   AGENTIC_REPO_URL:
     sh: yq -r '.agenticRepo.url' {{.CONFIG_FILE}}
   AGENTIC_REPO_REVISION:
@@ -179,7 +179,14 @@ tasks:
   platform:upgrade:
     desc: Upgrade the base platform to the configured ref
     cmds:
-      - cd {{.PLATFORM_DIR}} && git fetch origin && git checkout {{.PLATFORM_REF}} && git pull origin {{.PLATFORM_REF}} 2>/dev/null || true
+      # Reuse platform:clone for the checkout. The previous inline
+      # `git fetch origin && git checkout {{.PLATFORM_REF}} && git pull ... || true`
+      # silently no-ops on the --single-branch clone (a bare fetch does not retrieve a
+      # different branch, so checkout/pull of PLATFORM_REF fail and `|| true` swallows
+      # it), leaving stale platform code while platform:configure then writes
+      # revision: {{.PLATFORM_REF}} over it. platform:clone does the explicit-refspec
+      # fetch + forced detached checkout that actually updates the working tree.
+      - task: platform:clone
       - task: platform:configure
       - cd {{.PLATFORM_DIR}} && task install
 
@@ -199,7 +206,7 @@ tasks:
         CTX="kind-{{.HUB_CLUSTER_NAME}}-bootstrap"
         for SPOKE in $(yq -r '.spokes | keys | .[]' {{.CONFIG_FILE}}); do
           REGION=$(yq -r ".spokes.${SPOKE}.region // \"{{.AWS_REGION}}\"" {{.CONFIG_FILE}})
-          K8S_VER=$(yq -r ".spokes.${SPOKE}.kubernetesVersion // \"1.35\"" {{.CONFIG_FILE}})
+          K8S_VER=$(yq -r ".spokes.${SPOKE}.kubernetesVersion // \"1.37\"" {{.CONFIG_FILE}})
           VPC_CIDR=$(yq -r ".spokes.${SPOKE}.vpcCidr // \"10.1.0.0/16\"" {{.CONFIG_FILE}})
           AUTO_MODE=$(yq -r ".spokes.${SPOKE}.autoMode // true" {{.CONFIG_FILE}})
           kubectl --context "$CTX" apply -f - <<EOF

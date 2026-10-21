@@ -14,7 +14,7 @@ data:
     model_list:
       - model_name: bedrock-claude-3-5-sonnet
         litellm_params:
-          model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+          model: bedrock/us.anthropic.claude-sonnet-5-5
           aws_region_name: os.environ/AWS_REGION_NAME
       - model_name: bedrock-claude-3-haiku
         litellm_params:
