@@ -1,0 +1,51 @@
+# Fixture for tests/live/test_delegation.py. Applied and removed by that script.
+#
+# deleg-supervisor delegates to:
+#   deleg-math        granted to the supervisor only (dev overlay agentAccess)    D1, D2, P1, P2
+#   my-agent          the AgentCore memory example, no agentAccess entry          D2, I1, M1, P3
+#   deleg-restricted  granted to another agent only, so the supervisor is denied  P4
+#   deleg-ghost       not deployed                                                C2
+# The supervisor is in the dev overlay's delegation.agents, so the gateway believes the
+# user it names. Images come from the agent component's default.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: delegation-matrix
+  namespace: default
+spec:
+  components:
+    - name: deleg-supervisor
+      type: agent
+      # Start after the sub-agent it can reach, so its first card fetch succeeds.
+      dependsOn: [deleg-math]
+      properties:
+        description: "Supervisor that answers questions by delegating to other agents"
+        systemMessage: |
+          Goal: answer the user's request completely. Use your agents for the parts they
+          are described as handling, and do not compute arithmetic yourself.
+        agents:
+          - name: deleg-math
+          - name: my-agent
+          - name: deleg-restricted
+          - name: deleg-ghost
+        resources:
+          requests: {cpu: 250m, memory: 512Mi}
+          limits: {memory: 1Gi}
+      traits:
+        - type: gateway-identity
+    - name: deleg-math
+      type: agent
+      properties:
+        description: "Arithmetic specialist: evaluates arithmetic expressions exactly"
+        systemMessage: "You evaluate arithmetic. Reply with the number only."
+        resources:
+          requests: {cpu: 250m, memory: 512Mi}
+          limits: {memory: 1Gi}
+    - name: deleg-restricted
+      type: agent
+      properties:
+        description: "Agent the supervisor is not allowed to call"
+        systemMessage: "You are a helpful assistant."
+        resources:
+          requests: {cpu: 250m, memory: 512Mi}
+          limits: {memory: 1Gi}

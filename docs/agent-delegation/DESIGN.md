@@ -54,7 +54,7 @@ changes in them.
   the server's route listing the agents allowed to call it. A user who can reach an
   agent gets that agent's tools; the user is not re-checked at the MCP server.
 - Any authenticated caller, user or ServiceAccount, may call any agent route
-  (`scripts/test-identity-matrix.sh` row W3).
+  (`tests/live/test_identity.py` row W3).
 - Strands 1.57 ships an A2A client, `A2AAgent` (`strands/agent/a2a_agent.py`). Unlike a
   local `Agent`, it has no `as_tool()`, so the supervisor wraps it in its own tool.
 
@@ -214,7 +214,7 @@ supervisor tags its traces with the agents it delegated to.
 
 ## Scenario matrix
 
-Committed as `scripts/test-delegation-matrix.sh`, run on a spoke with one supervisor and
+Committed as the pytest suite `tests/live/test_delegation.py` (fixture `tests/live/fixtures/delegation.yaml`), run on a spoke with one supervisor and
 two sub-agents. Expected outcomes:
 
 | Row | Scenario | Expected |

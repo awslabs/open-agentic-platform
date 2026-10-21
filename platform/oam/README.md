@@ -227,7 +227,7 @@ immediately.
 
 Live check: `scripts/test-memory-matrix.sh` (provisioning, fail-closed, per-caller
 recall, A2A context and task isolation). Run `PHASE=write`, wait for extraction, then
-`PHASE=read`. The gateway side is `scripts/test-identity-matrix.sh`.
+`PHASE=read`. The gateway side is `tests/live/test_identity.py`.
 
 ## Monitoring rollouts
 
