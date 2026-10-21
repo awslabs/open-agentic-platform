@@ -27,6 +27,8 @@ mcpAccess:
 # these policies sync on a clean cluster): deleg-math accepts
 # only the supervisor (rows P1, P2), deleg-restricted accepts another agent only, so the
 # supervisor must leave it out (row P4). They are inert until that fixture is applied.
+# Listing an agent under delegation.agents lets it name any user toward the agents it can
+# reach; on dev that is the test supervisor only.
 delegation:
   agents:
     - default/deleg-supervisor

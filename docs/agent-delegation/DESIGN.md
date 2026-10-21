@@ -1,6 +1,6 @@
 # Supervisor agents: delegating to other agents
 
-Status: draft for review. Nothing here is built yet.
+Status: built on `feat/agent-delegation` (stacked on #66). Live rows: `tests/live/test_delegation.py`.
 
 ## Goal
 
@@ -84,9 +84,12 @@ No URLs, regions or cluster names appear in the Application, so it stays portabl
 
 ### 2. Capabilities: agent cards become tools
 
-At startup, and again on a timer (5 minutes, like the memory strategy refresh in #66),
-the supervisor fetches `<GATEWAY_URL>/<name>/.well-known/agent-card.json` for each
-listed name, presenting its own ServiceAccount token. Each card becomes one tool:
+The supervisor fetches `<GATEWAY_URL>/<name>/.well-known/agent-card.json` for each
+listed name, presenting its own ServiceAccount token: once when its first agent is built
+(at import, before it serves requests), then from a background thread every
+`DELEGATION_CARD_TTL_SECONDS` (default 300; a failed card is retried every 30 seconds).
+Building an agent for a request only reads that cache, so a slow or missing sub-agent
+never blocks a request. Each card becomes one tool:
 
 - name: `ask_<name>` (normalised to the tool-name pattern);
 - description: the card's description plus its skills (names, descriptions, examples);
@@ -96,7 +99,11 @@ listed name, presenting its own ServiceAccount token. Each card becomes one tool
 
 A card that cannot be fetched (agent missing, not ready, or denied by `agentAccess`) is
 logged with the reason and the tool is left out. The supervisor still starts, the same
-way caller MCP pools degrade today. A later refresh adds the tool when the agent appears.
+way caller MCP pools degrade today. When the set of reachable sub-agents changes, agents
+built on the old set are stale and are rebuilt on their next request (the same mechanism
+as a closed MCP pool), so a sub-agent that appears later reaches existing sessions too.
+A supervisor without the `gateway-identity` trait has no token to present; it logs an
+error at startup naming the trait.
 Readiness gating on sub-agents, like `/ready` does for the workload MCP pool, is not in
 the first version; it is a choice to revisit if autonomous supervisors need a complete
 roster to start.
@@ -134,20 +141,28 @@ and the gateway's identity policy becomes:
 | a delegating agent, header present | `X-Delegated-User` | `jwt.sub` |
 | a delegating agent, no header (autonomous run) | `jwt.sub` | `jwt.sub` |
 | any other agent | `jwt.sub` (header ignored) | `jwt.sub` |
-| a user | `jwt.sub` (header ignored) | removed |
+| a user | `jwt.sub` (header ignored) | empty |
 
 `X-Delegated-User` is removed before the request reaches any backend. "Delegating agent"
 is a list in the agent-gateway values (`delegation.agents`), granted per environment,
 like `mcpAccess`.
 
-The sub-agent needs no change: memory and A2A isolation key on `X-Forwarded-User`, so
-they stay per end user. `X-Forwarded-Agent` is available for traces and audit.
+Memory and A2A isolation at the sub-agent key on `X-Forwarded-User`, so they stay per
+end user. One case would break that: a supervisor that is not in `delegation.agents`, or
+an autonomous run with no user, arrives with `X-Forwarded-User` equal to
+`X-Forwarded-Agent` (the supervisor itself). Keying on it would give every user of that
+supervisor one shared memory actor and context namespace, so the agent treats a call
+with a delegation depth above 0 and `X-Forwarded-User == X-Forwarded-Agent` as having no
+identity: no memory, nothing cached (`identity.unattributed_delegation`). Depth comes
+from the caller, but setting it only costs the caller its own memory.
 
 An agent called by a supervisor and itself delegating passes `X-Delegated-User` on, so
 the user survives more than one hop.
 
-Unverified, and the first thing to check (step 1): whether an agentgateway request
-transformation can read a request header and pick a value conditionally on `jwt.sub`.
+Checked (step 1) against agentgateway v1.4.1: a request transformation evaluates CEL
+over the incoming request, so it can read `request.headers[...]` and branch on `jwt.sub`;
+`default(...)` covers a missing header, `set` runs before `remove`, and a `set` whose
+expression fails removes the header rather than passing a client value through.
 `caller-identity-policy.yaml` today sets a header from a CEL expression (`jwt.sub`). If
 conditional expressions or header reads are not supported, this section needs another
 mechanism before anything else is built.
@@ -193,24 +208,25 @@ Delegated calls are transitive, like MCP: the gateway authorizes the supervisor 
 not re-check the delegated user at the sub-agent. A user who can use the supervisor can
 use what it delegates to.
 
-Open point for implementation: whether an `agentAccess` entry also needs a way to keep
-direct user calls, for an agent that is both a sub-agent and called by people. The likely
-shape is an optional `users: any` flag; it is decided with the matrix rows.
+An entry restricts the agent to the listed agents, so users can no longer call it
+directly, as with an MCP server that sets `allowedAgents`. `allowUsers: true` keeps
+direct user calls for an agent that is both a sub-agent and used by people.
 
 ### 7. Guardrails
 
 - Depth: the supervisor sends `X-Delegation-Depth`, one more than the depth it received.
   An agent refuses to delegate past a maximum (default 3), so A to B to A loops end.
-- Time: a per-call timeout below the gateway's request timeout, and a cap on delegations
-  per turn.
+- Time: a per-call timeout (`DELEGATION_TIMEOUT_SECONDS`, default 120) and a cap on
+  delegations per request (`MAX_DELEGATIONS_PER_REQUEST`, default 10).
 - Failures: a sub-agent error or timeout returns a tool error the model can act on. It
   does not fail the supervisor's turn.
 
 ### 8. Observability
 
 The A2A client propagates the trace context, so Langfuse shows one trace: the user's
-request, the supervisor's turn, each delegation, and each sub-agent's own calls. The
-supervisor tags its traces with the agents it delegated to.
+request, the supervisor's turn, each delegation, and each sub-agent's own calls. Tagging
+supervisor traces with the agents it delegated to is a follow-up; today each delegation
+is logged (`Delegated to <agent>: ok=... context=...`).
 
 ## Scenario matrix
 
@@ -219,27 +235,35 @@ two sub-agents. Expected outcomes:
 
 | Row | Scenario | Expected |
 |---|---|---|
-| C1 | supervisor fetches cards for listed agents | one tool per listed agent, none for unlisted |
-| C2 | a listed agent is not deployed | supervisor starts; tool missing; reason logged |
-| D1 | task matching one sub-agent | that sub-agent is called; answer uses its result |
-| D2 | task needing both, independent | both called in one turn |
-| I1 | identity at the sub-agent, delegated call | `X-Forwarded-User` = end user, `X-Forwarded-Agent` = supervisor |
-| I2 | autonomous run (no end user) | `X-Forwarded-User` = supervisor |
-| I3 | user sends `X-Delegated-User` | stripped; `X-Forwarded-User` = the user |
-| I4 | agent not in `delegation.agents` sends it | ignored; `X-Forwarded-User` = that agent |
-| M1 | sub-agent memory, two users through one supervisor | separate actors; no cross-recall |
-| P1 | supervisor in the sub-agent's `agentAccess` | 200 |
-| P2 | supervisor not in it | 403; tool left out at card fetch |
-| P3 | sub-agent without an entry | any authenticated caller 200 |
-| G1 | delegation loop | stopped at the depth limit, reported |
-| G2 | sub-agent times out | reported as a gap; supervisor answers |
-| R1 | existing identity and memory matrices | unchanged pass |
+| P1 | supervisor -> sub-agent in its `agentAccess` grant (card) | 200 |
+| P2 | unlisted agent, and a user, -> that sub-agent | 403, 403 |
+| P3 | any authenticated caller -> sub-agent with no entry | 200 |
+| P4 | supervisor -> sub-agent granted to another agent | 403 |
+| C1 | supervisor's tools | reachable agents only; denied and missing ones listed unavailable |
+| C2 | left-out agents | logged with the reason (HTTP 403, 404) |
+| D1 | task matching one sub-agent | supervisor logs a delegation to it; answer has its result |
+| D2 | task needing two sub-agents | both delegated in one request |
+| I1 | delegated call, at the sub-agent | user = end user, delegated_by = supervisor |
+| M1 | sub-agent memory actor | the end user |
+| M2 | a second user through the same supervisor | their own actor; no recall of the first user's facts |
+| I2 | a workload calling the supervisor | the sub-agent sees that workload as the user |
+| I3 | user sends `X-Delegated-User` and `X-Forwarded-Agent` | both ignored |
+| I4 | agent not in `delegation.agents` sends `X-Delegated-User` | ignored |
+| R1 | listed supervisor's token + `X-Delegated-User` (no model) | sub-agent actor = that user |
+| R2 | delegated call that names no user | sub-agent has no identity: memory off |
+| A1 | autonomous run (no user reaches the supervisor) | sub-agent memory off |
+| G1 | request already at the depth limit | supervisor refuses to delegate |
+| G2 | sub-agent times out | tool error, supervisor answers. Unit test only |
+| X1 | shipped example | passes KubeVela admission |
+| H1 | supervisor and sub-agent | no restarts |
+
+Regression: `tests/live/test_identity.py` and `scripts/test-memory-matrix.sh`.
 
 ## Plan
 
 1. Spike: confirm the gateway transformation in section 4 against the agentgateway docs
    and live on oap-dev. Changes the design if it fails.
-2. Commit the scenario matrix script.
+2. Commit the scenario matrix (pytest, `tests/live`).
 3. Gateway: delegation rule in `caller-identity-policy.yaml`, `agentAccess` template,
    values defaults.
 4. Agent image: card-to-tool wrapper, outbound headers, guardrails, unit tests, new image.
@@ -247,7 +271,7 @@ two sub-agents. Expected outcomes:
    supervisor and two sub-agents.
 6. Full matrix live on oap-dev, then an independent review.
 
-Branches from `main` after #66 merges.
+Stacked on #66 (`feat/agent-long-term-memory`), whose identity code it extends; merges after it.
 
 ## Follow-ups
 
@@ -255,5 +279,7 @@ Branches from `main` after #66 merges.
   supervisor's claim.
 - Cross-cluster delegation.
 - Readiness gating on sub-agents for autonomous supervisors.
+- Tagging supervisor traces with the agents it delegated to.
+- A live row for a sub-agent timeout (G2).
 - Restricting agent and MCP ingress to the gateway (the NetworkPolicy issue from #66),
   which also protects the delegation headers from direct callers.

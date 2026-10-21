@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, restarts, subject
+from conftest import REPO, Gw, port_forward, restarts, subject
 
 pytestmark = pytest.mark.delegation
 
@@ -58,18 +58,45 @@ def t(deployed, user_token, sa_token):
 
 
 @pytest.fixture(scope="module")
-def runs(gw, t):
-    """Every delegated conversation the rows inspect, run once, in order."""
+def direct(deployed, spoke_kubeconfig):
+    """The supervisor's own Service, bypassing the gateway: a request with no identity."""
+    url, proc = port_forward(spoke_kubeconfig, NS, f"svc/{SUP}-stable", 8083)
+    yield Gw(url)
+    proc.terminate()
+
+
+@pytest.fixture(scope="module")
+def runs(gw, t, direct, logs):
+    """Every delegated conversation the rows inspect, run once, in order.
+
+    The model decides whether to delegate, so each prompt that must delegate is asked up
+    to twice; rows that check identity or policy at the gateway do not depend on it
+    (see the "gateway rule" rows below).
+    """
     out = {}
-    out["d1"] = gw.chat(t["u1"], SUP, f"d1{RUN}", "What is 1234 * 5678? Use your agents.")
-    out["d2"] = gw.chat(t["u1"], SUP, f"d2{RUN}",
-                        f"Two things: ask the assistant agent ({MEM}) to remember that my favourite fruit is "
-                        "mango, and compute 17 * 23.")
-    out["m2"] = gw.chat(t["u2"], SUP, f"m2{RUN}", f"Ask the assistant agent ({MEM}) what my favourite fruit is.")
-    out["i2"] = gw.chat(t["other"], SUP, f"i2{RUN}", f"Ask the assistant agent ({MEM}) to say hello.")
+
+    def until_delegated(key, client, token, message, agents):
+        # Same context both times, so a retry continues the conversation.
+        for _ in range(2):
+            out[key] = client.chat(token, SUP if client is gw else "", f"{key}{RUN}", message)
+            log = logs(NS, SUP)
+            if all(delegated(log, a, f"{key}{RUN}") for a in agents):
+                return
+
+    until_delegated("d1", gw, t["u1"], "What is 1234 * 5678? Use your agents.", [MATH])
+    until_delegated("d2", gw, t["u1"], f"Two things: ask the assistant agent ({MEM}) to remember that my "
+                    "favourite fruit is mango, and compute 17 * 23.", [MEM, MATH])
+    until_delegated("m2", gw, t["u2"], f"Ask the assistant agent ({MEM}) what my favourite fruit is.", [MEM])
+    until_delegated("i2", gw, t["other"], f"Ask the assistant agent ({MEM}) to say hello.", [MEM])
     out["i3"] = gw.chat(t["u1"], MEM, f"i3{RUN}", "Say hi.",
                         headers={"X-Delegated-User": t["s2"], "X-Forwarded-Agent": SUP_SUB})
     out["i4"] = gw.chat(t["other"], MEM, f"i4{RUN}", "Say hi.", headers={"X-Delegated-User": t["s1"]})
+    # Gateway rule rows: the supervisor's own token, as delegation_tools sends it, without a model.
+    out["r1"] = gw.chat(t["sup"], MEM, f"r1{RUN}", "Say hi.",
+                        headers={"X-Delegated-User": t["s1"], "X-Delegation-Depth": "1"})
+    out["r2"] = gw.chat(t["sup"], MEM, f"r2{RUN}", "Say hi.", headers={"X-Delegation-Depth": "1"})
+    # Autonomous run: no user at all reaches the supervisor (its Service, not the gateway).
+    until_delegated("a1", direct, None, f"Ask the assistant agent ({MEM}) to say hello.", [MEM])
     for line in (f"{k}: {v[0]} {v[1][:160]}" for k, v in out.items()):
         print(line)
     return out
@@ -91,9 +118,9 @@ def actor(mem_log, raw_context):
     return found[-1] if found else None
 
 
-def gateway_hits(gateway_logs, route):
-    return sum(1 for line in gateway_logs().splitlines()
-               if f"route={route} " in line and f"jwt.sub={SUP_SUB} " in line and "http.status=200" in line)
+def delegated(sup_log, agent, context):
+    """The supervisor logged a successful delegation to *agent* for *context*."""
+    return re.search(rf"Delegated to {re.escape(agent)}: ok=True .*context={re.escape(context)}-{re.escape(agent)}", sup_log)
 
 
 # ── policy at the gateway: card fetches ──────────────────────────────────
@@ -115,10 +142,10 @@ def test_card_access(gw, t, row, callers, agent, expected):
 
 # ── delegation ───────────────────────────────────────────────────────────
 
-def test_D1_arithmetic_goes_to_the_math_agent(runs, gateway_logs):
+def test_D1_arithmetic_goes_to_the_math_agent(runs, sup_log):
     status, reply = runs["d1"]
     assert status == 200
-    assert gateway_hits(gateway_logs, f"{NS}/{MATH}") >= 1
+    assert delegated(sup_log, MATH, f"d1{RUN}")
     assert "7006652" in reply.replace(",", "").replace(" ", "")
 
 
@@ -128,10 +155,17 @@ def test_C1_reachable_agents_only(runs, sup_log):
     assert lines[-1].endswith(f"available={MATH},{MEM} unavailable=deleg-restricted,deleg-ghost")
 
 
-def test_D2_two_part_task_reaches_both(runs, gateway_logs):
+def test_C2_left_out_agents_are_logged_with_the_reason(logs, deployed):
+    # Logged when the cards were first fetched, at supervisor startup, so read the whole log.
+    log = logs(NS, SUP, since_start=False)
+    assert "Sub-agent deleg-restricted left out: agent card unavailable (HTTP 403)" in log
+    assert re.search(r"Sub-agent deleg-ghost left out: agent card unavailable \(HTTP 40[34]\)", log)
+
+
+def test_D2_two_part_task_reaches_both(runs, sup_log):
     status, reply = runs["d2"]
     assert status == 200
-    assert gateway_hits(gateway_logs, f"{MEM_NS}/{MEM}") >= 1
+    assert delegated(sup_log, MEM, f"d2{RUN}") and delegated(sup_log, MATH, f"d2{RUN}")
     assert "391" in reply
 
 
@@ -145,8 +179,9 @@ def test_M1_sub_agent_memory_actor_is_the_end_user(mem_log, t):
     assert actor(mem_log, f"d2{RUN}-{MEM}") == t["s1"]
 
 
-def test_M2_second_user_gets_their_own_actor(mem_log, t):
+def test_M2_second_user_gets_their_own_actor_and_no_recall(mem_log, t, runs):
     assert actor(mem_log, f"m2{RUN}-{MEM}") == t["s2"]
+    assert "mango" not in runs["m2"][1].lower()
 
 
 def test_I2_workload_caller_is_the_user_the_sub_agent_sees(mem_log):
@@ -160,6 +195,25 @@ def test_I3_client_sent_delegation_headers_are_ignored(mem_log, t):
 
 def test_I4_agent_not_allowed_to_delegate_cannot_name_a_user(mem_log):
     assert actor(mem_log, f"i4{RUN}") == OTHER_SUB
+
+
+# ── gateway rule, without the model ──────────────────────────────────────
+
+def test_R1_listed_supervisor_names_the_user(mem_log, t):
+    assert actor(mem_log, f"r1{RUN}") == t["s1"]
+    assert re.search(rf"session=r1{RUN} delegated_by={re.escape(SUP_SUB)} user={re.escape(t['s1'])}", mem_log)
+
+
+def test_R2_delegated_call_without_a_named_user_gets_no_identity(mem_log):
+    # Fail closed (identity.unattributed_delegation): the sub-agent sees the supervisor as
+    # both user and agent, so it must not key memory on it.
+    assert f"memory is off for session 'r2{RUN}'" in mem_log
+    assert actor(mem_log, f"r2{RUN}") is None
+
+
+def test_A1_autonomous_run_without_a_user_gets_no_memory_at_the_sub_agent(mem_log, sup_log):
+    assert delegated(sup_log, MEM, f"a1{RUN}"), "the supervisor did not delegate the a1 request"
+    assert f"memory is off for session 'a1{RUN}-{MEM}'" in mem_log
 
 
 # ── guardrails ───────────────────────────────────────────────────────────

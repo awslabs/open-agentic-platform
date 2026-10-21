@@ -67,21 +67,23 @@ def kubectl(spoke_kubeconfig):
     return run
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def started():
-    """Start of the run; log reads are limited to lines written after it."""
+    """Start of the run; log reads are limited to lines written after it.
+
+    Autouse so it is taken before any test or fixture makes a request: a lazily created
+    start time would exclude the lines written by the fixtures that ran first.
+    """
     return datetime.now(timezone.utc)
 
 
-@pytest.fixture(scope="session")
-def gateway(spoke_kubeconfig):
-    """Base URL of the gateway through a port-forward held for the session."""
+def port_forward(kubeconfig, namespace, target, remote_port):
+    """Start `kubectl port-forward`; returns (base URL, process) once it accepts connections."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     proc = subprocess.Popen(
-        ["kubectl", "--kubeconfig", spoke_kubeconfig, "port-forward", "-n", GATEWAY_NS,
-         f"svc/{GATEWAY_SVC}", f"{port}:8080"],
+        ["kubectl", "--kubeconfig", kubeconfig, "port-forward", "-n", namespace, target, f"{port}:{remote_port}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     url = f"http://127.0.0.1:{port}"
@@ -89,11 +91,19 @@ def gateway(spoke_kubeconfig):
     while time.monotonic() < deadline:
         try:
             httpx.get(url, timeout=2)
-            break
+            return url, proc
         except httpx.TransportError:
             if proc.poll() is not None:
-                pytest.exit(f"port-forward failed: {proc.stderr.read().decode()[:300]}", returncode=2)
+                pytest.exit(f"port-forward to {target} failed: {proc.stderr.read().decode()[:300]}", returncode=2)
             time.sleep(0.5)
+    proc.terminate()
+    pytest.exit(f"port-forward to {target} did not come up", returncode=2)
+
+
+@pytest.fixture(scope="session")
+def gateway(spoke_kubeconfig):
+    """Base URL of the gateway through a port-forward held for the session."""
+    url, proc = port_forward(spoke_kubeconfig, GATEWAY_NS, f"svc/{GATEWAY_SVC}", 8080)
     yield url
     proc.terminate()
 
@@ -167,7 +177,8 @@ class Gw:
         return httpx.request(method, self.url + path, headers=h, json=body, timeout=timeout)
 
     def chat(self, token, agent, context_id, message, headers=None, timeout=280):
-        r = self.request(token, "POST", f"/{agent}/chat", {"message": message, "contextId": context_id},
+        path = f"/{agent}/chat" if agent else "/chat"
+        r = self.request(token, "POST", path, {"message": message, "contextId": context_id},
                          headers=headers, timeout=timeout)
         try:
             d = r.json()
@@ -185,9 +196,9 @@ def gw(gateway):
 def logs(core, started):
     """Log text written since the run started, for all pods matching a label."""
 
-    def get(namespace, name=None, selector=None, container=None):
+    def get(namespace, name=None, selector=None, container=None, since_start=True):
         selector = selector or f"app.kubernetes.io/name={name}"
-        since = max(1, int((datetime.now(timezone.utc) - started).total_seconds()) + 5)
+        since = max(1, int((datetime.now(timezone.utc) - started).total_seconds()) + 5) if since_start else None
         out = []
         for pod in core.list_namespaced_pod(namespace, label_selector=selector).items:
             try:
