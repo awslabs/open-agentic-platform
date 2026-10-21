@@ -135,3 +135,15 @@ mcpAuth:
 # default: every MCP server keeps the Gateway-wide rule. Set per environment in
 # gitops/overlays/environments/<env>/agent-gateway/values.yaml.
 mcpAccess: {}
+
+# Agents allowed to call other agents on behalf of a user
+# (templates/caller-identity-policy.yaml, docs/agent-delegation/DESIGN.md). A listed agent
+# may send X-Delegated-User, and the gateway then sets X-Forwarded-User to that user.
+# Empty by default: no agent can assert a user. Entries are <namespace>/<agent>.
+delegation:
+  agents: []
+
+# Which agents may call which agents (templates/agent-access.yaml). Same shape and rules
+# as mcpAccess. Empty by default: every agent keeps the Gateway-wide rule (any
+# authenticated caller). Set per environment.
+agentAccess: {}

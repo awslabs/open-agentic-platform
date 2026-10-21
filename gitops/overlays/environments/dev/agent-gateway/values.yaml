@@ -9,9 +9,31 @@
 # Shape: <mcp-server component name>: {namespace, agents: [<agent> | <ns>/<agent>]}.
 #
 # The grant below covers the time server from examples/mcp-servers/, which the identity
-# matrix (scripts/test-identity-matrix.sh, row G1) checks, so this config path is
+# matrix (tests/live/test_identity.py, row G1) checks, so this config path is
 # exercised by the repo. It is inert until that example is applied.
 mcpAccess:
   mcp-time:
     namespace: default
     agents: [oap-assistant-a]
+
+# Agent -> agent delegation for the dev environment (templates/caller-identity-policy.yaml,
+# templates/agent-access.yaml, docs/agent-delegation/DESIGN.md).
+#
+# delegation.agents: agents allowed to call other agents on behalf of a user.
+# agentAccess: which agents may call an agent; same shape and rules as mcpAccess.
+#
+# The entries below cover the fixture tests/live/test_delegation.py deploys
+# (tests/live/fixtures/delegation.yaml, namespace default, which always exists so
+# these policies sync on a clean cluster): deleg-math accepts
+# only the supervisor (rows P1, P2), deleg-restricted accepts another agent only, so the
+# supervisor must leave it out (row P4). They are inert until that fixture is applied.
+delegation:
+  agents:
+    - default/deleg-supervisor
+agentAccess:
+  deleg-math:
+    namespace: default
+    agents: [deleg-supervisor]
+  deleg-restricted:
+    namespace: default
+    agents: [default/oap-assistant-a]
