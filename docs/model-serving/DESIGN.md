@@ -23,9 +23,12 @@ model's Application.
 | Ownership | Everything in OAP: engine addons, `llm-model`, the Bifrost wiring, and any GPU driver addon. |
 | Default | Nothing is provisioned until a platform team applies an `llm-model`. |
 | Engines | Open-source engines are the base path. NVIDIA engines (Dynamo, NIM) are opt-in for customers with an NVIDIA relationship. |
-| Scale to zero | Configurable per model, on by default (row M9). |
-| Reachability | A model endpoint accepts traffic only from Bifrost (row M6). |
-| Limits | Per model, through Bifrost provider-level limits (see "Limits and budgets"). |
+| GPU drivers | EKS Auto Mode's own GPU support; no GPU Operator. Phase 0 confirms it on a node. |
+| Nodes | EKS Auto Mode (Karpenter) provisions and removes GPU nodes, whatever the engine or autoscaler. |
+| Scale to zero | Per model, on by default. KEDA HTTP add-on by default, replaceable per model (see "Autoscaling"). |
+| Reachability | A model endpoint accepts traffic only from Bifrost, through the autoscaler's proxy when one is used (row M6). |
+| Limits | Rate limits and token quotas per model, no dollar budgets (see "Rate limits and quotas"). |
+| Model names | Agents use `<deployment>/<servedName>`; no Bifrost aliases (see layer 5). |
 
 ## What exists today
 
@@ -60,10 +63,11 @@ engine replaceable.
 ### Layer 1: GPU substrate
 
 - Nodes come from the existing `gpu` NodePool.
-- Drivers and device plugin: open question Q1. EKS Auto Mode GPU nodes may already
-  provide them. If they do, nothing is added. If not, OAP adds a `nvidia-gpu-operator`
-  addon. The Dynamo install guide says to install the GPU Operator with drivers and
-  toolkit off when the nodes already have drivers, so the two are never both fully on.
+- Drivers and device plugin come from EKS Auto Mode; OAP adds no GPU Operator. Phase 0
+  confirms on a real `gpu` node that the device plugin advertises `nvidia.com/gpu`. If
+  an engine later needs more than that (for example Dynamo's DCGM metrics), the Dynamo
+  install guide's "drivers already present" mode applies: GPU Operator with drivers and
+  toolkit off.
 - Model sources: Hugging Face for the OSS tier, NGC for NIM. Tokens (`HF_TOKEN`,
   `NGC_API_KEY`) come through External Secrets and never appear in an Application.
 - Weights are downloaded per pod in phases 1 to 3, and come from a shared cache (S3 or
@@ -109,15 +113,17 @@ parameter: {
 	engine: *"{{ .Values.global.inferenceEngine }}" | "vllm" | "llm-d" | "dynamo" | "nim"
 	// Size, not instance types: the platform maps it to GPU count and the gpu NodePool.
 	gpus: *1 | int & >=1
-	// Scale to zero when idle. On by default.
-	scaleToZero: *true | bool
-	idleMinutes: *30 | int & >=5
-	maxReplicas: *1 | int & >=1
-	// Per-model limits, applied in Bifrost (layer 4). Omitted means no limit.
-	limits?: {
-		requestsPerMinute?: int & >0
-		tokensPerMinute?:   int & >0
+	// Pod autoscaling (see "Autoscaling"). Nodes are always EKS Auto Mode.
+	autoscaling: {
+		mode:        *"keda-http" | "keda-metrics" | "engine" | "none"
+		scaleToZero: *true | bool
+		idleMinutes: *30 | int & >=5
+		maxReplicas: *1 | int & >=1
+		replicas?:   int & >=1 // only with mode "none"
 	}
+	// Per-model rate limits and token quota, applied in Bifrost (see "Rate limits and
+	// quotas"). Omitted means no limit.
+	limits?: {...}
 	// Engine-specific settings, passed through unchanged.
 	engineConfig?: {...}
 }
@@ -158,10 +164,10 @@ parameter schema.
 Bifrost supports custom providers with `custom_provider_config.base_provider_type:
 openai` and `network_config.base_url`. Clients address them as `<provider>/<model>`
 ([custom providers](https://docs.getbifrost.ai/providers/custom-providers)). Each model
-becomes one provider, named `<namespace>-<component>`:
+becomes one provider, named after the component (see layer 5 for why that is unique):
 
 ```json
-"<namespace>-<component>": {
+"<component>": {
   "keys": [{"name": "default", "value": "unused", "models": ["<servedName>"], "weight": 1}],
   "network_config": {"base_url": "<endpoint output>"},
   "custom_provider_config": {"base_provider_type": "openai"}
@@ -183,59 +189,142 @@ and the static Bedrock entry coexist.
 
 Phase 1 uses W1 to prove the path. W2 replaces it in phase 2.
 
-### Layer 5: agents
+Version note: OAP pins Bifrost `v1.5.0` (`gitops/addons/configs/bifrost/values.yaml`),
+and the docs cited here describe current Bifrost. Phase 1 confirms custom providers on
+the pinned version, or upgrades Bifrost first.
+
+### Layer 5: agents and model names
 
 No change to the `agent` component. An agent selects a model with
-`modelConfig.modelId: "<namespace>-<component>/<servedName>"`. A short alias would be
-nicer, but whether Bifrost aliases work for custom providers is unverified (the current
-Bedrock entry uses `aliases`).
+`modelConfig.modelId: "<deployment>/<servedName>"`, for example
+`chat-small/qwen3-8b`.
 
-## Limits and budgets
+- `<deployment>` is the `llm-model` component name, which is also the Bifrost provider
+  name. It is the stable handle: switching engines keeps it.
+- `<servedName>` defaults to the component name and can be set to the model's name.
+- `llm-model` Applications live in one platform namespace per spoke,
+  `global.modelsNamespace` (default `models`, from `config.yaml`). The component rejects
+  any other namespace. That makes the component name unique on the spoke, so the
+  provider name needs no namespace prefix or hash, and it matches "the platform team
+  deploys models".
 
-Bifrost's governance works through virtual keys, with optional teams and customers above
-them. Budgets and rate limits are set at those levels. Inside a virtual key, each
-provider can have its own budget and rate limit, and a provider that exceeds its own
-limit is dropped from routing while the key's other providers keep working
-([budgets and limits](https://docs.getbifrost.ai/features/governance/budget-and-limits)).
-Rate limits can also be set on the provider config itself.
+Bifrost aliases are not used:
 
-Since every self-hosted model is its own provider, "per-model limits" means:
+- An alias belongs to a provider key, so it is always provider-qualified
+  (`<provider>/<alias>`). There is no bare, provider-independent name
+  ([Bifrost discussion #4032](https://github.com/maximhq/bifrost/discussions/4032)). An
+  alias would not be shorter than the scheme above.
+- A user report on Bifrost 1.6.11 says alias requests fail at key selection for the vLLM
+  provider ([issue #3278](https://github.com/maximhq/bifrost/issues/3278)). The
+  workaround there, routing rules, rewrites the model before virtual-key checks, which
+  would bypass per-agent model allowlists.
 
-- **Per model, for everyone:** `llm-model.limits` becomes a rate limit (requests and
-  tokens per minute) on that model's provider config. It protects the GPUs whoever
-  calls.
-- **Per model, per agent:** the agent's virtual key carries a provider-level limit for
-  that model. This comes with the per-agent virtual keys already planned in
-  `bifrost/DESIGN.md`, which `bifrost-sync` would own.
+The way to keep agents stable across model changes is the deployment name: point
+`chat-small` at a newer model and agents keep calling `chat-small/...`. Changing
+`servedName` with it does change the id, so leave `servedName` at its default when that
+matters.
 
-Dollar budgets are the weak spot. Bifrost computes cost from its model catalog, and the
-catalog has no entries for custom providers (custom providers page), so a self-hosted
-model's requests probably cost 0 against a dollar budget. I haven't verified whether
-custom pricing can be set. Until then, limits on self-hosted models are token and
-request rate limits, and dollar budgets keep applying to Bedrock only. GPU cost is
-better tracked as node-hours, outside Bifrost.
+## Rate limits and quotas
 
-## Scale to zero
+No dollar budgets for self-hosted models. Bifrost prices requests from its model
+catalog, which has no entries for custom providers (custom providers page), so a dollar
+budget would not see them anyway. GPU cost is reported as node-hours, outside Bifrost.
 
-The default is on, idle for 30 minutes. The mechanism is not chosen yet (Q2):
+Bifrost rate limits come in two kinds, request limits and token limits, each with a
+reset window from `1m` to `1Y`, and can be set on a provider config, a virtual key, a
+team or a customer. Inside a virtual key each provider can have its own limits, and a
+provider over its limit is dropped from routing while the key's other providers keep
+working ([budgets and limits](https://docs.getbifrost.ai/features/governance/budget-and-limits)).
 
-- KEDA HTTP add-on in front of the model Service: scales 0 to 1 on the first request;
-  generic for every engine.
-- The engine's own autoscaler (Dynamo planner, KServe). Engine-specific, and not every
-  engine scales to zero.
+So for a self-hosted model:
 
-Either way, a cold start includes GPU node provisioning and the weight download,
-probably minutes. Bifrost's request timeout and the agent's retry need to cover that,
-or the first call fails. That is row M9.
+| Need | Bifrost setting | Set by |
+|---|---|---|
+| Protect the GPUs from everyone | rate limit on the model's provider config, short window (`1m`) | `llm-model.limits.requestsPerMinute` / `tokensPerMinute` |
+| Quota for the model overall | token limit on the provider config, long window (`1d`, `1M`) | `llm-model.limits.tokenQuota` + `quotaWindow` |
+| Quota for one agent on one model | provider-level token limit inside that agent's virtual key | the agent's virtual key, owned by `bifrost-sync` |
+
+`llm-model.limits` becomes:
+
+```cue
+limits?: {
+	requestsPerMinute?: int & >0
+	tokensPerMinute?:   int & >0
+	tokenQuota?:        int & >0
+	quotaWindow:        *"1d" | "1h" | "1d" | "1w" | "1M"
+}
+```
+
+Per-agent quotas wait for per-agent virtual keys (`gitops/addons/charts/bifrost/DESIGN.md`).
+
+## Autoscaling
+
+Two separate things scale:
+
+- **Pods**, from zero to `autoscaling.maxReplicas`: the autoscaler chosen per model.
+- **Nodes**: EKS Auto Mode (Karpenter). A pending GPU pod gets a node; an empty GPU node
+  is consolidated away. This is the same for every engine and autoscaler.
+
+### Default: KEDA HTTP add-on
+
+New addons `keda` and `keda-http-add-on` (neither is in the OAP or base-platform
+registries today). `llm-model` emits an `InterceptorRoute` for the model's Service.
+What the add-on does, from its docs
+([architecture](https://keda.sh/http-add-on/1.0/concepts/architecture/),
+[cold start](https://keda.sh/http-add-on/0.16/user-guide/configure-cold-start/),
+[timeouts](https://keda.sh/http-add-on/0.16/user-guide/configure-timeouts/)):
+
+- An interceptor proxy sits in the request path, counts requests, and drives KEDA, which
+  drives an HPA. Scaling metrics are concurrency or request rate. Concurrency suits LLMs
+  better, since one request can run for a minute.
+- At zero replicas the interceptor holds the request until the backend is ready, up to a
+  readiness timeout, then returns 504, or a placeholder or a fallback Service if set.
+  `maxPendingRequests` bounds how many requests it holds.
+- Timeouts per route: request (whole lifecycle), response header (after forwarding,
+  excluding the cold start), readiness (the cold start).
+
+Path with KEDA: agent → Bifrost → interceptor → model Service. The NetworkPolicy then
+admits the interceptor's namespace on the model, and Bifrost on the interceptor (row M6).
+
+What this means for a model:
+
+- A cold start here is GPU node provisioning, a large image pull and the weight
+  download, so minutes, not seconds. The readiness timeout, the request timeout, and
+  Bifrost's provider timeout must all cover it, and the agent must not give up first.
+- Streaming: the request timeout covers the whole response, so it must also cover the
+  longest generation. Not verified yet that the interceptor streams server-sent events
+  without buffering; row M4b checks it.
+
+### Cold-start behaviour (decision D4)
+
+| Option | What the first caller sees |
+|---|---|
+| Hold (default proposal) | waits for the cold start, then the answer |
+| Fail fast + Bifrost fallback | a 504 after a short readiness timeout; Bifrost retries on a configured fallback model, for example on Bedrock. Bifrost keeps fallbacks available for a 5xx (custom providers page) |
+| Placeholder | an immediate 503; the caller retries |
+
+### Replacing the autoscaler
+
+`llm-model.autoscaling.mode`:
+
+| Mode | Use |
+|---|---|
+| `keda-http` (default) | scale to zero and back on HTTP traffic, any engine |
+| `keda-metrics` | KEDA with a Prometheus trigger on engine metrics (for example vLLM's waiting requests); scales 1 to N, not from zero |
+| `engine` | the engine's own scaler: Dynamo's planner, llm-d's KEDA-based scale from zero, KServe. The branch renders that engine's resources instead |
+| `none` | fixed `replicas` |
+
+`autoscaling.scaleToZero: true` is only valid with `keda-http`, or with `engine` for an engine whose
+scaler goes to zero; the component rejects other combinations at apply time.
 
 ## Phases
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 0 | Check GPU drivers on an Auto Mode `gpu` node; decide Q1 | written finding |
+| 0 | Confirm an Auto Mode `gpu` node advertises `nvidia.com/gpu`; confirm custom providers on the pinned Bifrost | written finding |
 | 1 spike | Plain vLLM, one small model as a raw Deployment on spoke-dev; static Bifrost entry (W1); one agent uses it | rows M2-M4, A1 green |
 | 2 | `llm-model` with the `vllm` branch; `bifrost-sync` (W2); NetworkPolicy; limits | rows M1-M8, A1-A3 green from a clean install |
-| 3 | Scale to zero | row M9 green |
+| 3 | `keda` + `keda-http-add-on` addons, `autoscaling.mode: keda-http`, scale to zero | rows M4b, M9, M10 green |
 | 4 | `llm-d` branch | rows E1, E3 green |
 | 5 | NVIDIA tier: `dynamo` and `nim` branches, Nemotron through NIM | row E2 green per engine |
 | later | Shared weight cache; Grove/KAI for large models; disaggregated serving on EFA/RDMA | per feature |
@@ -248,12 +337,16 @@ or the first call fails. That is row M9.
 | M2 | `GET /v1/models` on the endpoint | lists `servedName` |
 | M3 | Bifrost provider after M1 | `<ns>-<component>` exists with the endpoint as base URL |
 | M4 | streaming chat completion through Bifrost | 200, tokens streamed |
+| M4b | same, through the KEDA interceptor | tokens arrive incrementally, not in one block |
 | M5 | delete the Application | provider removed from Bifrost; GPU node released |
 | M6 | call the endpoint directly from a namespace other than `bifrost` | blocked |
 | M7 | model token secret missing | unhealthy with a clear message; no provider registered |
 | M8 | no GPU capacity | stays pending; no provider registered |
-| M9 | idle past `idleMinutes`, then one request | scaled to zero; the request succeeds after a cold start |
+| M9 | idle past `autoscaling.idleMinutes`, then one request | scaled to zero, GPU node removed; the request succeeds after the cold start (D4 hold) |
+| M10 | `autoscaling.scaleToZero: true` with `autoscaling.mode: none` | rejected at apply |
+| M11 | `llm-model` outside `global.modelsNamespace` | rejected at apply |
 | L1 | exceed `limits.requestsPerMinute` | Bifrost rejects the excess; other models unaffected |
+| L2 | exceed `limits.tokenQuota` in its window | rejected until the window resets |
 | A1 | agent with `modelId` set to the model | 200, answer from the self-hosted model |
 | A2 | agent whose virtual key has a provider limit for the model, over that limit | rejected for that model; the agent's Bedrock calls unaffected |
 | A3 | Bedrock agents on the same spoke | unchanged |
@@ -264,9 +357,7 @@ or the first call fails. That is row M9.
 
 ## Open questions
 
-- Q1 Drivers: is Auto Mode's GPU support enough, or does OAP add `nvidia-gpu-operator`
-  with drivers off? Phase 0 answers this.
-- Q2 Scale to zero: the KEDA HTTP add-on (generic) or the engine's own autoscaler?
-- Q3 Model aliases in Bifrost for custom providers, so agents can use a short name.
-- Q4 Dollar budgets for self-hosted models: needed, or are rate limits plus node-hour
-  reporting enough?
+- D4 Cold start: hold the request (default proposal), fail fast to a Bifrost fallback
+  model, or return a placeholder?
+- Bifrost version: does pinned `v1.5.0` support custom providers and provider-config
+  rate limits, or does phase 1 start with a Bifrost upgrade?
