@@ -188,6 +188,12 @@ template: {
 									value: strings.Join([for s in parameter.mcpServers {s.name}], ",")
 								}
 							},
+							if len(parameter.agents) > 0 {
+								{
+									name:  "A2A_AGENT_NAMES"
+									value: strings.Join([for a in parameter.agents {a.name}], ",")
+								}
+							},
 							for e in parameter.env {e},
 						]])
 						livenessProbe: {
@@ -351,6 +357,9 @@ template: {
 			if parameter.mcpServers != _|_ && len(parameter.mcpServers) > 0 {
 				data: mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
 			}
+			if len(parameter.agents) > 0 {
+				data: agents: strings.Join([for a in parameter.agents {a.name}], ",")
+			}
 		}
 
 		// HTTPRoute for AgentGateway registration (optional)
@@ -400,7 +409,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.9-review-r2" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.5.0-delegation" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
@@ -501,6 +510,15 @@ template: {
 		// MCP servers
 		mcpServers: *[] | [...{
 			name: string
+		}]
+
+		// +usage=Agents this agent may delegate to, by component name (supervisor pattern,
+		// docs/agent-delegation/DESIGN.md). Each must be registered on this cluster's gateway.
+		// The agent fetches each one's A2A card through the gateway and gets one tool per
+		// agent; the workflow goal is the systemMessage. Calls carry this agent's own
+		// identity, act for the user, and are allowed by the gateway's agentAccess rules.
+		agents: *[] | [...{
+			name: =~"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 		}]
 
 		// Additional environment variables

@@ -1,0 +1,50 @@
+# Example: a supervisor agent that delegates to two other agents.
+#
+# The supervisor lists the agents it may use under `agents`, like `mcpServers`. At
+# startup it fetches each one's A2A agent card through the gateway and gets one tool per
+# agent, described from the card. The goal of the workflow is its systemMessage: it
+# plans, hands each step to the agent that fits, runs independent steps in parallel, and
+# combines the answers. Design: docs/agent-delegation/DESIGN.md.
+#
+# Calls to the sub-agents carry the supervisor's own identity (the gateway-identity
+# trait) and act for the user who asked:
+#   - For the sub-agents to see that user (and keep memory per user), list the
+#     supervisor in the agent-gateway values: delegation.agents: [agents/supervisor-agent].
+#     Otherwise they see the supervisor as their caller.
+#   - To restrict who may call a sub-agent, add it to agentAccess in the same values
+#     file, e.g. math-agent: {namespace: agents, agents: [supervisor-agent]}. With no entry,
+#     any authenticated caller may.
+#
+# Nothing here names a region, account, cluster or URL.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: supervisor-example
+  namespace: agents
+spec:
+  components:
+    - name: supervisor-agent
+      type: agent
+      dependsOn: [math-agent, writer-agent]
+      properties:
+        description: "Answers requests by delegating calculation and writing to other agents"
+        systemMessage: |
+          Goal: answer the user's request completely and accurately. Hand calculations to
+          your calculation agent and prose to your writing agent, then put their answers
+          together into one reply.
+        agents:
+          - name: math-agent
+          - name: writer-agent
+      traits:
+        # The supervisor's own identity toward the gateway, which agentAccess checks.
+        - type: gateway-identity
+    - name: math-agent
+      type: agent
+      properties:
+        description: "Evaluates arithmetic and unit conversions exactly"
+        systemMessage: "You evaluate arithmetic and unit conversions. Show the result and one line of working."
+    - name: writer-agent
+      type: agent
+      properties:
+        description: "Writes short, clear prose: summaries, explanations, announcements"
+        systemMessage: "You write short, clear prose in plain language."
