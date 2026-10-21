@@ -23,11 +23,11 @@ data:
   AUTH_KEYCLOAK_ISSUER: "{{ .Values.keycloak.issuerUrl }}"
   AUTH_KEYCLOAK_ALLOW_ACCOUNT_LINKING: "true"
   AUTH_DISABLE_SIGNUP: "{{ .Values.keycloak.disableSignup | default "false" }}"
-  CLICKHOUSE_URL: "http://langfuse-clickhouse:8123"
-  CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse:9000"
+  CLICKHOUSE_URL: "http://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:8123"
+  CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:9000"
   CLICKHOUSE_USER: "default"
   CLICKHOUSE_CLUSTER_ENABLED: "false"
-  REDIS_CONNECTION_STRING: "redis://langfuse-redis:6379"
+  REDIS_CONNECTION_STRING: "redis://langfuse-redis.{{ .Release.Namespace }}.svc.cluster.local.:6379"
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "{{ .Values.minio.bucket }}"
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ .Values.global.awsRegion }}"
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://langfuse-minio:9000"
@@ -41,7 +41,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 type: Opaque
 stringData:
-  DATABASE_URL: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@langfuse-postgres:5432/langfuse"
+  DATABASE_URL: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@langfuse-postgres.{{ .Release.Namespace }}.svc.cluster.local.:5432/langfuse"
   POSTGRES_PASSWORD: "{{ .Values.postgres.password }}"
   NEXTAUTH_SECRET: "{{ .Values.nextauthSecret }}"
   SALT: "{{ .Values.salt }}"
@@ -75,7 +75,30 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          command: ['sh', '-c', 'until nc -z langfuse-postgres 5432; do sleep 2; done']
+          # Resolve postgres by its fully-qualified name with a TRAILING DOT so the
+          # lookup is a single absolute query that bypasses the CoreDNS search list.
+          # Any name under `ndots:5` (the short name, or even the 4-dot
+          # `*.svc.cluster.local` form WITHOUT the trailing dot) is first tried
+          # against every search-domain suffix; while postgres is still absent each
+          # probe emits extra NXDOMAINs, and on EKS Auto Mode a cold first-provision
+          # cross-node lookup can hang, leaving `nc -z` with no output and the pod
+          # stuck Init:0/1 (#1057 langfuse chain). The namespace comes from
+          # .Release.Namespace so the FQDN follows the chart wherever it is installed.
+          # The loop is bounded (cap + `nc -w`) and echoes every attempt, so a real
+          # dependency failure exits non-zero and the init restarts visibly instead
+          # of stalling silently.
+          command:
+            - sh
+            - -c
+            - |
+              host="langfuse-postgres.{{ .Release.Namespace }}.svc.cluster.local."
+              for i in $(seq 1 60); do
+                if nc -z -w 2 "$host" 5432; then
+                  echo "postgres reachable on attempt $i"; exit 0
+                fi
+                echo "attempt $i/60: $host:5432 not reachable yet"; sleep 2
+              done
+              echo "postgres still unreachable after 60 attempts; failing init"; exit 1
           securityContext:
             allowPrivilegeEscalation: false
             runAsUser: 65534
@@ -109,40 +132,43 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
-          # but /api/public/health checks Postgres + ClickHouse and can exceed 1s
-          # under load — with the 1s default the livenessProbe timed out, failed 3x,
-          # and the pod was SIGKILLed (exitCode 137) mid-boot, crash-looping and
-          # leaving the Service with no endpoints (UI 502). 5s gives real headroom.
+          # but /api/public/health does DEEP dependency checks (Postgres + ClickHouse
+          # + Redis) that intermittently spike well past 5s under load. With a 5s
+          # liveness timeout + failureThreshold 3 the kubelet SIGKILLed a HEALTHY,
+          # already-serving pod (exitCode 137), which flapped the Service endpoints to
+          # empty and surfaced as a 503 at the ALB. Give every probe a 20s timeout and
+          # make liveness tolerant of sustained slow responses (20×30s ≈ 10 min) so a
+          # genuinely hung pod is still restarted, but transient dependency latency is
+          # not mistaken for a crash.
           #
           # startupProbe is sized for the ONE-TIME cold init on a fresh cluster:
           # /api/public/health responds only after Prisma + ClickHouse migrations and
           # the init scripts complete, which on a cold ClickHouse exceeded the previous
           # ~315s budget (30×10s). The pod was SIGTERM'd mid-init and restarted before
           # the one-time init ever finished, so it never converged (observed 11 restarts).
-          # 60×10s = ~600s window + 10s per-attempt timeout tolerates the slow first boot;
-          # liveness below stays strict so a genuinely hung pod is still restarted later.
+          # 60×10s = ~600s window + 20s per-attempt timeout tolerates the slow first boot.
           startupProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 10
-            timeoutSeconds: 10
+            timeoutSeconds: 20
             failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 20
+            failureThreshold: 20
           readinessProbe:
             httpGet:
               path: /api/public/health
               port: 3000
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 20
+            failureThreshold: 6
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,37 @@
+# Agentic workload deployed through the Open Agentic Platform (OAP).
+#
+# The workshop copies this file to deployment/dev/application.yaml and later
+# promotes it to deployment/prod/. Argo CD syncs each folder to its spoke.
+#
+# It starts as a single agent with no tools. The workshop then adds an MCP
+# server component to this same Application, and finally points the agent at
+# it with `mcpServers`.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: agents
+spec:
+  components:
+    - name: assistant
+      type: agent
+      properties:
+        description: "Workshop assistant"
+        systemMessage: |
+          You are a helpful assistant. Answer briefly.
+        modelConfig:
+          modelId: claude-sonnet
+        # Expose the agent on AgentGateway at /assistant
+        registerWithGateway: true
+        env:
+          - name: APP_ENV
+            value: "DEV"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+      traits:
+        # Secretless identity the agent presents to AgentGateway and MCP servers
+        - type: gateway-identity

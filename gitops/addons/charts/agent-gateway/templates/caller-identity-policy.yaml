@@ -1,36 +1,63 @@
 {{- if .Values.callerIdentity.enabled }}
-# Tells every backend who the authenticated caller is, as a plain header.
-#
-# The gateway has already validated the caller's JWT (jwt-policy.yaml), so it sets
-# `X-Forwarded-User` to that token's `sub`. Backends use it as a stable per-caller
-# key, for example an agent's long-term memory actor, without parsing or
-# validating tokens themselves.
-#
-#   Keycloak user          -> the user's subject id
-#   agent ServiceAccount   -> system:serviceaccount:<namespace>:<name>
-#
-# `set`, not `add`: the value is overwritten on every request, so a header a client
-# sends itself never reaches the backend. That is the whole trust contract, and it
-# holds only for traffic through the gateway. Pods are reachable in-cluster by their
-# Service, and nothing in this chart blocks that, so a workload that calls an agent
-# directly can send any value (scripts/test-memory-matrix.sh row N1 does exactly
-# that). Restricting agent ingress to agentgateway-system is the cluster operator's
-# NetworkPolicy; this platform does not ship one yet.
-#
-# Scoped to the Gateway, like jwt-policy.yaml, so both hops are covered: client ->
-# agent, and agent -> MCP server or other agent.
-#
-# `inheritance: Override` keeps this authoritative: traffic policies merge field by
-# field with the more specific attachment winning, so without it a route-level
-# `traffic.transformation` would replace this one and silently drop the header that
-# agents use as their memory actor. Override applies per field, and this policy sets
-# only `transformation`, so route-level `authorization` rules (allowedAgents,
-# mcpAccess) still apply; verified by scripts/test-identity-matrix.sh. The cost: a
-# route-level `traffic.transformation` on this Gateway is ignored. Add request
-# transformations here, not on routes.
-#
-# The header name is fixed (agents read `x-forwarded-user`, app/identity.py), so the
-# gateway and the image cannot drift apart.
+{{- /*
+Tells every backend who the authenticated caller is, as plain headers.
+
+The gateway has already validated the caller's JWT (jwt-policy.yaml), so it sets
+`X-Forwarded-User` to that token's `sub`. Backends use it as a stable per-caller key, for
+example an agent's long-term memory actor, without parsing or validating tokens
+themselves.
+
+  Keycloak user          -> the user's subject id
+  agent ServiceAccount   -> system:serviceaccount:<namespace>:<name>
+
+Delegation (docs/agent-delegation/DESIGN.md) adds two things to that:
+
+  - A supervisor agent calls a sub-agent with its own ServiceAccount token and names the
+    end user in `X-Delegated-User`. When the token's `sub` is in `delegation.agents`, the
+    gateway sets `X-Forwarded-User` to that user instead of the agent, so the sub-agent's
+    memory stays per user. For every other caller the header is ignored. It is removed
+    before the request reaches any backend.
+  - `X-Forwarded-Agent` names the calling agent (its ServiceAccount subject), and is empty
+    when a user calls directly.
+
+Agents send `X-Delegated-User` only to other agents, not to MCP servers, so an MCP server
+still sees the calling agent in `X-Forwarded-User`, as before.
+
+`set`, not `add`: values are overwritten on every request, so headers a client sends
+itself never reach the backend. That is the whole trust contract, and it holds only for
+traffic through the gateway. Pods are reachable in-cluster by their Service, and nothing
+in this chart blocks that, so a workload that calls an agent directly can send any value
+(scripts/test-memory-matrix.sh row N1 does exactly that). Restricting agent ingress to
+agentgateway-system is the cluster operator's NetworkPolicy; this platform does not ship
+one yet.
+
+Scoped to the Gateway, like jwt-policy.yaml, so every hop is covered: client -> agent,
+agent -> MCP server, and agent -> agent.
+
+`inheritance: Override` keeps this authoritative: traffic policies merge field by field
+with the more specific attachment winning, so without it a route-level
+`traffic.transformation` would replace this one and silently drop the headers agents use
+as their memory actor. Override applies per field, and this policy sets only
+`transformation`, so route-level `authorization` rules (allowedAgents, mcpAccess,
+agentAccess) still apply; verified by tests/live/test_identity.py. The cost: a
+route-level `traffic.transformation` on this Gateway is ignored. Add request
+transformations here, not on routes.
+
+The header names are fixed (agents read them in app/identity.py), so the gateway and the
+image cannot drift apart. `default(...)` keeps the expression valid when a request has no
+`X-Delegated-User`: reading an absent header is an error in agentgateway CEL otherwise.
+*/ -}}
+{{- $user := "jwt.sub" -}}
+{{- with .Values.delegation.agents }}
+{{- $subs := list -}}
+{{- range . -}}
+{{- if not (contains "/" .) -}}
+{{- fail (printf "delegation.agents entry %q must be <namespace>/<agent>" .) -}}
+{{- end -}}
+{{- $subs = append $subs (printf "%q" (printf "system:serviceaccount:%s" (replace "/" ":" .))) -}}
+{{- end -}}
+{{- $user = printf "jwt.sub in [%s] && default(request.headers[\"x-delegated-user\"], \"\") != \"\" ? request.headers[\"x-delegated-user\"] : jwt.sub" (join ", " $subs) -}}
+{{- end }}
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -48,5 +75,9 @@ spec:
       request:
         set:
         - name: X-Forwarded-User
-          value: 'jwt.sub'
+          value: {{ $user | squote }}
+        - name: X-Forwarded-Agent
+          value: {{ printf "jwt.sub.startsWith(%q) ? jwt.sub : \"\"" .Values.workloadIdentity.allowedSubjectPrefix | squote }}
+        remove:
+        - X-Delegated-User
 {{- end }}

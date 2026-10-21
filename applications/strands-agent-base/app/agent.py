@@ -38,11 +38,15 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
+from .delegation import delegation_tools, prompt_addendum
+from .delegation import generation as delegation_generation
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
     HeadersProvider,
+    caller_agent,
     caller_key,
+    inbound_depth,
     caller_subject,
     is_no_identity_key,
     outbound,
@@ -131,8 +135,9 @@ def _get_model() -> OpenAIModel:
             model_id=config.MODEL_ID,
             params={
                 "max_tokens": config.MAX_TOKENS,
-                "temperature": config.MODEL_TEMPERATURE,
                 "stream": True,
+                **({"temperature": config.MODEL_TEMPERATURE}
+                   if config.MODEL_TEMPERATURE is not None else {}),
             },
         )
     return _model
@@ -522,10 +527,21 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
         return None
 
     if not actor_id:
-        logger.warning(
-            "No caller identity (%s header) on this request; memory is off for session %r",
-            CALLER_IDENTITY_HEADER, session_id,
-        )
+        via = caller_agent()
+        if via and inbound_depth() > 0:
+            # identity.unattributed_delegation: the caller delegated but the gateway did
+            # not name a user, so it is not in delegation.agents (or this is an
+            # autonomous run with no user).
+            logger.warning(
+                "Delegated call from %s names no user (is it in the gateway's delegation.agents?); "
+                "memory is off for session %r",
+                via, session_id,
+            )
+        else:
+            logger.warning(
+                "No caller identity (%s header) on this request; memory is off for session %r",
+                CALLER_IDENTITY_HEADER, session_id,
+            )
         return None
 
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
@@ -668,11 +684,14 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     session_manager = _build_session_manager(session_id, actor_id)
     headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
     pool = _get_mcp_pool(key, headers)
-    tools = (pool.tools if pool is not None else None) or None
+    tools = list(pool.tools) if pool is not None else []
+    # Sub-agents (OAM `agents`): one tool per agent whose card could be fetched.
+    sub_tools, available, unavailable = delegation_tools(session_id)
+    tools += sub_tools
     agent = Agent(
         model=_get_model(),
-        system_prompt=config.SYSTEM_PROMPT,
-        tools=tools,
+        system_prompt=config.SYSTEM_PROMPT + prompt_addendum(available, unavailable),
+        tools=tools or None,
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
         description=config.AGENT_DESCRIPTION,
@@ -681,11 +700,15 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     )
     _install_truncation_guard(agent)
     agent._oap_mcp_pool = pool
+    agent._oap_delegation = tuple(available)
     return agent
 
 
 def agent_is_stale(agent) -> bool:
-    """True when the MCP pool this agent's tools belong to has been closed.
+    """True when this agent must be rebuilt before reuse.
+
+    Either the MCP pool its tools belong to has been closed, or the set of reachable
+    sub-agents changed since it was built.
 
     Pools are capped (MCP_MAX_POOLS) separately from the agent caches
     (MAX_CACHED_AGENTS, the A2A executor's max_contexts). When the caller's token is
@@ -694,7 +717,12 @@ def agent_is_stale(agent) -> bool:
     caches check this on a hit and rebuild instead, which also reopens the pool.
     """
     pool = getattr(agent, "_oap_mcp_pool", None)
-    return pool is not None and pool.closed
+    if pool is not None and pool.closed:
+        return True
+    # The reachable sub-agents changed since this agent was built: its tools and its
+    # prompt list the old set (app/delegation.py).
+    built = getattr(agent, "_oap_delegation", None)
+    return built is not None and built != delegation_generation()
 
 
 def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> Agent:
@@ -711,7 +739,11 @@ def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = Non
     session_id = session_id or str(uuid.uuid4())
     actor_id = actor_id or caller_subject()
     agent = _construct_agent(session_id, actor_id)
-    logger.info(f"Agent created: {config.AGENT_NAME} session={session_id}")
+    via = caller_agent()
+    logger.info(
+        f"Agent created: {config.AGENT_NAME} session={session_id}"
+        + (f" delegated_by={via} user={actor_id}" if via else "")
+    )
     return agent
 
 

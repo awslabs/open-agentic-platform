@@ -112,7 +112,7 @@ spec:
     # Source B — the generator chart, pulled from the PLATFORM repo (reference model).
     - repoURL: https://github.com/aws-samples/appmod-blueprints.git
       path: platform-charts/appset-chart
-      targetRevision: feature/agent-platform
+      targetRevision: main
       helm:
         releaseName: agent-platform-addons
         ignoreMissingValueFiles: true

@@ -81,6 +81,8 @@ async def capture_caller_auth(request, call_next):
     """
     inbound_auth.set(request.headers.get("authorization"))
     inbound_actor.set(request.headers.get(CALLER_IDENTITY_HEADER))
+    inbound_agent.set(request.headers.get(CALLER_AGENT_HEADER))
+    inbound_depth_raw.set(request.headers.get(DELEGATION_DEPTH_HEADER))
     request_id.set(uuid.uuid4().hex)
     return await call_next(request)
 
@@ -105,6 +107,32 @@ async def capture_caller_auth(request, call_next):
 
 CALLER_IDENTITY_HEADER = "x-forwarded-user"
 
+# Set by the gateway to the calling agent's ServiceAccount subject; empty for a user.
+# Informational (logs, traces): authorization is the gateway's, keys use the user above.
+CALLER_AGENT_HEADER = "x-forwarded-agent"
+
+# Sent by a supervisor on calls to other agents (app/delegation.py). The gateway turns
+# X-Delegated-User into the sub-agent's X-Forwarded-User for agents allowed to delegate,
+# and removes it otherwise. The depth header is the agent's own loop guard.
+DELEGATED_USER_HEADER = "x-delegated-user"
+DELEGATION_DEPTH_HEADER = "x-delegation-depth"
+
+inbound_agent: ContextVar[Optional[str]] = ContextVar("inbound_agent", default=None)
+inbound_depth_raw: ContextVar[Optional[str]] = ContextVar("inbound_depth_raw", default=None)
+
+
+def caller_agent() -> Optional[str]:
+    """The agent that called on behalf of the user, when the call was delegated."""
+    return (inbound_agent.get() or "").strip() or None
+
+
+def inbound_depth() -> int:
+    """Delegation depth of the request in flight: 0 for a direct call."""
+    try:
+        return max(0, int((inbound_depth_raw.get() or "0").strip()))
+    except ValueError:
+        return 0
+
 inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=None)
 
 # Unique per request, set by the middleware. Keys a request that carries no identity
@@ -112,9 +140,30 @@ inbound_actor: ContextVar[Optional[str]] = ContextVar("inbound_actor", default=N
 request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 
 
+def unattributed_delegation(sub: Optional[str], agent: Optional[str], depth: Optional[str]) -> bool:
+    """A delegated call whose user the gateway did not set.
+
+    The gateway sets X-Forwarded-User to the delegated user only for agents in
+    delegation.agents; otherwise it is the calling agent itself. Keying on that would
+    let every user of that supervisor share one memory actor and one set of contexts at
+    this agent, so such a call is treated as having no identity (fail closed, like a
+    request without the header). Depth comes from the caller, but setting it only ever
+    costs the caller its own memory.
+    """
+    try:
+        delegated = int((depth or "0").strip()) > 0
+    except ValueError:
+        delegated = False
+    sub, agent = (sub or "").strip(), (agent or "").strip()
+    return delegated and bool(sub) and sub == agent
+
+
 def caller_subject() -> Optional[str]:
     """The gateway-validated caller (`sub`) for this request, or None."""
-    return (inbound_actor.get() or "").strip() or None
+    sub = (inbound_actor.get() or "").strip() or None
+    if unattributed_delegation(sub, inbound_agent.get(), inbound_depth_raw.get()):
+        return None
+    return sub
 
 
 def _token_hash(header: Optional[str]) -> Optional[str]:
@@ -148,6 +197,9 @@ def caller_key(propagate: bool) -> str:
     sub = caller_subject()
     if sub:
         return f"sub:{sub}" if pool == WORKLOAD_KEY else f"sub:{sub}|{pool}"
+    if unattributed_delegation(inbound_actor.get(), inbound_agent.get(), inbound_depth_raw.get()):
+        # Not the supervisor's token hash either: that is shared by all its users.
+        return _no_identity_key()
     tok = _token_hash(inbound_auth.get())
     return f"tok:{tok}" if tok else _no_identity_key()
 
@@ -166,9 +218,12 @@ def task_owner(context=None) -> str:
     if headers is not None:
         sub = (headers.get(CALLER_IDENTITY_HEADER) or "").strip()
         tok = _token_hash(headers.get("authorization"))
+        if unattributed_delegation(sub, headers.get(CALLER_AGENT_HEADER), headers.get(DELEGATION_DEPTH_HEADER)):
+            sub, tok = "", None
     else:
         sub = caller_subject() or ""
-        tok = _token_hash(inbound_auth.get())
+        tok = None if unattributed_delegation(inbound_actor.get(), inbound_agent.get(), inbound_depth_raw.get()) \
+            else _token_hash(inbound_auth.get())
     if sub:
         return f"sub:{sub}"
     return f"tok:{tok}" if tok else _no_identity_key()

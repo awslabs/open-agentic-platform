@@ -34,8 +34,14 @@ For example, always use the time tool when asked about the current time or date.
     # before any tool (e.g. opening a PR/MR) was ever invoked. Configurable via
     # env, default 4096.
     MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "4096"))
-    # Sampling temperature, configurable via env (default 0.7).
-    MODEL_TEMPERATURE: float = float(os.getenv("MODEL_TEMPERATURE", "0.7"))
+    # Sampling temperature. Omitted by default so the model uses its own: newer
+    # Bedrock models (e.g. Claude Sonnet 5) reject non-default values with a 400.
+    _MODEL_TEMPERATURE_RAW = os.getenv("MODEL_TEMPERATURE", "").strip()
+    MODEL_TEMPERATURE: Optional[float] = (
+        None
+        if _MODEL_TEMPERATURE_RAW.lower() in ("", "none")
+        else float(_MODEL_TEMPERATURE_RAW)
+    )
 
     # When the model hits MAX_TOKENS mid-answer, Strands raises
     # MaxTokensReachedException. Left unhandled the A2A task goes to `failed`
