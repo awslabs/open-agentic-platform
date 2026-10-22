@@ -663,7 +663,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_rules_active",
+          "expr": "sum(oap_agent_eval_rules_active)",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
