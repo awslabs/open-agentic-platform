@@ -399,7 +399,7 @@ declaration into Langfuse evaluators and rules.
 
 | Option | Verdict |
 |---|---|
-| **One reconciler Deployment in the `agent-evaluation` namespace** (**chosen**) | It watches ConfigMaps labelled `evaluation.oap.io/agent`, and holds the Langfuse key and the judge virtual key itself. Because it is level-triggered, deletion is a diff. |
+| **One reconciler Deployment in the `agent-evaluation` namespace of each cluster that runs agents** (**chosen**) | It watches ConfigMaps labelled `evaluation.oap.io/agent` on its own cluster, and holds the Langfuse key and the judge virtual key itself. Because it is level-triggered, deletion is a diff. |
 | A Job per agent, emitted by the component | Rejected. It puts Langfuse admin credentials in every agent namespace, does not re-run on drift, and leaves rules behind when the agent is deleted. The per-agent virtual-key mint Job in #18 hit the same three problems. |
 | A CRD and an operator | A heavier version of the chosen option. Worth it later if the declaration grows. |
 
