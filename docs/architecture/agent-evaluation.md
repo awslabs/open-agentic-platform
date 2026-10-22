@@ -449,6 +449,14 @@ File: `platform/oam/definitions/components/agent.cue` (proposed env entry, next 
 {name: "AGENT_NAMESPACE", value: context.namespace},
 ```
 
+File: `applications/strands-agent-base/app/agent.py` (proposed change in `_trace_attributes`)
+
+```python
+tags = [f"source:{source}", config.AGENT_NAME]
+if config.CLUSTER_NAME:  # unset outside OAP (local runs): keep the old tags only
+    tags.append(f"agent:{config.CLUSTER_NAME}/{config.AGENT_NAMESPACE}/{config.AGENT_NAME}")
+```
+
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
 platform seeds one shared project
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
