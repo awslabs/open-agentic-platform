@@ -755,8 +755,9 @@ change.
 | | Data age; stale data shows amber, not as a quality drop | `time() - oap_agent_eval_last_success_timestamp_seconds{loop="metrics"}` |
 | | Reconciler errors | `sum by (loop) (rate(oap_agent_eval_errors_total[15m]))` |
 
-A dashboard link opens Langfuse, where a reviewer filters traces by the agent's
-tag and reads the judge's reasoning for a failed trace.
+A dashboard link opens Langfuse filtered to the agent's scoped
+`agent:<cluster>/<namespace>/<name>` tag, where a reviewer reads the judge's
+reasoning for a failed trace.
 
 #### Alerts and gates
 
