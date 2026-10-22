@@ -411,7 +411,7 @@ overwrite each other, so each one owns only the rules it created (steps 4 and 5)
 
 The reconciler loop, each interval:
 
-1. List every `evaluation.oap.io/agent` ConfigMap across namespaces.
+1. List every `evaluation.oap.io/agent` ConfigMap across namespaces on this cluster.
 2. Ensure each catalog evaluator exists in Langfuse
    (`POST /api/public/unstable/evaluators`, versioned by name). The prompts come
    from the addon's catalog.
