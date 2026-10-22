@@ -23,7 +23,7 @@ spec:
         embeddingModel: amazon.titan-embed-text-v2:0
         # Metadata key holding each chunk's text, as written by the pipeline.
         textMetadataKey: text
-        description: Product user guides and release notes
+        description: Docling technical reports (how Docling converts PDFs)
         # Optional: only these agents may call it (bare name = this namespace).
         # allowedAgents: [docs-assistant, other-team/support-agent]
       traits:

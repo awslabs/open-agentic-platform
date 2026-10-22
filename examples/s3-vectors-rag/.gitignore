@@ -1,0 +1,4 @@
+.venv/
+.docling-cache/
+__pycache__/
+pdfs/
