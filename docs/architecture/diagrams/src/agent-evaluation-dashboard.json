@@ -600,7 +600,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window=\"7d\"} * on (namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)",
+          "expr": "avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window=\"7d\"} * on (cluster, namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)",
           "legendFormat": "{{gen_ai_request_model}} \u00b7 {{evaluator}}",
           "refId": "A",
           "instant": true,
