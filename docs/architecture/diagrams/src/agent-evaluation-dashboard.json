@@ -322,7 +322,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_pass_ratio{namespace=~\"$namespace\",agent=\"$agent\",window=\"24h\"}",
+          "expr": "oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\",window=\"24h\"}",
           "legendFormat": "{{evaluator}}",
           "refId": "A"
         }
