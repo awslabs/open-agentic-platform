@@ -648,7 +648,7 @@ the series of every other metric.
 | `oap_agent_eval_info` | `cluster`, `namespace`, `agent`, `gen_ai_request_model`, `eval_ai_request_model`, `strictness`, `coverage` | Always 1. Joined for by-model views and for showing each agent's levels |
 | `oap_agent_eval_rules_active` | `cluster` | Langfuse evaluation rules this cluster owns. The limit of 50 (D4) is per project, so compare `sum()` across clusters against it |
 | `oap_agent_eval_errors_total` | `cluster`, `loop` (`rules`, `metrics`) | Failed Langfuse calls |
-| `oap_agent_eval_last_success_timestamp_seconds` | `loop` | Last fully successful pass. The dashboard and alerts use it to tell stale data from bad data |
+| `oap_agent_eval_last_success_timestamp_seconds` | `cluster`, `loop` | Last fully successful pass. The dashboard and alerts use it to tell stale data from bad data, per cluster, so one stalled spoke is not hidden by a healthy one |
 
 A judge call that fails writes no score, so it counts as neither passed nor
 failed and does not lower the ratio. Judge errors show up on the judge's virtual
