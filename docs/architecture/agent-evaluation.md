@@ -907,9 +907,12 @@ sequenceDiagram
    Phase 1, or ship on the unstable endpoints with a version pin? The unstable
    surface already disagrees with itself: its spec documents 50 active rules and
    its code enforces 500 (D4).
-3. **One shared project or a project per team.** Grouping keeps one shared
-   project under the documented 50-rule limit, but a project per team also separates trace
-   access. Is that wanted?
+3. **One shared project, or one per team.** Decided: one shared project for every
+   cluster. Cluster-scoped tags and per-cluster rule ownership (D4) keep clusters
+   apart within it. A project per cluster would need a project, key pair and
+   Secrets Manager entry per cluster, and would split dev and prod traces in the
+   Langfuse UI. Still open: whether a project per team is wanted, since a project
+   is Langfuse's only trace-access boundary.
 4. **The Strands root span.** Rules select the root with `parentObservationId` is
    null (D4), so the span name is not needed. A live trace still has to confirm
    that the root observation carries the user input and the final output.
