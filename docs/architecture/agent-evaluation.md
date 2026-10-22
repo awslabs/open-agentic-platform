@@ -825,7 +825,7 @@ sequenceDiagram
     actor Dev as App developer
     participant KV as KubeVela
     participant R as Evaluation reconciler (this spoke)
-    participant LF as Langfuse
+    participant LF as Langfuse (hub, shared project)
     participant BF as Bifrost (judge key)
     participant G as AMP + AMG
     Dev->>KV: Application with evaluation: {enabled: true, strictness, coverage}
