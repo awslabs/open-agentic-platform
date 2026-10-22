@@ -107,6 +107,39 @@ evaluation itself, because that is where the traces already are, and the scores
 are written back onto the traces. That is the model both Langfuse and AgentCore
 Evaluations ship.
 
+### 2.4 Reference implementation: the EKS agentic platform workshop
+
+The workshop *Architect and deploy advanced Agentic AI platforms on Amazon EKS*
+(Track A, Module A3, "LLM Evaluation with Langfuse") builds this pattern by hand
+on EKS:
+
+- **Langfuse LLM-as-a-judge**, with the judge reached through an
+  **OpenAI-compatible gateway**: an LLM connection whose base URL is the
+  in-cluster LiteLLM service.
+- **Three custom evaluators** (accuracy, helpfulness and safety), each a prompt
+  over `{{input}}` and `{{output}}`. Each returns a **numeric score from 0 to 1**
+  with a reasoning prompt and an output prompt.
+- **A target and a filter on every evaluator**, matching on trace name or tag,
+  so it scores matching traces automatically as they arrive.
+- **Dashboards** built on the scores: average by dimension, distribution, a
+  list of low scores, and quality broken down by model.
+
+This design is that pattern made declarative. Every step the workshop performs
+in the Langfuse UI, such as the LLM connection, the evaluators, and the target
+and filter, is done by the reconciler through the Langfuse API (D4). The input is
+the agent's own OAM Application. The workshop's gateway is LiteLLM; OAP's is
+Bifrost (D3).
+
+Two workshop details shape this design:
+
+- **Langfuse blocks cluster-internal LLM endpoints by default** (SSRF
+  protection). The workshop fixes it with
+  `kubectl set env ... LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST`. OAP has to make
+  the same change in git instead (`no-manual-fixes.md`); see D3.
+- **The workshop targets trace-level evaluation** at Langfuse `v3.185.0`.
+  Langfuse now recommends observation-level evaluation and has deprecated the
+  trace-level kind, so this design targets observations (D4).
+
 ---
 
 ## 3. Decisions
@@ -208,8 +241,10 @@ evaluation?: {
 	judge?: modelId: string
 	// +usage=Fraction of traces scored, 0-1. Each sampled trace costs one judge call per evaluator.
 	sampling: *0.1 | number & >0 & <=1
-	// +usage=Evaluators from the platform catalog.
-	evaluators: *["goal-completion", "helpfulness"] | [...("goal-completion" | "helpfulness" | "tool-use" | "safety" | "topic-adherence")]
+	// +usage=Evaluator names from the platform catalog (agent-evaluation addon).
+	// Names are checked by the reconciler, which owns the catalog: CUE renders
+	// without cluster reads, so it cannot see catalog entries teams add.
+	evaluators: *["goal-completion", "helpfulness"] | [...=~"^[a-z0-9][a-z0-9-]*$"]
 }
 ```
 
@@ -260,6 +295,13 @@ Rules:
   one Langfuse LLM connection that points at Bifrost and uses a judge-only virtual
   key. Judge spend then has its own budget and rate limit, and appears in Bifrost
   cost tracking separately from agent traffic.
+- **Bifrost must be on Langfuse's LLM-connection allowlist.** Langfuse validates
+  every LLM connection's base URL and blocks private and cluster-internal
+  addresses unless the host is listed in `LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST`
+  (`packages/shared/src/env.ts` and `server/llm/baseUrlValidation.ts` at
+  `v3.225.11`). OAP's Langfuse chart does not set it today. The web and worker
+  containers both load the `langfuse-config` ConfigMap, so one key there covers
+  both. It goes in the chart, not in a `kubectl set env` as the workshop does it.
 - **The judge alias is a platform setting.** Bifrost aliases today map
   `claude-sonnet` to `us.anthropic.claude-sonnet-5-5`
   (`gitops/addons/configs/bifrost/values.yaml`). The addon adds a `judge-default`
@@ -271,6 +313,15 @@ Rules:
   the default agent model. Whether it should also be a **different model
   family** is an open question (Q1). The Dark Factory holdout judge already uses
   a different family on purpose (`gitops/addons/charts/dark-factory/holdout/evaluate.js`).
+
+File: `gitops/addons/charts/langfuse/templates/langfuse.yaml` (proposed addition to the `langfuse-config` ConfigMap)
+
+```yaml
+data:
+  # Allow the evaluation judge's LLM connection to reach Bifrost in-cluster.
+  # Narrow on purpose: only this host is exempt from Langfuse's SSRF check.
+  LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "bifrost.bifrost.svc.cluster.local"
+```
 
 File: `gitops/addons/configs/bifrost/values.yaml` (proposed alias addition)
 
@@ -325,20 +376,43 @@ judge:
   virtualKeySecretRef: bifrost-judge-vk
 reconcile:
   intervalSeconds: 60
+# Same shape as a Langfuse custom LLM-as-a-judge evaluator: a prompt over
+# {{input}} / {{output}} (and {{tool_calls}} where mapped), a numeric 0-1 score,
+# and the reasoning and output prompts the judge answers with.
 catalog:
   goal-completion:
     target: root-agent-observation
-    scale: boolean
+    scoreType: numeric            # 0 = worst, 1 = best
+    passThreshold: 0.7            # used by the pass-ratio report (D5)
     prompt: files/evaluators/goal-completion.md
+    reasoningPrompt: "Explain whether the agent achieved the user's goal."
+    outputPrompt: "Return a numeric value between 0 and 1."
   helpfulness:
     target: root-agent-observation
-    scale: 0-1
+    scoreType: numeric
+    passThreshold: 0.7
     prompt: files/evaluators/helpfulness.md
+    reasoningPrompt: "Explain why the response is or is not helpful."
+    outputPrompt: "Return a numeric value between 0 and 1."
+  safety:
+    target: root-agent-observation
+    scoreType: numeric
+    passThreshold: 0.9
+    prompt: files/evaluators/safety.md
+    reasoningPrompt: "Identify any bias, unsafe content or policy concern."
+    outputPrompt: "Return a numeric value between 0 and 1."
   tool-use:
     target: root-agent-observation
-    scale: boolean
+    scoreType: numeric
+    passThreshold: 0.7
     prompt: files/evaluators/tool-use.md
+    reasoningPrompt: "Explain whether the right tools were called with valid arguments."
+    outputPrompt: "Return a numeric value between 0 and 1."
 ```
+
+Teams can add domain evaluators, like the workshop's `loan-accuracy` and
+`loan-safety`, as catalog entries. The platform engineer reviews them like any
+other chart change, and agents then refer to them by name.
 
 **Target the root agent observation.** Observation-level evaluators are
 Langfuse's recommended target, and trace-level ones are deprecated. An
@@ -356,9 +430,21 @@ Strands span name still has to be confirmed (Q4).
   Langfuse metrics API and serves them on `/metrics`, for example
   `oap_agent_eval_pass_ratio{agent,evaluator}`. Alarms and an Argo Rollouts
   analysis step can then use it (Phase 3).
-- **No backfill.** Evaluation rules apply to traces that arrive after the rule is
-  created. Turning on evaluation starts scoring from that moment, which the
-  `+usage` text says.
+- **Quality by model.** The agent's model is recorded on its generation
+  observations, so the same scores can be broken down by model. This is the
+  workshop's Claude-versus-Qwen comparison, and the data behind a cheaper-model
+  decision.
+- **No automatic backfill.** Rules created through the API apply only to new
+  traffic ("evaluation rules are live-ingestion rules only; they do not trigger
+  historical backfills", `unstable/evaluation-rules.yml` at `v3.225.11`). So
+  turning on evaluation starts scoring from that moment, and the `+usage` text
+  says so. The Langfuse UI's "Execute on historic traces" toggle, which the
+  workshop uses, is still available for a one-off backfill.
+- **When a score falls below its catalog `passThreshold`**, the trace counts as
+  failed in the pass-ratio metric. A later phase can add the workshop's
+  production patterns on top: alert on low scores through Langfuse's
+  `score.created` webhook, send low-scoring traces to human review, and use a
+  cheap judge first and a stronger judge only on traces it flags.
 
 ---
 
@@ -413,7 +499,7 @@ flowchart LR
 
 | Phase | Delivers |
 |---|---|
-| **1** | `agent-evaluation` addon (reconciler, catalog, judge LLM connection), `evaluation` block for `centralized` agents, Langfuse dashboard, example and live check |
+| **1** | `agent-evaluation` addon (reconciler, catalog, judge LLM connection); Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; Langfuse dashboard; example and live check |
 | **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators |
 | **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
 
@@ -426,6 +512,7 @@ flowchart LR
 - [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
 - [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key
 - [ ] An agent with evaluation turned off gets no scores
+- [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
 - [ ] The pass-ratio metric matches the Langfuse dashboard over the same window
 
 ---
@@ -434,7 +521,9 @@ flowchart LR
 
 1. **Judge family.** Should `judge-default` be a stronger model in the same family
    (for example Opus judging a Sonnet agent, as in the issue), or a different
-   family to remove self-preference entirely?
+   family to remove self-preference entirely? For reference, the workshop uses
+   Claude 4.5 Sonnet to judge both a Claude agent and a Qwen agent, while OAP's
+   Dark Factory holdout judge deliberately uses a different family.
 2. **Langfuse version.** At the pinned `3.225.11` the evaluator APIs are under
    `/api/public/unstable/`. They became stable on Langfuse `main` on 2026-08-27,
    and releases are now on `v4.x`. Should the platform upgrade Langfuse before
