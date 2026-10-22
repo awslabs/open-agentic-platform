@@ -81,7 +81,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info{namespace=~\"$namespace\"}, agent)",
+          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\"}, agent)",
           "refId": "agent"
         },
         "refresh": 2,
