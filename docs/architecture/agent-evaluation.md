@@ -582,7 +582,7 @@ the series of every other metric.
 | `oap_agent_eval_passed` | same | Scores at or above the threshold |
 | `oap_agent_eval_pass_ratio` | same | `passed / scores`. Not emitted when `scores` is 0, so an idle agent is not reported as 0% |
 | `oap_agent_eval_score_avg` | same | Mean score |
-| `oap_agent_eval_pass_threshold` | `namespace`, `agent`, `evaluator` | The resolved threshold, drawn as a line on charts |
+| `oap_agent_eval_pass_threshold` | `namespace`, `agent`, `evaluator` | The resolved threshold, drawn beside the average score. It has no `window` label on purpose: the threshold comes from strictness, not from a window. Join it to windowed series `on (namespace, agent, evaluator)`, never `on (window)` |
 | `oap_agent_eval_info` | `namespace`, `agent`, `gen_ai_request_model`, `eval_ai_request_model`, `strictness`, `coverage` | Always 1. Joined for by-model views and for showing each agent's levels |
 | `oap_agent_eval_rules_active` | none | Langfuse evaluation rules in use, against the documented limit of 50 (D4) |
 | `oap_agent_eval_errors_total` | `loop` (`rules`, `metrics`) | Failed Langfuse calls |
