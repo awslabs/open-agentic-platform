@@ -457,6 +457,13 @@ if config.CLUSTER_NAME:  # unset outside OAP (local runs): keep the old tags onl
     tags.append(f"agent:{config.CLUSTER_NAME}/{config.AGENT_NAMESPACE}/{config.AGENT_NAME}")
 ```
 
+File: `applications/strands-agent-base/app/config.py` (proposed, beside `AGENT_NAME`)
+
+```python
+CLUSTER_NAME: str = os.getenv("CLUSTER_NAME", "")
+AGENT_NAMESPACE: str = os.getenv("AGENT_NAMESPACE", "")
+```
+
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
 platform seeds one shared project
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
