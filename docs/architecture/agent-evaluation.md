@@ -800,10 +800,12 @@ flowchart LR
       R["evaluation reconciler<br/>owns oap-&lt;cluster&gt;- rules"]
     end
   end
-  subgraph LFN["langfuse namespace"]
-    LF["Langfuse web + worker"]
+  subgraph HUB["hub cluster"]
+    subgraph LFN["langfuse namespace"]
+      LF["Langfuse web + worker<br/>one shared project"]
+    end
+    BF["Bifrost /v1<br/>judge virtual key"]
   end
-  BF["Bifrost /v1<br/>judge virtual key"]
   CM -- "watch" --> R
   R -- "evaluators + rules API" --> LF
   LF -- "sampled observations<br/>LLM connection" --> BF
