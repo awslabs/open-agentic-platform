@@ -1,0 +1,25 @@
+[project]
+name = "s3-vectors-mcp"
+version = "0.1.0"
+description = "Read-only MCP server that answers semantic-search queries against one Amazon S3 Vectors index"
+requires-python = ">=3.13"
+# Exact pins: the image is rebuilt from this file, so a floating range would change
+# what ships without a change here.
+dependencies = [
+    "mcp==2.3.0",
+    "boto3==1.43.117",
+    "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

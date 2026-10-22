@@ -1,0 +1,51 @@
+# RAG over an existing Amazon S3 Vectors index, exposed to agents as an MCP tool.
+#
+#   ingestion pipeline (outside OAP) --PutVectors--> S3 Vectors index
+#   agent --(JWT via agentgateway)--> [s3-vectors-mcp] --QueryVectors--> S3 Vectors index
+#                                            \--InvokeModel (query only)--> Bedrock
+#
+# The vector bucket and index must already exist. This Application only reads them.
+# Portable: no region, account or cluster appears below.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: product-docs
+  namespace: default
+spec:
+  components:
+    - name: product-docs-search
+      type: s3-vectors-mcp
+      properties:
+        vectorBucket: oap-rag-example     # existing vector bucket
+        index: product-docs               # existing index in it
+        # The model the pipeline embedded the documents with. Only queries are
+        # embedded here; the server checks it against the index dimension.
+        embeddingModel: amazon.titan-embed-text-v2:0
+        # Metadata key holding each chunk's text, as written by the pipeline.
+        textMetadataKey: text
+        description: Product user guides and release notes
+        # Optional: only these agents may call it (bare name = this namespace).
+        # allowedAgents: [docs-assistant, other-team/support-agent]
+      traits:
+        # Pod Identity for this server, with the read-only policy the component
+        # emits for exactly this index and model. accessFor names THIS component.
+        - type: aws-service-identity
+          properties:
+            accessFor:
+              - product-docs-search
+
+    # An agent that uses it: list the server by component name.
+    - name: docs-assistant
+      type: agent
+      dependsOn:
+        - product-docs-search
+      properties:
+        description: Answers questions from the product documentation
+        systemMessage: >-
+          Answer from the product documentation. Search it with the
+          product-docs-search tool and cite the source and page of what you use.
+        mcpServers:
+          - name: product-docs-search
+      traits:
+        # Lets the agent present its own identity to the gateway.
+        - type: gateway-identity
