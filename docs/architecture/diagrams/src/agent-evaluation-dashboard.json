@@ -146,7 +146,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_pass_ratio{namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"}",
+          "expr": "oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"}",
           "legendFormat": "{{evaluator}}",
           "refId": "A",
           "instant": true,
