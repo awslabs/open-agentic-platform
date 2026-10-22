@@ -596,7 +596,12 @@ key in Bifrost's existing metrics.
 queries, for example 20 × 2 × 4 = 160 every 5 minutes. The endpoint is
 rate-limited under the resource `public-api-metrics`, so `metrics.intervalSeconds`
 is a chart value, and the validation plan measures it under real agent counts.
-The v1 metrics endpoint refuses requests when Langfuse runs in `events_only` mode
+If Langfuse throttles the loop part-way through a pass, the reconciler keeps the
+last good values instead of publishing a partial set,
+`oap_agent_eval_errors_total{loop="metrics"}` increases, and
+`oap_agent_eval_last_success_timestamp_seconds{loop="metrics"}` stops moving. The
+health row then shows rising errors and an amber data age: "rate-limited, data
+ageing", not "quality dropped". The next full pass recovers it. The v1 metrics endpoint refuses requests when Langfuse runs in `events_only` mode
 (`rejectInEventsOnlyMode: true`), so a Langfuse v4 upgrade (Q2) moves this loop
 to `/api/public/v2/metrics`, which also exists at the pin.
 
