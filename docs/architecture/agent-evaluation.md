@@ -432,6 +432,14 @@ The reconciler loop, each interval:
    A rule another cluster owns is never touched, even though this reconciler sees
    no ConfigMap for it.
 
+**Agent identity in traces.** Rules and reports need a tag that names one agent on
+one cluster. The agent adds `agent:<cluster>/<namespace>/<name>` next to its
+existing bare-name tag, which stays for existing filters. The cluster name comes
+from the platform, not the developer: `oam-agent-components` already receives
+`global.clusterName` from the cluster secret's `aws_cluster_name` annotation
+(`gitops/addons/registry/agentcore.yaml`), and the component passes it to the
+agent as `CLUSTER_NAME`. This is the one agent change Phase 1 needs.
+
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
 platform seeds one shared project
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
