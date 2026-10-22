@@ -824,7 +824,7 @@ sequenceDiagram
     autonumber
     actor Dev as App developer
     participant KV as KubeVela
-    participant R as Evaluation reconciler
+    participant R as Evaluation reconciler (this spoke)
     participant LF as Langfuse
     participant BF as Bifrost (judge key)
     participant G as AMP + AMG
