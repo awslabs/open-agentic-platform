@@ -640,7 +640,7 @@ the series of every other metric.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `oap_agent_eval_scores` | `namespace`, `agent`, `evaluator`, `window` | Scored traces in the window (`24h`, `7d`) |
+| `oap_agent_eval_scores` | `cluster`, `namespace`, `agent`, `evaluator`, `window` | Scored traces in the window (`24h`, `7d`) |
 | `oap_agent_eval_passed` | same | Scores at or above the threshold |
 | `oap_agent_eval_pass_ratio` | same | `passed / scores`. Not emitted when `scores` is 0, so an idle agent is not reported as 0% |
 | `oap_agent_eval_score_avg` | same | Mean score |
