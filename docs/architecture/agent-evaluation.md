@@ -7,7 +7,7 @@
 | **Reviewers** | TBD |
 | **Target** | OAP agent platform: `agent` component, new `agent-evaluation` addon |
 | **Date** | 2026-10-22 |
-| **Revision** | 1 |
+| **Revision** | 2 (per-cluster reconciler, cluster-scoped agent tag) |
 | **Issue** | #79 |
 
 ## Scope
