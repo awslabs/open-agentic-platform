@@ -409,15 +409,26 @@ The reconciler loop, each interval:
    reports are computed (D5), not by the Langfuse rule, so levels add no rules.
 5. Delete rules whose group is now empty.
 
-**Why grouping.** Langfuse allows **at most 50 effectively active evaluation
-rules per project**. The platform seeds one shared project
+**Why grouping.** Langfuse caps active evaluation rules per project, and the
+platform seeds one shared project
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
-One rule per agent per evaluator would hit that limit at about 16 agents with
-three evaluators. With grouping, the number of rules depends on the number of
-distinct evaluator, judge and sampling combinations, not on the number of agents.
-`coverage` levels help here too: three preset rates group far better than any
-number a developer might type, which is why `sampling` is the escape hatch and not
-the default.
+At the pinned `v3.225.11` the documentation and the code disagree on the cap:
+
+| Source | Cap |
+|---|---|
+| `fern/apis/server/definition/unstable/evaluation-rules.yml` (the API contract) | "at most 50 evaluation rules can be effectively active in one project", `409` beyond it |
+| `web/src/features/evals/server/unstable-public-api/evaluation-rule-service.ts` (what is enforced) | `MAX_ACTIVE_EVALUATION_RULES = 500` |
+
+This design treats the documented **50** as the contract, because the endpoints
+are `unstable` and the enforced number could be brought down to match. Grouping
+makes the rule count scale with the number of distinct evaluator, judge and
+sampling combinations instead of with the number of agents, so the design is safe
+under either number. One rule per agent per evaluator would reach 50 at about 16
+agents with three evaluators, or 500 at about 166. Grouping is also kept for its
+other properties: idempotent `PATCH`, deletion as a diff, and fewer Langfuse
+objects to drift. `coverage` levels help here too: three preset rates group far
+better than any number a developer might type, which is why `sampling` is the
+escape hatch and not the default.
 
 File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
@@ -561,7 +572,7 @@ the series of every other metric.
 | `oap_agent_eval_score_avg` | same | Mean score |
 | `oap_agent_eval_pass_threshold` | `namespace`, `agent`, `evaluator` | The resolved threshold, drawn as a line on charts |
 | `oap_agent_eval_info` | `namespace`, `agent`, `gen_ai_request_model`, `eval_ai_request_model`, `strictness`, `coverage` | Always 1. Joined for by-model views and for showing each agent's levels |
-| `oap_agent_eval_rules_active` | none | Langfuse evaluation rules in use, against the limit of 50 |
+| `oap_agent_eval_rules_active` | none | Langfuse evaluation rules in use, against the documented limit of 50 (D4) |
 | `oap_agent_eval_errors_total` | `loop` (`rules`, `metrics`) | Failed Langfuse calls |
 | `oap_agent_eval_last_success_timestamp_seconds` | `loop` | Last fully successful pass. The dashboard and alerts use it to tell stale data from bad data |
 
@@ -810,9 +821,11 @@ sequenceDiagram
 2. **Langfuse version.** At the pinned `3.225.11` the evaluator APIs are under
    `/api/public/unstable/`. They became stable on Langfuse `main` on 2026-08-27,
    and releases are now on `v4.x`. Should the platform upgrade Langfuse before
-   Phase 1, or ship on the unstable endpoints with a version pin?
+   Phase 1, or ship on the unstable endpoints with a version pin? The unstable
+   surface already disagrees with itself: its spec documents 50 active rules and
+   its code enforces 500 (D4).
 3. **One shared project or a project per team.** Grouping keeps one shared
-   project under the 50-rule limit, but a project per team also separates trace
+   project under the documented 50-rule limit, but a project per team also separates trace
    access. Is that wanted?
 4. **The Strands root span name** that rules should target. It has to be confirmed
    against a live trace.
