@@ -514,8 +514,12 @@ other chart change, and agents then refer to them by name.
 Langfuse's recommended target, and trace-level ones are deprecated. An
 observation evaluator does not read its child observations, though. So rules
 target the agent's root invocation span, which carries the user input and final
-output, and `tool-use` maps the tool-call field of that observation. The exact
-Strands span name still has to be confirmed (Q4).
+output, and `tool-use` maps the tool-call field of that observation. The rule
+selects the root with a `parentObservationId` filter of type `null`, which the
+observation target accepts at the pin (`observationEvalFilterColumns` in
+`packages/shared/src/features/evals/observationForEval.ts`), so the rule does not
+depend on the Strands span name. Q4 only has to confirm that the root span is the
+one carrying the final output.
 
 ### D5. Reports: a GitOps Grafana dashboard fed by a reconciler metric
 
@@ -845,8 +849,9 @@ sequenceDiagram
 3. **One shared project or a project per team.** Grouping keeps one shared
    project under the documented 50-rule limit, but a project per team also separates trace
    access. Is that wanted?
-4. **The Strands root span name** that rules should target. It has to be confirmed
-   against a live trace.
+4. **The Strands root span.** Rules select the root with `parentObservationId` is
+   null (D4), so the span name is not needed. A live trace still has to confirm
+   that the root observation carries the user input and the final output.
 5. **Sensitive data before judging.** Is Bedrock in-account enough, or must PII
    be masked first? Langfuse server-side masking is an Enterprise feature.
 6. **Default evaluator set.** Is `goal-completion` plus `helpfulness` the right
