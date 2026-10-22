@@ -89,8 +89,10 @@ on the `agent` component selects where they go:
 Every trace carries the agent's name as a Langfuse tag
 (`applications/strands-agent-base/app/agent.py`, `_trace_attributes`:
 `langfuse.trace.tags = [source:<chat|rca>, <AGENT_NAME>]`), plus `session.id` and
-`user.id`. So a trace can already be attributed to a specific agent, without any
-change to the agent.
+`user.id`. That tag is the bare component name, with no cluster or namespace in it,
+and every spoke sends to the same hub Langfuse project. So the same agent deployed
+on `dev` and `prod` produces identical tags. D4 adds a cluster-scoped tag for that
+reason.
 
 ### 2.2 What is missing
 
