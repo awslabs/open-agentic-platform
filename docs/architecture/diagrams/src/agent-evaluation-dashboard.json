@@ -60,7 +60,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info, namespace)",
+          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\"}, namespace)",
           "refId": "namespace"
         },
         "refresh": 2,
