@@ -397,7 +397,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_pass_threshold{namespace=~\"$namespace\",agent=\"$agent\"}",
+          "expr": "oap_agent_eval_pass_threshold{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
           "legendFormat": "{{evaluator}} threshold",
           "refId": "B",
           "instant": true,
