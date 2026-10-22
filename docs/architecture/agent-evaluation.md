@@ -445,6 +445,8 @@ File: `platform/oam/definitions/components/agent.cue` (proposed env entry, next 
 ```cue
 // Platform-owned, not a parameter: scopes the agent's trace tag to this cluster.
 {name: "CLUSTER_NAME", value: "{{ .Values.global.clusterName }}"},
+// The agent is not told its namespace today; the tag needs it.
+{name: "AGENT_NAMESPACE", value: context.namespace},
 ```
 
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
