@@ -621,8 +621,9 @@ aggregations, and number filters accept `>=`
 (`packages/shared/src/features/query/dataModel.ts`, `types.ts`,
 `interfaces/filters.ts`). For each agent and window, the reconciler sends:
 
-1. One query, filtered to the agent's tag and evaluator names and grouped by
-   `name`, for `count` and `avg(value)`.
+1. One query, filtered to the agent's scoped `agent:<cluster>/<namespace>/<name>`
+   tag and evaluator names and grouped by `name`, for `count` and `avg(value)`.
+   Each reconciler queries only its own cluster's agents.
 2. One query per evaluator, with the extra filter `value >= passThreshold`, for
    `count` of passed scores.
 
