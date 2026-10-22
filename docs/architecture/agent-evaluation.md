@@ -737,7 +737,7 @@ How to read it:
   reconciler errors. The rules gauge turns amber at 40 and red at 48, so it warns
   before the documented cap of 50 is reached, not at it.
 
-Variables: `datasource`, `namespace`, `agent` (from
+Variables: `datasource`, `cluster`, `namespace`, `agent` (from
 `label_values(oap_agent_eval_info, agent)`) and `window` (`24h`, `7d`). A newly
 evaluated agent appears in the `agent` list on the next scrape, with no dashboard
 change.
