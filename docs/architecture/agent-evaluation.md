@@ -465,7 +465,7 @@ AGENT_NAMESPACE: str = os.getenv("AGENT_NAMESPACE", "")
 ```
 
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
-platform seeds one shared project
+platform seeds one shared project for the whole fleet, every cluster included
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
 At the pinned `v3.225.11` the documentation and the code disagree on the cap:
 
