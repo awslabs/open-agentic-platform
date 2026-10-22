@@ -430,14 +430,26 @@ objects to drift. `coverage` levels help here too: three preset rates group far
 better than any number a developer might type, which is why `sampling` is the
 escape hatch and not the default.
 
+**Authentication.** The reconciler calls the Langfuse public API, including
+`/evaluators` and `/evaluation-rules`, with HTTP Basic auth using the seeded
+project's public/secret key pair (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`).
+That is the same pair the OTel Collector already uses for ingestion. No separate
+admin key is minted. The langfuse addon writes it to Secrets Manager as
+`<resourcePrefix>-hub/langfuse-otel` (`templates/push-otel-secret.yaml`), and the
+reconciler reads it through an ExternalSecret into its own namespace, the same
+way the collector's `langfuse-otel-auth` does
+(`gitops/addons/charts/otel-collector/templates/langfuse-secret.yaml`). It does
+not read the `langfuse-otel-keys` Secret, which is in the `langfuse` namespace.
+
 File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
 ```yaml
 langfuse:
   url: http://langfuse.langfuse.svc.cluster.local:3000
-  # ExternalSecret from <resourcePrefix>-hub/langfuse-otel, the Secrets Manager
-  # entry the langfuse addon already writes (templates/push-otel-secret.yaml).
-  apiKeySecretRef: langfuse-api-key
+  # Secret created by this chart's ExternalSecret from <resourcePrefix>-hub/langfuse-otel,
+  # the SM entry the langfuse addon writes (templates/push-otel-secret.yaml). Holds
+  # LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, used as Basic auth to the public API.
+  apiKeySecretRef: langfuse-evaluation-keys
 judge:
   defaultModelId: judge-default
   bifrostUrl: http://bifrost.bifrost.svc.cluster.local:8080/v1
@@ -776,7 +788,7 @@ sequenceDiagram
 
 | Concern | Control |
 |---|---|
-| Langfuse credentials | Held only by the reconciler in `agent-evaluation`, never in an agent namespace |
+| Langfuse credentials | The seeded project's existing public/secret key pair, already used by the OTel Collector, read from Secrets Manager into the `agent-evaluation` namespace only. Never in an agent namespace, and no new admin key is created |
 | Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit. The judge never uses an agent's key |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
 | Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |
