@@ -61,7 +61,8 @@ them with the source and page."
 - **S3 Vectors** means no vector database to run, at S3 cost.
 - **OAP** makes search a governed tool: scoped IAM, agent-level access control, and the
   same OAM file deploys unchanged to any region or account.
-- **Security:** IBM gets no AWS credentials; Docling reads PDFs through short-lived links.
+- **Security:** IBM gets no AWS credentials. The demo uploads the PDFs directly; the
+  pipeline design hands Docling short-lived S3 links instead.
 
 ## Status
 
