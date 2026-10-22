@@ -267,7 +267,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_info{namespace=~\"$namespace\",agent=\"$agent\"}",
+          "expr": "oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
