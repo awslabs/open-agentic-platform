@@ -440,6 +440,13 @@ from the platform, not the developer: `oam-agent-components` already receives
 (`gitops/addons/registry/agentcore.yaml`), and the component passes it to the
 agent as `CLUSTER_NAME`. This is the one agent change Phase 1 needs.
 
+File: `platform/oam/definitions/components/agent.cue` (proposed env entry, next to `PROPAGATE_CALLER_TOKEN`)
+
+```cue
+// Platform-owned, not a parameter: scopes the agent's trace tag to this cluster.
+{name: "CLUSTER_NAME", value: "{{ .Values.global.clusterName }}"},
+```
+
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
 platform seeds one shared project
 (`seed.projectId: proj-agent-platform` in `gitops/addons/charts/langfuse/values.yaml`).
