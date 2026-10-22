@@ -791,12 +791,14 @@ tag and reads the judge's reasoning for a failed trace.
 
 ```mermaid
 flowchart LR
-  subgraph NS["agent namespace (application developer)"]
-    A["agent Rollout"] -- "OTLP traces<br/>tag = agent name" --> LF
-    CM["ConfigMap &lt;agent&gt;-evaluation<br/>(from evaluation: block)"]
-  end
-  subgraph EV["agent-evaluation namespace (platform)"]
-    R["evaluation reconciler"]
+  subgraph SPOKE["each spoke cluster (dev, prod)"]
+    subgraph NS["agent namespace (application developer)"]
+      A["agent Rollout"] -- "OTLP traces<br/>tag = agent:&lt;cluster&gt;/&lt;ns&gt;/&lt;name&gt;" --> LF
+      CM["ConfigMap &lt;agent&gt;-evaluation<br/>(from evaluation: block)"]
+    end
+    subgraph EV["agent-evaluation namespace (platform)"]
+      R["evaluation reconciler<br/>owns oap-&lt;cluster&gt;- rules"]
+    end
   end
   subgraph LFN["langfuse namespace"]
     LF["Langfuse web + worker"]
