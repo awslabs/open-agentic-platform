@@ -478,7 +478,9 @@ This design treats the documented **50** as the contract, because the endpoints
 are `unstable` and the enforced number could be brought down to match. Grouping
 makes the rule count scale with the number of distinct evaluator, judge and
 sampling combinations instead of with the number of agents, so the design is safe
-under either number. One rule per agent per evaluator would reach 50 at about 16
+under either number. Per-cluster ownership multiplies that by the number of
+clusters running evaluated agents: two spokes with four combinations each use 8
+rules. One rule per agent per evaluator would reach 50 at about 16
 agents with three evaluators, or 500 at about 166. Grouping is also kept for its
 other properties: idempotent `PATCH`, deletion as a diff, and fewer Langfuse
 objects to drift. `coverage` levels help here too: three preset rates group far
