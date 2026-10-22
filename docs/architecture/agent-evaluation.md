@@ -135,16 +135,58 @@ Evaluations ship.
 - **It works for the default observability mode** (`centralized`), so every agent
   can turn it on today.
 
+**Why not RAGAS as the engine (B).**
+
+- **It is a library, not a service.** RAGAS computes metrics on samples you hand
+  it. It has no trace ingestion, sampling, scheduling or score storage, so
+  "listens to Langfuse traces" means building and operating a service around
+  it: a poller with a cursor, a sampler, retries, a state store and a score
+  writer. Langfuse already runs all of that in its worker.
+- **Its agent metrics need ground truth that live traffic does not have.**
+  `ToolCallAccuracy` and `ToolCallF1` compare against `reference_tool_calls`, and
+  `TopicAdherenceScore` against `reference_topics`. Only
+  `AgentGoalAccuracyWithoutReference` works without a reference. The rest of the
+  metrics directory is mostly RAG-specific: context precision and recall,
+  faithfulness, noise sensitivity.
+- **Upstream has slowed.** The last release was `v0.4.3` on 2026-01-13, and the
+  last commit on `main` was on 2026-02-24. Platform code built on it would depend
+  on a project that has not shipped in nine months.
+- **Scores would live apart from the traces.** Writing them back to Langfuse is
+  more code we own. The native evaluators write the score on the trace they
+  judged.
+
+**Why not AgentCore Evaluations as the engine (C).**
+
+- **It reads traces from CloudWatch, and OAP's default traces go to Langfuse.**
+  Its prerequisites need "AgentCore Observability, including Transaction Search".
+  In OAP that is `observability.mode: decentralized` (ADOT to CloudWatch).
+  The default `centralized` agents send to Langfuse and would have to change
+  observability mode, or export twice, before they could be evaluated.
+- **Built-in evaluators bypass Bifrost.** For built-in and third-party evaluators
+  "the service selects and runs the judge model on its own capacity". So the
+  platform cannot choose the judge or route its calls through Bifrost, and judge
+  cost is outside Bifrost's budgets and tracking. Custom evaluators let us choose
+  the judge, but it is invoked through the evaluation's IAM execution role,
+  still not through Bifrost.
+- **Results live in CloudWatch**: a log group per configuration plus metrics.
+  Teams that debug in Langfuse would read scores in a second tool.
+- **Configuring it declaratively needs a provider upgrade.** The Crossplane
+  `OnlineEvaluationConfig` managed resource first ships in
+  `provider-upjet-aws` `v2.7.0` (2026-08-10). `crossplane-agentcore` pins
+  `v2.5.3` (`gitops/addons/charts/crossplane-agentcore/values.yaml`).
+
 **Where the others fit.**
 
 - **C is the backend for `observability.mode: decentralized`.** AgentCore
   Evaluations does not require AgentCore Runtime: its prerequisites accept "an
   agent built with a supported framework configured with AgentCore Observability,
-  including Transaction Search". Strands Agents is a supported framework. That is
-  the `decentralized` path, so the same `evaluation` block maps to an
-  `OnlineEvaluationConfig` for those agents (Phase 2).
-- **RAGAS fits offline evaluation**: a Job that runs a dataset through an agent
-  before promotion and scores it with reference-based metrics (Phase 3).
+  including Transaction Search". Strands Agents is a supported framework. For
+  those agents the traces are already in CloudWatch, so every objection above
+  except the Bifrost one goes away. The same `evaluation` block then maps to an
+  `OnlineEvaluationConfig` (Phase 2, after the provider upgrade).
+- **RAGAS fits offline evaluation.** Reference-based metrics are useful when a
+  dataset supplies the references. A Job runs a dataset through the agent before
+  promotion and scores it (Phase 3).
 
 ### D2. The abstraction: an `evaluation` block on `agent`, backed by a platform catalog
 
@@ -372,7 +414,7 @@ flowchart LR
 | Phase | Delivers |
 |---|---|
 | **1** | `agent-evaluation` addon (reconciler, catalog, judge LLM connection), `evaluation` block for `centralized` agents, Langfuse dashboard, example and live check |
-| **2** | `decentralized` agents: the reconciler maps the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators |
+| **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators |
 | **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
 
 ---
