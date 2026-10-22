@@ -107,38 +107,36 @@ evaluation itself, because that is where the traces already are, and the scores
 are written back onto the traces. That is the model both Langfuse and AgentCore
 Evaluations ship.
 
-### 2.4 Reference implementation: the EKS agentic platform workshop
+### 2.4 The common pattern on Kubernetes
 
-The workshop *Architect and deploy advanced Agentic AI platforms on Amazon EKS*
-(Track A, Module A3, "LLM Evaluation with Langfuse") builds this pattern by hand
-on EKS:
+Teams running agents on EKS with a self-hosted Langfuse usually set up online
+evaluation like this:
 
 - **Langfuse LLM-as-a-judge**, with the judge reached through an
   **OpenAI-compatible gateway**: an LLM connection whose base URL is the
-  in-cluster LiteLLM service.
-- **Three custom evaluators** (accuracy, helpfulness and safety), each a prompt
-  over `{{input}}` and `{{output}}`. Each returns a **numeric score from 0 to 1**
-  with a reasoning prompt and an output prompt.
+  in-cluster model gateway (LiteLLM or similar).
+- **A few custom evaluators**, typically accuracy, helpfulness and safety, plus
+  domain ones. Each is a prompt over `{{input}}` and `{{output}}` that returns a
+  **numeric score from 0 to 1**, with a reasoning prompt and an output prompt.
 - **A target and a filter on every evaluator**, matching on trace name or tag,
-  so it scores matching traces automatically as they arrive.
+  so matching traces are scored automatically as they arrive.
 - **Dashboards** built on the scores: average by dimension, distribution, a
   list of low scores, and quality broken down by model.
 
-This design is that pattern made declarative. Every step the workshop performs
-in the Langfuse UI, such as the LLM connection, the evaluators, and the target
-and filter, is done by the reconciler through the Langfuse API (D4). The input is
-the agent's own OAM Application. The workshop's gateway is LiteLLM; OAP's is
-Bifrost (D3).
+These steps are normally done by hand in the Langfuse UI. This design makes them
+declarative: the reconciler creates the LLM connection, the evaluators, and the
+targets and filters through the Langfuse API (D4), from the agent's own OAM
+Application. OAP's gateway is Bifrost (D3).
 
-Two workshop details shape this design:
+Two details of that setup shape this design:
 
 - **Langfuse blocks cluster-internal LLM endpoints by default** (SSRF
-  protection). The workshop fixes it with
+  protection). Hand-built setups fix it with
   `kubectl set env ... LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST`. OAP has to make
   the same change in git instead (`no-manual-fixes.md`); see D3.
-- **The workshop targets trace-level evaluation** at Langfuse `v3.185.0`.
-  Langfuse now recommends observation-level evaluation and has deprecated the
-  trace-level kind, so this design targets observations (D4).
+- **Older setups use trace-level evaluation.** Langfuse now recommends
+  observation-level evaluation and has deprecated the trace-level kind, so this
+  design targets observations (D4).
 
 ---
 
@@ -301,7 +299,7 @@ Rules:
   (`packages/shared/src/env.ts` and `server/llm/baseUrlValidation.ts` at
   `v3.225.11`). OAP's Langfuse chart does not set it today. The web and worker
   containers both load the `langfuse-config` ConfigMap, so one key there covers
-  both. It goes in the chart, not in a `kubectl set env` as the workshop does it.
+  both. It goes in the chart, not in a manual `kubectl set env`.
 - **The judge alias is a platform setting.** Bifrost aliases today map
   `claude-sonnet` to `us.anthropic.claude-sonnet-5-5`
   (`gitops/addons/configs/bifrost/values.yaml`). The addon adds a `judge-default`
@@ -410,8 +408,8 @@ catalog:
     outputPrompt: "Return a numeric value between 0 and 1."
 ```
 
-Teams can add domain evaluators, like the workshop's `loan-accuracy` and
-`loan-safety`, as catalog entries. The platform engineer reviews them like any
+Teams can add domain evaluators, such as `loan-accuracy` or `loan-safety` for a
+lending agent, as catalog entries. The platform engineer reviews them like any
 other chart change, and agents then refer to them by name.
 
 **Target the root agent observation.** Observation-level evaluators are
@@ -431,18 +429,17 @@ Strands span name still has to be confirmed (Q4).
   `oap_agent_eval_pass_ratio{agent,evaluator}`. Alarms and an Argo Rollouts
   analysis step can then use it (Phase 3).
 - **Quality by model.** The agent's model is recorded on its generation
-  observations, so the same scores can be broken down by model. This is the
-  workshop's Claude-versus-Qwen comparison, and the data behind a cheaper-model
-  decision.
+  observations, so the same scores can be broken down by model, for example
+  Claude against Qwen. That is the data behind a cheaper-model decision.
 - **No automatic backfill.** Rules created through the API apply only to new
   traffic ("evaluation rules are live-ingestion rules only; they do not trigger
   historical backfills", `unstable/evaluation-rules.yml` at `v3.225.11`). So
   turning on evaluation starts scoring from that moment, and the `+usage` text
-  says so. The Langfuse UI's "Execute on historic traces" toggle, which the
-  workshop uses, is still available for a one-off backfill.
+  says so. The Langfuse UI's "Execute on historic traces" toggle is still
+  available for a one-off backfill.
 - **When a score falls below its catalog `passThreshold`**, the trace counts as
-  failed in the pass-ratio metric. A later phase can add the workshop's
-  production patterns on top: alert on low scores through Langfuse's
+  failed in the pass-ratio metric. A later phase can add the usual production
+  patterns on top: alert on low scores through Langfuse's
   `score.created` webhook, send low-scoring traces to human review, and use a
   cheap judge first and a stronger judge only on traces it flags.
 
@@ -521,9 +518,9 @@ flowchart LR
 
 1. **Judge family.** Should `judge-default` be a stronger model in the same family
    (for example Opus judging a Sonnet agent, as in the issue), or a different
-   family to remove self-preference entirely? For reference, the workshop uses
-   Claude 4.5 Sonnet to judge both a Claude agent and a Qwen agent, while OAP's
-   Dark Factory holdout judge deliberately uses a different family.
+   family to remove self-preference entirely? For reference, a common setup uses one
+   Claude Sonnet judge for both Claude and Qwen agents, while OAP's Dark Factory
+   holdout judge deliberately uses a different family.
 2. **Langfuse version.** At the pinned `3.225.11` the evaluator APIs are under
    `/api/public/unstable/`. They became stable on Langfuse `main` on 2026-08-27,
    and releases are now on `v4.x`. Should the platform upgrade Langfuse before
