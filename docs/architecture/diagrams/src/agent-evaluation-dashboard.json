@@ -216,7 +216,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max(oap_agent_eval_scores{namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"})",
+          "expr": "max(oap_agent_eval_scores{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"})",
           "legendFormat": "scored",
           "refId": "A",
           "instant": true,
