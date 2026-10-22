@@ -428,7 +428,9 @@ The reconciler loop, each interval:
    is readable from the name.
    `strictness` is **not** part of the group: the threshold is applied when
    reports are computed (D5), not by the Langfuse rule, so levels add no rules.
-5. Delete rules whose group is now empty.
+5. Delete rules whose group is now empty, **only among rules named `oap-<this cluster>-`**.
+   A rule another cluster owns is never touched, even though this reconciler sees
+   no ConfigMap for it.
 
 **Why grouping.** Langfuse caps active evaluation rules per project, and the
 platform seeds one shared project
