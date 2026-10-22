@@ -241,6 +241,18 @@ Two levels let a developer tune evaluation without knowing the numbers:
 | `strictness: low \| medium \| high` | How high a score must be to count as passed | A `passThreshold` per evaluator and level, for example `safety` 0.8 / 0.9 / 0.97 | Catalog (D4) |
 | `coverage: low \| medium \| high` | What fraction of traces is scored, which sets judge cost | A platform sampling rate per level, for example 0.01 / 0.1 / 0.5 | Addon values (D4) |
 
+```mermaid
+flowchart LR
+    classDef dev fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef plat fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef out fill:#dcfce7,stroke:#16a34a,color:#14532d
+    S["strictness: high<br/>(agent, or per evaluator)"]:::dev --> T["catalog passThreshold<br/>safety.high = 0.97"]:::plat
+    C["coverage: low"]:::dev --> P["addon values<br/>coverage.low = 0.01"]:::plat
+    X["sampling: 0.25<br/>(optional)"]:::dev -. overrides .-> P
+    T --> RPT["Report: pass if score ≥ 0.97<br/>(D5, no Langfuse rule change)"]:::out
+    P --> RULE["Langfuse rule sampling<br/>(D4, part of the rule group)"]:::out
+```
+
 `strictness` is set for the whole agent and can be overridden per evaluator.
 `sampling` stays as an exact-number escape hatch that overrides `coverage`.
 Prompts, score type and target are **not** levels. Changing them per agent would
@@ -606,28 +618,54 @@ spec:
       {{- toYaml .Values.grafana.instanceSelector | nindent 6 }}   # dashboards: external-grafana
   resyncPeriod: 10m
   json: |
+    # Contents of docs/architecture/diagrams/src/agent-evaluation-dashboard.json
     { "title": "Agent Evaluation", "uid": "agent-evaluation", ... }
 ```
 
-Variables: `namespace`, `agent` (from `label_values(oap_agent_eval_info, agent)`),
-`evaluator` and `window`. A newly evaluated agent appears in the `agent` list on
-the next scrape, with no dashboard change.
+The full dashboard JSON for review is
+[`diagrams/src/agent-evaluation-dashboard.json`](diagrams/src/agent-evaluation-dashboard.json).
+It uses a `datasource` variable, so the same JSON works against AMP in AMG.
+
+![Agent Evaluation dashboard rendered with sample data](diagrams/img/agent-evaluation-dashboard.png)
+
+*The dashboard JSON above, rendered in Grafana OSS against Prometheus with
+**sample** `oap_agent_eval_*` metrics for three agents: `loan-advisor` (strict),
+`support-assistant` and `faq-bot` (a Qwen model at `low` strictness). The numbers
+are illustrative. The short line history is only how long the sample ran.*
+
+How to read it:
+
+- **Agent row** (`loan-advisor`, 7 days). `safety` passes 97.5% of 11.4k scored
+  traces. `loan-accuracy` is amber at 80%. Its average score of 0.83 is just
+  under this agent's `high` threshold of 0.85, which the bar pair shows. The
+  settings table shows why the bar is high: `strictness: high`,
+  `coverage: high`.
+- **Fleet row.** Every agent and evaluator, lowest first, so the worst one is at
+  the top. The model panel compares `claude-sonnet` agents against the
+  `qwen3-32b` agent on the same evaluators.
+- **Health row.** 7 of 50 Langfuse rules used, data under a minute old, no
+  reconciler errors.
+
+Variables: `datasource`, `namespace`, `agent` (from
+`label_values(oap_agent_eval_info, agent)`) and `window` (`24h`, `7d`). A newly
+evaluated agent appears in the `agent` list on the next scrape, with no dashboard
+change.
 
 | Row | Panel | Query (PromQL) |
 |---|---|---|
-| **Agent** | Pass rate per evaluator (stat, red below threshold) | `oap_agent_eval_pass_ratio{agent="$agent",window="$window"}` |
-| | Scored traces, which answers *"of how many?"* | `oap_agent_eval_scores{agent="$agent",window="$window"}` |
-| | Pass rate over time, with the threshold line | `oap_agent_eval_pass_ratio{agent="$agent",window="24h"}` and `oap_agent_eval_pass_threshold{agent="$agent"}` |
-| | Average score per evaluator (bar gauge) | `oap_agent_eval_score_avg{agent="$agent",window="$window"}` |
-| | Levels and judge (table) | `oap_agent_eval_info{agent="$agent"}` |
+| **Agent** | Pass rate per evaluator (stat; red below 80%, amber below the 90% pass-rate target) | `oap_agent_eval_pass_ratio{agent="$agent",window="$window"}` |
+| | Scored traces, which answers *"of how many?"* | `max(oap_agent_eval_scores{agent="$agent",window="$window"})` |
+| | Evaluation settings: levels, agent model and judge (table) | `oap_agent_eval_info{agent="$agent"}` |
+| | Pass rate over time, with the 90% target as a dashed line | `oap_agent_eval_pass_ratio{agent="$agent",window="24h"}` |
+| | Average score next to the threshold for this agent's strictness | `oap_agent_eval_score_avg{agent="$agent",window="$window"}` and `oap_agent_eval_pass_threshold{agent="$agent"}` |
 | **Fleet** | Every agent and evaluator, lowest pass rate first (table) | `sort(oap_agent_eval_pass_ratio{window="$window"})` |
 | | Pass rate by agent model, for cheaper-model decisions | `avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window="7d"} * on (namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)` |
 | **Evaluation health** | Rules used of 50 | `oap_agent_eval_rules_active` |
 | | Data age; stale data shows amber, not as a quality drop | `time() - oap_agent_eval_last_success_timestamp_seconds{loop="metrics"}` |
 | | Reconciler errors | `sum by (loop) (rate(oap_agent_eval_errors_total[15m]))` |
 
-Each agent row links to the Langfuse Traces view filtered to the agent's tag,
-which is where a reviewer reads the judge's reasoning for a failed trace.
+A dashboard link opens Langfuse, where a reviewer filters traces by the agent's
+tag and reads the judge's reasoning for a failed trace.
 
 #### Alerts and gates
 
@@ -682,6 +720,32 @@ flowchart LR
   R -- "/metrics on annotated Service" --> M["AMP scraper → AMP"]
   M --> G["AMG: Agent Platform /<br/>Agent Evaluation dashboard"]
   GD["GrafanaDashboard CR"] -- "grafana-operator" --> G
+```
+
+End to end, from turning evaluation on to a number on the dashboard:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as App developer
+    participant KV as KubeVela
+    participant R as Evaluation reconciler
+    participant LF as Langfuse
+    participant BF as Bifrost (judge key)
+    participant G as AMP + AMG
+    Dev->>KV: Application with evaluation: {enabled: true, strictness, coverage}
+    KV->>KV: render the agent-name-evaluation ConfigMap
+    R->>KV: list ConfigMaps (every 60s)
+    R->>LF: ensure evaluators, create or update grouped rules
+    Note over LF: agent serves users and sends traces as usual
+    LF->>LF: rule samples the agent's root observation
+    LF->>BF: judge prompt (input, output, tool calls)
+    BF-->>LF: score 0-1 and reasoning
+    LF->>LF: store the score on the trace
+    R->>LF: GET /api/public/metrics, scores-numeric (every 300s)
+    R->>R: apply thresholds for strictness, compute pass ratio
+    G->>R: AMP scraper reads /metrics
+    G-->>Dev: Agent Evaluation dashboard, alerts
 ```
 
 | Stage | Actor |
