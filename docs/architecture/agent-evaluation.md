@@ -403,6 +403,12 @@ declaration into Langfuse evaluators and rules.
 | A Job per agent, emitted by the component | Rejected. It puts Langfuse admin credentials in every agent namespace, does not re-run on drift, and leaves rules behind when the agent is deleted. The per-agent virtual-key mint Job in #18 hit the same three problems. |
 | A CRD and an operator | A heavier version of the chosen option. Worth it later if the declaration grows. |
 
+**Why per cluster.** Agents and their evaluation ConfigMaps live on the spokes,
+while every spoke's traces land in the one hub Langfuse project
+(`gitops/addons/registry/observability.yaml`). A reconciler on the hub cannot
+list spoke ConfigMaps. Several spoke reconcilers sharing one project must not
+overwrite each other, so each one owns only the rules it created (steps 4 and 5).
+
 The reconciler loop, each interval:
 
 1. List every `evaluation.oap.io/agent` ConfigMap across namespaces.
