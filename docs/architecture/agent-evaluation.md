@@ -881,6 +881,7 @@ sequenceDiagram
 - [ ] Two agents with the same `coverage` but different `strictness` share **one** rule per evaluator, and their pass ratios use different thresholds
 - [ ] Turning on evaluation for two agents with the same settings produces **one** rule per evaluator, filtered to both tags
 - [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
+- [ ] The same Application on `dev` and `prod` produces two `agent:<cluster>/...` tags, separate rules per cluster, and separate `cluster`-labelled series
 - [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key, not as an un-keyed request
 - [ ] An agent with evaluation turned off gets no scores
 - [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
