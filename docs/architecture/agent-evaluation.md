@@ -19,7 +19,8 @@
   configured in the agent's OAM Application and not wired by hand in a UI
 - A judge model chosen by the platform, overridable per agent
 - Per-agent quality reports over a rolling window, for example *"91% of 1,000
-  sampled interactions passed `goal-completion`"*
+  sampled interactions passed `goal-completion`"*, on a Grafana dashboard
+  shipped with the addon
 
 **Not in scope**
 
@@ -296,6 +297,8 @@ if parameter.evaluation != _|_ && parameter.evaluation.enabled {
 		data: {
 			agent:      context.name
 			backend:    parameter.observability.mode // centralized -> Langfuse, decentralized -> AgentCore
+			// The agent's model alias, so reports can compare quality by model (D5).
+			model:      parameter.modelConfig.modelId
 			strictness: parameter.evaluation.strictness
 			coverage:   parameter.evaluation.coverage
 			// Names and per-evaluator overrides as given; the reconciler resolves
@@ -419,6 +422,15 @@ judge:
   virtualKeySecretRef: bifrost-judge-vk
 reconcile:
   intervalSeconds: 60
+metrics:
+  intervalSeconds: 300            # score aggregates for the dashboard (D5)
+  windows: [24h, 7d]
+grafana:
+  # Same targets as the Dark Factory dashboard.
+  namespace: grafana-operator
+  instanceSelector:
+    dashboards: external-grafana
+  folder: "Agent Platform"
 # What each coverage level means. An agent's `sampling` overrides it.
 coverage:
   low: 0.01
@@ -470,27 +482,177 @@ target the agent's root invocation span, which carries the user input and final
 output, and `tool-use` maps the tool-call field of that observation. The exact
 Strands span name still has to be confirmed (Q4).
 
-### D5. Reports: Langfuse score analytics first, with a metric for gates
+### D5. Reports: a GitOps Grafana dashboard fed by a reconciler metric
 
-- **Per-agent report**: scores are Langfuse scores, filterable by the agent tag.
-  The pass rate over a window (for example *"91% of the last 1,000 sampled
-  traces"*) is a Langfuse dashboard widget over the score.
-- **A metric for automation**: the reconciler also reads aggregates through the
-  Langfuse metrics API and serves them on `/metrics`, for example
-  `oap_agent_eval_pass_ratio{agent,evaluator}`. Alarms and an Argo Rollouts
-  analysis step can then use it (Phase 3).
-- **Quality by model.** The agent's model is recorded on its generation
-  observations, so the same scores can be broken down by model, for example
-  Claude against Qwen. That is the data behind a cheaper-model decision.
+Scores live in Langfuse, but the report has to be wired like everything else: no
+dashboard built by hand, and one view per agent that appears as soon as the
+agent turns evaluation on.
+
+| Option | Verdict |
+|---|---|
+| Langfuse dashboards | Kept for drill-down into individual traces. Not the report: they are built in the Langfuse UI, and this design does not rely on a Langfuse dashboard API |
+| Grafana Cloud Agent Observability online evaluation | Rejected. Its documentation describes it as a Grafana Cloud feature, configured in its UI, with traces sent to that service. OAP keeps traces in-account and uses Amazon Managed Grafana |
+| **Reconciler exports score aggregates as Prometheus metrics; a `GrafanaDashboard` CR ships with the addon** (**chosen**) | Uses the path OAP already has: the AMP scraper, AMP, grafana-operator and AMG |
+
+**The pattern already exists in the repo.** Dark Factory ships its dashboard as a
+`GrafanaDashboard` CR, imported by grafana-operator into the
+`dashboards: external-grafana` instance and the "Agent Platform" folder
+(`gitops/addons/charts/dark-factory/templates/71-grafana-dashboard.yaml`). It
+exposes its metrics on a Service annotated `prometheus.io/scrape`, which the
+platform's AMP scraper discovers (`70-metrics-service.yaml`). The
+`agent-evaluation` addon uses both, unchanged.
+
+```mermaid
+flowchart LR
+    classDef plat fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef aws fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    LF["Langfuse<br/>scores on traces"] -- "GET /api/public/metrics<br/>view scores-numeric" --> R["evaluation reconciler<br/>metrics loop, every 300s"]:::plat
+    R -- "/metrics on an annotated Service" --> S["AMP scraper"]:::aws
+    S --> AMP["Amazon Managed Prometheus"]:::aws
+    GD["GrafanaDashboard CR<br/>agent-evaluation chart"]:::plat -- "grafana-operator" --> AMG["Amazon Managed Grafana<br/>Agent Platform / Agent Evaluation"]:::aws
+    AMP --> AMG
+```
+
+#### Where the numbers come from
+
+Langfuse is the source of truth, and score writes happen in the Langfuse worker,
+so the reconciler cannot count them as they happen. Instead, a second loop reads
+**rolling-window aggregates** and exports them as gauges. At the pinned
+`v3.225.11`, `GET /api/public/metrics` takes a query over the `scores-numeric`
+view. That view has a `name` dimension (the evaluator), a trace `tags` dimension
+(the agent), a `count` measure and a numeric `value` with `avg` and percentile
+aggregations, and number filters accept `>=`
+(`packages/shared/src/features/query/dataModel.ts`, `types.ts`,
+`interfaces/filters.ts`). For each agent and window, the reconciler sends:
+
+1. One query, filtered to the agent's tag and evaluator names and grouped by
+   `name`, for `count` and `avg(value)`.
+2. One query per evaluator, with the extra filter `value >= passThreshold`, for
+   `count` of passed scores.
+
+The pass ratio is `passed / scored`. The threshold is the one resolved from the
+agent's strictness, so two agents in the same Langfuse rule can be held to
+different bars.
+
+#### Metrics
+
+Labels follow the OpenTelemetry GenAI naming used by GenAI tooling, so the agent's
+model is `gen_ai_request_model` and the judge's is `eval_ai_request_model`. Model
+and level labels sit on an info metric, joined in PromQL, so they do not multiply
+the series of every other metric.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `oap_agent_eval_scores` | `namespace`, `agent`, `evaluator`, `window` | Scored traces in the window (`24h`, `7d`) |
+| `oap_agent_eval_passed` | same | Scores at or above the threshold |
+| `oap_agent_eval_pass_ratio` | same | `passed / scores`. Not emitted when `scores` is 0, so an idle agent is not reported as 0% |
+| `oap_agent_eval_score_avg` | same | Mean score |
+| `oap_agent_eval_pass_threshold` | `namespace`, `agent`, `evaluator` | The resolved threshold, drawn as a line on charts |
+| `oap_agent_eval_info` | `namespace`, `agent`, `gen_ai_request_model`, `eval_ai_request_model`, `strictness`, `coverage` | Always 1. Joined for by-model views and for showing each agent's levels |
+| `oap_agent_eval_rules_active` | none | Langfuse evaluation rules in use, against the limit of 50 |
+| `oap_agent_eval_errors_total` | `loop` (`rules`, `metrics`) | Failed Langfuse calls |
+| `oap_agent_eval_last_success_timestamp_seconds` | `loop` | Last fully successful pass. The dashboard and alerts use it to tell stale data from bad data |
+
+A judge call that fails writes no score, so it counts as neither passed nor
+failed and does not lower the ratio. Judge errors show up on the judge's virtual
+key in Bifrost's existing metrics.
+
+**Query budget.** Each metrics pass sends agents × windows × (1 + evaluators)
+queries, for example 20 × 2 × 4 = 160 every 5 minutes. The endpoint is
+rate-limited under the resource `public-api-metrics`, so `metrics.intervalSeconds`
+is a chart value, and the validation plan measures it under real agent counts.
+The v1 metrics endpoint refuses requests when Langfuse runs in `events_only` mode
+(`rejectInEventsOnlyMode: true`), so a Langfuse v4 upgrade (Q2) moves this loop
+to `/api/public/v2/metrics`, which also exists at the pin.
+
+File: `gitops/addons/charts/agent-evaluation/templates/metrics-service.yaml` (proposed)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-evaluation-metrics
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Discovered by the platform AMP scraper, the same way as Dark Factory's metrics.
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: /metrics
+    prometheus.io/scheme: http
+spec:
+  selector:
+    app: agent-evaluation-reconciler
+  ports:
+    - name: http-metrics
+      port: 9090
+      targetPort: 9090
+```
+
+#### The dashboard
+
+File: `gitops/addons/charts/agent-evaluation/templates/grafana-dashboard.yaml` (proposed)
+
+```yaml
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: agent-evaluation
+  namespace: {{ .Values.grafana.namespace }}        # grafana-operator
+spec:
+  allowCrossNamespaceImport: true
+  folder: {{ .Values.grafana.folder | quote }}      # "Agent Platform"
+  instanceSelector:
+    matchLabels:
+      {{- toYaml .Values.grafana.instanceSelector | nindent 6 }}   # dashboards: external-grafana
+  resyncPeriod: 10m
+  json: |
+    { "title": "Agent Evaluation", "uid": "agent-evaluation", ... }
+```
+
+Variables: `namespace`, `agent` (from `label_values(oap_agent_eval_info, agent)`),
+`evaluator` and `window`. A newly evaluated agent appears in the `agent` list on
+the next scrape, with no dashboard change.
+
+| Row | Panel | Query (PromQL) |
+|---|---|---|
+| **Agent** | Pass rate per evaluator (stat, red below threshold) | `oap_agent_eval_pass_ratio{agent="$agent",window="$window"}` |
+| | Scored traces, which answers *"of how many?"* | `oap_agent_eval_scores{agent="$agent",window="$window"}` |
+| | Pass rate over time, with the threshold line | `oap_agent_eval_pass_ratio{agent="$agent",window="24h"}` and `oap_agent_eval_pass_threshold{agent="$agent"}` |
+| | Average score per evaluator (bar gauge) | `oap_agent_eval_score_avg{agent="$agent",window="$window"}` |
+| | Levels and judge (table) | `oap_agent_eval_info{agent="$agent"}` |
+| **Fleet** | Every agent and evaluator, lowest pass rate first (table) | `sort(oap_agent_eval_pass_ratio{window="$window"})` |
+| | Pass rate by agent model, for cheaper-model decisions | `avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window="7d"} * on (namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)` |
+| **Evaluation health** | Rules used of 50 | `oap_agent_eval_rules_active` |
+| | Data age; stale data shows amber, not as a quality drop | `time() - oap_agent_eval_last_success_timestamp_seconds{loop="metrics"}` |
+| | Reconciler errors | `sum by (loop) (rate(oap_agent_eval_errors_total[15m]))` |
+
+Each agent row links to the Langfuse Traces view filtered to the agent's tag,
+which is where a reviewer reads the judge's reasoning for a failed trace.
+
+#### Alerts and gates
+
+- **Quality alert (later phase):** pass ratio below a pass-rate target (a chart
+  value, for example 0.9) for an hour, only when there are enough scores to mean
+  something. For example,
+  `oap_agent_eval_pass_ratio{window="24h"} < 0.9 and oap_agent_eval_scores{window="24h"} >= 50`.
+  It is shipped in the chart, as a grafana-operator alert rule CR if the installed
+  operator version supports one, otherwise as an AMP rule group (Q7).
+- **Staleness alert:** `time() - oap_agent_eval_last_success_timestamp_seconds{loop="metrics"} > 900`,
+  so silence is never mistaken for health.
+- **Rollout gate (Phase 3):** an Argo Rollouts analysis step reads the same metric
+  from AMP.
+
+#### Langfuse is still the place to drill down
+
 - **No automatic backfill.** Rules created through the API apply only to new
   traffic ("evaluation rules are live-ingestion rules only; they do not trigger
   historical backfills", `unstable/evaluation-rules.yml` at `v3.225.11`). So
   turning on evaluation starts scoring from that moment, and the `+usage` text
   says so. The Langfuse UI's "Execute on historic traces" toggle is still
   available for a one-off backfill.
-- **When a score falls below its catalog `passThreshold`**, the trace counts as
-  failed in the pass-ratio metric. A later phase can add the usual production
-  patterns on top: alert on low scores through Langfuse's
+- **Per-trace reasoning.** Each score carries the judge's reasoning in Langfuse,
+  linked from the Grafana agent row.
+- **Later patterns** on top of the same scores: alert on single low scores through Langfuse's
   `score.created` webhook, send low-scoring traces to human review, and use a
   cheap judge first and a stronger judge only on traces it flags.
 
@@ -517,7 +679,9 @@ flowchart LR
   BF --> BR["Amazon Bedrock<br/>judge-default"]
   LF -- "scores on trace" --> LF
   R -- "metrics API" --> LF
-  R -- "/metrics pass ratio" --> M["Prometheus / AMP"]
+  R -- "/metrics on annotated Service" --> M["AMP scraper → AMP"]
+  M --> G["AMG: Agent Platform /<br/>Agent Evaluation dashboard"]
+  GD["GrafanaDashboard CR"] -- "grafana-operator" --> G
 ```
 
 | Stage | Actor |
@@ -527,6 +691,8 @@ flowchart LR
 | Renders the declaration ConfigMap | KubeVela |
 | Creates and updates the Langfuse evaluators and rules | Evaluation reconciler |
 | Samples traces and calls the judge | Langfuse worker |
+| Exports score aggregates as metrics | Evaluation reconciler |
+| Imports the dashboard into AMG | grafana-operator |
 | Reads reports and alarms | Application developer, platform engineer |
 
 ---
@@ -547,8 +713,8 @@ flowchart LR
 
 | Phase | Delivers |
 |---|---|
-| **1** | `agent-evaluation` addon (reconciler, catalog, judge LLM connection); Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; Langfuse dashboard; example and live check |
-| **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators |
+| **1** | `agent-evaluation` addon (reconciler, catalog, judge LLM connection); Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check |
+| **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged |
 | **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
 
 ---
@@ -562,7 +728,11 @@ flowchart LR
 - [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key
 - [ ] An agent with evaluation turned off gets no scores
 - [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
-- [ ] The pass-ratio metric matches the Langfuse dashboard over the same window
+- [ ] `oap_agent_eval_scores` and `oap_agent_eval_pass_ratio` for one agent match a hand count of that agent's scores in Langfuse over the same window
+- [ ] The metrics Service is scraped into AMP, and the `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import
+- [ ] A second agent turning on evaluation appears in the dashboard's `agent` list with no dashboard change
+- [ ] An idle agent shows no pass ratio (not 0%), and stopping the reconciler turns the data-age panel amber and fires the staleness alert
+- [ ] The metrics loop stays within the `public-api-metrics` rate limit at the expected agent count and `metrics.intervalSeconds`
 
 ---
 
@@ -587,3 +757,7 @@ flowchart LR
 6. **Default evaluator set.** Is `goal-completion` plus `helpfulness` the right
    default, or should `tool-use` be on by default for agents that have
    `mcpServers`?
+7. **Where quality alerts live.** The dashboard follows the Dark Factory
+   `GrafanaDashboard` pattern. Does the platform's grafana-operator version
+   support alert rule CRs, or should alerts be AMP rule groups? Both are
+   declarative; the choice depends on which the base platform already uses.
