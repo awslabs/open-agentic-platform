@@ -386,7 +386,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_score_avg{namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"}",
+          "expr": "oap_agent_eval_score_avg{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\",window=\"$window\"}",
           "legendFormat": "{{evaluator}} avg",
           "refId": "A",
           "instant": true,
