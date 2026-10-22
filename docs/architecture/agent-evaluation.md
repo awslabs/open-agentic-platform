@@ -343,6 +343,16 @@ Rules:
   one Langfuse LLM connection that points at Bifrost and uses a judge-only virtual
   key. Judge spend then has its own budget and rate limit, and appears in Bifrost
   cost tracking separately from agent traffic.
+- **The virtual key travels in `x-bf-vk`, and the addon must create it.** Bifrost
+  reads the key from the `x-bf-vk` header, which is how agents send it
+  (`applications/strands-agent-base/app/agent.py`, `default_headers`). The
+  reconciler therefore sets the header in the LLM connection's `extraHeaders`
+  (`PUT /api/public/llm-connections` accepts it at the pin), not only as the
+  connection's secret key. Bifrost runs with `is_vk_mandatory: false` today
+  (`gitops/addons/configs/bifrost/values.yaml`), so a connection without the header
+  is not rejected: it simply runs un-budgeted. No virtual key is declared in that
+  file, so the addon also has to declare the judge key and its budget there
+  rather than assume one exists.
 - **Bifrost must be on Langfuse's LLM-connection allowlist.** Langfuse validates
   every LLM connection's base URL and blocks private and cluster-internal
   addresses unless the host is listed in `LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST`
@@ -799,7 +809,7 @@ sequenceDiagram
 | Concern | Control |
 |---|---|
 | Langfuse credentials | The seeded project's existing public/secret key pair, already used by the OTel Collector, read from Secrets Manager into the `agent-evaluation` namespace only. Never in an agent namespace, and no new admin key is created |
-| Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit. The judge never uses an agent's key |
+| Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit, sent as `x-bf-vk` from the LLM connection's `extraHeaders`. The judge never uses an agent's key. Because `is_vk_mandatory` is `false`, the validation plan checks that judge calls are attributed to that key |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
 | Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |
 | A developer weakening evaluation | The developer controls only `enabled`, `strictness`, `coverage` or `sampling`, the `judge` alias and evaluator names. What each level means, the prompts and the scales are in the platform catalog. A `low` strictness is visible on every report (D5) |
@@ -822,7 +832,7 @@ sequenceDiagram
 - [ ] Two agents with the same `coverage` but different `strictness` share **one** rule per evaluator, and their pass ratios use different thresholds
 - [ ] Turning on evaluation for two agents with the same settings produces **one** rule per evaluator, filtered to both tags
 - [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
-- [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key
+- [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key, not as an un-keyed request
 - [ ] An agent with evaluation turned off gets no scores
 - [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
 - [ ] `oap_agent_eval_scores` and `oap_agent_eval_pass_ratio` for one agent match a hand count of that agent's scores in Langfuse over the same window
