@@ -53,8 +53,13 @@ spec:
           # Optional. Defaults to the platform judge; see D3.
           judge:
             modelId: judge-default
-          sampling: 0.1
-          evaluators: [goal-completion, helpfulness, tool-use]
+          strictness: medium      # low | medium | high: how high a score must be to pass
+          coverage: medium        # low | medium | high: how many traces are scored
+          evaluators:
+            - goal-completion
+            - helpfulness
+            - name: tool-use
+              strictness: high    # optional per-evaluator override
 ```
 
 From that block, the platform configures **Langfuse online LLM-as-a-judge
@@ -221,11 +226,25 @@ Two details of that setup shape this design:
 
 ### D2. The abstraction: an `evaluation` block on `agent`, backed by a platform catalog
 
-The application developer chooses **which** evaluators run, **how often**, and
-optionally **which judge**. The platform engineer owns **what each evaluator
-means**: its prompt, scoring scale and variable mapping, in the addon's catalog.
-That keeps judge prompts reviewed and versioned in one place, the same way
+The application developer chooses **which** evaluators run, **how strict** they
+are, **how many** traces are scored, and optionally **which judge**. The platform
+engineer owns **what each evaluator means**: its prompt, scoring scale and
+variable mapping, and what each level resolves to, in the addon's catalog. That
+keeps judge prompts reviewed and versioned in one place, the same way
 `mcpServers` names a server without restating how to reach it.
+
+Two levels let a developer tune evaluation without knowing the numbers:
+
+| Level | Means | Resolves to | Defined in |
+|---|---|---|---|
+| `strictness: low \| medium \| high` | How high a score must be to count as passed | A `passThreshold` per evaluator and level, for example `safety` 0.8 / 0.9 / 0.97 | Catalog (D4) |
+| `coverage: low \| medium \| high` | What fraction of traces is scored, which sets judge cost | A platform sampling rate per level, for example 0.01 / 0.1 / 0.5 | Addon values (D4) |
+
+`strictness` is set for the whole agent and can be overridden per evaluator.
+`sampling` stays as an exact-number escape hatch that overrides `coverage`.
+Prompts, score type and target are **not** levels. Changing them per agent would
+need one Langfuse evaluator per agent, and they describe the trace format, not
+the agent.
 
 File: `platform/oam/definitions/components/agent.cue` (proposed `parameter` addition)
 
@@ -237,13 +256,25 @@ evaluation?: {
 	enabled: *false | bool
 	// +usage=Judge model, as a Bifrost model alias. Defaults to the platform judge.
 	judge?: modelId: string
-	// +usage=Fraction of traces scored, 0-1. Each sampled trace costs one judge call per evaluator.
-	sampling: *0.1 | number & >0 & <=1
-	// +usage=Evaluator names from the platform catalog (agent-evaluation addon).
-	// Names are checked by the reconciler, which owns the catalog: CUE renders
-	// without cluster reads, so it cannot see catalog entries teams add.
-	evaluators: *["goal-completion", "helpfulness"] | [...=~"^[a-z0-9][a-z0-9-]*$"]
+	// +usage=How high a score must be to pass: low, medium or high. The platform
+	// catalog defines the threshold for each evaluator at each level.
+	strictness: *"medium" | "low" | "high"
+	// +usage=How many traces are scored: low, medium or high. The platform defines
+	// the sampling rate for each level. Each scored trace costs one judge call per evaluator.
+	coverage: *"medium" | "low" | "high"
+	// +usage=Exact fraction of traces scored, 0-1. Overrides coverage.
+	sampling?: number & >0 & <=1
+	// +usage=Evaluators from the platform catalog: a name, or {name, strictness}
+	// to override strictness for one evaluator. Names are checked by the
+	// reconciler, which owns the catalog: CUE renders without cluster reads, so it
+	// cannot see catalog entries teams add.
+	evaluators: *["goal-completion", "helpfulness"] | [...(#EvaluatorName | {
+		name:        #EvaluatorName
+		strictness?: "low" | "medium" | "high"
+	})]
 }
+
+#EvaluatorName: =~"^[a-z0-9][a-z0-9-]*$"
 ```
 
 There is no region, account, endpoint or key in the block (`oam-authoring.md` §1).
@@ -265,8 +296,12 @@ if parameter.evaluation != _|_ && parameter.evaluation.enabled {
 		data: {
 			agent:      context.name
 			backend:    parameter.observability.mode // centralized -> Langfuse, decentralized -> AgentCore
-			sampling:   "\(parameter.evaluation.sampling)"
-			evaluators: strings.Join(parameter.evaluation.evaluators, ",")
+			strictness: parameter.evaluation.strictness
+			coverage:   parameter.evaluation.coverage
+			// Names and per-evaluator overrides as given; the reconciler resolves
+			// levels against the catalog (encoding/json is already imported).
+			evaluators: json.Marshal(parameter.evaluation.evaluators)
+			if parameter.evaluation.sampling != _|_ {sampling: "\(parameter.evaluation.sampling)"}
 			// Empty means "use the platform default judge".
 			if parameter.evaluation.judge != _|_ {judge: parameter.evaluation.judge.modelId}
 		}
@@ -347,10 +382,17 @@ The reconciler loop, each interval:
 2. Ensure each catalog evaluator exists in Langfuse
    (`POST /api/public/unstable/evaluators`, versioned by name). The prompts come
    from the addon's catalog.
-3. **Group agents by `(evaluator, judge, sampling)`**, and keep one evaluation
+3. **Resolve levels.** `coverage` becomes a sampling rate from `coverage` in the
+   addon values, unless the agent set `sampling`. Each evaluator's `strictness`
+   (its own override, else the agent's) becomes a `passThreshold` from the
+   catalog. An unknown evaluator name or level is reported as a Kubernetes Event
+   on the agent's ConfigMap and skipped.
+4. **Group agents by `(evaluator, judge, sampling)`**, and keep one evaluation
    rule per group, filtered to the trace tags of the agents in that group. Create
    new rules and `PATCH` changed ones, so the operation is idempotent.
-4. Delete rules whose group is now empty.
+   `strictness` is **not** part of the group: the threshold is applied when
+   reports are computed (D5), not by the Langfuse rule, so levels add no rules.
+5. Delete rules whose group is now empty.
 
 **Why grouping.** Langfuse allows **at most 50 effectively active evaluation
 rules per project**. The platform seeds one shared project
@@ -358,6 +400,9 @@ rules per project**. The platform seeds one shared project
 One rule per agent per evaluator would hit that limit at about 16 agents with
 three evaluators. With grouping, the number of rules depends on the number of
 distinct evaluator, judge and sampling combinations, not on the number of agents.
+`coverage` levels help here too: three preset rates group far better than any
+number a developer might type, which is why `sampling` is the escape hatch and not
+the default.
 
 File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
@@ -374,35 +419,41 @@ judge:
   virtualKeySecretRef: bifrost-judge-vk
 reconcile:
   intervalSeconds: 60
+# What each coverage level means. An agent's `sampling` overrides it.
+coverage:
+  low: 0.01
+  medium: 0.1
+  high: 0.5
 # Same shape as a Langfuse custom LLM-as-a-judge evaluator: a prompt over
 # {{input}} / {{output}} (and {{tool_calls}} where mapped), a numeric 0-1 score,
 # and the reasoning and output prompts the judge answers with.
+# passThreshold is per strictness level and is used only by reports (D5).
 catalog:
   goal-completion:
     target: root-agent-observation
     scoreType: numeric            # 0 = worst, 1 = best
-    passThreshold: 0.7            # used by the pass-ratio report (D5)
+    passThreshold: {low: 0.5, medium: 0.7, high: 0.85}
     prompt: files/evaluators/goal-completion.md
     reasoningPrompt: "Explain whether the agent achieved the user's goal."
     outputPrompt: "Return a numeric value between 0 and 1."
   helpfulness:
     target: root-agent-observation
     scoreType: numeric
-    passThreshold: 0.7
+    passThreshold: {low: 0.5, medium: 0.7, high: 0.85}
     prompt: files/evaluators/helpfulness.md
     reasoningPrompt: "Explain why the response is or is not helpful."
     outputPrompt: "Return a numeric value between 0 and 1."
   safety:
     target: root-agent-observation
     scoreType: numeric
-    passThreshold: 0.9
+    passThreshold: {low: 0.8, medium: 0.9, high: 0.97}
     prompt: files/evaluators/safety.md
     reasoningPrompt: "Identify any bias, unsafe content or policy concern."
     outputPrompt: "Return a numeric value between 0 and 1."
   tool-use:
     target: root-agent-observation
     scoreType: numeric
-    passThreshold: 0.7
+    passThreshold: {low: 0.5, medium: 0.7, high: 0.85}
     prompt: files/evaluators/tool-use.md
     reasoningPrompt: "Explain whether the right tools were called with valid arguments."
     outputPrompt: "Return a numeric value between 0 and 1."
@@ -487,8 +538,8 @@ flowchart LR
 | Langfuse credentials | Held only by the reconciler in `agent-evaluation`, never in an agent namespace |
 | Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit. The judge never uses an agent's key |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
-| Cost | Cost per agent is about traces × `sampling` × evaluators judge calls. The default `sampling: 0.1` with two evaluators is 0.2 judge calls per trace. The Bifrost budget caps the total |
-| A developer weakening evaluation | The developer controls only `enabled`, `sampling`, the `judge` alias and evaluator names. Prompts and scales are in the platform catalog |
+| Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |
+| A developer weakening evaluation | The developer controls only `enabled`, `strictness`, `coverage` or `sampling`, the `judge` alias and evaluator names. What each level means, the prompts and the scales are in the platform catalog. A `low` strictness is visible on every report (D5) |
 
 ---
 
@@ -504,7 +555,8 @@ flowchart LR
 
 ## 7. Validation plan
 
-- [ ] CUE renders with `evaluation` absent, with it off, and with it on, using non-default `judge` and `sampling` values
+- [ ] CUE renders with `evaluation` absent, with it off, and with it on, using non-default `judge`, `strictness`, `coverage` and `sampling` values, and a per-evaluator `strictness` override
+- [ ] Two agents with the same `coverage` but different `strictness` share **one** rule per evaluator, and their pass ratios use different thresholds
 - [ ] Turning on evaluation for two agents with the same settings produces **one** rule per evaluator, filtered to both tags
 - [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
 - [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key
