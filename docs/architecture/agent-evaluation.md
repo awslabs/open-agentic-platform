@@ -421,7 +421,8 @@ The reconciler loop, each interval:
    catalog. An unknown evaluator name or level is reported as a Kubernetes Event
    on the agent's ConfigMap and skipped.
 4. **Group agents by `(evaluator, judge, sampling)`**, and keep one evaluation
-   rule per group, filtered to the trace tags of the agents in that group. Create
+   rule per group, filtered to the agents' scoped `agent:<cluster>/<namespace>/<name>`
+   tags (see "Agent identity in traces" below). Create
    new rules and `PATCH` changed ones, so the operation is idempotent.
    `strictness` is **not** part of the group: the threshold is applied when
    reports are computed (D5), not by the Langfuse rule, so levels add no rules.
