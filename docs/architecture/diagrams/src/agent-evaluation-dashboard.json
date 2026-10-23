@@ -802,8 +802,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (loop) (rate(oap_agent_eval_errors_total[15m]))",
-          "legendFormat": "{{loop}}",
+          "expr": "sum by (cluster, loop) (rate(oap_agent_eval_errors_total{cluster=~\"$cluster\"}[15m]))",
+          "legendFormat": "{{cluster}} {{loop}}",
           "refId": "A"
         }
       ],
