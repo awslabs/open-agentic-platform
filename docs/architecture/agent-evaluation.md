@@ -83,7 +83,7 @@ on the `agent` component selects where they go:
 
 | Mode | Path | Where |
 |---|---|---|
-| `centralized` (default) | Agent → OTel Collector → hub Langfuse (the spoke collector exports to the single fleet Langfuse) | `platform/oam/definitions/components/agent.cue` (`OTEL_EXPORTER_OTLP_ENDPOINT`), `gitops/addons/registry/observability.yaml` |
+| `centralized` (default) | Agent → OTel Collector → hub Langfuse (the spoke collector exports to the single fleet Langfuse). `agent.cue` also emits `LANGFUSE_*` for a direct path in every mode, but they default to empty, so the collector is the path in use | `platform/oam/definitions/components/agent.cue` (`OTEL_EXPORTER_OTLP_ENDPOINT`), `gitops/addons/registry/observability.yaml` |
 | `decentralized` | Agent → ADOT → CloudWatch GenAI Observability | same file (`OTEL_PYTHON_DISTRO=aws_distro`) |
 
 Every trace carries the agent's name as a Langfuse tag
