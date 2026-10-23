@@ -735,7 +735,10 @@ How to read it:
   `qwen3-32b` agent on the same evaluators.
 - **Health row.** 7 of 50 Langfuse rules used, data under a minute old, no
   reconciler errors. The rules gauge turns amber at 40 and red at 48, so it warns
-  before the documented cap of 50 is reached, not at it.
+  before the documented cap of 50 is reached, not at it. The rules gauge is
+  fleet-wide on purpose and ignores `$cluster`, because the cap is per Langfuse
+  project. Data age and errors follow `$cluster` and show one series per cluster,
+  so one stalled spoke is not hidden by a healthy one.
 
 Variables: `datasource`, `cluster`, `namespace`, `agent` (from
 `label_values(oap_agent_eval_info, agent)`) and `window` (`24h`, `7d`). A newly
