@@ -741,7 +741,8 @@ How to read it:
   so one stalled spoke is not hidden by a healthy one.
 
 Variables: `datasource`, `cluster`, `namespace`, `agent` (from
-`label_values(oap_agent_eval_info, agent)`) and `window` (`24h`, `7d`). A newly
+`label_values(oap_agent_eval_info{cluster=~"$cluster",namespace=~"$namespace"}, agent)`)
+and `window` (`24h`, `7d`). A newly
 evaluated agent appears in the `agent` list on the next scrape, with no dashboard
 change.
 
