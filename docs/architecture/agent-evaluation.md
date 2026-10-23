@@ -753,7 +753,7 @@ change.
 | | Pass rate by agent model, for cheaper-model decisions | `avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window="7d"} * on (cluster, namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)` |
 | **Evaluation health** | Rules used of 50, across all clusters | `sum(oap_agent_eval_rules_active)` |
 | | Data age per cluster; stale data shows amber, not as a quality drop | `time() - oap_agent_eval_last_success_timestamp_seconds{cluster=~"$cluster",loop="metrics"}` |
-| | Reconciler errors | `sum by (loop) (rate(oap_agent_eval_errors_total[15m]))` |
+| | Reconciler errors per cluster | `sum by (cluster, loop) (rate(oap_agent_eval_errors_total{cluster=~"$cluster"}[15m]))` |
 
 A dashboard link opens Langfuse filtered to the agent's scoped
 `agent:<cluster>/<namespace>/<name>` tag, where a reviewer reads the judge's
