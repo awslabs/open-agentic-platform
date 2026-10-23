@@ -737,8 +737,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "time() - oap_agent_eval_last_success_timestamp_seconds{loop=\"metrics\"}",
-          "legendFormat": "",
+          "expr": "time() - oap_agent_eval_last_success_timestamp_seconds{cluster=~\"$cluster\",loop=\"metrics\"}",
+          "legendFormat": "{{cluster}}",
           "refId": "A",
           "instant": true,
           "range": false
