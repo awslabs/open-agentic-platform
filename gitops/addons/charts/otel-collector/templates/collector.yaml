@@ -120,10 +120,9 @@ spec:
         app: otel-collector
       annotations:
         checksum/config: {{ printf "%s-%s-%s-%s" (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
-        # Hash the rendered ExternalSecret (SM key AND token template). The token is
-        # injected as an env var, read only at startup, so a template change must
-        # roll the pod or a running collector keeps the old value.
-        checksum/langfuse-auth: {{ include (print $.Template.BasePath "/langfuse-secret.yaml") . | sha256sum | trunc 8 }}
+        # Tracks the content-addressed auth Secret name (token template + SM key),
+        # so any change to either rolls the collector.
+        checksum/langfuse-auth: {{ include "otel-collector.langfuseAuthSecretName" . | sha256sum | trunc 8 }}
     spec:
       serviceAccountName: otel-collector
       containers:
@@ -141,13 +140,17 @@ spec:
           env:
             - name: AWS_REGION
               value: {{ .Values.global.awsRegion }}
-            {{- if and .Values.langfuse.enabled .Values.langfuse.endpoint }}
+            {{- /* Same condition as the ExternalSecret, so the referenced Secret is always one ESO will create. */}}
+            {{- if and .Values.langfuse.enabled .Values.langfuse.endpoint .Values.langfuse.secretManagerKey }}
             - name: LANGFUSE_OTEL_AUTH
               valueFrom:
                 secretKeyRef:
-                  name: langfuse-otel-auth
+                  name: {{ include "otel-collector.langfuseAuthSecretName" . }}
                   key: LANGFUSE_OTEL_AUTH
-                  optional: true
+                  # Required: kubelet holds the container until ESO has written this
+                  # exact (content-addressed) Secret, so the collector never starts
+                  # with a missing or stale token. Env vars are read only at startup.
+                  optional: false
             {{- end }}
           volumeMounts:
             - name: config
