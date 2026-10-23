@@ -120,7 +120,10 @@ spec:
         app: otel-collector
       annotations:
         checksum/config: {{ printf "%s-%s-%s-%s" (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
-        checksum/langfuse-auth: {{ .Values.langfuse.secretManagerKey | default "none" | sha256sum | trunc 8 }}
+        # Hash the rendered ExternalSecret (SM key AND token template). The token is
+        # injected as an env var, read only at startup, so a template change must
+        # roll the pod or a running collector keeps the old value.
+        checksum/langfuse-auth: {{ include (print $.Template.BasePath "/langfuse-secret.yaml") . | sha256sum | trunc 8 }}
     spec:
       serviceAccountName: otel-collector
       containers:
