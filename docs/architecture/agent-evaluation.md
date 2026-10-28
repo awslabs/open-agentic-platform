@@ -431,13 +431,14 @@ Every project-wide object therefore has exactly one writer:
 |---|---|---|
 | Catalog evaluators (prompts, scales) | **hub** reconciler (`role: hub`) | One per project; prompts come from the hub's chart version |
 | Judge LLM connection and its `x-bf-vk` virtual key | **hub** reconciler | One per project, next to Langfuse and Bifrost |
-| Evaluation rules `oap-<cluster>-…` | the **spoke** reconciler of that cluster | Only its own prefix (steps 4 and 5) |
+| Evaluation rules `oap-<cluster>-…` | the reconciler of that cluster, hub included | Only its own prefix (steps 4 and 5) |
 | Score metrics `oap_agent_eval_*` | every reconciler, for the agents on its own cluster | `cluster`-labelled, so no object is shared (D5) |
 
 The same image runs in both roles, selected by `role: hub | spoke` in the addon
-values: the hub instance watches no ConfigMaps and owns no rules, and a spoke
-instance needs no judge virtual key. A spoke never creates, updates or deletes an
-evaluator or the LLM connection. If an agent names an evaluator the project does
+values. Every instance runs the per-cluster loop below for the agents on its own
+cluster. The hub instance also runs the project loop, and a spoke instance needs
+no judge virtual key. A spoke never creates, updates or deletes an evaluator or
+the LLM connection. If an agent names an evaluator the project does
 not have yet, which is what a spoke upgraded ahead of the hub looks like, the
 spoke records a Kubernetes Event on that agent's ConfigMap and skips that
 evaluator. The mismatch is then a visible, self-healing wait for the hub to catch
