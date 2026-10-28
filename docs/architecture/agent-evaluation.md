@@ -7,7 +7,7 @@
 | **Reviewers** | TBD |
 | **Target** | OAP agent platform: `agent` component, new `agent-evaluation` addon |
 | **Date** | 2026-10-22 |
-| **Revision** | 3 (hub owns the project-wide Langfuse objects; `evaluator` component recorded as a Phase 4 follow-up) |
+| **Revision** | 4 (the hub also evaluates its own agents; one evaluator per judge alias, since the rule has no model; write-on-change evaluator `POST`; spokes reach Langfuse through the hub domain) |
 | **Issue** | #79 |
 
 ## Scope
