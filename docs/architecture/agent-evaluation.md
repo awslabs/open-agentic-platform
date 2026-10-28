@@ -433,7 +433,7 @@ Every project-wide object therefore has exactly one writer:
 
 | Langfuse object | Owner | Scope |
 |---|---|---|
-| Catalog evaluators (prompts, scales) | **hub** reconciler (`role: hub`) | One per project; prompts come from the hub's chart version |
+| Catalog evaluators (prompts, scales, judge model) | **hub** reconciler (`role: hub`) | One per catalog entry per judge alias, for the whole project; prompts come from the hub's chart version |
 | Judge LLM connection and its `x-bf-vk` virtual key | **hub** reconciler | One per project, next to Langfuse and Bifrost |
 | Evaluation rules `oap-<cluster>-…` | the reconciler of that cluster, hub included | Only its own prefix (steps 4 and 5) |
 | Score metrics `oap_agent_eval_*` | every reconciler, for the agents on its own cluster | `cluster`-labelled, so no object is shared (D5) |
