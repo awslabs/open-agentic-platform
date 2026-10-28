@@ -602,10 +602,15 @@ langfuse:
   # the SM entry the langfuse addon writes (templates/push-otel-secret.yaml). Holds
   # LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, used as Basic auth to the public API.
   apiKeySecretRef: langfuse-evaluation-keys
-# Only the hub instance uses this block: it owns the judge LLM connection, so the
-# judge virtual key never has to exist on a spoke.
+# Only the hub instance uses the connection and key in this block: it owns the
+# judge LLM connection, so the judge virtual key never has to exist on a spoke.
 judge:
   defaultModelId: judge-default
+  # Every Bifrost alias an agent may name in evaluation.judge. The hub writes one
+  # evaluator per catalog entry per extra alias (<evaluator>--<alias>), because the
+  # judge model lives on the evaluator, not on the rule (D4). Read by every
+  # instance: a spoke uses it to reject an unknown judge with an Event.
+  aliases: [judge-default]
   bifrostUrl: http://bifrost.bifrost.svc.cluster.local:8080/v1
   # Judge-only Bifrost virtual key with its own budget.
   virtualKeySecretRef: bifrost-judge-vk
