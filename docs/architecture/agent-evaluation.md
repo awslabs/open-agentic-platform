@@ -1027,16 +1027,17 @@ sequenceDiagram
     autonumber
     actor Dev as App developer
     participant KV as KubeVela
-    participant R as Evaluation reconciler (this spoke)
-    participant RH as Evaluation reconciler (hub)
+    participant K as Kubernetes API (agent's cluster)
+    participant R as Evaluation reconciler (agent's cluster)
+    participant RH as Evaluation reconciler (hub, project loop)
     participant LF as Langfuse (hub, shared project)
     participant BF as Bifrost (judge key)
     participant G as AMP + AMG
-    RH->>LF: ensure catalog evaluators + judge LLM connection (hub owns both)
+    RH->>LF: POST catalog evaluators (one per judge alias) only when changed, ensure judge LLM connection
     Dev->>KV: Application with evaluation: {enabled: true, strictness, coverage}
-    KV->>KV: render the agent-name-evaluation ConfigMap
-    R->>KV: list ConfigMaps (every 60s)
-    R->>LF: resolve evaluator names, create or update grouped rules
+    KV->>K: apply the agent-name-evaluation ConfigMap
+    R->>K: list ConfigMaps (every 60s)
+    R->>LF: resolve (evaluator, judge) names, create or update grouped rules
     Note over LF: agent serves users and sends traces as usual
     LF->>LF: rule samples the agent's root observation
     LF->>BF: judge prompt (input, output, tool calls)
