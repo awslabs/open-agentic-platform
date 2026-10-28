@@ -601,7 +601,14 @@ File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 # Both export metrics for their own cluster's agents.
 role: spoke                       # hub on the cluster that runs Langfuse
 langfuse:
-  url: http://langfuse.langfuse.svc.cluster.local:3000
+  # Set by the registry entry per cluster. On the hub it is in-cluster:
+  #   http://langfuse.langfuse.svc.cluster.local:3000
+  # A spoke has no Langfuse Service and reaches the hub's over HTTPS on the hub
+  # domain, resolved exactly like the otel-collector's export endpoint
+  # (gitops/addons/registry/observability.yaml: ingress_domain_name, else the
+  # host of oidc_issuer_url). Langfuse is served at "/" on that domain
+  # (langfuse/values.yaml ingress.groupOrder), so /api/public/... resolves there.
+  url: ""
   # Secret created by this chart's ExternalSecret from <resourcePrefix>-hub/langfuse-otel,
   # the SM entry the langfuse addon writes (templates/push-otel-secret.yaml). Holds
   # LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, used as Basic auth to the public API.
