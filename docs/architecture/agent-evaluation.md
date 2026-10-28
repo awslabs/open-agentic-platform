@@ -596,9 +596,9 @@ not read the `langfuse-otel-keys` Secret, which is in the `langfuse` namespace.
 File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
 ```yaml
-# hub: owns the catalog evaluators and the judge LLM connection, watches nothing.
-# spoke: watches ConfigMaps and owns only this cluster's oap-<cluster>- rules.
-# Both export metrics for their own cluster's agents.
+# Both roles watch this cluster's ConfigMaps, own only this cluster's
+# oap-<cluster>- rules and export metrics for this cluster's agents.
+# hub additionally owns the catalog evaluators and the judge LLM connection.
 role: spoke                       # hub on the cluster that runs Langfuse
 langfuse:
   # Set by the registry entry per cluster. On the hub it is in-cluster:
