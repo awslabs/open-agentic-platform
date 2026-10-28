@@ -343,7 +343,13 @@ tasks:
         OVERLAY_REPO_URL="{{.OVERLAY_REPO_URL}}"
         OVERLAY_REVISION="{{.OVERLAY_REPO_REVISION}}"
         OVERLAY_BASEPATH="{{.OVERLAY_REPO_BASEPATH}}"
-        if [ -z "$OVERLAY_REPO_URL" ]; then
+        if [ -z "$OVERLAY_REPO_URL" ] && ! kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd \
+            get secret {{.HUB_CLUSTER_NAME}} >/dev/null 2>&1; then
+          # Make a wrong context / missing secret visible instead of silently
+          # looking like "no overlay wired". Behaviour is unchanged: overlay stays off.
+          printf '⚠ Hub cluster secret argocd/%s not found on context %s: OAP overlay not inherited (overlay tier disabled)\n' \
+            "{{.HUB_CLUSTER_NAME}}" "{{.HUB_CLUSTER_NAME}}"
+        elif [ -z "$OVERLAY_REPO_URL" ]; then
           ann() { kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd get secret {{.HUB_CLUSTER_NAME}} \
             -o "jsonpath={.metadata.annotations.$1}" 2>/dev/null || true; }
           OVERLAY_REPO_URL=$(ann overlay_repo_url)
