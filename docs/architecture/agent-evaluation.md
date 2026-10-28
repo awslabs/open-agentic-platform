@@ -581,9 +581,9 @@ better than any number a developer might type, which is why `sampling` is the
 escape hatch and not the default.
 
 **Authentication.** Both roles call the Langfuse public API with HTTP Basic auth
-using the seeded project's public/secret key pair: the hub writes `/evaluators`
-and `/llm-connections`, and a spoke reads `/evaluators` and writes
-`/evaluation-rules` (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`).
+using the seeded project's public/secret key pair: every instance reads
+`/evaluators` and writes its own cluster's `/evaluation-rules`, and the hub also
+writes `/evaluators` and `/llm-connections` (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`).
 That is the same pair the OTel Collector already uses for ingestion. No separate
 admin key is minted, and the two roles are separated by what each one calls, not
 by a second credential. The langfuse addon writes it to Secrets Manager as
