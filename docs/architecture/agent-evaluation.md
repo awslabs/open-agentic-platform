@@ -452,7 +452,7 @@ stop sharing a series, which breaks the pass-ratio trend the dashboard is for
 (D5). One owner per object keeps one name per evaluator and keeps the metric
 continuous.
 
-The **spoke** reconciler loop, each interval:
+The **per-cluster** loop, run by every instance (hub included) each interval:
 
 1. List every `evaluation.oap.io/agent` ConfigMap across namespaces on this cluster.
 2. **Resolve the evaluator names it needs against the project**
@@ -476,12 +476,25 @@ The **spoke** reconciler loop, each interval:
    A rule another cluster owns is never touched, even though this reconciler sees
    no ConfigMap for it.
 
-The **hub** reconciler loop is the other half, and runs only where Langfuse does:
-ensure every catalog evaluator exists with the prompt, scale and variable mapping
-from its own chart version (`POST`/`PATCH /api/public/unstable/evaluators`, one
-object per evaluator name), and ensure the judge LLM connection points at Bifrost
-with the judge virtual key in `extraHeaders` (D3). It reads no ConfigMaps, creates
-no rules, and deletes an evaluator only when its own catalog drops it.
+The **project** loop runs only on the hub instance, next to Langfuse, in addition
+to its per-cluster loop. It ensures every catalog evaluator exists with the
+prompt, scale and variable mapping from the hub's own chart version, and that the
+judge LLM connection points at Bifrost with the judge virtual key in
+`extraHeaders` (D3). It creates no rules for other clusters, and deletes an
+evaluator only when its own catalog drops it.
+
+At the pin, evaluators have no `PATCH`: `POST /api/public/unstable/evaluators`
+with an existing name creates the next version, and "existing evaluation rules in
+that project automatically move to the newest version for that evaluator name"
+(`fern/apis/server/definition/unstable/evaluators.yml`). Two consequences follow:
+
+- **Write only on change.** The project loop compares each catalog entry with the
+  latest version (`GET /evaluators`) and `POST`s only when the prompt, output
+  definition or model differ. Otherwise every 60-second pass would mint a new
+  version.
+- **A prompt change reaches every cluster with no spoke action.** Every
+  cluster's rules reference evaluators by name, so they move to the hub's new
+  version on their own. This is what makes hub ownership take effect fleet-wide.
 
 **Agent identity in traces.** Rules and reports need a tag that names one agent on
 one cluster. The agent adds `agent:<cluster>/<namespace>/<name>` next to its
