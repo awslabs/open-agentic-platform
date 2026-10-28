@@ -1054,8 +1054,8 @@ sequenceDiagram
 | Adds `evaluation:` to the agent's Application | Application developer |
 | Defines the evaluator catalog, the judge alias and the judge budget | Platform engineer |
 | Renders the declaration ConfigMap | KubeVela |
-| Creates and updates the catalog evaluators and the judge LLM connection | Evaluation reconciler, `role: hub`, one for the project |
-| Creates and updates its own cluster's `oap-<cluster>-` rules | Evaluation reconciler, `role: spoke`, one per cluster |
+| Creates and updates the catalog evaluators (one per judge alias) and the judge LLM connection | Evaluation reconciler, `role: hub`, one for the project |
+| Creates and updates its own cluster's `oap-<cluster>-` rules | Evaluation reconciler on every cluster that runs agents, the hub included |
 | Samples traces and calls the judge | Langfuse worker |
 | Exports score aggregates as metrics | Evaluation reconciler |
 | Imports the dashboard into AMG | grafana-operator |
