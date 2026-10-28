@@ -272,7 +272,9 @@ File: `platform/oam/definitions/components/agent.cue` (proposed `parameter` addi
 evaluation?: {
 	// +usage=Turn evaluation on for this agent.
 	enabled: *false | bool
-	// +usage=Judge model, as a Bifrost model alias. Defaults to the platform judge.
+	// +usage=Judge model, as a Bifrost model alias from the platform's judge.aliases
+	// list. Defaults to the platform judge. An alias not on the list is reported on
+	// the agent and its evaluators are skipped.
 	judge?: modelId: string
 	// +usage=How high a score must be to pass: low, medium or high. The platform
 	// catalog defines the threshold for each evaluator at each level.
