@@ -455,18 +455,22 @@ continuous.
 The **per-cluster** loop, run by every instance (hub included) each interval:
 
 1. List every `evaluation.oap.io/agent` ConfigMap across namespaces on this cluster.
-2. **Resolve the evaluator names it needs against the project**
-   (`GET /api/public/unstable/evaluators`). It does not create or update them: the
-   hub owns the catalog. A name the project does not have is reported as a
-   Kubernetes Event on the agent's ConfigMap and skipped.
+2. **Resolve each `(evaluator, judge)` the agents need to an evaluator name**
+   (`<evaluator>`, or `<evaluator>--<alias>` for a non-default judge, as described
+   under "The judge is a property of the evaluator" below), and check it against
+   the project (`GET /api/public/unstable/evaluators`). It does not create or
+   update evaluators: the hub owns them. A name the project does not have is
+   reported as a Kubernetes Event on the agent's ConfigMap and skipped.
 3. **Resolve levels.** `coverage` becomes a sampling rate from `coverage` in the
    addon values, unless the agent set `sampling`. Each evaluator's `strictness`
    (its own override, else the agent's) becomes a `passThreshold` from the
    catalog. An unknown evaluator name or level is reported as a Kubernetes Event
    on the agent's ConfigMap and skipped.
 4. **Group agents by `(evaluator, judge, sampling)`**, and keep one evaluation
-   rule per group, filtered to the agents' scoped `agent:<cluster>/<namespace>/<name>`
-   tags (see "Agent identity in traces" below). Create
+   rule per group. The rule references the group's evaluator name from step 2,
+   which is how the judge reaches Langfuse, and is filtered to the agents' scoped
+   `agent:<cluster>/<namespace>/<name>` tags (see "Agent identity in traces"
+   below). Create
    new rules and `PATCH` changed ones, so the operation is idempotent. Each rule
    is named `oap-<cluster>-<evaluator>-<hash of judge and sampling>`, so its owner
    is readable from the name.
@@ -495,6 +499,27 @@ that project automatically move to the newest version for that evaluator name"
 - **A prompt change reaches every cluster with no spoke action.** Every
   cluster's rules reference evaluators by name, so they move to the hub's new
   version on their own. This is what makes hub ownership take effect fleet-wide.
+
+**The judge is a property of the evaluator, so each judge alias is its own
+evaluator.** At the pin, the judge model is the evaluator's `modelConfig`
+(`provider` from `GET /llm-connections`, `model`), and an evaluation rule has no
+model field: `CreateLlmAsJudgeEvaluationRuleRequest` takes `name`, `evaluator`,
+`target`, `enabled`, `sampling`, `filter` and `mapping`. So an agent's
+`evaluation.judge` override cannot be carried by its rule. It needs an evaluator
+object whose `modelConfig` names that judge. The hub writes one per catalog entry
+per alias in `judge.aliases`:
+
+| Evaluator object | `modelConfig.model` |
+|---|---|
+| `<evaluator>` | `judge.defaultModelId` (`judge-default`) |
+| `<evaluator>--<alias>`, for each other alias in `judge.aliases` | that alias |
+
+The per-cluster loop maps an agent's `(evaluator, judge)` to that name. A judge
+that is not in `judge.aliases` is reported as an Event and skipped, the same way
+an unknown evaluator is. That keeps judge choice a platform list, as D3 intends,
+and it keeps spokes out of evaluator writes. `--` is the separator, so
+`#EvaluatorName` (D2) forbids it in catalog names, and judge aliases must not
+contain it either.
 
 **Agent identity in traces.** Rules and reports need a tag that names one agent on
 one cluster. The agent adds `agent:<cluster>/<namespace>/<name>` next to its
