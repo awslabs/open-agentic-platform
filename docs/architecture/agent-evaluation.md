@@ -405,15 +405,18 @@ declaration into Langfuse evaluators and rules.
 
 | Option | Verdict |
 |---|---|
-| **One reconciler Deployment in the `agent-evaluation` namespace of each cluster that runs agents, plus one on the hub** (**chosen**) | A spoke instance watches ConfigMaps labelled `evaluation.oap.io/agent` on its own cluster and holds the Langfuse key; the hub instance holds the judge virtual key and owns the project-wide objects ("Ownership" below). Because both are level-triggered, deletion is a diff. |
+| **One reconciler Deployment in the `agent-evaluation` namespace of each cluster that runs agents, the hub included** (**chosen**) | Every instance watches ConfigMaps labelled `evaluation.oap.io/agent` on its own cluster and holds the Langfuse key. The hub instance also holds the judge virtual key and owns the project-wide objects ("Ownership" below). Because every loop is level-triggered, deletion is a diff. |
 | A Job per agent, emitted by the component | Rejected. It puts Langfuse admin credentials in every agent namespace, does not re-run on drift, and leaves rules behind when the agent is deleted. The per-agent virtual-key mint Job in #18 hit the same three problems. |
 | A CRD and an operator | A heavier version of the chosen option. Worth it later if the declaration grows. |
 
-**Why per cluster.** Agents and their evaluation ConfigMaps live on the spokes,
-while every spoke's traces land in the one hub Langfuse project
-(`gitops/addons/registry/observability.yaml`). A reconciler on the hub cannot
-list spoke ConfigMaps. Several spoke reconcilers sharing one project must not
-overwrite each other, so each one owns only the rules it created (steps 4 and 5).
+**Why per cluster.** Agents and their evaluation ConfigMaps live on every cluster
+that runs the agent platform. That includes the hub, because
+`gitops/overlays/environments/control-plane/enabled-addons.yaml` sets
+`agent_platform: true`. Every cluster's traces land in the one hub Langfuse
+project (`gitops/addons/registry/observability.yaml`). A reconciler on one cluster
+cannot list another cluster's ConfigMaps. Several reconcilers sharing one project
+must not overwrite each other, so each one owns only the rules it created
+(steps 4 and 5).
 
 **Ownership: the hub owns the project-wide objects, a spoke owns only its own
 rules.** Rules carry their owner in the name, but two kinds of Langfuse object are
