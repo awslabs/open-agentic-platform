@@ -297,7 +297,9 @@ evaluation?: {
 	})]
 }
 
-#EvaluatorName: =~"^[a-z0-9][a-z0-9-]*$"
+// Single hyphens only: "--" separates an evaluator from a judge alias in the
+// Langfuse object name (D4), so a catalog name must not contain it.
+#EvaluatorName: =~"^[a-z0-9]+(-[a-z0-9]+)*$"
 ```
 
 There is no region, account, endpoint or key in the block (`oam-authoring.md` §1).
