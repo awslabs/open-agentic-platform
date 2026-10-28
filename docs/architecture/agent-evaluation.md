@@ -963,34 +963,62 @@ reasoning for a failed trace.
 ## 4. Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph SPOKE["each spoke cluster (dev, prod)"]
+    direction LR
     subgraph NS["agent namespace (application developer)"]
-      A["agent Rollout"] -- "OTLP traces<br/>tag = agent:&lt;cluster&gt;/&lt;ns&gt;/&lt;name&gt;" --> LF
+      A["agent Rollout"]
       CM["ConfigMap &lt;agent&gt;-evaluation<br/>(from evaluation: block)"]
     end
+    OC["OTel Collector"]
     subgraph EV["agent-evaluation namespace (platform)"]
-      R["evaluation reconciler (role: spoke)<br/>owns oap-&lt;cluster&gt;- rules only"]
+      R["evaluation reconciler (role: spoke)<br/>per-cluster loop:<br/>oap-&lt;spoke&gt;- rules + metrics"]
     end
   end
-  subgraph HUB["hub cluster"]
+  subgraph HUB["hub cluster (also runs agents)"]
+    direction LR
+    subgraph HNS["agent namespace"]
+      HA["agent Rollout"]
+      HCM["ConfigMap &lt;agent&gt;-evaluation"]
+    end
+    HOC["OTel Collector"]
+    subgraph HEV["agent-evaluation namespace"]
+      RH["evaluation reconciler (role: hub)<br/>per-cluster loop: oap-&lt;hub&gt;- rules + metrics<br/>project loop: catalog evaluators<br/>(one per judge alias) + judge LLM connection"]
+    end
+    ALB["platform ALB<br/>https://&lt;hub domain&gt;/"]
     subgraph LFN["langfuse namespace"]
       LF["Langfuse web + worker<br/>one shared project"]
     end
-    RH["evaluation reconciler (role: hub)<br/>owns catalog evaluators<br/>+ judge LLM connection"]
     BF["Bifrost /v1<br/>judge virtual key"]
   end
+  subgraph AWS["AWS managed services"]
+    direction LR
+    BR["Amazon Bedrock<br/>judge-default"]
+    M["AMP scraper → AMP"]
+    G["AMG: Agent Platform /<br/>Agent Evaluation dashboard"]
+  end
+  A -- "OTLP traces<br/>tag = agent:&lt;cluster&gt;/&lt;ns&gt;/&lt;name&gt;" --> OC
   CM -- "watch" --> R
-  RH -- "evaluators + LLM connection API" --> LF
-  R -- "read evaluators by name,<br/>own rules API" --> LF
-  LF -- "sampled observations<br/>LLM connection" --> BF
-  BF --> BR["Amazon Bedrock<br/>judge-default"]
-  LF -- "scores on trace" --> LF
-  R -- "metrics API" --> LF
-  R -- "/metrics on annotated Service" --> M["AMP scraper → AMP"]
-  M --> G["AMG: Agent Platform /<br/>Agent Evaluation dashboard"]
-  GD["GrafanaDashboard CR"] -- "grafana-operator" --> G
+  OC -- "HTTPS /api/public/otel" --> ALB
+  R -- "HTTPS: read evaluators,<br/>own rules, metrics API" --> ALB
+  HA -- "OTLP traces" --> HOC
+  HCM -- "watch" --> RH
+  HOC -- "HTTPS /api/public/otel" --> ALB
+  ALB --> LF
+  RH -- "in-cluster: evaluators + LLM connection,<br/>own rules, metrics API" --> LF
+  LF -- "sampled observations,<br/>LLM connection" --> BF
+  BF --> BR
+  R -- "/metrics" --> M
+  RH -- "/metrics" --> M
+  M --> G
+  HEV -. "GrafanaDashboard CR" .-> G
 ```
+
+A spoke has no Langfuse of its own. Its collector and its reconciler both reach
+the hub's Langfuse over HTTPS on the hub domain, through the shared platform ALB,
+and it never holds the judge key. The hub runs the same per-cluster loop for its
+own agents, in-cluster, plus the project loop that owns the objects every cluster
+shares.
 
 End to end, from turning evaluation on to a number on the dashboard:
 
