@@ -1099,6 +1099,10 @@ sequenceDiagram
 - [ ] A spoke reconciler creates and updates no evaluator and no LLM connection: editing a catalog prompt on the hub is reflected in the project, and a spoke pass afterwards leaves it unchanged
 - [ ] A spoke running a chart version whose catalog has an evaluator the hub does not yet have records an Event on that agent's ConfigMap, skips only that evaluator, and creates the rule on its own next pass once the hub lands it
 - [ ] The judge virtual-key Secret is present only in the hub's `agent-evaluation` namespace, and a spoke reconciler runs without it
+- [ ] An agent deployed on the hub with `evaluation` on gets `oap-<hub>-` rules and `cluster`-labelled metrics from the hub instance
+- [ ] Two hub passes with an unchanged catalog create no new evaluator version; editing one prompt creates exactly one, and every cluster's rules for that evaluator move to it
+- [ ] An agent with `judge.modelId` set to a second alias in `judge.aliases` gets a rule on `<evaluator>--<alias>`; an alias not in the list records an Event and creates no rule
+- [ ] A spoke reconciler reaches Langfuse at the hub domain with no hub-local DNS, and its rule calls succeed through the platform ALB
 - [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key, not as an un-keyed request
 - [ ] An agent with evaluation turned off gets no scores
 - [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
