@@ -723,9 +723,9 @@ then one rule for every object in the project, read off the name:
 
 | Object name | Written by |
 |---|---|
-| `<evaluator>` from the catalog | hub reconciler |
-| `oap-<cluster>-<namespace>-<name>` | that cluster's spoke reconciler |
-| `oap-<cluster>-<evaluator>-<hash>` (a rule) | that cluster's spoke reconciler |
+| `<evaluator>` and `<evaluator>--<alias>` from the catalog | hub reconciler, project loop |
+| `oap-<cluster>-<namespace>-<name>` | that cluster's reconciler, hub included |
+| `oap-<cluster>-<evaluator>-<hash>` (a rule) | that cluster's reconciler, hub included |
 
 Keeping the cluster in the object name also means `dev` and `prod` can carry
 different versions of a team's prompt while it is being iterated, which is the
@@ -1084,7 +1084,7 @@ sequenceDiagram
 | **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<cluster>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check |
 | **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged |
 | **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
-| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<cluster>-<namespace>-<name>` objects owned by that cluster's spoke reconciler, and a possible home for agent-based judges |
+| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<cluster>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges |
 
 ---
 
