@@ -345,7 +345,7 @@ evaluation rules (D4). That handles cleanup with no finalizer.
 | Option | Verdict |
 |---|---|
 | Judge = the agent's own model | Rejected. A model grading its own output inflates the score (self-preference bias), and a small agent model is a weak judge. |
-| **Platform default judge, overridable per agent** (**chosen**) | The platform engineer sets one Bifrost alias, for example `judge-default`, to a more capable model. An application developer can override it with `evaluation.judge.modelId`. |
+| **Platform default judge, overridable per agent** (**chosen**) | The platform engineer sets one Bifrost alias, for example `judge-default`, to a more capable model. An application developer can override it with `evaluation.judge.modelId`, choosing from the platform's `judge.aliases` list, because each alias is a separate Langfuse evaluator the hub writes (D4). |
 | The developer must always name a judge | Rejected. Most teams have no basis for choosing one, so it should be a platform default. |
 
 Rules:
