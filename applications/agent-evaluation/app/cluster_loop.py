@@ -49,6 +49,14 @@ ROOT_OBSERVATION_FILTER = {
     "value": "",
 }
 
+# Observation-target rules may map a variable from one of these only. A catalog
+# entry asking for anything else is rejected before a rule is built, because
+# Langfuse would answer 400 invalid_variable_mapping mid-pass.
+VALID_MAPPING_SOURCES = ("input", "output", "metadata", "tool_calls")
+
+# Variables every catalog prompt uses, when an entry declares no mapping.
+DEFAULT_MAPPING = {"input": "input", "output": "output"}
+
 
 @dataclass(frozen=True)
 class RuleGroup:
@@ -59,6 +67,10 @@ class RuleGroup:
     sampling: float
     evaluator_object: str
     tags: tuple[str, ...]
+    # variable -> observation field. Carried on the RULE, not the evaluator:
+    # Langfuse derives an evaluator's variables from its prompt, and every one of
+    # them must be mapped here exactly once or the rule is refused.
+    mapping: tuple[tuple[str, str], ...] = ()
 
     def name(self, cluster: str) -> str:
         return rule_name(cluster, self.evaluator, self.judge, self.sampling)
@@ -66,7 +78,15 @@ class RuleGroup:
     def payload(self, cluster: str) -> dict:
         return {
             "name": self.name(cluster),
-            "evaluator": self.evaluator_object,
+            # An evaluator FAMILY reference, not a bare name: Langfuse resolves
+            # it to the latest version when saving, which is what lets a hub
+            # prompt change reach this rule with no action here. scope=project
+            # distinguishes ours from Langfuse's managed library.
+            "evaluator": {
+                "name": self.evaluator_object,
+                "scope": "project",
+                "type": "llm_as_judge",
+            },
             "target": "observation",
             "enabled": True,
             "sampling": self.sampling,
@@ -78,6 +98,10 @@ class RuleGroup:
                     "type": "arrayOptions",
                     "value": list(self.tags),
                 },
+            ],
+            "mapping": [
+                {"variable": variable, "source": source}
+                for variable, source in self.mapping
             ],
         }
 
@@ -223,6 +247,22 @@ class ClusterLoop:
                     )
                 )
 
+                mapping = _mapping_for(entry)
+                invalid = [s for _, s in mapping if s not in VALID_MAPPING_SOURCES]
+                if invalid:
+                    self._events.warn(
+                        decl.namespace,
+                        decl.configmap,
+                        events.REASON_INVALID_DECLARATION,
+                        f"evaluator {requested.name!r} maps a variable to "
+                        f"{invalid!r}, which an observation rule cannot supply; "
+                        f"valid sources are {list(VALID_MAPPING_SOURCES)}. This is "
+                        "a platform catalog error, not something this Application "
+                        "can fix.",
+                    )
+                    skipped.add(decl.key)
+                    continue
+
                 key = f"{requested.name}\x00{judge}\x00{sampling:.6f}"
                 if key not in members:
                     groups[key] = RuleGroup(
@@ -231,6 +271,7 @@ class ClusterLoop:
                         sampling=sampling,
                         evaluator_object=object_name,
                         tags=(),
+                        mapping=mapping,
                     )
                 members[key].append(decl.trace_tag(cluster))
 
@@ -243,6 +284,7 @@ class ClusterLoop:
                 sampling=group.sampling,
                 evaluator_object=group.evaluator_object,
                 tags=tuple(sorted(set(members[key]))),
+                mapping=group.mapping,
             )
 
         return ClusterPlan(
@@ -379,7 +421,12 @@ class ClusterLoop:
     @staticmethod
     def _rule_matches(current: dict, desired: dict) -> bool:
         """Compare only the fields this loop sets, so a pass is idempotent."""
-        if current.get("evaluator") != desired["evaluator"]:
+        # `evaluator` is a family reference object, and Langfuse echoes it back
+        # with the resolved version and id attached, so only the name is
+        # comparable. Comparing the whole object would make every pass a change.
+        if _evaluator_name_of(current) != _evaluator_name_of(desired):
+            return False
+        if _mapping_of(current) != _mapping_of(desired):
             return False
         if bool(current.get("enabled")) != desired["enabled"]:
             return False
@@ -395,3 +442,29 @@ def _tags_of(rule: dict) -> list[str]:
         if clause.get("column") == "tags":
             return sorted(clause.get("value") or [])
     return []
+
+
+def _evaluator_name_of(rule: dict) -> str:
+    """The evaluator family name, however the reference is shaped."""
+    evaluator = rule.get("evaluator")
+    if isinstance(evaluator, dict):
+        return evaluator.get("name") or ""
+    return evaluator or ""
+
+
+def _mapping_of(rule: dict) -> list[tuple[str, str]]:
+    return sorted(
+        (m.get("variable") or "", m.get("source") or "")
+        for m in (rule.get("mapping") or [])
+    )
+
+
+def _mapping_for(evaluator) -> tuple[tuple[str, str], ...]:
+    """variable -> observation field for one catalog entry.
+
+    Defaults to the two variables every catalog prompt uses. An entry whose
+    prompt also scores tool calls declares the mapping explicitly, because
+    `tool_calls` is only present on observations that made any.
+    """
+    items = evaluator.mapping or DEFAULT_MAPPING
+    return tuple(sorted(items.items()))

@@ -7,7 +7,12 @@ import dataclasses
 import pytest
 
 from app.langfuse_client import ProjectWriteForbidden
-from app.project_loop import JUDGE_PROVIDER, ProjectLoop, connection_payload
+from app.project_loop import (
+    JUDGE_PROVIDER,
+    ProjectLoop,
+    connection_payload,
+    evaluator_payload,
+)
 from tests.conftest import FakeLangfuse
 
 
@@ -169,3 +174,58 @@ def test_connection_is_upserted_once_when_unchanged(settings, catalog, metrics):
     langfuse.calls.clear()
     assert loop.run_once()
     assert not [c for c in langfuse.calls if c.startswith("upsert_connection")]
+
+
+# ── API contract ──────────────────────────────────────────────────────────
+# These pin the request shapes verified against a live Langfuse at the pin
+# (v3.225.11) through its own OpenAPI contract. An earlier revision guessed
+# `outputSchema`/`scoreType`, which the API rejects with 400 invalid_body — a
+# runtime failure, so only a test of the shape itself catches a regression.
+
+
+def test_evaluator_payload_matches_the_api_contract(settings, catalog, metrics):
+    payload = evaluator_payload(
+        catalog.evaluators["safety"], "judge-default", "judge-default"
+    )
+    assert set(payload) == {"name", "type", "prompt", "outputDefinition", "modelConfig"}
+    assert payload["type"] == "llm_as_judge"
+    assert payload["outputDefinition"]["dataType"] == "NUMERIC"
+    # Both description fields are required by the contract.
+    assert payload["outputDefinition"]["reasoning"]["description"]
+    assert payload["outputDefinition"]["score"]["description"]
+    assert payload["modelConfig"] == {
+        "provider": JUDGE_PROVIDER,
+        "model": "judge-default",
+    }
+    # Explicitly not part of the public request shape. `version` is called out in
+    # the contract as an internal storage detail that must not be sent, and the
+    # variable mapping belongs on the rule.
+    for forbidden in ("version", "outputSchema", "scoreType", "mapping", "variables"):
+        assert forbidden not in payload
+
+
+def test_unknown_score_type_is_rejected_before_it_reaches_langfuse(
+    settings, catalog, metrics
+):
+    import dataclasses as _dc
+
+    from app.config import ConfigError
+
+    broken = _dc.replace(catalog.evaluators["safety"], score_type="stars")
+    with pytest.raises(ConfigError, match="scoreType"):
+        evaluator_payload(broken, "judge-default", "judge-default")
+
+
+def test_connection_payload_matches_the_api_contract(settings, catalog, metrics):
+    payload = connection_payload(settings, catalog.judge_aliases)
+    assert set(payload) == {
+        "provider",
+        "adapter",
+        "secretKey",
+        "baseURL",
+        "extraHeaders",
+        "withDefaultModels",
+        "customModels",
+    }
+    # Must be one of the adapters Langfuse knows; Bifrost speaks OpenAI.
+    assert payload["adapter"] == "openai"

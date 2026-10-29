@@ -210,7 +210,13 @@ def test_non_default_judge_uses_the_judge_specific_evaluator(
         published=["goal-completion", "goal-completion--judge-strong"],
     )
     assert loop.run_once()
-    assert langfuse.rules[0]["evaluator"] == "goal-completion--judge-strong"
+    # An evaluator family reference, which is what the API takes; Langfuse
+    # resolves it to the latest version when saving.
+    assert langfuse.rules[0]["evaluator"] == {
+        "name": "goal-completion--judge-strong",
+        "scope": "project",
+        "type": "llm_as_judge",
+    }
 
 
 def test_explicit_sampling_overrides_coverage(settings, catalog, metrics):
@@ -230,6 +236,77 @@ def test_rule_cap_is_reported_rather_than_left_to_a_409(settings, catalog, metri
     loop, langfuse, _ = build(tight, catalog, metrics, decls)
     assert not loop.run_once()
     assert len(langfuse.rules) == 1
+
+
+def test_rule_payload_matches_the_api_contract(settings, catalog, metrics):
+    """Shape verified against a live Langfuse at the pin.
+
+    `mapping` is required and every evaluator variable must appear exactly once,
+    so a missing one is a 400 missing_variable_mapping at runtime.
+    """
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
+    assert loop.run_once()
+    rule = langfuse.rules[0]
+
+    for required in ("name", "evaluator", "target", "enabled", "mapping"):
+        assert required in rule, required
+    assert rule["evaluator"]["scope"] == "project"
+    assert rule["target"] in ("observation", "experiment")
+    # Default catalog prompts use {{input}} and {{output}}.
+    assert sorted(m["variable"] for m in rule["mapping"]) == ["input", "output"]
+    assert all(
+        m["source"] in ("input", "output", "metadata", "tool_calls")
+        for m in rule["mapping"]
+    )
+    # Every variable exactly once — duplicates are rejected by the API.
+    variables = [m["variable"] for m in rule["mapping"]]
+    assert len(variables) == len(set(variables))
+
+
+def test_tool_use_maps_its_third_variable(settings, catalog, metrics):
+    """An evaluator whose prompt scores tool calls needs tool_calls mapped."""
+    import dataclasses as _dc
+
+    tool_use = _dc.replace(
+        catalog.evaluators["safety"],
+        name="tool-use",
+        mapping={"input": "input", "output": "output", "tool_calls": "tool_calls"},
+    )
+    extended = _dc.replace(
+        catalog, evaluators={**catalog.evaluators, "tool-use": tool_use}
+    )
+    loop, langfuse, _ = build(
+        settings,
+        extended,
+        metrics,
+        [declaration(evaluators=("tool-use",))],
+        published=["tool-use"],
+    )
+    assert loop.run_once()
+    assert sorted(m["variable"] for m in langfuse.rules[0]["mapping"]) == [
+        "input",
+        "output",
+        "tool_calls",
+    ]
+
+
+def test_a_catalog_mapping_source_the_api_rejects_is_evented(
+    settings, catalog, metrics
+):
+    """Caught before the call, so one bad catalog entry does not 400 mid-pass."""
+    import dataclasses as _dc
+
+    broken = _dc.replace(
+        catalog.evaluators["goal-completion"],
+        mapping={"input": "input", "output": "toolCalls"},
+    )
+    bad_catalog = _dc.replace(
+        catalog, evaluators={**catalog.evaluators, "goal-completion": broken}
+    )
+    loop, langfuse, recorder = build(settings, bad_catalog, metrics, [declaration()])
+    assert loop.run_once()
+    assert langfuse.rules == []
+    assert any("toolCalls" in w[3] for w in recorder.warnings)
 
 
 def test_rule_targets_the_root_observation(settings, catalog, metrics):

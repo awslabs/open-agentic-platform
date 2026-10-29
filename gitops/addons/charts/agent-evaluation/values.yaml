@@ -149,12 +149,15 @@ catalog:
     prompt: tool-use.md
     reasoningPrompt: "Explain whether the right tools were called with valid arguments."
     outputPrompt: "Return a numeric value between 0 and 1."
-    # tool_calls is only present on observations that made any, so it is mapped
-    # explicitly rather than defaulted.
+    # Maps each {{variable}} in the prompt to an observation field. Carried on
+    # the Langfuse evaluation RULE, where every evaluator variable must be mapped
+    # exactly once. Declared explicitly here because this prompt uses a third
+    # variable: tool_calls is only present on observations that made any.
+    # Valid sources for an observation rule: input, output, metadata, tool_calls.
     mapping:
       input: input
       output: output
-      tool_calls: toolCalls
+      tool_calls: tool_calls
 
 resources:
   requests:

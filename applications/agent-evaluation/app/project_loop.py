@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 
-from .config import Catalog, Settings
+from .config import Catalog, ConfigError, Settings
 from .langfuse_client import LangfuseClient, LangfuseError
 from .naming import evaluator_name
 
@@ -36,46 +36,55 @@ logger = logging.getLogger(__name__)
 JUDGE_PROVIDER = "oap-bifrost-judge"
 
 
-def _mapping_for(evaluator) -> list[dict]:
-    """Langfuse variable mapping for an observation-target evaluator.
-
-    Defaults cover the two variables every catalog prompt uses. An entry that
-    scores tool calls adds a third, which is why the catalog can override it:
-    `tool_calls` is only present on observations that made any.
-    """
-    if evaluator.mapping:
-        items = evaluator.mapping
-    else:
-        items = {"input": "input", "output": "output"}
-    return [
-        {
-            "templateVariable": variable,
-            "langfuseObject": "trace" if source.startswith("trace.") else "observation",
-            "objectName": None,
-            "selectedColumnId": source.split(".")[-1],
-        }
-        for variable, source in items.items()
-    ]
+# Catalog scoreType -> the dataType Langfuse stores the score as. The catalog
+# speaks in lowercase because that is how a chart value reads; the API takes an
+# uppercase enum.
+_DATA_TYPES = {"numeric": "NUMERIC", "boolean": "BOOLEAN", "categorical": "CATEGORICAL"}
 
 
 def evaluator_payload(evaluator, judge_alias: str, default_judge: str) -> dict:
-    """The POST body for one (catalog entry, judge alias) pair."""
+    """The POST body for one (catalog entry, judge alias) pair.
+
+    Shape verified against the live API's OpenAPI contract at the pin
+    (`unstableCreateLlmAsJudgeEvaluatorRequest`): name, prompt and
+    outputDefinition are required, modelConfig is optional, and nothing else is
+    part of the public request shape.
+
+    Two things that are deliberately NOT here:
+
+    - **The variable mapping.** Langfuse derives an evaluator's `variables` from
+      the `{{...}}` placeholders in its prompt, and the mapping from those
+      variables to observation fields lives on the evaluation RULE, not on the
+      evaluator. The per-cluster loop supplies it.
+    - **`version`.** The contract says explicitly not to send it; a name that
+      already exists mints the next version on its own.
+    """
+    data_type = _DATA_TYPES.get(evaluator.score_type.lower())
+    if data_type is None:
+        raise ConfigError(
+            f"evaluator {evaluator.name!r} has scoreType "
+            f"{evaluator.score_type!r}; expected one of {sorted(_DATA_TYPES)}"
+        )
     return {
         "name": evaluator_name(evaluator.name, judge_alias, default_judge),
+        # Omitting this defaults to llm_as_judge for backwards compatibility, but
+        # the contract asks new clients to send it explicitly.
+        "type": "llm_as_judge",
         "prompt": evaluator.prompt,
-        "modelConfig": {
-            "provider": JUDGE_PROVIDER,
-            "model": judge_alias,
-            "modelParams": {},
+        "outputDefinition": {
+            "dataType": data_type,
+            "reasoning": {
+                "description": evaluator.reasoning_prompt or "Explain the score."
+            },
+            "score": {
+                "description": evaluator.output_prompt
+                or "Return a numeric value between 0 and 1."
+            },
         },
-        "outputSchema": {
-            "name": "score",
-            "description": evaluator.output_prompt
-            or "Return a numeric value between 0 and 1.",
-            "reasoning": evaluator.reasoning_prompt or "Explain the score.",
-        },
-        "scoreType": evaluator.score_type,
-        "mapping": _mapping_for(evaluator),
+        # Pins the judge for this evaluator. Without it Langfuse falls back to the
+        # project's default evaluation model, which the platform does not set — so
+        # omitting it would make the judge choice implicit and unreviewable.
+        "modelConfig": {"provider": JUDGE_PROVIDER, "model": judge_alias},
     }
 
 
@@ -83,24 +92,28 @@ def _differs(existing: dict, desired: dict) -> bool:
     """True when the published evaluator no longer matches the chart.
 
     Compares only the fields this loop owns. Langfuse adds its own (id, version,
-    createdAt, projectId), and comparing those would make every pass look like a
-    change.
+    scope, variables, createdAt, updatedAt), and comparing those would make every
+    pass look like a change — which matters more than usual here, because a
+    "change" mints a new evaluator version.
     """
     if (existing.get("prompt") or "") != desired["prompt"]:
         return True
+
     existing_model = existing.get("modelConfig") or {}
     desired_model = desired["modelConfig"]
     if existing_model.get("model") != desired_model["model"]:
         return True
     if existing_model.get("provider") != desired_model["provider"]:
         return True
-    existing_schema = existing.get("outputSchema") or {}
-    desired_schema = desired["outputSchema"]
-    for key in ("description", "reasoning"):
-        if (existing_schema.get(key) or "") != desired_schema[key]:
-            return True
-    if (existing.get("scoreType") or "") != desired["scoreType"]:
+
+    existing_output = existing.get("outputDefinition") or {}
+    desired_output = desired["outputDefinition"]
+    if (existing_output.get("dataType") or "") != desired_output["dataType"]:
         return True
+    for field in ("reasoning", "score"):
+        existing_description = (existing_output.get(field) or {}).get("description") or ""
+        if existing_description != desired_output[field]["description"]:
+            return True
     return False
 
 
