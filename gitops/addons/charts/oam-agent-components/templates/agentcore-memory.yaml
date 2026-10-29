@@ -145,7 +145,7 @@ spec:
         }
 
         parameter: {
-        	// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. <namespace>_<component> ("-" replaced by "_") when the namespace has no "-", else M<first 30 characters>_<16-character hash>
+        	// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. M<first 30 characters of <namespace>_<component>>_<16-character hash>
         	// Fixed rather than overridable because the IAM policy grants memory/<memoryName>-*:
         	// an override could name another namespace's memory and be granted access to it.
         	memoryName: _autoName & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"

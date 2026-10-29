@@ -198,10 +198,11 @@ Application name and component name collide on it. Until that convention changes
 upstream, keep that pair unique per account.
 
 The AWS memory name is derived, not set, and is one-to-one with the namespace and
-component: `<namespace>_<component>` with `-` replaced by `_` when the namespace has no
-`-`, otherwise `M<first 30 characters>_<16-character hash>`. The second form is also used
-when the first would start with a digit or exceed AgentCore's 48 characters, so the same
-Application deploys in any namespace. `memoryName` cannot be overridden: the IAM policy
+component: `M<first 30 characters of <namespace>_<component>>_<16-character hash>`, at
+most AgentCore's 48 characters, so the same Application deploys in any namespace. It never
+equals a name from earlier versions (`<namespace>_<component>`, lower case), so an
+upgrade creates the new memory next to the old one and KubeVela then deletes the old
+one; with the same name the new memory could not be created and the upgrade would stall. `memoryName` cannot be overridden: the IAM policy
 grants `memory/<memoryName>-*`, so a chosen or colliding name could reach another
 namespace's memory. `eventExpiryDuration` must be 3 to 365 days. KubeVela rejects other
 values when the Application is applied.
