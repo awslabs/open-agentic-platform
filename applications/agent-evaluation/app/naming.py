@@ -33,6 +33,13 @@ import re
 
 PREFIX = "oap"
 
+# The Langfuse LLM-connection provider name the platform's judge is registered
+# under. It doubles as the ownership marker on evaluator objects: v4 evaluator
+# names are not identifiers, so "is this evaluator ours?" is answered by its
+# modelConfig.provider rather than by its name. Shared by the project loop
+# (which writes it) and the per-cluster loop (which filters on it).
+JUDGE_PROVIDER = "oap-bifrost-judge"
+
 # Separates an evaluator from the judge alias it is bound to, in the evaluator
 # object name (D4, "The judge is a property of the evaluator"). Catalog names and
 # judge aliases must not contain it, or the name would be ambiguous.

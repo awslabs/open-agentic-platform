@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 STRICTNESS_LEVELS = ("low", "medium", "high")
 
+# The observation fields a prompt variable may be populated from. An
+# observation-target evaluation rule accepts only these, so a catalog entry
+# naming anything else is rejected before any Langfuse call.
+VALID_MAPPING_SOURCES = ("input", "output", "metadata", "tool_calls")
+
+# Variables every catalog prompt uses, when an entry declares no mapping.
+DEFAULT_MAPPING = {"input": "input", "output": "output"}
+
 
 class ConfigError(Exception):
     """Configuration that cannot be defaulted. The reconciler exits on these."""
@@ -60,7 +68,28 @@ class Catalog:
     evaluators: dict[str, Evaluator]
     coverage: dict[str, float]
     judge_default: str
-    judge_aliases: tuple[str, ...]
+    # Judge label -> the model id sent to the gateway. Two separate things on
+    # purpose: the LABEL is what a developer writes in `evaluation.judge` and
+    # what appears in evaluator object names, while the MODEL ID is what Bifrost
+    # needs. They cannot be the same string, because Bifrost does not
+    # auto-resolve a bare platform alias ("no providers found for model
+    # 'judge-default' in model catalog to auto-resolve") and Langfuse requires
+    # the model to be listed on the LLM connection. Using the real model id also
+    # lets Langfuse attribute judge cost from its own model catalog.
+    judge_models: dict[str, str]
+
+    @property
+    def judge_aliases(self) -> tuple[str, ...]:
+        return tuple(self.judge_models)
+
+    def judge_model(self, alias: str) -> str:
+        try:
+            return self.judge_models[alias]
+        except KeyError as exc:
+            raise ConfigError(
+                f"judge {alias!r} is not in the platform's judge list "
+                f"{sorted(self.judge_models)}"
+            ) from exc
 
     def sampling_for(self, coverage: str) -> float:
         try:
@@ -214,16 +243,28 @@ def load_catalog(path: str) -> Catalog:
         coverage[level] = rate
 
     judge = raw.get("judge") or {}
-    judge_default = str(_require(judge, "defaultModelId", "catalog.judge"))
-    aliases = [str(a) for a in (judge.get("aliases") or [judge_default])]
-    if judge_default not in aliases:
-        aliases.insert(0, judge_default)
-    for alias in aliases:
+    judge_default = str(_require(judge, "defaultAlias", "catalog.judge"))
+    models_raw = _require(judge, "models", "catalog.judge")
+    if not isinstance(models_raw, dict) or not models_raw:
+        raise ConfigError(
+            "catalog.judge.models must be a non-empty mapping of judge alias to "
+            "gateway model id, for example {judge-default: us.amazon.nova-pro-v1:0}"
+        )
+    judge_models = {str(alias): str(model) for alias, model in models_raw.items()}
+    if judge_default not in judge_models:
+        raise ConfigError(
+            f"catalog.judge.defaultAlias is {judge_default!r} but that alias is "
+            f"not in catalog.judge.models {sorted(judge_models)}; an agent that "
+            "does not name a judge would have no model to score with"
+        )
+    for alias, model in judge_models.items():
         if "--" in alias:
             raise ConfigError(
                 f"judge alias {alias!r} must not contain '--': it is the separator "
                 "between an evaluator and its judge in Langfuse object names"
             )
+        if not model:
+            raise ConfigError(f"judge alias {alias!r} has an empty model id")
 
     evaluators: dict[str, Evaluator] = {}
     for name, spec in (_require(raw, "catalog", "catalog")).items():
@@ -265,5 +306,5 @@ def load_catalog(path: str) -> Catalog:
         evaluators=evaluators,
         coverage=coverage,
         judge_default=judge_default,
-        judge_aliases=tuple(aliases),
+        judge_models=judge_models,
     )

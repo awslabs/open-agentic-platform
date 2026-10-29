@@ -14,8 +14,10 @@ coverage:
   medium: 0.1
   high: 0.5
 judge:
-  defaultModelId: judge-default
-  aliases: [judge-default, judge-strong]
+  defaultAlias: judge-default
+  models:
+    judge-default: us.amazon.nova-pro-v1:0
+    judge-strong: us.amazon.nova-premier-v1:0
 catalog:
   safety:
     target: root-agent-observation
@@ -38,16 +40,24 @@ def test_loads_a_good_catalog(tmp_path):
     assert set(catalog.evaluators) == {"safety"}
     assert catalog.coverage["medium"] == 0.1
     assert catalog.judge_default == "judge-default"
-    assert catalog.judge_aliases == ("judge-default", "judge-strong")
+    assert sorted(catalog.judge_aliases) == ["judge-default", "judge-strong"]
+    # The label and the model id are separate: Bifrost needs the concrete id.
+    assert catalog.judge_model("judge-default") == "us.amazon.nova-pro-v1:0"
     assert catalog.evaluators["safety"].threshold("high") == 0.97
     assert catalog.sampling_for("low") == 0.01
 
 
-def test_default_judge_is_always_an_alias(tmp_path):
-    """Otherwise the bare evaluator name would have no alias to be written for."""
-    body = GOOD.replace("aliases: [judge-default, judge-strong]", "aliases: [judge-strong]")
-    catalog = load_catalog(write(tmp_path, body))
-    assert catalog.judge_aliases[0] == "judge-default"
+def test_default_alias_must_have_a_model(tmp_path):
+    """Otherwise an agent that names no judge would have nothing to score with."""
+    body = GOOD.replace("defaultAlias: judge-default", "defaultAlias: judge-missing")
+    with pytest.raises(ConfigError, match="defaultAlias"):
+        load_catalog(write(tmp_path, body))
+
+
+def test_unknown_judge_is_rejected_by_the_catalog(tmp_path):
+    catalog = load_catalog(write(tmp_path, GOOD))
+    with pytest.raises(ConfigError, match="not in the platform's judge list"):
+        catalog.judge_model("judge-nope")
 
 
 def test_a_missing_strictness_level_is_rejected(tmp_path):
@@ -73,7 +83,10 @@ def test_judge_separator_is_forbidden_in_names(tmp_path):
 
     with pytest.raises(ConfigError, match="must not contain"):
         load_catalog(
-            write(tmp_path, GOOD.replace("judge-strong]", "judge--strong]"))
+            write(
+                tmp_path,
+                GOOD.replace("judge-strong: us", "judge--strong: us"),
+            )
         )
 
 

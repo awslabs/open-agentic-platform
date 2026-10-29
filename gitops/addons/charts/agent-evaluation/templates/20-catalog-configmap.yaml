@@ -27,14 +27,16 @@ data:
       {{ $level }}: {{ $rate }}
       {{- end }}
     judge:
-      defaultModelId: {{ .Values.judge.defaultModelId | quote }}
-      aliases:
-        {{- $aliases := .Values.judge.aliases | default (list .Values.judge.defaultModelId) }}
-        {{- if not (has .Values.judge.defaultModelId $aliases) }}
-        - {{ .Values.judge.defaultModelId | quote }}
+      {{- if not (hasKey .Values.judge.models .Values.judge.defaultAlias) }}
+      {{- fail (printf "agent-evaluation: judge.defaultAlias is %q but that alias is not a key in judge.models %v; an agent that does not name a judge would have no model to score with." .Values.judge.defaultAlias (keys .Values.judge.models)) }}
+      {{- end }}
+      defaultAlias: {{ .Values.judge.defaultAlias | quote }}
+      models:
+        {{- range $alias, $model := .Values.judge.models }}
+        {{- if not $model }}
+        {{- fail (printf "agent-evaluation: judge alias %q has an empty model id; it must be the gateway model id, for example us.amazon.nova-pro-v1:0" $alias) }}
         {{- end }}
-        {{- range $aliases }}
-        - {{ . | quote }}
+        {{ $alias }}: {{ $model | quote }}
         {{- end }}
     catalog:
       {{- $root := . }}

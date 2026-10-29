@@ -93,27 +93,42 @@ bifrost:
               # Platform default judge for continuous agent evaluation
               # (docs/architecture/agent-evaluation.md, D3).
               #
-              # Nova Pro, not a Claude model, and that is a HARD CONSTRAINT rather
-              # than a preference. Langfuse validates an LLM-as-a-judge evaluator
-              # by making a real model call that demands STRUCTURED OUTPUT, and
-              # Bifrost translates that into a Bedrock forced tool call. Every
-              # Claude 5 model tested rejects it:
-              #   tool_choice: type "tool" and "any" are not supported for this model
-              # which makes Langfuse pause the evaluator with
-              # EVAL_MODEL_CONFIG_INVALID. Verified against Bedrock through Bifrost:
-              #   us.anthropic.claude-opus-5-5    -> rejected (forced tool_choice)
-              #   us.anthropic.claude-sonnet-5-5  -> rejected (forced tool_choice)
-              #   us.anthropic.claude-3-7-sonnet  -> end of life
-              #   us.amazon.nova-pro-v1:0         -> returns valid structured JSON
+              # The judge is constrained by a capability, not chosen on taste.
+              # Langfuse validates an LLM-as-a-judge evaluator by making a real
+              # model call that demands STRUCTURED OUTPUT, and Bifrost translates
+              # that into a Bedrock FORCED tool call. A model that refuses forced
+              # tool choice makes Langfuse pause the evaluator with
+              # EVAL_MODEL_CONFIG_INVALID.
               #
-              # It also happens to be the better answer to open question Q1: a
-              # different model family removes self-preference bias entirely,
-              # rather than relying on a stronger model of the same family being
-              # impartial about its own output.
+              # Measured against Bedrock through Bifrost on the hub:
+              #   us.amazon.nova-pro-v1:0         OK, valid structured JSON
+              #   us.anthropic.claude-haiku-5-5   OK, valid structured JSON
+              #   us.anthropic.claude-sonnet-5-5  rejected: tool_choice: type
+              #                                   "tool" and "any" are not
+              #                                   supported for this model
+              #   us.anthropic.claude-opus-5-5    rejected, same reason
+              #   us.anthropic.claude-fable-5(-1) rejected by the ACCOUNT, not the
+              #                                   capability: "data retention mode
+              #                                   'default' is not available for
+              #                                   this model" — it fails a plain
+              #                                   chat call too, so Fable needs
+              #                                   Bedrock model access sorted out
+              #                                   before it can be considered
+              #   us.anthropic.claude-3-7-sonnet  404, end of life
               #
-              # The dashboard breaks pass ratios down by judge model, so a future
-              # swap (once Claude models accept forced tool choice on Bedrock, or
-              # Bifrost stops forcing it) stays measurable.
+              # Note this is NOT a Claude-family limitation: Haiku 5.5 accepts
+              # forced tool choice while Sonnet and Opus 5.5 do not.
+              #
+              # Nova Pro over Haiku 5.5 for two reasons: it is the stronger of the
+              # two working options (D3 warns that a small model makes a weak
+              # judge), and a different family removes self-preference bias
+              # outright instead of trusting one Claude to grade another.
+              #
+              # Prefer Sonnet/Opus/Fable once any of these is true: Bifrost stops
+              # forcing tool_choice (`auto` would likely satisfy them), those
+              # models start accepting it on Bedrock, or Fable's data-retention
+              # access is enabled on this account. The dashboard breaks pass ratios
+              # down by judge model, so a swap stays measurable.
               judge-default: us.amazon.nova-pro-v1:0
             bedrock_key_config:
               region: us-west-2

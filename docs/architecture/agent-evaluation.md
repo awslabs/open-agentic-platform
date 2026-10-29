@@ -1145,19 +1145,29 @@ sequenceDiagram
 
    | Judge candidate | Structured-output call |
    |---|---|
-   | `us.anthropic.claude-opus-5-5` | Rejected: `tool_choice: type "tool" and "any" are not supported for this model` |
-   | `us.anthropic.claude-sonnet-5-5` | Rejected, same reason |
+   | `us.amazon.nova-pro-v1:0` | Valid structured JSON |
+   | `us.anthropic.claude-haiku-5-5` | Valid structured JSON |
+   | `us.anthropic.claude-sonnet-5-5` | Rejected: `tool_choice: type "tool" and "any" are not supported for this model` |
+   | `us.anthropic.claude-opus-5-5` | Rejected, same reason |
+   | `us.anthropic.claude-fable-5`, `-5-1` | Rejected by the **account**, not the capability: `data retention mode 'default' is not available for this model`. It fails a plain chat call too, so Fable needs Bedrock model access resolved before it can be judged on merit |
    | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `404` end of life |
-   | `us.amazon.nova-pro-v1:0` | Returns valid structured JSON |
 
-   A Claude judge makes Langfuse pause the evaluator with
-   `EVAL_MODEL_CONFIG_INVALID`, so "a stronger model of the same family" is not
-   currently available through this path at all. The different family is also
-   the better answer on the merits, since it removes self-preference bias
-   instead of relying on a stronger sibling being impartial about its own
-   output. Revisit if Claude models accept forced tool choice on Bedrock, or if
-   Bifrost stops forcing it; the dashboard breaks pass ratios down by judge
-   model, so a swap stays measurable.
+   This is **not** a Claude-family limitation: Haiku 5.5 accepts forced tool
+   choice while Sonnet and Opus 5.5 refuse it. A model that refuses makes
+   Langfuse pause the evaluator with `EVAL_MODEL_CONFIG_INVALID`.
+
+   Nova Pro is chosen over Haiku 5.5 because it is the stronger of the two
+   working options — D3's own argument is that a small model makes a weak judge
+   — and because a different family removes self-preference bias outright
+   rather than trusting one Claude to grade another. The original idea of "a
+   stronger model of the same family" (Opus judging Sonnet) is simply not
+   reachable through this path today.
+
+   Revisit when any of these changes: Bifrost stops forcing `tool_choice`
+   (`auto` would likely satisfy Sonnet and Opus), those models start accepting
+   it on Bedrock, or Fable's data-retention access is enabled on the account.
+   The dashboard breaks pass ratios down by judge model, so a swap stays
+   measurable.
 2. **Langfuse version.** Decided: upgraded to v4. On the previously pinned
    `3.225.11` the evaluator API is under `/api/public/unstable/` and could not
    be used at all — its preflight fails with

@@ -45,11 +45,12 @@ def test_hub_publishes_one_evaluator_per_catalog_entry_per_judge_alias(
         "safety--judge-strong",
     ]
     for record in langfuse.evaluators:
-        alias = (
-            "judge-strong" if record["name"].endswith("--judge-strong")
-            else "judge-default"
+        expected_model = (
+            "us.amazon.nova-premier-v1:0"
+            if record["name"].endswith("--judge-strong")
+            else "us.amazon.nova-pro-v1:0"
         )
-        assert record["modelConfig"]["model"] == f"{JUDGE_PROVIDER}/{alias}"
+        assert record["modelConfig"]["model"] == expected_model
         assert record["modelConfig"]["provider"] == JUDGE_PROVIDER
 
 
@@ -65,7 +66,10 @@ def test_unchanged_catalog_writes_nothing_on_the_second_pass(
 
     langfuse.calls.clear()
     assert loop.run_once()
-    assert not [c for c in langfuse.calls if c.startswith("create_evaluator")]
+    assert not [
+        c for c in langfuse.calls
+        if c.startswith(("create_evaluator", "update_evaluator"))
+    ]
 
 
 def test_a_changed_prompt_publishes_exactly_one_new_version(
@@ -83,13 +87,17 @@ def test_a_changed_prompt_publishes_exactly_one_new_version(
     )
     assert loop.run_once()
 
-    created = [c for c in langfuse.calls if c.startswith("create_evaluator")]
+    # A new VERSION of the existing evaluator, keyed by id -- not a second
+    # evaluator object, which is what a v4 POST to /evaluators would create.
+    created = [c for c in langfuse.calls if c.startswith("update_evaluator")]
     assert sorted(created) == [
-        "create_evaluator:safety",
-        "create_evaluator:safety--judge-strong",
+        "update_evaluator:safety",
+        "update_evaluator:safety--judge-strong",
     ]
-    versions = [e for e in langfuse.evaluators if e["name"] == "safety"]
-    assert [v["version"] for v in versions] == [1, 2]
+    assert not [c for c in langfuse.calls if c.startswith("create_evaluator")]
+    safety = [e for e in langfuse.evaluators if e["name"] == "safety"]
+    assert len(safety) == 1, "must stay ONE object, at a higher version"
+    assert safety[0]["version"] == 2
 
 
 def test_only_the_newest_version_is_diffed(settings, catalog, metrics):
@@ -111,7 +119,7 @@ def test_a_spoke_is_refused_at_the_client(settings, catalog, metrics):
     """The guarantee is the code path, because the shared key pair would allow it."""
     loop, langfuse = build(settings, catalog, metrics, hub=False)
     with pytest.raises(ProjectWriteForbidden):
-        langfuse.create_evaluator_version({"name": "safety"})
+        langfuse.create_evaluator({"name": "safety"})
 
 
 def test_dropped_catalog_entry_is_reported_not_deleted(
@@ -185,25 +193,38 @@ def test_connection_is_upserted_once_when_unchanged(settings, catalog, metrics):
 
 def test_evaluator_payload_matches_the_api_contract(settings, catalog, metrics):
     payload = evaluator_payload(
-        catalog.evaluators["safety"], "judge-default", "judge-default"
+        catalog.evaluators["safety"],
+        "judge-default",
+        "judge-default",
+        "us.amazon.nova-pro-v1:0",
     )
-    assert set(payload) == {"name", "type", "prompt", "outputDefinition", "modelConfig"}
+    assert set(payload) == {
+        "name",
+        "type",
+        "prompt",
+        "outputDefinition",
+        "variableMapping",
+        "modelConfig",
+    }
     assert payload["type"] == "llm_as_judge"
     assert payload["outputDefinition"]["dataType"] == "NUMERIC"
     # Both description fields are required by the contract.
     assert payload["outputDefinition"]["reasoning"]["description"]
     assert payload["outputDefinition"]["score"]["description"]
-    # `model` must be provider-qualified even though `provider` is sent beside
-    # it: a bare alias is rejected at evaluator preflight, because Langfuse tries
-    # to auto-resolve an unqualified name against its built-in model catalog.
+    # The gateway's own model id, UNQUALIFIED: `provider` is the field beside it.
     assert payload["modelConfig"] == {
         "provider": JUDGE_PROVIDER,
-        "model": f"{JUDGE_PROVIDER}/judge-default",
+        "model": "us.amazon.nova-pro-v1:0",
     }
-    # Explicitly not part of the public request shape. `version` is called out in
-    # the contract as an internal storage detail that must not be sent, and the
-    # variable mapping belongs on the rule.
-    for forbidden in ("version", "outputSchema", "scoreType", "mapping", "variables"):
+    # In v4 the variable mapping is the evaluator's default, which a rule
+    # inherits; in v3 it was only valid on the rule.
+    assert sorted(m["variable"] for m in payload["variableMapping"]) == [
+        "input",
+        "output",
+    ]
+    # `version` is called out in the contract as an internal storage detail that
+    # must not be sent; the other two were the v3 spellings.
+    for forbidden in ("version", "outputSchema", "scoreType"):
         assert forbidden not in payload
 
 
@@ -216,7 +237,9 @@ def test_unknown_score_type_is_rejected_before_it_reaches_langfuse(
 
     broken = _dc.replace(catalog.evaluators["safety"], score_type="stars")
     with pytest.raises(ConfigError, match="scoreType"):
-        evaluator_payload(broken, "judge-default", "judge-default")
+        evaluator_payload(
+            broken, "judge-default", "judge-default", "us.amazon.nova-pro-v1:0"
+        )
 
 
 def test_connection_payload_matches_the_api_contract(settings, catalog, metrics):

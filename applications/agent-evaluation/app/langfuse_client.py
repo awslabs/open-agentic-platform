@@ -23,7 +23,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-UNSTABLE = "/api/public/unstable"
+# Langfuse v4. The evaluator and evaluation-rule surfaces are STABLE here; on v3
+# they lived under /api/public/unstable/ and could not be used at all, because
+# their preflight could not resolve a provider config (see the design doc, Q2).
+V2 = "/api/public/v2"
 PUBLIC = "/api/public"
 
 
@@ -99,12 +102,10 @@ class LangfuseClient:
             raise LangfuseError(f"{method} {path} returned non-JSON body") from exc
 
     def _paged(self, path: str, params: dict | None = None) -> list[dict]:
-        """Collect every page of a list endpoint.
+        """Collect every page of a page-numbered list endpoint (`page`/`meta`).
 
-        Langfuse list endpoints are 1-indexed on `page` and report totals in
-        `meta`. Without this, a project with more than one page of evaluators
-        would look as though the later ones did not exist, and the hub would
-        re-POST them on every pass.
+        Used by the endpoints that still paginate that way, such as
+        /api/public/llm-connections.
         """
         items: list[dict] = []
         page = 1
@@ -126,6 +127,36 @@ class LangfuseClient:
             page += 1
         return items
 
+    def _cursor_paged(self, path: str, params: dict | None = None) -> list[dict]:
+        """Collect every page of a CURSOR-paginated v2 list endpoint.
+
+        The v2 evaluator and evaluation-rule endpoints page by an opaque cursor
+        in `meta.cursor`, which is omitted on the last page — unlike the
+        page-numbered v1 endpoints. Getting this wrong is quiet and expensive:
+        the hub would stop seeing evaluators past the first 100, decide they do
+        not exist, and publish a duplicate of each on every pass (v4 happily
+        creates same-named evaluators, since names are not identifiers).
+
+        `limit` is capped at 100 by the API.
+        """
+        items: list[dict] = []
+        cursor: str | None = None
+        # Bounded rather than `while True`: a server that kept returning the
+        # same cursor would otherwise spin forever holding the reconcile loop.
+        for _ in range(1000):
+            query = {**(params or {}), "limit": 100}
+            if cursor:
+                query["cursor"] = cursor
+            body = self._call("GET", path, params=query)
+            items.extend((body or {}).get("data") or [])
+            cursor = ((body or {}).get("meta") or {}).get("cursor")
+            if not cursor:
+                return items
+        raise LangfuseError(
+            f"GET {path} did not stop paginating after 1000 pages; refusing to "
+            "loop further"
+        )
+
     def _require_project_write(self, what: str) -> None:
         if not self.allow_project_writes:
             raise ProjectWriteForbidden(
@@ -137,22 +168,46 @@ class LangfuseClient:
     # ── evaluators (hub writes, every role reads) ─────────────────────────
 
     def list_evaluators(self) -> list[dict]:
-        return self._paged(f"{UNSTABLE}/evaluators")
+        """Every evaluator, each with its latest definition flattened in."""
+        return self._cursor_paged(f"{V2}/evaluators")
 
-    def create_evaluator_version(self, payload: dict) -> dict:
-        """POST an evaluator. An existing name creates the next version.
+    def create_evaluator(self, payload: dict) -> dict:
+        """Create a NEW evaluator at version 1.
 
-        At the pin there is no PATCH: posting a name that already exists mints a
-        new version and every rule referencing that name moves to it. That is
-        what makes a hub prompt change reach every cluster with no spoke action
-        — and also why the project loop must compare before posting.
+        In v4 a name is not an identifier and does not have to be unique, so
+        this always creates another object — it is not an upsert. Call it only
+        when no evaluator of ours carries that name yet, or the project
+        accumulates duplicates that all match the same traces.
         """
         self._require_project_write(f"evaluator {payload.get('name')!r}")
-        return self._call("POST", f"{UNSTABLE}/evaluators", json=payload)
+        return self._call("POST", f"{V2}/evaluators", json=payload)
 
-    def delete_evaluator(self, name: str) -> None:
-        self._require_project_write(f"deletion of evaluator {name!r}")
-        self._call("DELETE", f"{UNSTABLE}/evaluators/{name}")
+    def update_evaluator(self, evaluator_id: str, payload: dict) -> dict:
+        """Replace an evaluator's definition, which publishes a new version.
+
+        PATCH, not `POST /evaluators/{id}/versions`: that path exists but is
+        read-only (listing version history) and answers 405 to a POST. A
+        definition change through PATCH is what mints the next version — the
+        contract notes that metadata-only changes do not.
+
+        Every rule assigned to the evaluator automatically uses its latest
+        version, so this is what makes a hub prompt change reach every cluster
+        with no action on the spokes. It also clears a pause caused by an
+        invalid or missing model config, keeping the id and rule assignments.
+
+        The whole definition must be sent: definition fields are replaced as a
+        unit rather than merged.
+        """
+        self._require_project_write(f"a new version of evaluator {evaluator_id}")
+        return self._call("PATCH", f"{V2}/evaluators/{evaluator_id}", json=payload)
+
+    def list_evaluator_versions(self, evaluator_id: str) -> list[dict]:
+        """Version history, newest first. Diagnostics only."""
+        return self._cursor_paged(f"{V2}/evaluators/{evaluator_id}/versions")
+
+    def delete_evaluator(self, evaluator_id: str) -> None:
+        self._require_project_write(f"deletion of evaluator {evaluator_id}")
+        self._call("DELETE", f"{V2}/evaluators/{evaluator_id}")
 
     # ── LLM connections (hub only) ────────────────────────────────────────
 
@@ -167,18 +222,16 @@ class LangfuseClient:
     # ── evaluation rules (every role, own cluster only) ───────────────────
 
     def list_evaluation_rules(self) -> list[dict]:
-        return self._paged(f"{UNSTABLE}/evaluation-rules")
+        return self._cursor_paged(f"{V2}/evaluation-rules")
 
     def create_evaluation_rule(self, payload: dict) -> dict:
-        return self._call("POST", f"{UNSTABLE}/evaluation-rules", json=payload)
+        return self._call("POST", f"{V2}/evaluation-rules", json=payload)
 
     def update_evaluation_rule(self, rule_id: str, payload: dict) -> dict:
-        return self._call(
-            "PATCH", f"{UNSTABLE}/evaluation-rules/{rule_id}", json=payload
-        )
+        return self._call("PATCH", f"{V2}/evaluation-rules/{rule_id}", json=payload)
 
     def delete_evaluation_rule(self, rule_id: str) -> None:
-        self._call("DELETE", f"{UNSTABLE}/evaluation-rules/{rule_id}")
+        self._call("DELETE", f"{V2}/evaluation-rules/{rule_id}")
 
     # ── metrics (every role, own cluster's agents only) ───────────────────
 

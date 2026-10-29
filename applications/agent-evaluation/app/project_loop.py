@@ -26,14 +26,10 @@ import logging
 
 from .config import Catalog, ConfigError, Settings
 from .langfuse_client import LangfuseClient, LangfuseError
-from .naming import evaluator_name
+from .config import DEFAULT_MAPPING
+from .naming import JUDGE_PROVIDER, evaluator_name
 
 logger = logging.getLogger(__name__)
-
-# The provider name the judge LLM connection is registered under. Evaluators
-# reference the judge by this provider plus a model, so it is part of the
-# contract between this loop and the evaluator payloads below.
-JUDGE_PROVIDER = "oap-bifrost-judge"
 
 
 # Catalog scoreType -> the dataType Langfuse stores the score as. The catalog
@@ -42,22 +38,26 @@ JUDGE_PROVIDER = "oap-bifrost-judge"
 _DATA_TYPES = {"numeric": "NUMERIC", "boolean": "BOOLEAN", "categorical": "CATEGORICAL"}
 
 
-def evaluator_payload(evaluator, judge_alias: str, default_judge: str) -> dict:
-    """The POST body for one (catalog entry, judge alias) pair.
+def evaluator_payload(
+    evaluator, judge_alias: str, default_judge: str, judge_model: str
+) -> dict:
+    """The request body for one (catalog entry, judge alias) pair.
 
-    Shape verified against the live API's OpenAPI contract at the pin
-    (`unstableCreateLlmAsJudgeEvaluatorRequest`): name, prompt and
-    outputDefinition are required, modelConfig is optional, and nothing else is
-    part of the public request shape.
+    Shape verified against the live v4 contract
+    (`CreateLlmAsJudgeEvaluatorRequest`): name, type, prompt and
+    outputDefinition are required; modelConfig and variableMapping are optional.
 
-    Two things that are deliberately NOT here:
+    Used for both the create and the new-version calls, which take the same
+    definition body.
 
-    - **The variable mapping.** Langfuse derives an evaluator's `variables` from
-      the `{{...}}` placeholders in its prompt, and the mapping from those
-      variables to observation fields lives on the evaluation RULE, not on the
-      evaluator. The per-cluster loop supplies it.
-    - **`version`.** The contract says explicitly not to send it; a name that
-      already exists mints the next version on its own.
+    `variableMapping` lives HERE in v4, as the evaluator's default, and a rule's
+    `evaluatorAssignments` inherit it by passing `null`. That is the opposite of
+    v3, where the mapping was only valid on the rule. Keeping it on the
+    evaluator means one definition of how a prompt variable is populated, rather
+    than a copy per rule that could drift.
+
+    `version` is deliberately absent: the contract calls it an internal
+    persistence detail and rejects it.
     """
     data_type = _DATA_TYPES.get(evaluator.score_type.lower())
     if data_type is None:
@@ -81,35 +81,65 @@ def evaluator_payload(evaluator, judge_alias: str, default_judge: str) -> dict:
                 or "Return a numeric value between 0 and 1."
             },
         },
+        "variableMapping": [
+            {"variable": variable, "source": source}
+            for variable, source in sorted(
+                (evaluator.mapping or DEFAULT_MAPPING).items()
+            )
+        ],
         # Pins the judge for this evaluator. Without it Langfuse falls back to the
         # project's default evaluation model, which the platform does not set — so
         # omitting it would make the judge choice implicit and unreviewable.
         #
-        # `model` must be PROVIDER-QUALIFIED as `<provider>/<model>`, even though
-        # `provider` is also sent beside it. A bare alias is rejected at
-        # evaluator preflight with
-        #   422 evaluator_preflight_failed: provider is required in model field
-        #   (format: provider/model) — no providers found for model
-        #   "judge-default" in model catalog to auto-resolve
-        # because Langfuse tries to auto-resolve an unqualified name against its
-        # built-in model catalog, where a platform alias like judge-default does
-        # not exist. The connection's `customModels` stays unqualified.
-        "modelConfig": {
-            "provider": JUDGE_PROVIDER,
-            "model": f"{JUDGE_PROVIDER}/{judge_alias}",
-        },
+        # `model` is the gateway's own model id, UNQUALIFIED. The earlier
+        # `<provider>/<model>` form came from misreading an error that Bifrost
+        # had raised and Langfuse merely passed through; v4 documents this field
+        # as "Model identifier exposed by the provider", and the provider is the
+        # separate field beside it. The connection's `customModels` must list the
+        # same string.
+        "modelConfig": {"provider": JUDGE_PROVIDER, "model": judge_model},
     }
+
+
+def _mapping_of(definition: dict) -> list[tuple[str, str]]:
+    return sorted(
+        (m.get("variable") or "", m.get("source") or "")
+        for m in (definition.get("variableMapping") or [])
+    )
+
+
+def _prompt_text(value) -> str:
+    """Normalise a prompt to plain text for comparison.
+
+    A prompt is SENT as a string but comes BACK as a list of chat messages, so
+    comparing the two shapes directly reports a difference on every pass — which
+    here means minting a new evaluator version a minute.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(
+            str(m.get("content") or "") for m in value if isinstance(m, dict)
+        ).strip()
+    return ""
 
 
 def _differs(existing: dict, desired: dict) -> bool:
     """True when the published evaluator no longer matches the chart.
 
-    Compares only the fields this loop owns. Langfuse adds its own (id, version,
-    scope, variables, createdAt, updatedAt), and comparing those would make every
-    pass look like a change — which matters more than usual here, because a
-    "change" mints a new evaluator version.
+    Compares only the fields this loop owns AND that Langfuse echoes back.
+    Langfuse adds its own (id, version, variables, createdAt, versionId...), and
+    comparing those would make every pass look like a change — which matters
+    more than usual here, because a "change" mints a new version.
+
+    KNOWN GAP: the read model returns `outputDefinition` as just
+    `{"dataType": ...}`; the reasoning and score descriptions are accepted on
+    write but never returned. They therefore cannot be diffed, so editing only a
+    description in the catalog does not republish on its own. Change the prompt
+    alongside it, or bump the evaluator name, if it has to take effect. Guessing
+    "changed" instead would mint a version every pass forever.
     """
-    if (existing.get("prompt") or "") != desired["prompt"]:
+    if _prompt_text(existing.get("prompt")) != _prompt_text(desired["prompt"]):
         return True
 
     existing_model = existing.get("modelConfig") or {}
@@ -123,32 +153,60 @@ def _differs(existing: dict, desired: dict) -> bool:
     desired_output = desired["outputDefinition"]
     if (existing_output.get("dataType") or "") != desired_output["dataType"]:
         return True
-    for field in ("reasoning", "score"):
-        existing_description = (existing_output.get(field) or {}).get("description") or ""
-        if existing_description != desired_output[field]["description"]:
-            return True
+    # The reasoning/score descriptions are deliberately NOT compared: see the
+    # docstring — they are write-only, so diffing them never converges.
+
+    if _mapping_of(existing) != _mapping_of(desired):
+        return True
+
+    # A paused evaluator scores nothing, and replacing its definition is what
+    # returns it to active. So treat "paused for a bad model config" as a
+    # difference even when the definition matches: that is the one pause this
+    # loop can clear by itself, and it is exactly what happens when a judge
+    # model is fixed in Bifrost after the evaluator was first published.
+    if (existing.get("status") or "").lower() == "paused" and (
+        existing.get("pausedReason") in _CLEARABLE_PAUSE_REASONS
+    ):
+        return True
     return False
 
 
-def _latest_by_name(published: list[dict]) -> dict[str, dict]:
-    """Keep the highest version of each evaluator name.
+# Pauses that republishing the definition resolves. Others (provider auth,
+# billing, connectivity, account state) need an explicit reactivation check and
+# are left alone, because re-posting on every pass would mint a version a minute
+# without fixing anything.
+_CLEARABLE_PAUSE_REASONS = frozenset(
+    {"EVAL_MODEL_CONFIG_INVALID", "DEFAULT_EVAL_MODEL_MISSING"}
+)
 
-    The list endpoint returns every version, and a rule follows the newest, so
-    only the newest is worth diffing against.
+
+def _ours_by_name(published: list[dict], wanted: set[str]) -> dict[str, dict]:
+    """Index the evaluators this platform owns by name.
+
+    v4 lists one entry per evaluator with its latest definition already
+    flattened in, so there is no version collapsing to do. What there IS is a
+    duplicate-name risk: names are not identifiers in v4, so the project can
+    legitimately hold several evaluators called `safety`. Only ours are
+    considered — matched on name AND on our judge provider — and if two of ours
+    somehow share a name, the oldest is kept so the choice is stable across
+    passes rather than flipping with list order.
     """
-    latest: dict[str, dict] = {}
+    ours: dict[str, dict] = {}
     for item in published:
         name = item.get("name")
-        if not name:
+        if not name or name not in wanted:
             continue
-        version = item.get("version") or 0
-        current = latest.get(name)
-        if current is None or (current.get("version") or 0) < version:
-            latest[name] = item
-    return latest
+        if (item.get("modelConfig") or {}).get("provider") != JUDGE_PROVIDER:
+            continue
+        current = ours.get(name)
+        if current is None or str(item.get("createdAt") or "") < str(
+            current.get("createdAt") or ""
+        ):
+            ours[name] = item
+    return ours
 
 
-def connection_payload(settings: Settings, judge_aliases: tuple[str, ...]) -> dict:
+def connection_payload(settings: Settings, judge_models: tuple[str, ...]) -> dict:
     """The judge LLM connection: Bifrost's OpenAI-compatible endpoint.
 
     The virtual key travels in `extraHeaders` as `x-bf-vk`, which is how Bifrost
@@ -167,10 +225,11 @@ def connection_payload(settings: Settings, judge_aliases: tuple[str, ...]) -> di
         "secretKey": settings.judge_virtual_key or "not-used-by-bifrost",
         "extraHeaders": headers,
         "withDefaultModels": False,
-        # Every alias an evaluator's modelConfig may name. Langfuse validates an
-        # evaluator's model against the connection's model list, so an alias
-        # missing here would fail the evaluator write rather than the judge call.
-        "customModels": list(dict.fromkeys(judge_aliases)),
+        # Every gateway model id an evaluator's modelConfig may name. Langfuse
+        # validates an evaluator's model against this list, so a model missing
+        # here fails the evaluator write rather than the judge call. These are
+        # the resolved model ids, not the platform's alias labels.
+        "customModels": list(dict.fromkeys(judge_models)),
     }
 
 
@@ -193,7 +252,10 @@ class ProjectLoop:
         for evaluator in self._catalog.evaluators.values():
             for alias in self._catalog.judge_aliases:
                 payload = evaluator_payload(
-                    evaluator, alias, self._catalog.judge_default
+                    evaluator,
+                    alias,
+                    self._catalog.judge_default,
+                    self._catalog.judge_model(alias),
                 )
                 desired[payload["name"]] = payload
         return desired
@@ -207,26 +269,46 @@ class ProjectLoop:
             ok = False
             self._error("judge LLM connection", exc)
 
+        desired = self.desired_evaluators()
         try:
-            published = _latest_by_name(self._client.list_evaluators())
+            all_published = self._client.list_evaluators()
         except LangfuseError as exc:
             self._error("listing evaluators", exc)
             return False
+        published = _ours_by_name(all_published, set(desired))
 
-        desired = self.desired_evaluators()
         for name, payload in sorted(desired.items()):
             existing = published.get(name)
-            if existing is not None and not _differs(existing, payload):
-                continue
-            action = "creating" if existing is None else "publishing a new version of"
             try:
-                self._client.create_evaluator_version(payload)
-                logger.info(
-                    "%s evaluator %s (judge=%s)",
-                    action,
-                    name,
-                    payload["modelConfig"]["model"],
-                )
+                if existing is None:
+                    # No evaluator of ours carries this name yet. In v4 a POST
+                    # to /evaluators always creates a NEW object rather than
+                    # upserting, so this must only run when we genuinely have
+                    # none — otherwise the project fills with duplicates that
+                    # all score the same traces.
+                    created = self._client.create_evaluator(payload)
+                    logger.info(
+                        "created evaluator %s id=%s judge=%s status=%s",
+                        name,
+                        created.get("id"),
+                        payload["modelConfig"]["model"],
+                        created.get("status"),
+                    )
+                    self._warn_if_paused(name, created)
+                elif _differs(existing, payload):
+                    # Keyed by id, not name: replacing the definition publishes
+                    # a new VERSION of the same evaluator, which every assigned
+                    # rule picks up automatically. This is also what clears a
+                    # model-config pause.
+                    updated = self._client.update_evaluator(existing["id"], payload)
+                    logger.info(
+                        "published version %s of evaluator %s id=%s status=%s",
+                        updated.get("version"),
+                        name,
+                        existing["id"],
+                        updated.get("status"),
+                    )
+                    self._warn_if_paused(name, updated)
             except LangfuseError as exc:
                 ok = False
                 self._error(f"evaluator {name}", exc)
@@ -236,9 +318,9 @@ class ProjectLoop:
         # cluster's evaluation down, and this loop cannot see other clusters'
         # rules. Report it instead; removing it is a deliberate platform action.
         orphans = sorted(
-            name
-            for name, record in published.items()
-            if name not in desired and self._looks_like_ours(record)
+            f"{record.get('name')} ({record.get('id')})"
+            for record in all_published
+            if record.get("name") not in desired and self._looks_like_ours(record)
         )
         if orphans:
             logger.warning(
@@ -248,6 +330,30 @@ class ProjectLoop:
                 ", ".join(orphans),
             )
         return ok
+
+    def _warn_if_paused(self, name: str, record: dict) -> None:
+        """Say so loudly when Langfuse publishes an evaluator but pauses it.
+
+        A paused evaluator scores nothing, so this is the difference between
+        "evaluation is configured" and "evaluation is running". It is not an
+        error from the API's point of view — the write returned 201 — so without
+        this the hub would look entirely healthy while no trace was ever judged.
+        """
+        if (record.get("status") or "").lower() != "paused":
+            return
+        reason = record.get("pausedReason") or "unknown"
+        self._metrics.errors.labels(self._settings.cluster, "project").inc()
+        logger.error(
+            "evaluator %s was published but Langfuse PAUSED it (%s): %s. It will "
+            "score nothing until this is resolved. For "
+            "EVAL_MODEL_CONFIG_INVALID the usual cause is the judge model "
+            "refusing the structured-output call Langfuse validates with — on "
+            "Bedrock through Bifrost that is a forced tool call, which some "
+            "models reject.",
+            name,
+            reason,
+            record.get("pausedMessage") or "no message",
+        )
 
     @staticmethod
     def _looks_like_ours(record: dict) -> bool:
@@ -271,7 +377,9 @@ class ProjectLoop:
                 "calls still succeed. Create the Secrets Manager entry the chart's "
                 "ExternalSecret reads to fix this."
             )
-        payload = connection_payload(self._settings, self._catalog.judge_aliases)
+        payload = connection_payload(
+            self._settings, tuple(self._catalog.judge_models.values())
+        )
         existing = {
             c.get("provider"): c for c in self._client.list_llm_connections()
         }.get(JUDGE_PROVIDER)

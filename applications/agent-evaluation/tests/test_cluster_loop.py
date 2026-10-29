@@ -13,7 +13,8 @@ from app.events import (
     REASON_UNKNOWN_EVALUATOR,
     REASON_UNKNOWN_JUDGE,
 )
-from app.naming import rule_name
+from app.naming import JUDGE_PROVIDER, rule_name
+from app.project_loop import evaluator_payload
 from tests.conftest import FakeEvents, FakeLangfuse, FakeReader
 
 
@@ -46,8 +47,17 @@ def declaration(
 
 def build(settings, catalog, metrics, declarations, published=None, rules=None):
     langfuse = FakeLangfuse(allow_project_writes=settings.is_hub)
+    # Evaluators carry the platform judge provider, which is how the loop tells
+    # ours from one a human made in the UI, and a stable id, which is what a v4
+    # rule is built from.
     langfuse.evaluators = [
-        {"name": n, "version": 1} for n in (published or ["goal-completion"])
+        {
+            "name": n,
+            "id": f"ev-{i}",
+            "version": 1,
+            "modelConfig": {"provider": JUDGE_PROVIDER, "model": "m"},
+        }
+        for i, n in enumerate(published or ["goal-completion"])
     ]
     langfuse.rules = list(rules or [])
     recorder = FakeEvents()
@@ -185,7 +195,14 @@ def test_evaluator_in_catalog_but_not_published_waits_for_the_hub(
     assert not [c for c in langfuse.calls if c.startswith("create_evaluator")]
 
     # The hub lands it; the next pass creates the rule with no action here.
-    langfuse.evaluators.append({"name": "safety", "version": 1})
+    langfuse.evaluators.append(
+        {
+            "name": "safety",
+            "id": "ev-safety",
+            "version": 1,
+            "modelConfig": {"provider": JUDGE_PROVIDER, "model": "m"},
+        }
+    )
     assert loop.run_once()
     assert len(langfuse.rules) == 1
 
@@ -210,13 +227,15 @@ def test_non_default_judge_uses_the_judge_specific_evaluator(
         published=["goal-completion", "goal-completion--judge-strong"],
     )
     assert loop.run_once()
-    # An evaluator family reference, which is what the API takes; Langfuse
-    # resolves it to the latest version when saving.
-    assert langfuse.rules[0]["evaluator"] == {
-        "name": "goal-completion--judge-strong",
-        "scope": "project",
-        "type": "llm_as_judge",
-    }
+    # Attached by stable id, not by name: v4 names are not identifiers. The
+    # judge-specific evaluator object is the one whose id is assigned.
+    strong_id = next(
+        e["id"] for e in langfuse.evaluators
+        if e["name"] == "goal-completion--judge-strong"
+    )
+    assert [a["evaluatorId"] for a in langfuse.rules[0]["evaluatorAssignments"]] == [
+        strong_id
+    ]
 
 
 def test_explicit_sampling_overrides_coverage(settings, catalog, metrics):
@@ -248,19 +267,17 @@ def test_rule_payload_matches_the_api_contract(settings, catalog, metrics):
     assert loop.run_once()
     rule = langfuse.rules[0]
 
-    for required in ("name", "evaluator", "target", "enabled", "mapping"):
+    for required in ("name", "enabled", "evaluatorAssignments"):
         assert required in rule, required
-    assert rule["evaluator"]["scope"] == "project"
-    assert rule["target"] in ("observation", "experiment")
-    # Default catalog prompts use {{input}} and {{output}}.
-    assert sorted(m["variable"] for m in rule["mapping"]) == ["input", "output"]
-    assert all(
-        m["source"] in ("input", "output", "metadata", "tool_calls")
-        for m in rule["mapping"]
-    )
-    # Every variable exactly once — duplicates are rejected by the API.
-    variables = [m["variable"] for m in rule["mapping"]]
-    assert len(variables) == len(set(variables))
+    # Exactly one evaluator per rule here, attached by id.
+    assert len(rule["evaluatorAssignments"]) == 1
+    assert rule["evaluatorAssignments"][0]["evaluatorId"]
+    # variableMapping is null so the rule inherits the evaluator's default,
+    # keeping one definition of how each prompt variable is populated.
+    assert rule["evaluatorAssignments"][0]["variableMapping"] is None
+    # No `target` in v4, and `mapping` moved onto the evaluator.
+    for gone in ("target", "mapping", "evaluator"):
+        assert gone not in rule
 
 
 def test_tool_use_maps_its_third_variable(settings, catalog, metrics):
@@ -283,7 +300,13 @@ def test_tool_use_maps_its_third_variable(settings, catalog, metrics):
         published=["tool-use"],
     )
     assert loop.run_once()
-    assert sorted(m["variable"] for m in langfuse.rules[0]["mapping"]) == [
+    # The third variable is mapped on the EVALUATOR in v4, which the rule
+    # inherits, so the rule itself carries no mapping.
+    assert langfuse.rules[0]["evaluatorAssignments"][0]["variableMapping"] is None
+    payload = evaluator_payload(
+        tool_use, "judge-default", "judge-default", "us.amazon.nova-pro-v1:0"
+    )
+    assert sorted(m["variable"] for m in payload["variableMapping"]) == [
         "input",
         "output",
         "tool_calls",
@@ -313,7 +336,9 @@ def test_rule_targets_the_root_observation(settings, catalog, metrics):
     loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
     assert loop.run_once()
     rule = langfuse.rules[0]
-    assert rule["target"] == "observation"
+    # v4 rules have no `target` field; an observation rule is the default and
+    # experiments are selected with a datasetId filter instead.
+    assert "target" not in rule
     assert any(
         f["column"] == "parentObservationId" and f["operator"] == "is null"
         for f in rule["filter"]

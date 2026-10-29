@@ -31,11 +31,17 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from . import events
-from .config import Catalog, Settings
+from .config import DEFAULT_MAPPING, VALID_MAPPING_SOURCES, Catalog, Settings
 from .declarations import AgentDeclaration, DeclarationReader, DeclarationError
 from .langfuse_client import LangfuseClient, LangfuseError
 from .metrics import InfoRow, ThresholdRow
-from .naming import evaluator_name, is_platform_rule, owns, rule_name
+from .naming import (
+    JUDGE_PROVIDER,
+    evaluator_name,
+    is_platform_rule,
+    owns,
+    rule_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +55,6 @@ ROOT_OBSERVATION_FILTER = {
     "value": "",
 }
 
-# Observation-target rules may map a variable from one of these only. A catalog
-# entry asking for anything else is rejected before a rule is built, because
-# Langfuse would answer 400 invalid_variable_mapping mid-pass.
-VALID_MAPPING_SOURCES = ("input", "output", "metadata", "tool_calls")
-
-# Variables every catalog prompt uses, when an entry declares no mapping.
-DEFAULT_MAPPING = {"input": "input", "output": "output"}
-
 
 @dataclass(frozen=True)
 class RuleGroup:
@@ -65,12 +63,12 @@ class RuleGroup:
     evaluator: str
     judge: str
     sampling: float
+    # Name of the evaluator object in Langfuse, for logging and diagnostics.
     evaluator_object: str
+    # Stable Langfuse id of that evaluator. This, not the name, is what the rule
+    # is built from: v4 names are not identifiers.
+    evaluator_id: str
     tags: tuple[str, ...]
-    # variable -> observation field. Carried on the RULE, not the evaluator:
-    # Langfuse derives an evaluator's variables from its prompt, and every one of
-    # them must be mapped here exactly once or the rule is refused.
-    mapping: tuple[tuple[str, str], ...] = ()
 
     def name(self, cluster: str) -> str:
         return rule_name(cluster, self.evaluator, self.judge, self.sampling)
@@ -78,18 +76,21 @@ class RuleGroup:
     def payload(self, cluster: str) -> dict:
         return {
             "name": self.name(cluster),
-            # An evaluator FAMILY reference, not a bare name: Langfuse resolves
-            # it to the latest version when saving, which is what lets a hub
-            # prompt change reach this rule with no action here. scope=project
-            # distinguishes ours from Langfuse's managed library.
-            "evaluator": {
-                "name": self.evaluator_object,
-                "scope": "project",
-                "type": "llm_as_judge",
-            },
-            "target": "observation",
             "enabled": True,
-            "sampling": self.sampling,
+            # Evaluators are attached by STABLE ID in v4, and a rule always uses
+            # the assigned evaluator's latest version — which is what lets a hub
+            # prompt change reach this rule with no action here.
+            #
+            # variableMapping is null on purpose: it inherits the evaluator's
+            # own default mapping, so how a prompt variable is populated is
+            # defined once on the evaluator rather than copied into every rule
+            # where it could drift.
+            "evaluatorAssignments": [
+                {"evaluatorId": self.evaluator_id, "variableMapping": None}
+            ],
+            # Omitted when 1, because the API rejects a null sampling and
+            # documents "omit to evaluate every match".
+            **({"sampling": self.sampling} if self.sampling < 1 else {}),
             "filter": [
                 ROOT_OBSERVATION_FILTER,
                 {
@@ -98,10 +99,6 @@ class RuleGroup:
                     "type": "arrayOptions",
                     "value": list(self.tags),
                 },
-            ],
-            "mapping": [
-                {"variable": variable, "source": source}
-                for variable, source in self.mapping
             ],
         }
 
@@ -138,8 +135,16 @@ class ClusterLoop:
     # ── planning (pure, so it is unit-testable without a cluster) ─────────
 
     def plan(
-        self, declarations: list[AgentDeclaration], published_evaluators: set[str]
+        self,
+        declarations: list[AgentDeclaration],
+        published_evaluators: dict[str, str],
     ) -> ClusterPlan:
+        """Build this cluster's desired rules.
+
+        `published_evaluators` maps an evaluator object NAME to its stable
+        Langfuse id. A name the hub has not published yet is simply absent,
+        which is how a cluster running ahead of the hub is detected.
+        """
         cluster = self._settings.cluster
         groups: dict[str, RuleGroup] = {}
         members: dict[str, list[str]] = defaultdict(list)
@@ -207,7 +212,8 @@ class ClusterLoop:
                 object_name = evaluator_name(
                     requested.name, judge, self._catalog.judge_default
                 )
-                if object_name not in published_evaluators:
+                evaluator_id = published_evaluators.get(object_name)
+                if evaluator_id is None:
                     # The hub has not published this evaluator yet. This is what a
                     # cluster upgraded ahead of the hub looks like. Skip just this
                     # evaluator and say so: the rule appears on the pass after the
@@ -247,8 +253,11 @@ class ClusterLoop:
                     )
                 )
 
-                mapping = _mapping_for(entry)
-                invalid = [s for _, s in mapping if s not in VALID_MAPPING_SOURCES]
+                invalid = [
+                    source
+                    for source in (entry.mapping or DEFAULT_MAPPING).values()
+                    if source not in VALID_MAPPING_SOURCES
+                ]
                 if invalid:
                     self._events.warn(
                         decl.namespace,
@@ -270,8 +279,8 @@ class ClusterLoop:
                         judge=judge,
                         sampling=sampling,
                         evaluator_object=object_name,
+                        evaluator_id=evaluator_id,
                         tags=(),
-                        mapping=mapping,
                     )
                 members[key].append(decl.trace_tag(cluster))
 
@@ -283,8 +292,8 @@ class ClusterLoop:
                 judge=group.judge,
                 sampling=group.sampling,
                 evaluator_object=group.evaluator_object,
+                evaluator_id=group.evaluator_id,
                 tags=tuple(sorted(set(members[key]))),
-                mapping=group.mapping,
             )
 
         return ClusterPlan(
@@ -317,9 +326,7 @@ class ClusterLoop:
             )
 
         try:
-            published = {
-                e["name"] for e in self._client.list_evaluators() if e.get("name")
-            }
+            published = self._published_evaluator_ids()
         except LangfuseError as exc:
             self._metrics.errors.labels(cluster, "rules").inc()
             logger.error("could not list evaluators: %s", exc)
@@ -418,23 +425,48 @@ class ClusterLoop:
         self._metrics.publish_info(plan.info)
         return ok
 
+    def _published_evaluator_ids(self) -> dict[str, str]:
+        """Evaluator object name -> stable id, for the evaluators the hub owns.
+
+        Only evaluators bound to the platform's judge provider are considered.
+        v4 names are not identifiers, so a human could create their own
+        `safety` in the UI; attaching a rule to that one would silently score
+        agents with somebody's draft prompt.
+        """
+        ids: dict[str, str] = {}
+        for item in self._client.list_evaluators():
+            name, ident = item.get("name"), item.get("id")
+            if not name or not ident:
+                continue
+            if (item.get("modelConfig") or {}).get("provider") != JUDGE_PROVIDER:
+                continue
+            # Oldest wins, so repeated passes keep choosing the same object.
+            if name in ids:
+                continue
+            ids[name] = ident
+        return ids
+
     @staticmethod
     def _rule_matches(current: dict, desired: dict) -> bool:
         """Compare only the fields this loop sets, so a pass is idempotent."""
-        # `evaluator` is a family reference object, and Langfuse echoes it back
-        # with the resolved version and id attached, so only the name is
-        # comparable. Comparing the whole object would make every pass a change.
-        if _evaluator_name_of(current) != _evaluator_name_of(desired):
-            return False
-        if _mapping_of(current) != _mapping_of(desired):
+        # Compare the assigned evaluator IDS. Langfuse echoes assignments back
+        # enriched with the resolved version and the evaluator's definition, so
+        # comparing whole objects would make every pass look like a change.
+        if _assigned_ids(current) != _assigned_ids(desired):
             return False
         if bool(current.get("enabled")) != desired["enabled"]:
             return False
-        if abs(float(current.get("sampling") or 0) - desired["sampling"]) > 1e-9:
-            return False
-        if (current.get("target") or "") != desired["target"]:
+        # Sampling is omitted from the payload when it is 1, because the API
+        # rejects null and treats absent as "every match" — so an absent value
+        # on either side means 1, not 0.
+        if abs(_sampling_of(current) - _sampling_of(desired)) > 1e-9:
             return False
         return _tags_of(current) == _tags_of(desired)
+
+
+def _sampling_of(rule: dict) -> float:
+    value = rule.get("sampling")
+    return 1.0 if value is None else float(value)
 
 
 def _tags_of(rule: dict) -> list[str]:
@@ -444,18 +476,11 @@ def _tags_of(rule: dict) -> list[str]:
     return []
 
 
-def _evaluator_name_of(rule: dict) -> str:
-    """The evaluator family name, however the reference is shaped."""
-    evaluator = rule.get("evaluator")
-    if isinstance(evaluator, dict):
-        return evaluator.get("name") or ""
-    return evaluator or ""
-
-
-def _mapping_of(rule: dict) -> list[tuple[str, str]]:
+def _assigned_ids(rule: dict) -> list[str]:
+    """The stable ids of the evaluators attached to a rule, sorted."""
     return sorted(
-        (m.get("variable") or "", m.get("source") or "")
-        for m in (rule.get("mapping") or [])
+        a.get("evaluatorId") or ((a.get("evaluator") or {}).get("id") or "")
+        for a in (rule.get("evaluatorAssignments") or [])
     )
 
 

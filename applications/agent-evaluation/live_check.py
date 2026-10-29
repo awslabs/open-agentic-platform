@@ -100,33 +100,57 @@ def main() -> int:
     print("\n== 2. catalog evaluators (hub-owned) ==")
     desired = loop.desired_evaluators()
     print(f"  catalog implies {len(desired)} evaluator object(s)")
-    for name, payload in sorted(desired.items()):
-        try:
-            created = client.create_evaluator_version(payload)
-            ok(
-                f"{name}: version={created.get('version')} "
-                f"scope={created.get('scope')} vars={created.get('variables')}"
-            )
-        except LangfuseError as exc:
-            fail(f"{name}: {exc}")
-            failures += 1
-
-    print("\n== 3. write-on-change (a second pass must write nothing) ==")
-    before = [c for c in [] ]  # placeholder for readability
-    published_before = len(client.list_evaluators())
     if loop.run_once():
-        after = len(client.list_evaluators())
-        if after == published_before:
-            ok(f"no new versions minted ({after} total evaluator versions)")
-        else:
-            fail(f"minted {after - published_before} extra version(s)")
-            failures += 1
+        ok("project loop completed")
     else:
         fail("project loop reported failure")
         failures += 1
 
+    published = {
+        e["name"]: e
+        for e in client.list_evaluators()
+        if e.get("name") in desired
+    }
+    for name in sorted(desired):
+        record = published.get(name)
+        if record is None:
+            fail(f"{name}: not published")
+            failures += 1
+            continue
+        status = record.get("status")
+        line = (
+            f"{name}: id={record.get('id')} v{record.get('version')} "
+            f"status={status} model={(record.get('modelConfig') or {}).get('model')}"
+        )
+        # A paused evaluator scores nothing, so it is a failure here even though
+        # the write itself succeeded.
+        if str(status).lower() == "paused":
+            fail(f"{line} pausedReason={record.get('pausedReason')}")
+            failures += 1
+        else:
+            ok(line)
+
+    print("\n== 3. write-on-change (a second pass must mint no version) ==")
+    versions_before = {
+        e.get("id"): e.get("version") for e in client.list_evaluators()
+    }
+    if loop.run_once():
+        versions_after = {
+            e.get("id"): e.get("version") for e in client.list_evaluators()
+        }
+        if versions_after == versions_before:
+            ok(f"no new versions minted ({len(versions_after)} evaluators unchanged)")
+        else:
+            changed = [
+                i for i, v in versions_after.items() if versions_before.get(i) != v
+            ]
+            fail(f"minted a new version for {changed}")
+            failures += 1
+    else:
+        fail("project loop reported failure on the second pass")
+        failures += 1
+
     print("\n== 4. evaluation rule (per-cluster) ==")
-    published = {e["name"] for e in client.list_evaluators() if e.get("name")}
     decl = AgentDeclaration(
         agent="livecheck-agent",
         namespace="agents",
@@ -144,16 +168,16 @@ def main() -> int:
         settings, catalog, client, metrics, Reader([decl]), recorder
     )
     created_rules = []
-    plan = cluster.plan([decl], published)
+    plan = cluster.plan([decl], cluster._published_evaluator_ids())
     for group in plan.groups.values():
         payload = group.payload(args.cluster)
         try:
             rule = client.create_evaluation_rule(payload)
             created_rules.append(rule.get("id"))
             ok(
-                f"{payload['name']}: evaluator={payload['evaluator']['name']} "
-                f"sampling={payload['sampling']} "
-                f"mapping={[m['variable'] for m in payload['mapping']]}"
+                f"{payload['name']}: evaluator={group.evaluator_object} "
+                f"id={group.evaluator_id} "
+                f"sampling={payload.get('sampling', 1)}"
             )
         except LangfuseError as exc:
             fail(f"{payload['name']}: {exc}")

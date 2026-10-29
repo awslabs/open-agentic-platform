@@ -41,14 +41,35 @@ langfuse:
 # Only the hub instance uses the connection and key in this block: it owns the
 # judge LLM connection, so the judge virtual key never has to exist on a spoke.
 judge:
-  defaultModelId: judge-default
-  # Every Bifrost alias an agent may name in evaluation.judge. The hub writes one
-  # evaluator per catalog entry per alias (<evaluator>--<alias>), because at the
-  # Langfuse pin the judge model lives on the evaluator and not on the rule (D4).
-  # Read by every instance: a spoke uses it to reject an unknown judge with an
-  # Event rather than silently falling back to the default.
-  aliases:
-    - judge-default
+  # The judge an agent gets when it does not name one. Must be a key in `models`.
+  defaultAlias: judge-default
+  # Every judge an agent may name in `evaluation.judge`, as
+  #   <alias label>: <gateway model id>
+  #
+  # Two separate strings on purpose. The LABEL is what a developer writes and
+  # what appears in evaluator object names; the MODEL ID is what Bifrost needs.
+  # They cannot be the same value: Bifrost does not auto-resolve a bare platform
+  # alias ("no providers found for model 'judge-default' in model catalog to
+  # auto-resolve"), and Langfuse requires the model to be listed on the judge
+  # LLM connection. Using the real model id also lets Langfuse attribute judge
+  # cost from its own model catalog.
+  #
+  # The hub writes one evaluator per catalog entry per alias
+  # (<evaluator>--<alias>), because the judge model lives on the evaluator
+  # rather than on the rule (D4). Read by every instance: a spoke uses the list
+  # to reject an unknown judge with an Event instead of silently falling back to
+  # the default.
+  #
+  # WHICH MODELS WORK IS CONSTRAINED. Langfuse validates an evaluator by making
+  # a real call that demands structured output, which Bifrost turns into a
+  # Bedrock forced tool call. Measured on the hub: Nova Pro and Claude Haiku 5.5
+  # pass; Claude Sonnet 5.5 and Opus 5.5 are rejected with
+  # `tool_choice: type "tool" and "any" are not supported for this model`, and
+  # Fable is blocked at the account level by its data-retention mode. A model
+  # that fails leaves the evaluator paused as EVAL_MODEL_CONFIG_INVALID, scoring
+  # nothing. See gitops/addons/configs/bifrost/values.yaml.
+  models:
+    judge-default: us.amazon.nova-pro-v1:0
   bifrostUrl: http://bifrost.bifrost.svc.cluster.local:8080/v1
   virtualKey:
     # Judge-only Bifrost virtual key, so judge spend has its own budget and is
