@@ -339,15 +339,18 @@ def test_rule_targets_the_root_observation(settings, catalog, metrics):
     # v4 rules have no `target` field; an observation rule is the default and
     # experiments are selected with a datasetId filter instead.
     assert "target" not in rule
-    # isRootObservation, not parentObservationId: the Strands/a2a root span
-    # keeps a non-null parent, so the null filter matches nothing.
+    # Observation TYPE, not the trace root: the root is the a2a transport span
+    # and carries no input or output, so judging it scores nothing meaningful.
     assert any(
-        f["column"] == "isRootObservation"
-        and f["operator"] == "="
-        and f["value"] is True
+        f["column"] == "type"
+        and f["operator"] == "any of"
+        and f["value"] == ["AGENT"]
         for f in rule["filter"]
     )
-    assert not any(f["column"] == "parentObservationId" for f in rule["filter"])
+    assert not any(
+        f["column"] in ("parentObservationId", "isRootObservation")
+        for f in rule["filter"]
+    )
 
 
 def test_a_filter_change_is_detected_and_patched(settings, catalog, metrics):
@@ -379,5 +382,5 @@ def test_a_filter_change_is_detected_and_patched(settings, catalog, metrics):
         c for c in langfuse.calls if c.startswith("update_rule")
     ], "a stale filter must be patched"
     assert any(
-        f["column"] == "isRootObservation" for f in langfuse.rules[0]["filter"]
+        f["column"] == "type" for f in langfuse.rules[0]["filter"]
     )

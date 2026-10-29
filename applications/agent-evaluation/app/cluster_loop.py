@@ -48,22 +48,37 @@ logger = logging.getLogger(__name__)
 # Langfuse's observation-target filter that selects a trace's root observation:
 # the span with no parent. This is why rules do not depend on the Strands span
 # name (D4).
-# Select the agent's root span, so one trace is judged once rather than once per
-# child observation.
+# Select the ONE observation per trace that represents the agent's turn, so a
+# trace costs one judge call and the judge sees the user's request and the
+# agent's final answer.
 #
-# `isRootObservation`, NOT `parentObservationId is null`. The two are not
-# equivalent, and the difference is the whole behaviour: Langfuse documents that
-# "observations marked as app roots by the SDK may retain a non-null
-# parentObservationId", which is exactly what the Strands/a2a root span does. A
-# `parentObservationId is null` filter therefore matches NOTHING for these
-# agents — measured on the hub, the rule was active and enabled with sampling 1
-# and a correct tag filter, and produced no evaluation job at all, while the same
-# rule with no filter scored every observation.
-ROOT_OBSERVATION_FILTER = {
-    "column": "isRootObservation",
-    "operator": "=",
-    "type": "boolean",
-    "value": True,
+# This is observation TYPE, not the trace root. The design assumed the root
+# observation carried the input and output; measured on the hub, it does not. A
+# single agent turn produces 28 observations, and the root is the a2a transport
+# span:
+#
+#   7bb3f4c3  SPAN        a2a...jsonrpc_handler.JSONRPC...   parent=None   in/out: NO
+#   bf9b3926  AGENT       invoke_agent eval-smoketest                      in/out: YES
+#   e5cb49e4  GENERATION  chat                                             in/out: YES
+#   accd9427  GENERATION  llm.call                                         in/out: YES
+#   ...plus Bifrost plugin spans, event-loop spans, HTTP spans
+#
+# Judging the root produced a score of 0 with the comment "No user request or
+# agent response provided" — a meaningless number that would have dragged every
+# pass ratio down. Filtering on the tag alone judged 3 observations per trace:
+# triple the judge cost and three different numbers for one answer.
+#
+# AGENT is the Strands agent-invocation observation, so this stays independent of
+# span NAMES (which the design rightly wanted to avoid depending on) while being
+# precise about which observation is the agent's turn. Verified: exactly one
+# score per trace, on the observation carrying input and output.
+#
+# This answers design question Q4, and answers it in the negative.
+AGENT_TURN_FILTER = {
+    "column": "type",
+    "operator": "any of",
+    "type": "stringOptions",
+    "value": ["AGENT"],
 }
 
 
@@ -103,7 +118,7 @@ class RuleGroup:
             # documents "omit to evaluate every match".
             **({"sampling": self.sampling} if self.sampling < 1 else {}),
             "filter": [
-                ROOT_OBSERVATION_FILTER,
+                AGENT_TURN_FILTER,
                 {
                     "column": "tags",
                     "operator": "any of",
