@@ -44,8 +44,10 @@ spec:
           # repoURLGit / repoURLGitRevision are deliberately NOT set in valuesObject.
           # They fall through to registry/_defaults.yaml, which resolves them from the
           # cluster-secret annotations at ApplicationSet generation time:
-          #   repoURLGit          <- {{default "<upstream>" .metadata.annotations.addons_repo_url}}
-          #   repoURLGitRevision  <- {{default "main"       .metadata.annotations.addons_repo_revision}}
+          #   repoURLGit          <- {{default "<upstream>" (index .metadata.annotations "addons_repo_url")}}
+          #   repoURLGitRevision  <- {{default "main"       (index .metadata.annotations "addons_repo_revision")}}
+          # (`index`, not dot-key, so a cluster secret lacking the keys falls back to the
+          # default instead of failing generation under missingkey=error.)
           # These OAP-scoped snake_case annotations are distinct from any platform
           # (appmod) addonsRepoRevision, so the OAP revision is decoupled and no child
           # ApplicationSet carries a hardcoded revision. Baking ${OAP_REVISION} here is what
