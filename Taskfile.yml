@@ -68,13 +68,16 @@ vars:
     sh: yq -r '.agenticRepo.revision' {{.CONFIG_FILE}}
   AGENTIC_REPO_BASEPATH:
     sh: yq -r '.agenticRepo.basepath' {{.CONFIG_FILE}}
-  # Optional in-cluster overlay (Option A). Empty by default → overlay disabled.
-  # Point at an in-cluster GitOps repo (e.g. the platform fleet-config) to override
-  # OAP addon values without committing to the addon repo.
+  # Optional in-cluster overlay (Option A). Point at an in-cluster GitOps repo (e.g.
+  # the platform fleet-config) to override OAP addon values without committing to the
+  # addon repo. Resolution (agentic:bootstrap): agenticRepo.overlayUrl when set in
+  # config, else the overlay the PLATFORM already wired on the hub cluster secret
+  # (overlay_repo_url/revision/basepath annotations — the same coordinates the
+  # platform cluster-addons appset feeds the appset-chart), else empty → disabled.
   OVERLAY_REPO_URL:
     sh: yq -r '.agenticRepo.overlayUrl // ""' {{.CONFIG_FILE}}
   OVERLAY_REPO_REVISION:
-    sh: yq -r '.agenticRepo.overlayRevision // "main"' {{.CONFIG_FILE}}
+    sh: yq -r '.agenticRepo.overlayRevision // ""' {{.CONFIG_FILE}}
   OVERLAY_REPO_BASEPATH:
     sh: yq -r '.agenticRepo.overlayBasepath // ""' {{.CONFIG_FILE}}
 
@@ -330,13 +333,36 @@ tasks:
       # Application's source B.
       PLATFORM_REPO_URL: "{{.PLATFORM_REPO}}"
       PLATFORM_REPO_REVISION: "{{.PLATFORM_REF}}"
-      # Option A overlay coordinates (empty OVERLAY_REPO_URL → overlay source omitted).
-      OVERLAY_REPO_URL: "{{.OVERLAY_REPO_URL}}"
-      OVERLAY_REVISION: "{{.OVERLAY_REPO_REVISION}}"
-      OVERLAY_BASEPATH: "{{.OVERLAY_REPO_BASEPATH}}"
     cmds:
       - task: agentic:hub-oidc-annotation
-      - envsubst '${OAP_REPO_URL} ${OAP_REVISION} ${OAP_BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION} ${OVERLAY_REPO_URL} ${OVERLAY_REVISION} ${OVERLAY_BASEPATH}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
+      - |
+        # Option A overlay coordinates (empty OVERLAY_REPO_URL → overlay source omitted).
+        # Config wins; otherwise inherit what the platform wired on the hub cluster
+        # secret, so OAP addons read the SAME $overlay tier as the platform addons
+        # without repeating the repo in OAP config. Nothing wired → empty, unchanged.
+        OVERLAY_REPO_URL="{{.OVERLAY_REPO_URL}}"
+        OVERLAY_REVISION="{{.OVERLAY_REPO_REVISION}}"
+        OVERLAY_BASEPATH="{{.OVERLAY_REPO_BASEPATH}}"
+        if [ -z "$OVERLAY_REPO_URL" ] && ! kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd \
+            get secret {{.HUB_CLUSTER_NAME}} >/dev/null 2>&1; then
+          # Make a wrong context / missing secret visible instead of silently
+          # looking like "no overlay wired". Behaviour is unchanged: overlay stays off.
+          printf '⚠ Hub cluster secret argocd/%s not found on context %s: OAP overlay not inherited (overlay tier disabled)\n' \
+            "{{.HUB_CLUSTER_NAME}}" "{{.HUB_CLUSTER_NAME}}"
+        elif [ -z "$OVERLAY_REPO_URL" ]; then
+          ann() { kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd get secret {{.HUB_CLUSTER_NAME}} \
+            -o "jsonpath={.metadata.annotations.$1}" 2>/dev/null || true; }
+          OVERLAY_REPO_URL=$(ann overlay_repo_url)
+          if [ -n "$OVERLAY_REPO_URL" ]; then
+            [ -n "$OVERLAY_REVISION" ] || OVERLAY_REVISION=$(ann overlay_repo_revision)
+            [ -n "$OVERLAY_BASEPATH" ] || OVERLAY_BASEPATH=$(ann overlay_repo_basepath)
+            printf '✓ OAP overlay inherited from hub cluster secret: %s @ %s (basepath %s)\n' \
+              "$OVERLAY_REPO_URL" "${OVERLAY_REVISION:-main}" "${OVERLAY_BASEPATH:-<root>}"
+          fi
+        fi
+        OVERLAY_REVISION="${OVERLAY_REVISION:-main}"   # previous default, kept byte-identical
+        export OVERLAY_REPO_URL OVERLAY_REVISION OVERLAY_BASEPATH
+        envsubst '${OAP_REPO_URL} ${OAP_REVISION} ${OAP_BASEPATH} ${HUB_CLUSTER_NAME} ${PLATFORM_REPO_URL} ${PLATFORM_REPO_REVISION} ${OVERLAY_REPO_URL} ${OVERLAY_REVISION} ${OVERLAY_BASEPATH}' < gitops/bootstrap/agent-platform-app.yaml | kubectl --context {{.HUB_CLUSTER_NAME}} apply -f -
       - printf '\n✓ Agentic platform bootstrap applied. ArgoCD will sync components to clusters with enable_agent_platform=true label (set via fleet overlays).\n'
 
   agentic:seed-observability:
