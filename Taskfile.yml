@@ -74,8 +74,8 @@ vars:
   # config, else the overlay the PLATFORM already wired on the hub cluster secret
   # (overlay_repo_url/revision/basepath annotations — the same coordinates the
   # platform cluster-addons appset feeds the appset-chart), else the hub's own
-  # fleetRepoURL/Revision when it is a separate repo from addonsRepoURL (the
-  # platform's fallback), else empty → disabled.
+  # fleetRepoURL/Revision when it is a separate repo from both addonsRepoURL (the
+  # platform's fallback) and the OAP repo itself, else empty → disabled.
   OVERLAY_REPO_URL:
     sh: yq -r '.agenticRepo.overlayUrl // ""' {{.CONFIG_FILE}}
   OVERLAY_REPO_REVISION:
@@ -363,10 +363,14 @@ tasks:
           else
             # Same fallback as the platform cluster-addons appset: a dedicated fleet repo
             # (fleetRepoURL != addonsRepoURL, ignoring a trailing .git) IS the overlay.
+            # Also skip it when the fleet repo is the OAP repo itself (OAP standalone:
+            # platform:configure sets fleetRepo to the OAP repo): OAP's own addon repo is
+            # not an overlay, and its root would otherwise be layered on top.
             # Basepath stays "" = repo root (overlay content), not fleetRepoBasepath.
             FLEET_URL=$(ann fleetRepoURL)
             ADDONS_URL=$(ann addonsRepoURL)
-            if [ -n "$FLEET_URL" ] && [ "${FLEET_URL%.git}" != "${ADDONS_URL%.git}" ]; then
+            if [ -n "$FLEET_URL" ] && [ "${FLEET_URL%.git}" != "${ADDONS_URL%.git}" ] \
+               && [ "${FLEET_URL%.git}" != "${OAP_REPO_URL%.git}" ]; then
               OVERLAY_REPO_URL="$FLEET_URL"
               [ -n "$OVERLAY_REVISION" ] || OVERLAY_REVISION=$(ann fleetRepoRevision)
               printf '✓ OAP overlay = hub fleet repo (no overlay_repo_url): %s @ %s (basepath %s)\n' \
