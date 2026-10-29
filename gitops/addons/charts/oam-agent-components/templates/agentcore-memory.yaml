@@ -21,22 +21,21 @@ spec:
         // with (namespace, component): the IAM policy grants memory/<name>-*, so two pairs
         // sharing a name would share a memory.
         //
-        // Plain form <namespace>_<component> with "-" -> "_", used only when the namespace
-        // has no "-": namespaces and components never contain "_", so the first "_" then
-        // separates the two and the mapping is one-to-one. Without that condition team/a-memory
-        // and team-a/memory would both be team_a_memory. Existing memories in such namespaces
-        // keep their names.
+        // "M", the first 30 characters of <namespace>_<component> ("-" -> "_"), "_", and 16
+        // hex characters of sha256(namespace/component). At most 48 characters. The 64-bit
+        // hash makes it one-to-one; the readable head is only for people.
         //
-        // Otherwise, or when the plain form is too long or starts with a digit: "M", the
-        // first 30 characters of the plain form, "_", and 16 hex characters of
-        // sha256(namespace/component). The upper-case "M" cannot occur in a plain name
-        // (Kubernetes names are lower case), so the two forms never meet, and the 64-bit hash
-        // separates fallback names. At most 48 characters.
+        // It must never equal a name an earlier version of this component produced. Those
+        // were <namespace>_<component>, lower case (Kubernetes names are lower case), so the
+        // upper-case "M" rules that out. That matters on upgrade: the object name changes
+        // (see _objName), and KubeVela deletes the old Memory only after the new revision is
+        // healthy. With the same AWS name, CreateMemory for the new object fails with
+        // "already exists" while the old object holds the name, so the Application never
+        // becomes healthy and the old revision, agent included, keeps running unchanged.
         let _rawName = strings.Replace(context.namespace+"_"+context.name, "-", "_", -1)
-        let _plainOK = !strings.Contains(context.namespace, "-") && (_rawName =~ "^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
         let _hash = strings.SliceRunes(hex.Encode(sha256.Sum256(context.namespace+"/"+context.name)), 0, 16)
         let _head = [if len(_rawName) > 30 {strings.SliceRunes(_rawName, 0, 30)}, _rawName][0]
-        let _autoName = [if _plainOK {_rawName}, "M" + _head + "_" + _hash][0]
+        let _autoName = "M" + _head + "_" + _hash
 
         // Memory and MemoryStrategy here are the cluster-scoped Upbound kinds
         // (*.aws.upbound.io), so their object names carry the namespace to stay unique
@@ -145,7 +144,7 @@ spec:
         }
 
         parameter: {
-        	// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. <namespace>_<component> ("-" replaced by "_") when the namespace has no "-", else M<first 30 characters>_<16-character hash>
+        	// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. M<first 30 characters of <namespace>_<component>>_<16-character hash>
         	// Fixed rather than overridable because the IAM policy grants memory/<memoryName>-*:
         	// an override could name another namespace's memory and be granted access to it.
         	memoryName: _autoName & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
