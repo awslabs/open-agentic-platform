@@ -348,3 +348,36 @@ def test_rule_targets_the_root_observation(settings, catalog, metrics):
         for f in rule["filter"]
     )
     assert not any(f["column"] == "parentObservationId" for f in rule["filter"])
+
+
+def test_a_filter_change_is_detected_and_patched(settings, catalog, metrics):
+    """The reconciler must converge on a filter change, not just on tags.
+
+    Comparing only the agent tags left every rule already in Langfuse stuck with
+    an old, non-matching root-span clause: the tags were identical, so the rule
+    looked up to date forever, and a rule whose filter cannot be corrected
+    silently scores nothing.
+    """
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
+    assert loop.run_once()
+    rule = langfuse.rules[0]
+
+    # A rule as an older reconciler wrote it: same tags, stale root clause.
+    rule["filter"] = [
+        {
+            "type": "null",
+            "column": "parentObservationId",
+            "operator": "is null",
+            "value": "",
+        },
+        next(f for f in rule["filter"] if f["column"] == "tags"),
+    ]
+    langfuse.calls.clear()
+
+    assert loop.run_once()
+    assert [
+        c for c in langfuse.calls if c.startswith("update_rule")
+    ], "a stale filter must be patched"
+    assert any(
+        f["column"] == "isRootObservation" for f in langfuse.rules[0]["filter"]
+    )

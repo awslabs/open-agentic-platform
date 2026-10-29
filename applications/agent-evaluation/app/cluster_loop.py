@@ -472,12 +472,41 @@ class ClusterLoop:
         # on either side means 1, not 0.
         if abs(_sampling_of(current) - _sampling_of(desired)) > 1e-9:
             return False
-        return _tags_of(current) == _tags_of(desired)
+        # The WHOLE filter, not just the agent tags. Comparing only the tags
+        # left the reconciler unable to converge on a filter change: when the
+        # root-span clause was corrected, every rule already in Langfuse kept
+        # the old, non-matching clause forever, because the tags were identical
+        # so the rule looked up to date. A rule whose filter cannot be corrected
+        # silently scores nothing.
+        return _filter_of(current) == _filter_of(desired)
 
 
 def _sampling_of(rule: dict) -> float:
     value = rule.get("sampling")
     return 1.0 if value is None else float(value)
+
+
+def _filter_of(rule: dict) -> list[tuple]:
+    """A rule's filter, normalised so two equivalent filters compare equal.
+
+    Sorted because clause order is not meaningful, and values are sorted within
+    a clause for the same reason. Only the fields this loop sets are included,
+    so a field Langfuse adds on read cannot make an unchanged rule look changed.
+    """
+    out = []
+    for clause in rule.get("filter") or []:
+        value = clause.get("value")
+        if isinstance(value, list):
+            value = tuple(sorted(str(v) for v in value))
+        out.append(
+            (
+                str(clause.get("column") or ""),
+                str(clause.get("operator") or ""),
+                str(clause.get("type") or ""),
+                value,
+            )
+        )
+    return sorted(out, key=repr)
 
 
 def _tags_of(rule: dict) -> list[str]:
