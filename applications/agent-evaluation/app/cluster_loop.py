@@ -48,11 +48,22 @@ logger = logging.getLogger(__name__)
 # Langfuse's observation-target filter that selects a trace's root observation:
 # the span with no parent. This is why rules do not depend on the Strands span
 # name (D4).
+# Select the agent's root span, so one trace is judged once rather than once per
+# child observation.
+#
+# `isRootObservation`, NOT `parentObservationId is null`. The two are not
+# equivalent, and the difference is the whole behaviour: Langfuse documents that
+# "observations marked as app roots by the SDK may retain a non-null
+# parentObservationId", which is exactly what the Strands/a2a root span does. A
+# `parentObservationId is null` filter therefore matches NOTHING for these
+# agents — measured on the hub, the rule was active and enabled with sampling 1
+# and a correct tag filter, and produced no evaluation job at all, while the same
+# rule with no filter scored every observation.
 ROOT_OBSERVATION_FILTER = {
-    "column": "parentObservationId",
-    "operator": "is null",
-    "type": "null",
-    "value": "",
+    "column": "isRootObservation",
+    "operator": "=",
+    "type": "boolean",
+    "value": True,
 }
 
 

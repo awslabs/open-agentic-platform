@@ -339,7 +339,12 @@ def test_rule_targets_the_root_observation(settings, catalog, metrics):
     # v4 rules have no `target` field; an observation rule is the default and
     # experiments are selected with a datasetId filter instead.
     assert "target" not in rule
+    # isRootObservation, not parentObservationId: the Strands/a2a root span
+    # keeps a non-null parent, so the null filter matches nothing.
     assert any(
-        f["column"] == "parentObservationId" and f["operator"] == "is null"
+        f["column"] == "isRootObservation"
+        and f["operator"] == "="
+        and f["value"] is True
         for f in rule["filter"]
     )
+    assert not any(f["column"] == "parentObservationId" for f in rule["filter"])
