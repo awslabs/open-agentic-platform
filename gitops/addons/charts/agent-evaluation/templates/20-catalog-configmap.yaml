@@ -1,0 +1,64 @@
+{{- /*
+The catalog, as one file the reconciler reads at startup.
+
+Everything in here is platform policy shared by the whole fleet: the judge
+prompts and their scales, what each coverage level means, and which judge aliases
+exist. It is rendered from chart values and the prompt files, so changing a
+prompt is a reviewed chart change — which is the whole point of the catalog
+living on the platform rather than in each agent's Application (D2).
+
+The hub is the only instance that writes these to Langfuse. A spoke reads the
+same file so it can resolve an agent's evaluator and judge names, reject an
+unknown one with an Event, and resolve strictness to a threshold for the report.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-evaluation-catalog
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+data:
+  catalog.yaml: |
+    # Rendered by the agent-evaluation chart. Do not edit in the cluster: the
+    # next Argo sync overwrites it. Edit the chart values instead.
+    coverage:
+      {{- range $level, $rate := .Values.coverage }}
+      {{ $level }}: {{ $rate }}
+      {{- end }}
+    judge:
+      defaultModelId: {{ .Values.judge.defaultModelId | quote }}
+      aliases:
+        {{- $aliases := .Values.judge.aliases | default (list .Values.judge.defaultModelId) }}
+        {{- if not (has .Values.judge.defaultModelId $aliases) }}
+        - {{ .Values.judge.defaultModelId | quote }}
+        {{- end }}
+        {{- range $aliases }}
+        - {{ . | quote }}
+        {{- end }}
+    catalog:
+      {{- $root := . }}
+      {{- range $name, $spec := .Values.catalog }}
+      {{ $name }}:
+        target: {{ $spec.target | default "root-agent-observation" | quote }}
+        scoreType: {{ $spec.scoreType | default "numeric" | quote }}
+        passThreshold:
+          {{- range $level, $value := $spec.passThreshold }}
+          {{ $level }}: {{ $value }}
+          {{- end }}
+        reasoningPrompt: {{ $spec.reasoningPrompt | default "" | quote }}
+        outputPrompt: {{ $spec.outputPrompt | default "" | quote }}
+        {{- with $spec.mapping }}
+        mapping:
+          {{- range $variable, $source := . }}
+          {{ $variable }}: {{ $source | quote }}
+          {{- end }}
+        {{- end }}
+        {{- $file := printf "files/evaluators/%s" $spec.prompt }}
+        {{- $prompt := $root.Files.Get $file }}
+        {{- if not $prompt }}
+        {{- fail (printf "agent-evaluation: catalog entry %q names prompt file %q, which is empty or missing from the chart. Every catalog entry must have a prompt, or the hub would publish an evaluator that scores nothing." $name $spec.prompt) }}
+        {{- end }}
+        prompt: |
+          {{- $prompt | nindent 10 }}
+      {{- end }}

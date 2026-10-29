@@ -175,3 +175,14 @@ seed:
     id: "ak-otel-collector"
     publicKey: "pk-lf-otel-platform"
     secretKey: "sk-lf-otel-platform-2026"
+
+# Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+# Langfuse itself runs no evaluation here; it only needs to be allowed to reach
+# the judge's model gateway, which is a cluster-internal address its SSRF check
+# blocks by default.
+evaluation:
+  # The one host exempted from Langfuse's LLM-connection SSRF check: Bifrost's
+  # in-cluster Service. Keep this a single host — it is an exemption from a
+  # security control, not a convenience setting. Must match the host in the
+  # agent-evaluation addon's judge.bifrostUrl.
+  judgeGatewayHost: "bifrost.bifrost.svc.cluster.local"

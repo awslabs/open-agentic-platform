@@ -41,6 +41,11 @@ enabledAddons:
   bifrost: true
   otel_collector: true
   monitoring: true
+  # Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+  # role=spoke, derived by the registry entry from this cluster having no
+  # ingress_domain_name: it owns only its own oap-<cluster>- Langfuse rules and
+  # never writes a judge prompt, so it cannot change how prod is scored.
+  agent_evaluation: true
   agent_core: true
   agent_gateway: true
   oam_components: true

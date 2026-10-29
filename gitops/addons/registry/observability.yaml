@@ -120,3 +120,54 @@ prometheus-operator-crds:
       kind: CustomResourceDefinition
       jsonPointers:
         - /metadata/annotations
+
+# Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+#
+# Deployed to EVERY cluster that runs agents, the hub included, because agents and
+# their evaluation ConfigMaps are local to a cluster and one reconciler cannot
+# list another cluster's. Each instance owns only its own cluster's Langfuse
+# rules.
+#
+# The HUB instance additionally owns the project-wide objects — the catalog
+# evaluators and the judge LLM connection — because all clusters share one
+# Langfuse project and, under trunk-based development, spokes sit on different
+# chart versions. Without a single writer the last cluster to reconcile would
+# decide how the whole fleet is scored.
+#
+# role is derived the same way the otel-collector derives its Langfuse endpoint:
+# the hub is the cluster with a non-empty ingress_domain_name (its own public
+# domain), and a spoke has none. langfuse.url follows from the same test — the
+# hub reaches Langfuse in-cluster, a spoke over HTTPS on the hub domain (which
+# every spoke carries in oidc_issuer_url).
+agent-evaluation:
+  namespace: agent-evaluation
+  defaultVersion: '0.1.0'
+  path: 'gitops/addons/charts/agent-evaluation'
+  annotationsAppSet:
+    # After langfuse (5) and otel-collector (6): the reconciler needs the seeded
+    # project's keys in Secrets Manager before it can call the Langfuse API.
+    argocd.argoproj.io/sync-wave: '7'
+  selector:
+    matchExpressions:
+      - key: enable_agent_evaluation
+        operator: In
+        values: ['true']
+  valuesObject:
+    global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+    role: '{{ if index .metadata.annotations "ingress_domain_name" }}hub{{ else }}spoke{{ end }}'
+    langfuse:
+      # Hub: in-cluster Service. Spoke: the hub domain over HTTPS, resolved
+      # exactly like the otel-collector's export endpoint above. Langfuse is
+      # served at "/" on that domain, so /api/public/... resolves there.
+      url: '{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ if $d }}http://langfuse.langfuse.svc.cluster.local:3000{{ else }}https://{{ (splitList "/" (trimPrefix "https://" (index .metadata.annotations "oidc_issuer_url"))) | first }}{{ end }}'
+      # Same entry the otel-collector reads, written by the langfuse addon's
+      # push-otel-keys hook. <resource_prefix>-hub is the hub cluster name, and
+      # the annotation is identical on hub and spokes.
+      secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}-hub/langfuse-otel'
+  ignoreDifferences:
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jsonPointers:
+        - /spec/dataFrom

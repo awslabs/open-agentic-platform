@@ -138,6 +138,13 @@ enabledAddons:
   langfuse: true
   otel_collector: true
   monitoring: true
+  # Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+  # The hub instance reconciles its OWN agents' rules like any other cluster, and
+  # additionally owns the project-wide Langfuse objects (the catalog evaluators
+  # and the judge LLM connection) because every cluster shares one project. The
+  # registry entry derives role=hub from this cluster having an
+  # ingress_domain_name, so no flag here chooses the role.
+  agent_evaluation: true
   agent_core: true
   agent_gateway: true
   oam_components: true

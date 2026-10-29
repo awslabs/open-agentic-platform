@@ -1,0 +1,148 @@
+{{- /*
+The reconciler. One replica on purpose.
+
+A second replica would not make this faster or safer: both would run the same
+level-triggered diff against the same Langfuse project and race on the same
+objects. Every pass is idempotent, so a restart loses nothing — the next pass
+rebuilds the whole picture. Availability is not a concern either: evaluation is
+an offline reporting path, and an agent keeps serving users while this pod is
+down.
+
+Probes are split deliberately. /healthz answers as soon as the process serves
+HTTP and never consults Langfuse, so a slow ExternalSecret or an IAM policy still
+propagating cannot restart the pod in a loop. /readyz is the one that reports the
+dependency.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-evaluation-reconciler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # The old pod must release its Langfuse writes before the new one starts, and
+  # two reconcilers mid-rollout would PATCH the same rules.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agent-evaluation.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agent-evaluation.labels" . | nindent 8 }}
+        {{- include "agent-evaluation.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Restart when a prompt, a coverage rate or a judge alias changes, so a
+        # catalog edit actually reaches Langfuse instead of waiting for an
+        # unrelated restart.
+        checksum/catalog: {{ include "agent-evaluation.catalogChecksum" . }}
+    spec:
+      serviceAccountName: agent-evaluation-reconciler
+      securityContext:
+        runAsNonRoot: true
+        # Numeric uid: the kubelet cannot verify runAsNonRoot from a named USER,
+        # so a restricted namespace would refuse the pod without it.
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reconciler
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: ROLE
+              value: {{ include "agent-evaluation.role" . | quote }}
+            - name: CLUSTER_NAME
+              value: {{ include "agent-evaluation.clusterName" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LANGFUSE_URL
+              value: {{ include "agent-evaluation.langfuseUrl" . | quote }}
+            - name: LANGFUSE_TIMEOUT_SECONDS
+              value: {{ .Values.langfuse.timeoutSeconds | quote }}
+            - name: BIFROST_URL
+              value: {{ .Values.judge.bifrostUrl | quote }}
+            - name: RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.reconcile.intervalSeconds | quote }}
+            - name: METRICS_INTERVAL_SECONDS
+              value: {{ .Values.metrics.intervalSeconds | quote }}
+            - name: METRICS_WINDOWS
+              value: {{ join "," .Values.metrics.windows | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: MAX_ACTIVE_RULES
+              value: {{ .Values.maxActiveRules | quote }}
+            - name: CATALOG_PATH
+              value: /etc/agent-evaluation/catalog.yaml
+            - name: CREDENTIALS_DIR
+              value: /etc/agent-evaluation/credentials
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+          ports:
+            # Scraped through a ClusterIP Service. No hostPort and no Ingress:
+            # this listener is reachable only from inside the cluster.
+            - name: http-metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          # Credentials are mounted as files rather than envFrom: a file is not
+          # visible in `kubectl describe pod` and it updates in place when the
+          # ExternalSecret refreshes.
+          volumeMounts:
+            - name: catalog
+              mountPath: /etc/agent-evaluation/catalog.yaml
+              subPath: catalog.yaml
+              readOnly: true
+            - name: langfuse-credentials
+              mountPath: /etc/agent-evaluation/credentials/LANGFUSE_PUBLIC_KEY
+              subPath: LANGFUSE_PUBLIC_KEY
+              readOnly: true
+            - name: langfuse-credentials
+              mountPath: /etc/agent-evaluation/credentials/LANGFUSE_SECRET_KEY
+              subPath: LANGFUSE_SECRET_KEY
+              readOnly: true
+            {{- if and (eq (include "agent-evaluation.role" .) "hub") .Values.judge.virtualKey.enabled }}
+            - name: judge-key
+              mountPath: /etc/agent-evaluation/credentials/BIFROST_VIRTUAL_KEY
+              subPath: BIFROST_VIRTUAL_KEY
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            # One reconcile interval plus headroom: a cold start lists every
+            # ConfigMap and every Langfuse object before it can report ready.
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: catalog
+          configMap:
+            name: agent-evaluation-catalog
+        - name: langfuse-credentials
+          secret:
+            secretName: {{ .Values.langfuse.apiKeySecretRef }}
+        {{- if and (eq (include "agent-evaluation.role" .) "hub") .Values.judge.virtualKey.enabled }}
+        - name: judge-key
+          secret:
+            secretName: {{ .Values.judge.virtualKey.secretRef }}
+        {{- end }}

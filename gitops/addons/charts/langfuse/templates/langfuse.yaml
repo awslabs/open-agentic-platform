@@ -32,6 +32,17 @@ data:
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ .Values.global.awsRegion }}"
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://langfuse-minio:9000"
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  # Allow the continuous-evaluation judge's LLM connection to reach Bifrost
+  # in-cluster. Langfuse validates every LLM connection's base URL and blocks
+  # private and cluster-internal addresses as SSRF protection, so without this
+  # the judge connection cannot be saved at all.
+  #
+  # Deliberately a single host, not a CIDR or a wildcard: this is an exemption
+  # from an SSRF control, so it names exactly the one in-cluster service the
+  # judge uses and nothing else. Any other internal base URL is still refused.
+  # Both the web and worker containers load this ConfigMap, so one key covers
+  # both, and it belongs here rather than in a manual `kubectl set env`.
+  LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ .Values.evaluation.judgeGatewayHost }}"
 ---
 # ─── Secret (credentials — overridable via values) ────────────────────────
 apiVersion: v1

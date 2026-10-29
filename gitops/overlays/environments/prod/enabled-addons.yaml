@@ -26,6 +26,11 @@ enabledAddons:
   bifrost: true
   otel_collector: true
   monitoring: true
+  # Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+  # role=spoke, derived by the registry entry from this cluster having no
+  # ingress_domain_name. prod's rules are named for prod and only prod's
+  # reconciler can delete them, so a dev rollout cannot disturb prod scoring.
+  agent_evaluation: true
   agent_core: true
   agent_gateway: true
   oam_components: true

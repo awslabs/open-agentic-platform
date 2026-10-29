@@ -156,6 +156,16 @@ template: {
 							// identity to MCP servers, which mcpAccess grants match on. "true": it forwards the
 							// user's token (main's behaviour, the passthrough the MCP spec forbids).
 							{name: "PROPAGATE_CALLER_TOKEN", value: "{{ .Values.global.agentIdentity.propagateCallerToken }}"},
+							// Platform-owned, not parameters: together these scope the agent's
+							// Langfuse trace tag to one cluster, as agent:<cluster>/<ns>/<name>.
+							// Every cluster's traces land in the one hub Langfuse project, so
+							// without the cluster the same Application on dev and prod would
+							// share a tag -- one evaluation rule would match both, and their
+							// scores would be one indistinguishable series.
+							// The agent is not told its own namespace otherwise, and the tag
+							// needs it.
+							{name: "CLUSTER_NAME", value: "{{ .Values.global.clusterName }}"},
+							{name: "AGENT_NAMESPACE", value: context.namespace},
 							// Observability env vars — mode-dependent
 							{name: "OTEL_SERVICE_NAME", value: context.name},
 							{name: "OTEL_TRACES_EXPORTER", value: "otlp"},
@@ -353,6 +363,52 @@ template: {
 			}
 		}
 
+		// Evaluation declaration. One ConfigMap naming WHAT this agent wants
+		// evaluated; the agent-evaluation addon's reconciler owns everything else
+		// (D4). There is no account, region, endpoint or key in it.
+		//
+		// Because this is a KubeVela output, deleting the Application or setting
+		// enabled: false deletes it, and the reconciler then removes the agent
+		// from its evaluation rules on the next pass. That is what handles
+		// cleanup with no finalizer.
+		if parameter.evaluation != _|_ && parameter.evaluation.enabled {
+			evaluationSpec: {
+				apiVersion: "v1"
+				kind:       "ConfigMap"
+				metadata: {
+					name:      context.name + "-evaluation"
+					namespace: context.namespace
+					labels: {
+						// The reconciler lists on this label alone, so it must be
+						// present for the agent to be evaluated at all.
+						"evaluation.oap.io/agent": context.name
+						"app.kubernetes.io/name":  context.name
+					}
+				}
+				data: {
+					agent: context.name
+					// centralized -> Langfuse (Phase 1); decentralized -> AgentCore
+					// Evaluations (Phase 2), which reports the same metrics.
+					backend: parameter.observability.mode
+					// The agent's model alias, so reports can compare quality by model.
+					model:      parameter.modelConfig.modelId
+					strictness: parameter.evaluation.strictness
+					coverage:   parameter.evaluation.coverage
+					// Names and per-evaluator overrides exactly as given. The
+					// reconciler resolves them against the platform catalog, because
+					// CUE renders without cluster reads and cannot see it.
+					evaluators: json.Marshal(parameter.evaluation.evaluators)
+					if parameter.evaluation.sampling != _|_ {
+						sampling: "\(parameter.evaluation.sampling)"
+					}
+					// Absent means "use the platform default judge".
+					if parameter.evaluation.judge != _|_ {
+						judge: parameter.evaluation.judge.modelId
+					}
+				}
+			}
+		}
+
 		// HTTPRoute for AgentGateway registration (optional)
 		if parameter.registerWithGateway {
 			gatewayRoute: {
@@ -474,6 +530,54 @@ template: {
 		observability: {
 			mode: *"centralized" | "decentralized"
 		}
+
+		// +usage=Online evaluation of this agent's live traces by an LLM judge.
+		// Requires the agent-evaluation addon on the cluster.
+		//
+		// The developer chooses WHICH evaluators run, HOW STRICT they are, HOW MANY
+		// traces are scored and optionally WHICH judge. What each evaluator means --
+		// its prompt, scale and thresholds -- is platform-owned, so judge prompts
+		// stay reviewed in one place and every agent is held to the same definition
+		// of "safe" or "helpful".
+		evaluation?: {
+			// +usage=Turn evaluation on for this agent.
+			enabled: *false | bool
+			// +usage=Judge model, as a Bifrost model alias. Defaults to the platform
+			// judge. Must be one of the aliases the platform allows; an unknown one is
+			// reported as a Kubernetes Event on this agent's evaluation ConfigMap and
+			// no rule is created, rather than silently falling back to the default.
+			judge?: modelId: string
+			// +usage=How high a score must be to pass: low, medium or high. The
+			// platform catalog defines the threshold for each evaluator at each level,
+			// so `high` is stricter for safety than for helpfulness.
+			// Costs nothing: it changes the reported threshold, not the judge calls.
+			strictness: *"medium" | "low" | "high"
+			// +usage=How many traces are scored: low, medium or high. The platform
+			// defines the sampling rate for each level. Each scored trace costs one
+			// judge call per evaluator, so this is the cost dial.
+			coverage: *"medium" | "low" | "high"
+			// +usage=Exact fraction of traces scored, 0-1. Overrides coverage.
+			// Prefer coverage: the three preset rates group into far fewer Langfuse
+			// rules, and the project has a cap on them.
+			sampling?: number & >0 & <=1
+			// +usage=Evaluators from the platform catalog: a name, or
+			// {name, strictness} to override strictness for one evaluator. Names are
+			// checked by the reconciler, which owns the catalog: CUE renders without
+			// cluster reads, so it cannot see catalog entries teams add.
+			//
+			// A bare name is a platform catalog entry. The <namespace>/<name> form is
+			// reserved for team-defined evaluators (D4, "Planned follow-up") and is
+			// not accepted yet, so widening #EvaluatorName is part of that follow-up.
+			evaluators: *["goal-completion", "helpfulness"] | [...(#EvaluatorName | {
+				name:        #EvaluatorName
+				strictness?: "low" | "medium" | "high"
+			})]
+		}
+
+		// Lowercase alphanumeric with internal hyphens. `--` is excluded because it
+		// separates an evaluator from its judge alias in the Langfuse object name
+		// (<evaluator>--<alias>), so a catalog name containing it would be ambiguous.
+		#EvaluatorName: =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$"
 
 		// Memory configuration — pluggable providers
 		// mem0 providers: milvus, qdrant, opensearch, pgvector, redis, chroma, s3vectors

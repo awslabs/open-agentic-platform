@@ -2,12 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted; Phase 1 implemented |
+| **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/` |
 | **Author** | @elamaran11 |
 | **Reviewers** | TBD |
 | **Target** | OAP agent platform: `agent` component, new `agent-evaluation` addon |
 | **Date** | 2026-10-22 |
-| **Revision** | 4 (the hub also evaluates its own agents; one evaluator per judge alias, since the rule has no model; write-on-change evaluator `POST`; spokes reach Langfuse through the hub domain) |
+| **Revision** | 5 (Phase 1 implemented; rule ownership moved from a cluster-name prefix to an exact owner token, which closes the `dev` / `dev-2` prefix overlap) |
 | **Issue** | #79 |
 
 ## Scope
@@ -435,7 +436,7 @@ Every project-wide object therefore has exactly one writer:
 |---|---|---|
 | Catalog evaluators (prompts, scales, judge model) | **hub** reconciler (`role: hub`) | One per catalog entry per judge alias, for the whole project; prompts come from the hub's chart version |
 | Judge LLM connection and its `x-bf-vk` virtual key | **hub** reconciler | One per project, next to Langfuse and Bifrost |
-| Evaluation rules `oap-<cluster>-…` | the reconciler of that cluster, hub included | Only its own prefix (steps 4 and 5) |
+| Evaluation rules `oap-<owner token>-…` | the reconciler of that cluster, hub included | Only its own owner token, compared exactly (steps 4 and 5) |
 | Score metrics `oap_agent_eval_*` | every reconciler, for the agents on its own cluster | `cluster`-labelled, so no object is shared (D5) |
 
 The same image runs in both roles, selected by `role: hub | spoke` in the addon
@@ -476,13 +477,31 @@ The **per-cluster** loop, run by every instance (hub included) each interval:
    `agent:<cluster>/<namespace>/<name>` tags (see "Agent identity in traces"
    below). Create
    new rules and `PATCH` changed ones, so the operation is idempotent. Each rule
-   is named `oap-<cluster>-<evaluator>-<hash of judge and sampling>`, so its owner
-   is readable from the name.
+   is named `oap-<owner token>-<evaluator>-<hash of judge and sampling>`, where
+   the owner token identifies the cluster (see "Owner token" below).
    `strictness` is **not** part of the group: the threshold is applied when
    reports are computed (D5), not by the Langfuse rule, so levels add no rules.
-5. Delete rules whose group is now empty, **only among rules named `oap-<this cluster>-`**.
-   A rule another cluster owns is never touched, even though this reconciler sees
-   no ConfigMap for it.
+5. Delete rules whose group is now empty, **only among rules whose owner token is
+   this cluster's**, compared exactly. A rule another cluster owns is never
+   touched, even though this reconciler sees no ConfigMap for it.
+
+**Owner token: an exact token, not a cluster-name prefix.** An earlier revision
+named rules `oap-<cluster>-…` and scoped deletion to that prefix. That is unsafe,
+because EKS cluster names may contain hyphens: `oap-dev-` is also a prefix of
+every rule belonging to a cluster named `dev-2`, so the `dev` reconciler would
+see `oap-dev-2-safety-abc12345` as its own, find no ConfigMap for it, and delete
+another cluster's rule — the exact cross-cluster deletion per-cluster ownership
+exists to prevent. The owner token is therefore the first 8 hex characters of
+SHA-256 over the cluster name. Fixed length and a fixed alphabet mean no
+cluster's token can extend another's, so the comparison is exact. A separator
+EKS names cannot contain (`.`) would also work, but only if Langfuse accepts it
+in an object name, which is unverified at the pin; hex is accepted anywhere.
+
+The cost is that the cluster is no longer legible in the Langfuse UI. The
+reconciler therefore logs `cluster=<name> owner_token=<token>` at startup and
+publishes the pair as labels on `oap_agent_eval_cluster_info`, so an operator can
+map a token back to a cluster. The same reasoning applies to the Phase 4
+team-evaluator names.
 
 The **project** loop runs only on the hub instance, next to Langfuse, in addition
 to its per-cluster loop. It ensures every catalog evaluator exists with the
@@ -597,7 +616,7 @@ File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
 ```yaml
 # Both roles watch this cluster's ConfigMaps, own only this cluster's
-# oap-<cluster>- rules and export metrics for this cluster's agents.
+# oap-<owner token>- rules and export metrics for this cluster's agents.
 # hub additionally owns the catalog evaluators and the judge LLM connection.
 role: spoke                       # hub on the cluster that runs Langfuse
 langfuse:
@@ -717,15 +736,15 @@ the component is the one writer of that object.
 
 That reference is cluster-free for the same reason the `evaluation` block is: the
 platform supplies the cluster. The Langfuse object is named
-`oap-<cluster>-<namespace>-<name>`, flattened the way rules already are, and is
+`oap-<owner token>-<namespace>-<name>`, flattened the way rules already are, and is
 owned by the reconciler on the cluster the component is deployed to. Ownership is
 then one rule for every object in the project, read off the name:
 
 | Object name | Written by |
 |---|---|
 | `<evaluator>` and `<evaluator>--<alias>` from the catalog | hub reconciler, project loop |
-| `oap-<cluster>-<namespace>-<name>` | that cluster's reconciler, hub included |
-| `oap-<cluster>-<evaluator>-<hash>` (a rule) | that cluster's reconciler, hub included |
+| `oap-<owner token>-<namespace>-<name>` | that cluster's reconciler, hub included |
+| `oap-<owner token>-<evaluator>-<hash>` (a rule) | that cluster's reconciler, hub included |
 
 Keeping the cluster in the object name also means `dev` and `prod` can carry
 different versions of a team's prompt while it is being iterated, which is the
@@ -1055,7 +1074,7 @@ sequenceDiagram
 | Defines the evaluator catalog, the judge alias and the judge budget | Platform engineer |
 | Renders the declaration ConfigMap | KubeVela |
 | Creates and updates the catalog evaluators (one per judge alias) and the judge LLM connection | Evaluation reconciler, `role: hub`, one for the project |
-| Creates and updates its own cluster's `oap-<cluster>-` rules | Evaluation reconciler on every cluster that runs agents, the hub included |
+| Creates and updates its own cluster's `oap-<owner token>-` rules | Evaluation reconciler on every cluster that runs agents, the hub included |
 | Samples traces and calls the judge | Langfuse worker |
 | Exports score aggregates as metrics | Evaluation reconciler |
 | Imports the dashboard into AMG | grafana-operator |
@@ -1081,10 +1100,10 @@ sequenceDiagram
 
 | Phase | Delivers |
 |---|---|
-| **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<cluster>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check |
+| **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<owner token>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check |
 | **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged |
 | **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
-| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<cluster>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges |
+| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<owner token>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges |
 
 ---
 
@@ -1095,7 +1114,8 @@ sequenceDiagram
 - [ ] Turning on evaluation for two agents with the same settings produces **one** rule per evaluator, filtered to both tags
 - [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
 - [ ] The same Application on `dev` and `prod` produces two `agent:<cluster>/...` tags, separate rules per cluster, and separate `cluster`-labelled series
-- [ ] Deleting every evaluated agent on `dev` removes only `oap-<dev cluster>-` rules; `prod`'s rules survive the `dev` reconciler's next pass
+- [ ] Deleting every evaluated agent on `dev` removes only rules carrying `dev`'s owner token; `prod`'s rules survive the `dev` reconciler's next pass
+- [ ] Two clusters whose names are prefixes of each other (`dev` and `dev-2`) do not delete each other's rules. Covered by a unit test (`tests/test_naming.py`), so the live check only has to confirm the token in the rule names matches `oap_agent_eval_cluster_info`
 - [ ] A spoke reconciler creates and updates no evaluator and no LLM connection: editing a catalog prompt on the hub is reflected in the project, and a spoke pass afterwards leaves it unchanged
 - [ ] A spoke running a chart version whose catalog has an evaluator the hub does not yet have records an Event on that agent's ConfigMap, skips only that evaluator, and creates the rule on its own next pass once the hub lands it
 - [ ] The judge virtual-key Secret is present only in the hub's `agent-evaluation` namespace, and a spoke reconciler runs without it

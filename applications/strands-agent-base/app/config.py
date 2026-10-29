@@ -13,6 +13,15 @@ class Config:
     AGENT_DESCRIPTION: str = os.getenv(
         "AGENT_DESCRIPTION", "A Strands agent with A2A protocol support"
     )
+    # Where this agent runs. Supplied by the platform (the agent component sets
+    # both), and used only to scope this agent's Langfuse trace tag so continuous
+    # evaluation can tell one deployment of an Application from another: every
+    # cluster's traces land in the same hub Langfuse project, so the same
+    # Application on dev and prod would otherwise be one indistinguishable series.
+    # Both default to empty, which is what a local run looks like, and the scoped
+    # tag is then simply not added.
+    CLUSTER_NAME: str = os.getenv("CLUSTER_NAME", "")
+    AGENT_NAMESPACE: str = os.getenv("AGENT_NAMESPACE", "")
     
     # System prompt
     SYSTEM_PROMPT: str = os.getenv(

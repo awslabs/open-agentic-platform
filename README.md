@@ -120,7 +120,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Browser** | `crossplane-agentcore` | ⚠️ CRD ready | Managed headless browser resource for agents that browse. |
 | **Agent Code Interpreter** | `crossplane-agentcore` / sandbox | ⚠️ CRD ready | Sandboxed code execution for agents. |
 | **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code. |
-| **Agent Evaluation** | (planned) `agent-evaluation` | ⬜ | Online LLM-as-a-judge on agent traces, configured from the agent's OAM `evaluation` block — [design](docs/architecture/agent-evaluation.md). |
+| **Agent Evaluation** | `agent-evaluation` | ✅ (Phase 1) | Online LLM-as-a-judge on agent traces, turned on from the agent's OAM `evaluation` block; pass ratios in Grafana — [design](docs/architecture/agent-evaluation.md), [example](platform/oam/examples/example-agent-evaluation.yaml). |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
 keys, model routing); **LiteLLM** is included as an alternative chart. Both front Amazon Bedrock.

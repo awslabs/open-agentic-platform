@@ -90,6 +90,16 @@ bifrost:
             weight: 1
             aliases:
               claude-sonnet: us.anthropic.claude-sonnet-5-5
+              # Platform default judge for continuous agent evaluation
+              # (docs/architecture/agent-evaluation.md, D3). A judge must be
+              # STRONGER than the agent it grades, and must not be the agent's own
+              # model: a model scoring its own output inflates the result
+              # (self-preference bias). Opus grading a Sonnet agent satisfies both.
+              # Whether the judge should also be a different model family is still
+              # open (Q1); changing it is a one-line change here, and the agent
+              # evaluation dashboard breaks pass ratios down by judge model so a
+              # swap is measurable.
+              judge-default: us.anthropic.claude-opus-5-5
             bedrock_key_config:
               region: us-west-2
 
