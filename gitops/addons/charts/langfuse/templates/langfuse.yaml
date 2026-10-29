@@ -151,6 +151,17 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # ENCRYPTION_KEY, without which the LLM-connection API fails closed
+            # with a 500 (see templates/encryption-key.yaml). Optional so a
+            # cluster whose generator Job or ExternalSecret has not landed yet
+            # still boots and serves traces, instead of the whole Langfuse web
+            # pod sitting in CreateContainerConfigError over a key that only the
+            # evaluation feature needs.
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+                optional: true
+            {{- end }}
           env:
             - name: HOSTNAME
               value: "0.0.0.0"
@@ -254,6 +265,14 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # The worker needs it as much as the web pod: it is the container
+            # that runs the evaluation judge, so it decrypts the LLM connection
+            # secret on every judge call.
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+                optional: true
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
 

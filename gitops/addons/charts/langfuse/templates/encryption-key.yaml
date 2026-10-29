@@ -1,0 +1,123 @@
+{{- /*
+ENCRYPTION_KEY for Langfuse.
+
+Langfuse encrypts stored secrets at rest with this key — the LLM connection
+secret keys and extra headers above all. Without it, the whole LLM-connection
+API fails closed:
+
+  PUT /api/public/llm-connections -> 500
+  {"message":"Internal Server Error","error":"Missing environment variable: `ENCRYPTION_KEY`"}
+
+That is the surface continuous agent evaluation uses to register its judge
+gateway, so no judge can be configured at all until this exists. Langfuse boots
+and serves traces happily without it, which is why this was invisible until the
+evaluation reconciler tried to write a connection.
+
+NEVER ROTATE IT. The key decrypts what it encrypted: replacing it leaves every
+stored connection secret undecryptable, with no way back. Hence the Job below
+only ever CREATES the Secrets Manager entry and treats "already exists" as
+success — it must not be made idempotent by overwriting.
+
+The key is generated in-cluster and kept in Secrets Manager, never rendered into
+a chart value, so no copy of it lands in git. Spokes have no Langfuse of their
+own, so unlike the OTEL keys this is only ever read by the hub.
+*/ -}}
+{{- if .Values.encryptionKey.enabled }}
+{{- $secretId := printf "%s-hub/langfuse-encryption" (include "langfuse.resourcePrefix" .) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langfuse-generate-encryption-key
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # PreSync, not Sync: the Deployments below consume the Secret this feeds, so
+    # the entry has to exist before they are applied. A PreSync hook blocks the
+    # sync until it completes, which is the ordering guarantee a Sync hook in a
+    # later wave does not give.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      # Reuses the seed SA, which already carries the pod identity granting
+      # Secrets Manager write for this chart.
+      serviceAccountName: langfuse-seed
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: generate
+          image: amazon/aws-cli:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: AWS_REGION
+              value: "{{ .Values.global.awsRegion | default "us-west-2" }}"
+            - name: SECRET_ID
+              value: {{ $secretId | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+
+              # Create-only. An existing entry is left exactly as it is: see the
+              # header -- rotating this key destroys access to everything it has
+              # already encrypted.
+              if aws secretsmanager describe-secret \
+                   --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null 2>&1; then
+                echo "$SECRET_ID already exists; leaving it untouched (rotating ENCRYPTION_KEY would make stored Langfuse secrets undecryptable)"
+                exit 0
+              fi
+
+              # 32 random bytes as 64 hex characters, which is the AES-256 key
+              # length Langfuse expects. Read straight from /dev/urandom so this
+              # does not depend on openssl being in the image.
+              KEY=$(od -vAn -N32 -tx1 /dev/urandom | tr -d ' \n')
+              if [ "${#KEY}" -ne 64 ]; then
+                echo "refusing to store a key of length ${#KEY}; expected 64 hex characters" >&2
+                exit 1
+              fi
+
+              # The value never reaches the log: only the ARN is printed.
+              aws secretsmanager create-secret \
+                --name "$SECRET_ID" \
+                --description "Langfuse ENCRYPTION_KEY (AES-256, 64 hex). Encrypts LLM connection secrets at rest. NEVER rotate." \
+                --secret-string "{\"ENCRYPTION_KEY\":\"$KEY\"}" \
+                --region "$AWS_REGION" \
+                --query ARN --output text
+              echo "created $SECRET_ID"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: langfuse-encryption
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  # Short, for the same reason as the collector's: on a fresh environment the
+  # generator Job may land only moments before this first syncs.
+  refreshInterval: "1m"
+  target:
+    name: {{ .Values.encryptionKey.secretRef }}
+    creationPolicy: Owner
+  data:
+    - secretKey: ENCRYPTION_KEY
+      remoteRef:
+        key: {{ $secretId }}
+        property: ENCRYPTION_KEY
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+{{- end }}

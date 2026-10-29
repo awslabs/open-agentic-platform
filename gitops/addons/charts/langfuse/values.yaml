@@ -186,3 +186,18 @@ evaluation:
   # security control, not a convenience setting. Must match the host in the
   # agent-evaluation addon's judge.bifrostUrl.
   judgeGatewayHost: "bifrost.bifrost.svc.cluster.local"
+
+# ENCRYPTION_KEY: Langfuse encrypts stored secrets at rest with it, and without
+# it the whole LLM-connection API returns 500 "Missing environment variable:
+# ENCRYPTION_KEY" — so no evaluation judge can be registered. Langfuse still
+# boots and serves traces without it, which is why its absence is invisible
+# until something writes a connection.
+#
+# The key is generated in-cluster into Secrets Manager and read back through an
+# ExternalSecret; it is never a chart value, so no copy of it is in git. See
+# templates/encryption-key.yaml, and note that it must NEVER be rotated.
+encryptionKey:
+  enabled: true
+  # Name of the Secret the ExternalSecret creates, loaded by the web and worker
+  # Deployments with envFrom.
+  secretRef: langfuse-encryption
