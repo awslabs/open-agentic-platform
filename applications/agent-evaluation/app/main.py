@@ -44,26 +44,51 @@ logger = logging.getLogger("agent-evaluation")
 
 
 class _State:
-    """What the probes report. Written by the loops, read by the HTTP handler."""
+    """What the probes report. Written by the loops, read by the HTTP handler.
 
-    def __init__(self):
+    Readiness is per LOOP, not a single flag, because an instance is only doing
+    its job when every loop it is responsible for is working. On a hub that
+    includes the project loop: if the catalog evaluators and the judge connection
+    cannot be published, this instance is not delivering the one thing only it
+    can do, and reporting Ready would be fake-green — the addon would look
+    healthy while no agent anywhere could be scored. A spoke has no project loop,
+    so its readiness rests on the rules loop alone.
+    """
+
+    def __init__(self, required_loops: tuple[str, ...]):
         self.lock = threading.Lock()
-        self.ready = False
-        self.detail: dict[str, object] = {"status": "initializing"}
+        self._required = required_loops
+        self._ok: dict[str, bool] = {name: False for name in required_loops}
+        self._detail: dict[str, object] = {}
+        self._reasons: dict[str, str] = {
+            name: "no pass has completed yet" for name in required_loops
+        }
 
-    def set_ready(self, **detail) -> None:
+    def loop_ready(self, loop: str, **detail) -> None:
         with self.lock:
-            self.ready = True
-            self.detail = {"status": "ready", **detail}
+            self._ok[loop] = True
+            self._reasons.pop(loop, None)
+            self._detail.update(detail)
 
-    def set_initializing(self, reason: str) -> None:
+    def loop_failing(self, loop: str, reason: str) -> None:
         with self.lock:
-            self.ready = False
-            self.detail = {"status": "initializing", "reason": reason}
+            self._ok[loop] = False
+            self._reasons[loop] = reason
 
     def snapshot(self) -> tuple[bool, dict]:
         with self.lock:
-            return self.ready, dict(self.detail)
+            ready = all(self._ok.get(name) for name in self._required)
+            detail: dict[str, object] = {
+                "status": "ready" if ready else "initializing",
+                **self._detail,
+            }
+            if not ready:
+                detail["waitingOn"] = {
+                    name: self._reasons.get(name, "not ready")
+                    for name in self._required
+                    if not self._ok.get(name)
+                }
+            return ready, detail
 
 
 def _make_handler(registry: CollectorRegistry, state: _State):
@@ -165,8 +190,8 @@ def main() -> int:
         return 2
 
     metrics = Metrics()
-    state = _State()
-    state.set_initializing("resolving the Langfuse project and catalog")
+    # A hub is only ready when it can also publish the project-wide objects.
+    state = _State(("rules", "project") if settings.role == "hub" else ("rules",))
 
     token = owner_token(settings.cluster)
     metrics.cluster_info.labels(settings.cluster, token, settings.role).set(1)
@@ -195,7 +220,7 @@ def main() -> int:
 
     kube_ready = _load_kube()
     if not kube_ready:
-        state.set_initializing("waiting for Kubernetes credentials")
+        state.loop_failing("rules", "waiting for Kubernetes credentials")
     core = k8s_client.CoreV1Api()
     reader = DeclarationReader(core)
     recorder = events.EventRecorder(settings.cluster, core)
@@ -232,10 +257,17 @@ def main() -> int:
         def project_pass() -> bool:
             ok = project_loop.run_once()
             if ok:
-                state.set_ready(
+                state.loop_ready(
+                    "project",
                     role=settings.role,
                     cluster=settings.cluster,
                     evaluators=len(catalog.evaluators),
+                )
+            else:
+                state.loop_failing(
+                    "project",
+                    "cannot publish the catalog evaluators or the judge LLM "
+                    "connection; see the reconciler logs",
                 )
             return ok
 
@@ -262,12 +294,13 @@ def main() -> int:
         if not kube["ready"]:
             kube["ready"] = _load_kube()
             if not kube["ready"]:
-                state.set_initializing("waiting for Kubernetes credentials")
+                state.loop_failing("rules", "waiting for Kubernetes credentials")
                 return False
         ok = cluster_loop.run_once()
         plan = cluster_loop.last_plan
         if ok and plan is not None:
-            state.set_ready(
+            state.loop_ready(
+                "rules",
                 role=settings.role,
                 cluster=settings.cluster,
                 agents=plan.declared,
@@ -275,7 +308,9 @@ def main() -> int:
                 skipped=plan.skipped,
             )
         elif not ok:
-            state.set_initializing("the last reconcile pass did not complete")
+            state.loop_failing(
+                "rules", "the last reconcile pass did not complete"
+            )
         return ok
 
     threads.append(

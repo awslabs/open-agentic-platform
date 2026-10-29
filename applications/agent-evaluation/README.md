@@ -156,5 +156,86 @@ faked in `tests/conftest.py`, and the loops' planning logic is pure.
 ## Build
 
 ```bash
-podman build -t agent-evaluation:dev .
+./build.sh                 # build both architectures, no push
+./build.sh --push          # build + push to the default registry
 ```
+
+**Multi-arch is required, not optional.** OAP clusters run mixed `arm64` and
+`amd64` nodes (verified on the hub), so a single-arch image schedules onto part
+of the fleet and `ImagePullBackOff`s on the rest.
+
+### Publishing to the platform registry
+
+The chart defaults to `public.ecr.aws/z0a4o2j5/agent-evaluation`, the alias the
+platform's other images use (`browser-mcp`, `strands-agent`). That alias belongs
+to a different AWS account than the one a typical contributor has, so publishing
+usually needs a handoff. For whoever holds those credentials:
+
+```bash
+# 1. Authenticate to the public registry (public ECR is always us-east-1,
+#    whatever region the cluster is in).
+aws ecr-public get-login-password --region us-east-1 \
+  | podman login --username AWS --password-stdin public.ecr.aws
+
+# 2. Confirm the alias is reachable from these credentials. It must list
+#    z0a4o2j5; if it does not, these are the wrong credentials.
+aws ecr-public describe-registries --region us-east-1 \
+  --query 'registries[0].aliases[].name' --output text
+
+# 3. Create the repository once.
+aws ecr-public create-repository --repository-name agent-evaluation \
+  --region us-east-1
+
+# 4. Build and push both architectures.
+cd applications/agent-evaluation
+VERSION=0.1.1 REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
+```
+
+Then set `image.tag` in `gitops/addons/charts/agent-evaluation/values.yaml` to
+the published version. Pin by digest for production, the way `browser-mcp`
+documents.
+
+### Testing from a private repo first
+
+Publishing makes an image fetchable by anyone, so validate from a private
+repository in your own account before publishing:
+
+```bash
+aws ecr create-repository --repository-name agent-evaluation --region us-west-2
+aws ecr get-login-password --region us-west-2 \
+  | podman login --username AWS --password-stdin \
+      <account>.dkr.ecr.us-west-2.amazonaws.com
+
+VERSION=0.1.1 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+```
+
+Point the addon at it with a values override rather than editing the chart
+default, so the test registry never lands in git:
+
+```bash
+helm upgrade --install agent-evaluation \
+  gitops/addons/charts/agent-evaluation -n agent-evaluation \
+  --set image.repository=<account>.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation \
+  --set image.tag=0.1.1 \
+  --set global.clusterName=<cluster> --set role=hub \
+  --set langfuse.url=http://langfuse.langfuse.svc.cluster.local:3000 \
+  --set langfuse.secretManagerKey=<prefix>-hub/langfuse-otel
+```
+
+## Validating against a live Langfuse
+
+`live_check.py` runs the real loops against a real project and reports each step,
+so the API shapes can be re-verified after a Langfuse upgrade rather than
+rediscovered from a 400:
+
+```bash
+kubectl port-forward -n langfuse svc/langfuse 3999:3000 &
+aws secretsmanager get-secret-value --secret-id <prefix>-hub/langfuse-otel \
+  --query SecretString --output text > /tmp/lfkeys.json
+
+python live_check.py --catalog /tmp/catalog.yaml \
+  --url http://127.0.0.1:3999 --keys /tmp/lfkeys.json
+```
+
+It creates real evaluators and a throwaway rule, and deletes the rule afterwards
+unless `--keep` is passed.
