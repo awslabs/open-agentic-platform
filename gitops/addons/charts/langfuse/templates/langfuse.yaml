@@ -77,6 +77,26 @@ spec:
     metadata:
       labels:
         app: langfuse
+      annotations:
+        # Roll the pods when langfuse-config or langfuse-secrets changes.
+        #
+        # Both are consumed with envFrom, and Kubernetes does NOT restart a pod
+        # when a ConfigMap it reads as env changes — the running container keeps
+        # the values it started with. Without this, adding a key (for example
+        # LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST, which continuous agent
+        # evaluation needs) updates the ConfigMap and changes nothing about the
+        # running Langfuse, and the next unrelated restart silently applies it
+        # minutes or days later. Observed exactly that: the key was present in
+        # the ConfigMap while the 93-minute-old pod still refused the judge
+        # connection.
+        #
+        # Hashes the VALUES that langfuse-config and langfuse-secrets are built
+        # from, not the rendered template: this file defines both of them plus
+        # these Deployments, so `include`-ing it here would recurse forever.
+        # Scoped to those inputs rather than all of .Values so that a change
+        # which only affects the Deployment (image tag, resources) does not roll
+        # the pods twice.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -210,6 +230,12 @@ spec:
     metadata:
       labels:
         app: langfuse-worker
+      annotations:
+        # Same reason as the web Deployment above: the worker also loads
+        # langfuse-config with envFrom, and it is the container that actually
+        # runs the evaluation judge, so a stale allowlist here is what silently
+        # blocks scoring.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
