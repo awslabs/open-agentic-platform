@@ -1,5 +1,7 @@
 # Consistent Hashing for Multi-Replica Scaling
 
+> **Not deployed by this platform.** The platform routes through agentgateway, not kgateway, and the referenced deployment manifest is no longer in this repository. Run agents with one replica; see README.md, Deployment.
+
 This guide explains how to use consistent hashing with kgateway to enable multi-replica deployments with in-memory TaskStore.
 
 ## Overview
