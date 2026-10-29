@@ -128,7 +128,21 @@ spec:
                 secretKeyRef:
                   name: langfuse-keycloak-secret
                   key: LANGFUSE_CLIENT_SECRET
+                  {{- /*
+                  Required whenever a Keycloak client is configured (secretManagerKey
+                  set): the ExternalSecret below only creates langfuse-keycloak-secret
+                  once the platform has written <cluster>/keycloak-clients, which can be
+                  after this pod is scheduled. An optional ref let the pod start with an
+                  EMPTY client secret, and Langfuse reads it only at boot, so the Keycloak
+                  provider stayed off (empty sign-in card) until a manual restart. As a
+                  required ref the container waits in CreateContainerConfigError and the
+                  kubelet starts it by itself as soon as the secret exists.
+                  With no secretManagerKey there is no Keycloak client and the secret is
+                  never created, so keep it optional and let the pod start without SSO.
+                  */}}
+                  {{- if not .Values.keycloak.secretManagerKey }}
                   optional: true
+                  {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
