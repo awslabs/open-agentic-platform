@@ -274,9 +274,10 @@ three follow-ups lost the conversation.
 
 `replicas` is now optional on `agent`, which means one pod unless asked. The durable fix
 for scaling agents is not affinity but **external conversation state**: with a memory
-provider configured (the `agentcore-memory` trait, `MEMORY_PROVIDER=agentcore`), a
-session manager rehydrates state on whichever pod receives the request, and replicas
-become free. Set memory first, then scale.
+provider configured (the `agentcore-memory` component, `MEMORY_PROVIDER=agentcore`), a
+session manager rehydrates the conversation on whichever pod receives the request. That
+does not cover A2A tasks (`tasks/get`, `tasks/cancel`, `tasks/resubscribe`), which stay in
+pod memory, so an agent whose callers use them still needs one replica.
 
 ### The deleted kgateway example
 

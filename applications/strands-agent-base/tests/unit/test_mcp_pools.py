@@ -242,3 +242,56 @@ def test_ready_reuses_the_workload_pool_the_autonomous_path_reads(isolated_agent
     assert key == WORKLOAD_KEY
     assert tools, "autonomous path sees the probe-connected tools"
     assert len(isolated_agent_state["calls"]) == calls_after_probe, "no reconnect"
+
+
+def test_evicting_a_pool_marks_agents_built_on_it_stale(monkeypatch):
+    # The pool cap (MCP_MAX_POOLS) is smaller than the agent caches, so a cached
+    # agent can outlive its pool; agent_is_stale tells the caches to rebuild it.
+    monkeypatch.setattr(agent_mod, "_MAX_MCP_POOLS", 1)
+    inbound_auth.set("Bearer one")
+    provider, key = outbound(True)
+    first = agent_mod._get_mcp_pool(key, provider)
+    agent = type("A", (), {"_oap_mcp_pool": first})()
+    assert not agent_mod.agent_is_stale(agent)
+    inbound_auth.set("Bearer two")
+    provider, key = outbound(True)
+    agent_mod._get_mcp_pool(key, provider)
+    assert first.closed
+    assert agent_mod.agent_is_stale(agent)
+    assert not agent_mod.agent_is_stale(type("B", (), {})())
+
+
+def _built_agent(monkeypatch):
+    """An agent built through the real _construct_agent, with Agent and the model stubbed."""
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.tools = kwargs.get("tools")
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeAgent)
+    monkeypatch.setattr(agent_mod, "_get_model", lambda: None)
+    monkeypatch.setattr(agent_mod, "_build_session_manager", lambda *a: None)
+    monkeypatch.setattr(agent_mod, "_install_truncation_guard", lambda a: None)
+    return agent_mod._construct_agent("s1", None)
+
+
+def test_agent_built_by_construct_agent_goes_stale_when_its_pool_is_evicted(monkeypatch):
+    # Exercises the real tagging in _construct_agent, not a hand-set attribute.
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", True)
+    monkeypatch.setattr(agent_mod, "_MAX_MCP_POOLS", 1)
+    inbound_auth.set("Bearer one")
+    agent = _built_agent(monkeypatch)
+    assert agent.tools and not agent_mod.agent_is_stale(agent)
+    _tools_for("Bearer two")  # second caller pool evicts the first
+    assert agent_mod.agent_is_stale(agent)
+
+
+def test_recycling_the_workload_pool_does_not_make_its_agents_stale(monkeypatch, isolated_agent_state):
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", False)
+    inbound_auth.set(None)
+    agent = _built_agent(monkeypatch)
+    agent_mod._pools[WORKLOAD_KEY].connected_at = 0.0  # past max age
+    isolated_agent_state["sa"].write_text("sa-token-v2")
+    _tools_for(None)  # recycles in place
+    assert isolated_agent_state["clients"].instances[0].stops == 1
+    assert not agent_mod.agent_is_stale(agent)

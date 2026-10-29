@@ -400,7 +400,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.3.3-main" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
@@ -411,10 +411,11 @@ template: {
 		// (app/agent.py `_agents`), and there is no A2A session affinity available in
 		// this stack, so a follow-up request that lands on another pod starts from
 		// nothing. Verified: same contextId, one pod answered "Teal" and another said it
-		// had no such information. Set a memory provider first (the agentcore-memory
+		// had no such information. Set a memory provider first (the agentcore-memory component,
 		// trait, MEMORY_PROVIDER=agentcore), which attaches a session manager that
 		// rehydrates state on any pod. The previous default of 3 was unsafe for exactly
-		// this reason.
+		// this reason. A2A tasks (tasks/get, tasks/cancel, tasks/resubscribe) stay
+		// pod-local even with memory, so an agent whose callers use them needs one replica.
 		replicas?: int
 
 		// Blue-green deployment settings
@@ -489,7 +490,10 @@ template: {
 				// redis:      url, password?
 				// chroma:     host, port
 				// s3vectors:  bucket, region
-				// agentcore:  memoryId, region
+				// agentcore:  memoryId (from the agentcore-memory component), region,
+				//             retrievalTopK and retrievalRelevanceScore (numbers written
+				//             as strings, e.g. "5" and "0.3"; an unparsable value falls
+				//             back to the default, 10 and 0.2, with a warning)
 				{[string]: string}
 			}
 		}
