@@ -84,7 +84,20 @@ def evaluator_payload(evaluator, judge_alias: str, default_judge: str) -> dict:
         # Pins the judge for this evaluator. Without it Langfuse falls back to the
         # project's default evaluation model, which the platform does not set — so
         # omitting it would make the judge choice implicit and unreviewable.
-        "modelConfig": {"provider": JUDGE_PROVIDER, "model": judge_alias},
+        #
+        # `model` must be PROVIDER-QUALIFIED as `<provider>/<model>`, even though
+        # `provider` is also sent beside it. A bare alias is rejected at
+        # evaluator preflight with
+        #   422 evaluator_preflight_failed: provider is required in model field
+        #   (format: provider/model) — no providers found for model
+        #   "judge-default" in model catalog to auto-resolve
+        # because Langfuse tries to auto-resolve an unqualified name against its
+        # built-in model catalog, where a platform alias like judge-default does
+        # not exist. The connection's `customModels` stays unqualified.
+        "modelConfig": {
+            "provider": JUDGE_PROVIDER,
+            "model": f"{JUDGE_PROVIDER}/{judge_alias}",
+        },
     }
 
 

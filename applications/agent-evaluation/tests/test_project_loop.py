@@ -45,11 +45,11 @@ def test_hub_publishes_one_evaluator_per_catalog_entry_per_judge_alias(
         "safety--judge-strong",
     ]
     for record in langfuse.evaluators:
-        expected = (
+        alias = (
             "judge-strong" if record["name"].endswith("--judge-strong")
             else "judge-default"
         )
-        assert record["modelConfig"]["model"] == expected
+        assert record["modelConfig"]["model"] == f"{JUDGE_PROVIDER}/{alias}"
         assert record["modelConfig"]["provider"] == JUDGE_PROVIDER
 
 
@@ -193,9 +193,12 @@ def test_evaluator_payload_matches_the_api_contract(settings, catalog, metrics):
     # Both description fields are required by the contract.
     assert payload["outputDefinition"]["reasoning"]["description"]
     assert payload["outputDefinition"]["score"]["description"]
+    # `model` must be provider-qualified even though `provider` is sent beside
+    # it: a bare alias is rejected at evaluator preflight, because Langfuse tries
+    # to auto-resolve an unqualified name against its built-in model catalog.
     assert payload["modelConfig"] == {
         "provider": JUDGE_PROVIDER,
-        "model": "judge-default",
+        "model": f"{JUDGE_PROVIDER}/judge-default",
     }
     # Explicitly not part of the public request shape. `version` is called out in
     # the contract as an internal storage detail that must not be sent, and the
