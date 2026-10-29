@@ -23,6 +23,8 @@ data:
   AUTH_KEYCLOAK_ISSUER: "{{ .Values.keycloak.issuerUrl }}"
   AUTH_KEYCLOAK_ALLOW_ACCOUNT_LINKING: "true"
   AUTH_DISABLE_SIGNUP: "{{ .Values.keycloak.disableSignup | default "false" }}"
+  {{- /* Only an explicit "false"/false re-enables local accounts; unset means "true". */}}
+  AUTH_DISABLE_USERNAME_PASSWORD: {{ if eq (toString .Values.keycloak.disableUsernamePassword) "false" }}"false"{{ else }}"true"{{ end }}
   CLICKHOUSE_URL: "http://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:8123"
   CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:9000"
   CLICKHOUSE_USER: "default"
