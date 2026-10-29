@@ -88,8 +88,21 @@ otel-collector:
       # ingress_domain_name and no public domain of its own, so it falls back to
       # the host of oidc_issuer_url (every spoke carries it, pointing at the hub
       # domain) -> spoke ADOT collectors export traces to the hub Langfuse.
-      # No-op on the hub (ingress_domain_name non-empty takes the first branch).
-      endpoint: 'https://{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ if $d }}{{ $d }}{{ else }}{{ (splitList "/" (trimPrefix "https://" (index .metadata.annotations "oidc_issuer_url"))) | first }}{{ end }}/api/public/otel'
+      #
+      # THE HUB EXPORTS IN-CLUSTER, not through its own public domain. Sending
+      # hub traces out to the ALB and straight back in is a pointless round trip,
+      # and on this platform it does not merely cost latency — it silently
+      # DROPPED every hub trace. Observed on the hub: POSTs to
+      # https://<domain>/api/public/otel/v1/traces never returned
+      # ("context deadline exceeded ... awaiting headers", retried forever), so
+      # no hub trace reached Langfuse for six days, while the same request to
+      # langfuse.langfuse.svc.cluster.local answered 200 in 0.3s. Continuous
+      # agent evaluation depends on those traces, so an agent on the hub could
+      # never be scored.
+      #
+      # Spokes keep using the hub domain, because they have no Langfuse Service
+      # of their own to reach.
+      endpoint: '{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ if $d }}http://langfuse.langfuse.svc.cluster.local:3000/api/public/otel{{ else }}https://{{ (splitList "/" (trimPrefix "https://" (index .metadata.annotations "oidc_issuer_url"))) | first }}/api/public/otel{{ end }}'
       # Resource-prefixed so two events with different prefixes in the SAME AWS account
       # do not collide on one SM secret. resource_prefix is present+identical on hub and
       # all spokes (spokes read the hub's secret), and <resource_prefix>-hub == the hub
