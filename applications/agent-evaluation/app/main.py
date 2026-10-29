@@ -101,11 +101,32 @@ def _make_handler(registry: CollectorRegistry, state: _State):
     return Handler
 
 
-def _load_kube() -> None:
+def _load_kube() -> bool:
+    """Load Kubernetes credentials. False when none are available yet.
+
+    Deliberately not fatal. The whole reason /healthz and /readyz are split is
+    that a dependency which is not ready must not look like a crash: exiting here
+    would put the pod in CrashLoopBackOff, where the probes can no longer report
+    anything at all. Returning False instead leaves the process serving, lets
+    /readyz say why, and lets the next reconcile pass retry — so the pod recovers
+    on its own once the dependency appears.
+    """
     try:
         k8s_config.load_incluster_config()
+        return True
     except k8s_config.ConfigException:
+        pass
+    try:
         k8s_config.load_kube_config()
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
+        logger.error(
+            "no Kubernetes credentials available (%s). Still serving: /readyz "
+            "reports not-ready and each reconcile pass retries. In-cluster this "
+            "means the ServiceAccount token is not mounted yet.",
+            exc,
+        )
+        return False
 
 
 def _run_loop(name: str, interval: int, body, stop: threading.Event, metrics, cluster):
@@ -172,7 +193,9 @@ def main() -> int:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("serving /metrics, /healthz and /readyz on :%d", settings.metrics_port)
 
-    _load_kube()
+    kube_ready = _load_kube()
+    if not kube_ready:
+        state.set_initializing("waiting for Kubernetes credentials")
     core = k8s_client.CoreV1Api()
     reader = DeclarationReader(core)
     recorder = events.EventRecorder(settings.cluster, core)
@@ -231,7 +254,16 @@ def main() -> int:
             )
         )
 
+    kube = {"ready": kube_ready}
+
     def cluster_pass() -> bool:
+        # Retry the credential load until it works, so a token that is mounted
+        # late recovers without a restart.
+        if not kube["ready"]:
+            kube["ready"] = _load_kube()
+            if not kube["ready"]:
+                state.set_initializing("waiting for Kubernetes credentials")
+                return False
         ok = cluster_loop.run_once()
         plan = cluster_loop.last_plan
         if ok and plan is not None:
