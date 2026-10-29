@@ -95,11 +95,19 @@ postgres:
       cpu: "1"
       memory: 512Mi
 
-# ClickHouse (required for Langfuse v3 — OLAP trace storage)
+# ClickHouse (required for Langfuse v3+ — OLAP trace storage)
 clickhouse:
   image:
     repository: clickhouse/clickhouse-server
-    tag: "24.12"
+    # Langfuse v4 requires ClickHouse >= 25.12 and its schema migrations run
+    # automatically on server startup, so ClickHouse MUST be upgraded BEFORE the
+    # Langfuse image. Current v3 releases work fine against 25.12, which is what
+    # makes that ordering safe to do as a separate step.
+    #
+    # Pinned to a full patch version, not "25.12": a floating tag means a fresh
+    # install and an existing one can run different builds, which is the same
+    # reproducibility problem #1057 fixed for the Langfuse image itself.
+    tag: "25.12.11.4"
   password: clickhouse
   storage: 20Gi
   resources:
