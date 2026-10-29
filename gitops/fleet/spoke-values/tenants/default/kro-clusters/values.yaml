@@ -37,7 +37,8 @@ clusters:
     # therefore matches an empty value, and that chart then 409-conflicts with the pod
     # identity associations the EksCluster RGD has already created.
     provider: "kro-ack"
-    region: us-west-2
+    # TEST-ONLY (integration branch, do not upstream): us-east-2 deploy test.
+    region: us-east-2
     # Kept at 1.35 intentionally: this value feeds ACK Cluster.spec.version under
     # adopt-or-create (appmod rg-eks.yaml), and EKS upgrades only ONE minor per call,
     # so bumping a live 1.35 spoke straight to 1.37 (two minors) parks it in error.
@@ -54,7 +55,8 @@ clusters:
     # ever unavailable; do not reintroduce it as a habit.
     # Must match the hub's prefix so the spoke can assume the hub's
     # <prefix>-cluster-mgmt-* roles via ACK CARM.
-    resourcePrefix: peeks
+    # TEST-ONLY (integration branch, do not upstream): matches the test hub prefix.
+    resourcePrefix: oap
     # 10.0.0.0/16 is the hub; 10.2.0.0/16 is an unrelated CDK VPC hosting ROSA workers.
     cidr:
       vpcCidr: "10.1.0.0/16"
