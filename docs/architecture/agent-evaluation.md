@@ -1136,17 +1136,52 @@ sequenceDiagram
 
 ## 8. Open questions
 
-1. **Judge family.** Should `judge-default` be a stronger model in the same family
-   (for example Opus judging a Sonnet agent, as in the issue), or a different
-   family to remove self-preference entirely? For reference, a common setup uses one
-   Claude Sonnet judge for both Claude and Qwen agents, while OAP's Dark Factory
-   holdout judge deliberately uses a different family.
-2. **Langfuse version.** At the pinned `3.225.11` the evaluator APIs are under
-   `/api/public/unstable/`. They became stable on Langfuse `main` on 2026-08-27,
-   and releases are now on `v4.x`. Should the platform upgrade Langfuse before
-   Phase 1, or ship on the unstable endpoints with a version pin? The unstable
-   surface already disagrees with itself: its spec documents 50 active rules and
-   its code enforces 500 (D4).
+1. **Judge family.** Decided, and by constraint rather than preference:
+   `judge-default` is `us.amazon.nova-pro-v1:0`, a different family from the
+   agents' Claude. Langfuse validates an LLM-as-a-judge evaluator by making a
+   real model call that demands **structured output**, and Bifrost translates
+   that into a Bedrock forced tool call. Measured against Bedrock through
+   Bifrost on the hub:
+
+   | Judge candidate | Structured-output call |
+   |---|---|
+   | `us.anthropic.claude-opus-5-5` | Rejected: `tool_choice: type "tool" and "any" are not supported for this model` |
+   | `us.anthropic.claude-sonnet-5-5` | Rejected, same reason |
+   | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `404` end of life |
+   | `us.amazon.nova-pro-v1:0` | Returns valid structured JSON |
+
+   A Claude judge makes Langfuse pause the evaluator with
+   `EVAL_MODEL_CONFIG_INVALID`, so "a stronger model of the same family" is not
+   currently available through this path at all. The different family is also
+   the better answer on the merits, since it removes self-preference bias
+   instead of relying on a stronger sibling being impartial about its own
+   output. Revisit if Claude models accept forced tool choice on Bedrock, or if
+   Bifrost stops forcing it; the dashboard breaks pass ratios down by judge
+   model, so a swap stays measurable.
+2. **Langfuse version.** Decided: upgraded to v4. On the previously pinned
+   `3.225.11` the evaluator API is under `/api/public/unstable/` and could not
+   be used at all — its preflight fails with
+   `failed to get config for provider: not found` even for a catalog model such
+   as `openai/gpt-4o-mini` on a connection named `openai`, so it was not
+   specific to a Bifrost alias or a custom provider name. v4 exposes the same
+   surface as the stable `/api/public/v2/evaluators` and
+   `/api/public/v2/evaluation-rules`.
+
+   The upgrade is deliberately split from the storage-model cutover: the server
+   runs v4 while `LANGFUSE_MIGRATION_V4_WRITE_MODE` stays `legacy`, so every v3
+   ingestion and read surface keeps working (including the OTel collector's path
+   and this addon's metrics loop). Moving to `events_only` is a separate,
+   one-way decision, and it requires this reconciler's metrics loop to move off
+   `/api/public/metrics` first.
+
+   Three v4 API differences change D4's mechanics: evaluators are identified by
+   a stable **id** rather than by name (names are explicitly not identifiers),
+   a new version is published through `POST /evaluators/{id}/versions` rather
+   than by re-posting the name, and the variable mapping now lives on the
+   evaluator as a default that a rule's `evaluatorAssignments` may inherit. The
+   property D4 depends on survives: a rule always uses the latest version of
+   each evaluator it is assigned, so a hub prompt change still reaches every
+   cluster with no spoke action.
 3. **One shared project, or one per team.** Decided: one shared project for every
    cluster. Cluster-scoped tags and per-cluster rule ownership (D4) keep clusters
    apart within it. A project per cluster would need a project, key pair and

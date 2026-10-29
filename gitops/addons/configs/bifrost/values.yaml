@@ -91,15 +91,30 @@ bifrost:
             aliases:
               claude-sonnet: us.anthropic.claude-sonnet-5-5
               # Platform default judge for continuous agent evaluation
-              # (docs/architecture/agent-evaluation.md, D3). A judge must be
-              # STRONGER than the agent it grades, and must not be the agent's own
-              # model: a model scoring its own output inflates the result
-              # (self-preference bias). Opus grading a Sonnet agent satisfies both.
-              # Whether the judge should also be a different model family is still
-              # open (Q1); changing it is a one-line change here, and the agent
-              # evaluation dashboard breaks pass ratios down by judge model so a
-              # swap is measurable.
-              judge-default: us.anthropic.claude-opus-5-5
+              # (docs/architecture/agent-evaluation.md, D3).
+              #
+              # Nova Pro, not a Claude model, and that is a HARD CONSTRAINT rather
+              # than a preference. Langfuse validates an LLM-as-a-judge evaluator
+              # by making a real model call that demands STRUCTURED OUTPUT, and
+              # Bifrost translates that into a Bedrock forced tool call. Every
+              # Claude 5 model tested rejects it:
+              #   tool_choice: type "tool" and "any" are not supported for this model
+              # which makes Langfuse pause the evaluator with
+              # EVAL_MODEL_CONFIG_INVALID. Verified against Bedrock through Bifrost:
+              #   us.anthropic.claude-opus-5-5    -> rejected (forced tool_choice)
+              #   us.anthropic.claude-sonnet-5-5  -> rejected (forced tool_choice)
+              #   us.anthropic.claude-3-7-sonnet  -> end of life
+              #   us.amazon.nova-pro-v1:0         -> returns valid structured JSON
+              #
+              # It also happens to be the better answer to open question Q1: a
+              # different model family removes self-preference bias entirely,
+              # rather than relying on a stronger model of the same family being
+              # impartial about its own output.
+              #
+              # The dashboard breaks pass ratios down by judge model, so a future
+              # swap (once Claude models accept forced tool choice on Bedrock, or
+              # Bifrost stops forcing it) stays measurable.
+              judge-default: us.amazon.nova-pro-v1:0
             bedrock_key_config:
               region: us-west-2
 
