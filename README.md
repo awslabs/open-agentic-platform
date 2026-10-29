@@ -131,8 +131,9 @@ keys, model routing); **LiteLLM** is included as an alternative chart. Both fron
 
 OAP uses a **hub + spokes** model, provisioned declaratively:
 
-- **Hub cluster** — runs ArgoCD, Crossplane, the platform control plane, and (by default) the agentic
-  capabilities. Crossplane on the hub provisions the spokes.
+- **Hub cluster** — runs ArgoCD, the platform control plane, and (by default) the agentic
+  capabilities. The hub provisions the spokes through the configured cluster provider:
+  kro + ACK with the default `kind-kro-ack`, or Crossplane with `kind-crossplane`.
 - **Spoke clusters** (`dev`, `prod`, …) — workload environments; agentic addons deploy to them
   automatically based on their `environment` label.
 - **Kind bootstrap** — a throwaway local cluster that stands up the hub, then self-destructs.
@@ -160,7 +161,7 @@ enabledAddons:
 
 | Section | Key Fields | Description |
 |---------|-----------|-------------|
-| `platform` | `repo`, `ref` | Base platform repo (appmod-blueprints) + version |
+| `platform` | `repo`, `ref`, `clusterProvider` | Base platform repo (appmod-blueprints) + version, and cluster provider (default `kind-kro-ack`; `kind-crossplane`, `terraform`, `byoc` selectable) |
 | `aws` | `region`, `accountId`, `profile` | AWS settings |
 | `hub` | `clusterName`, `kubernetesVersion` | Hub cluster config |
 | `domain` | | Ingress domain (ACM cert + Route53 zone) |
@@ -174,7 +175,10 @@ spokes:
   prod: { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.2.0.0/16", autoMode: true }
 ```
 
-Spokes are provisioned via Crossplane from the hub. Fleet member definitions in `gitops/fleet/members/`
+The `spokes` block is applied by `task spokes:install` as Crossplane `PlatformCluster` claims, so it
+only applies with `clusterProvider: kind-crossplane`. With the default `kind-kro-ack`, `spokes:install`
+skips and spokes are declared in the fleet repo instead (see
+`gitops/fleet/members/_example/README.md`). Fleet member definitions in `gitops/fleet/members/`
 control spoke discovery.
 
 ---
@@ -185,7 +189,7 @@ control spoke discovery.
 |---------|-------------|
 | `task install` | Full install (platform + spokes + agentic) |
 | `task platform:install` | Provision base EKS platform only |
-| `task spokes:install` | Provision spoke clusters only |
+| `task spokes:install` | Provision spoke clusters only (kind-crossplane) |
 | `task spokes:status` | Check spoke provisioning progress |
 | `task agentic:install` | Deploy agentic capabilities only |
 | `task status` | Show ArgoCD application status |
