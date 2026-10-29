@@ -224,6 +224,18 @@ migrationV4:
   #   - producers need Python SDK >= 4.7.0 / JS-TS >= 5.4.0
   #   - trace-level and legacy-dataset LLM-as-a-judge evaluators stop running
   writeMode: legacy
+  # direct | dual_write
+  #
+  # MUST be dual_write whenever writeMode is legacy, and this is not advisory:
+  # v4 validates the combination at startup and the WORKER exits with
+  #   Invalid V4 config: LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR=direct
+  #   requires LANGFUSE_MIGRATION_V4_WRITE_MODE in {dual, events_only}.
+  #   Direct OTel writes target events_full, which is not read in legacy mode.
+  # so leaving v4's `direct` default in place crash-loops the worker — which is
+  # the container that runs the evaluation judge. `dual_write` keeps the
+  # server-side propagation that makes OTel-ingested traces readable through the
+  # v3 read path, which is exactly what legacy mode means.
+  nativeOtelBehaviour: dual_write
   # The historic backfill must stay off while in `legacy` mode. It also wants
   # roughly 3x the current ClickHouse volume as working space.
   enableHistoricBackfill: false

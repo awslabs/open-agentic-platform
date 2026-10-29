@@ -54,7 +54,19 @@ data:
   {{- if not (has .Values.migrationV4.writeMode (list "legacy" "dual" "events_only")) }}
   {{- fail (printf "langfuse: migrationV4.writeMode must be legacy, dual or events_only, got %q" .Values.migrationV4.writeMode) }}
   {{- end }}
+  {{- if not (has .Values.migrationV4.nativeOtelBehaviour (list "direct" "dual_write")) }}
+  {{- fail (printf "langfuse: migrationV4.nativeOtelBehaviour must be direct or dual_write, got %q" .Values.migrationV4.nativeOtelBehaviour) }}
+  {{- end }}
+  {{- /*
+  Caught here rather than at runtime: v4 validates this pair on startup and the
+  WORKER exits on a bad combination, so the judge silently stops running behind
+  a CrashLoopBackOff. Failing the render names the fix instead.
+  */}}
+  {{- if and (eq .Values.migrationV4.nativeOtelBehaviour "direct") (eq .Values.migrationV4.writeMode "legacy") }}
+  {{- fail "langfuse: migrationV4.nativeOtelBehaviour 'direct' requires writeMode 'dual' or 'events_only' — direct OTel writes target events_full, which legacy mode does not read. Set nativeOtelBehaviour: dual_write while in legacy mode." }}
+  {{- end }}
   LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ .Values.migrationV4.writeMode }}"
+  LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: "{{ .Values.migrationV4.nativeOtelBehaviour }}"
   LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL: "{{ .Values.migrationV4.enableHistoricBackfill }}"
   LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "{{ .Values.migrationV4.allowPreviewOptIn }}"
 ---
