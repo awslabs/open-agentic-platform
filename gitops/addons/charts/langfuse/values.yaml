@@ -49,7 +49,18 @@ ingress:
 keycloak:
   clientSecret: ""
   issuerUrl: ""
+  # AUTH_DISABLE_SIGNUP. Keep "false" when Keycloak is the login path: Langfuse
+  # refuses to create ANY new user when it is "true", SSO included (its Prisma
+  # adapter createUser throws "Sign up is disabled."). A Keycloak user who has
+  # never opened Langfuse could then not sign in, and the seed CronJob only
+  # attaches users that already exist. Set "true" only to freeze the user list.
   disableSignup: "false"
+  # AUTH_DISABLE_USERNAME_PASSWORD. "true" (default) turns off Langfuse's local
+  # email/password sign-up AND sign-in, so nobody who can reach the UI can create
+  # a local account. Keycloak SSO is unaffected: first-time SSO users are still
+  # created. Nothing in this chart signs in with a password (the seed job writes
+  # to Postgres directly). Set "false" to bring back local accounts.
+  disableUsernamePassword: "true"
   secretManagerKey: ""  # Set dynamically: <cluster>/keycloak-clients
 
 # Application secrets (override for production)
