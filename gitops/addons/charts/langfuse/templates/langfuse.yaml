@@ -43,6 +43,20 @@ data:
   # Both the web and worker containers load this ConfigMap, so one key covers
   # both, and it belongs here rather than in a manual `kubectl set env`.
   LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ .Values.evaluation.judgeGatewayHost }}"
+  # ─── v4 migration (see values.yaml migrationV4) ─────────────────────────
+  # Set explicitly rather than left to v4's defaults: the default write mode is
+  # events_only, which is a one-way cutover that would break the OTel
+  # collector's ingestion path and every v1 read endpoint the moment the image
+  # was bumped.
+  {{- if and (eq .Values.migrationV4.writeMode "legacy") .Values.migrationV4.enableHistoricBackfill }}
+  {{- fail "langfuse: migrationV4.enableHistoricBackfill must be false while migrationV4.writeMode is 'legacy' — the upgrade guide requires the backfill to stay disabled in legacy mode." }}
+  {{- end }}
+  {{- if not (has .Values.migrationV4.writeMode (list "legacy" "dual" "events_only")) }}
+  {{- fail (printf "langfuse: migrationV4.writeMode must be legacy, dual or events_only, got %q" .Values.migrationV4.writeMode) }}
+  {{- end }}
+  LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ .Values.migrationV4.writeMode }}"
+  LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL: "{{ .Values.migrationV4.enableHistoricBackfill }}"
+  LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "{{ .Values.migrationV4.allowPreviewOptIn }}"
 ---
 # ─── Secret (credentials — overridable via values) ────────────────────────
 apiVersion: v1

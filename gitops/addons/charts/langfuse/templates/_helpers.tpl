@@ -44,6 +44,7 @@ kind this helper exists to prevent.
   "nextauthSecret" .Values.nextauthSecret
   "salt"           .Values.salt
   "evaluation"     .Values.evaluation
+  "migrationV4"    .Values.migrationV4
 -}}
 {{- toJson $inputs | sha256sum -}}
 {{- end -}}

@@ -19,15 +19,23 @@ replicas: 1
 
 image:
   repository: langfuse/langfuse
-  # Pinned to a concrete 3.x (was a floating "3", so each fresh install could pull a
-  # different 3.x image, making the init-time/CPU behaviour non-reproducible). #1057
-  tag: "3.225.11"
+  # Pinned to a concrete version (was a floating "3", so each fresh install could
+  # pull a different build, making the init-time/CPU behaviour non-reproducible).
+  # #1057
+  #
+  # v4 requires ClickHouse >= 25.12, which the clickhouse block below now pins.
+  # Do not raise this above the ClickHouse floor in the same change: the server
+  # runs its ClickHouse schema migrations on startup.
+  tag: "4.72.0"
   pullPolicy: IfNotPresent
 
 worker:
   image:
     repository: langfuse/langfuse-worker
-    tag: "3"
+    # Pinned for the same reason as the web image above, which had been fixed
+    # while this one was left floating on "3" — so the worker could silently run
+    # a different build from the web container it is supposed to match.
+    tag: "4.72.0"
   replicas: 1
   resources:
     requests:
@@ -188,6 +196,42 @@ seed:
 # Langfuse itself runs no evaluation here; it only needs to be allowed to reach
 # the judge's model gateway, which is a cluster-internal address its SSRF check
 # blocks by default.
+# Langfuse v4 migration controls.
+# https://langfuse.com/self-hosting/upgrade/upgrade-guides/upgrade-v3-to-v4
+#
+# v4 introduces a new event-based storage model and three write modes. The
+# platform upgraded the SERVER to v4 while deliberately staying in `legacy`
+# write mode, because those are two independent decisions:
+#
+#   - the server version is what exposes the STABLE /api/public/v2 evaluator
+#     API that continuous agent evaluation needs (on v3 it was /unstable/, and
+#     its preflight could not resolve a provider config at all)
+#   - the write mode is what changes ingestion and read behaviour, and
+#     `events_only` is a ONE-WAY cutover that breaks the legacy ingestion and
+#     read endpoints
+#
+# So the version moves now and the cutover is a later, deliberate change rather
+# than a side effect of a bump.
+migrationV4:
+  # legacy | dual | events_only  (v4's own default is events_only)
+  #
+  # `legacy` keeps full v3 ingestion and read behaviour: the OTel collector's
+  # ingestion path and every v1 read endpoint keep working untouched.
+  #
+  # Before moving to events_only, these have to be dealt with first:
+  #   - the agent-evaluation reconciler's metrics loop uses /api/public/metrics,
+  #     which refuses requests in events_only mode (it has to move to v2/v3)
+  #   - producers need Python SDK >= 4.7.0 / JS-TS >= 5.4.0
+  #   - trace-level and legacy-dataset LLM-as-a-judge evaluators stop running
+  writeMode: legacy
+  # The historic backfill must stay off while in `legacy` mode. It also wants
+  # roughly 3x the current ClickHouse volume as working space.
+  enableHistoricBackfill: false
+  # Gates the v4 UI toggle and the /api/public/v2 APIs. Required for the stable
+  # evaluator API, which is the whole reason for this upgrade, and harmless in
+  # legacy mode.
+  allowPreviewOptIn: true
+
 evaluation:
   # The one host exempted from Langfuse's LLM-connection SSRF check: Bifrost's
   # in-cluster Service. Keep this a single host — it is an exemption from a
