@@ -223,7 +223,21 @@ migrationV4:
   #     which refuses requests in events_only mode (it has to move to v2/v3)
   #   - producers need Python SDK >= 4.7.0 / JS-TS >= 5.4.0
   #   - trace-level and legacy-dataset LLM-as-a-judge evaluators stop running
-  writeMode: legacy
+  # `dual`, not `legacy`, and this is load-bearing for continuous agent
+  # evaluation rather than a preference.
+  #
+  # v4's online evaluation pipeline consumes the NEW events stream. In `legacy`
+  # mode nothing writes it, so an evaluation rule can be active, enabled, with
+  # sampling 1 and a filter that matches the trace — and no evaluation job is
+  # ever created. Observed exactly that on the hub: the trace arrived with the
+  # right tag, the rule was correct, and the worker logged no evaluation
+  # activity at all.
+  #
+  # `dual` writes BOTH the old and the new tables, so every v3 read surface
+  # keeps working (the UI, the v1 read APIs, this addon's metrics loop) AND the
+  # evaluation pipeline has the events it needs. It is the documented
+  # transitional mode and is reversible, unlike `events_only`.
+  writeMode: dual
   # direct | dual_write
   #
   # MUST be dual_write whenever writeMode is legacy, and this is not advisory:
