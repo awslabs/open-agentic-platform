@@ -15,6 +15,18 @@ metadata:
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     {{- end }}
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
+    # /api/public/health does DEEP dependency checks (Postgres + ClickHouse + Redis)
+    # that intermittently spike past the ALB's default 5s health-check timeout. With
+    # the LBC defaults (15s interval, 5s timeout, unhealthy-threshold 2) the ALB marks
+    # a healthy target unhealthy and returns 503 at the edge — the same spike-driven
+    # failure the pod probes were widened for (see langfuse.yaml). Give the target-group
+    # health check matching headroom: longer timeout/interval and a tolerant unhealthy
+    # threshold so transient dependency latency is not read as a down target.
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "20"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "5"
+    alb.ingress.kubernetes.io/success-codes: "200"
     # Langfuse (Next.js) can only be served at "/" (assets use absolute /_next paths;
     # no runtime basePath), so on a shared ALB group its "/" rule is a catch-all.
     # Give it a high group.order so it is evaluated LAST and never shadows

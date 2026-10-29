@@ -1,0 +1,23 @@
+# Time MCP server, owned by the tools team and added to this application.
+name: time-server
+type: mcp-server
+properties:
+  description: "Time tools for agents"
+  # Prebuilt server from another team, pinned by digest. The image is
+  # linux/amd64 only, hence the node-affinity trait below.
+  image: public.ecr.aws/z0a4o2j5/mcp-time-server@sha256:ae8d38d1ed3de074235b5f0a9e549a447c1d2744502d07a801051afafbf6de2b
+  port: 8000
+  # Publish on AgentGateway at /mcp/time-server; the gateway checks every caller
+  registerWithGateway: true
+  # Authorization: only the assistant agent may call this server. Any other
+  # caller, agent or user, gets 403. The platform can narrow this further.
+  allowedAgents:
+    - assistant
+  env:
+    - name: LOCAL_TIMEZONE
+      value: UTC
+traits:
+  - type: node-affinity
+    properties:
+      affinity:
+        kubernetes.io/arch: ["amd64"]

@@ -120,7 +120,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Browser** | `crossplane-agentcore` | ⚠️ CRD ready | Managed headless browser resource for agents that browse. |
 | **Agent Code Interpreter** | `crossplane-agentcore` / sandbox | ⚠️ CRD ready | Sandboxed code execution for agents. |
 | **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code. |
-| **Agent Evaluation** | (planned) | ⬜ | Eval tooling (AgentCore Evals / RAGAS) — roadmap. |
+| **Agent Evaluation** | (planned) `agent-evaluation` | ⬜ | Online LLM-as-a-judge on agent traces, configured from the agent's OAM `evaluation` block — [design](docs/architecture/agent-evaluation.md). |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
 keys, model routing); **LiteLLM** is included as an alternative chart. Both front Amazon Bedrock.
@@ -170,8 +170,8 @@ enabledAddons:
 
 ```yaml
 spokes:
-  dev:  { region: us-west-2, kubernetesVersion: "1.35", vpcCidr: "10.1.0.0/16", autoMode: true }
-  prod: { region: us-west-2, kubernetesVersion: "1.35", vpcCidr: "10.2.0.0/16", autoMode: true }
+  dev:  { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.1.0.0/16", autoMode: true }
+  prod: { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.2.0.0/16", autoMode: true }
 ```
 
 Spokes are provisioned via Crossplane from the hub. Fleet member definitions in `gitops/fleet/members/`

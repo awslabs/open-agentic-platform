@@ -145,6 +145,9 @@ template: {
 							{name: "AGENT_NAME", value: context.name},
 							{name: "AGENT_DESCRIPTION", value: parameter.description},
 							{name: "MODEL_ID", value: parameter.modelConfig.modelId},
+							if parameter.modelConfig.temperature != _|_ {
+								{name: "MODEL_TEMPERATURE", value: "\(parameter.modelConfig.temperature)"}
+							},
 							{name: "SYSTEM_PROMPT", value: parameter.systemMessage},
 							{name: "PORT", value: "8083"},
 							{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
@@ -397,7 +400,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.9-review-r2" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
@@ -455,6 +458,8 @@ template: {
 			modelId:          *"claude-sonnet" | string
 			llmGatewayUrl:    *"http://bifrost.bifrost.svc.cluster.local:8080/v1" | string
 			llmGatewayApiKey: *"" | string
+			// Omitted unless set; newer models reject non-default values.
+			temperature?: number & >=0 & <=1
 		}
 
 		// Langfuse direct OTLP (Strands StrandsTelemetry sends traces directly)
