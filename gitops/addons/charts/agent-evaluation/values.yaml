@@ -69,7 +69,14 @@ judge:
   # that fails leaves the evaluator paused as EVAL_MODEL_CONFIG_INVALID, scoring
   # nothing. See gitops/addons/configs/bifrost/values.yaml.
   models:
+    # Default: a different family from the agents, which removes self-preference
+    # bias outright, and the stronger of the two working options.
     judge-default: us.amazon.nova-pro-v1:0
+    # Offered so the judge choice can be measured rather than argued. An agent
+    # sets `evaluation.judge.modelId: judge-haiku` and the dashboard compares
+    # pass ratios by judge model. Same family as the agents (self-preference
+    # risk) and the small tier, so it is not the default.
+    judge-haiku: us.anthropic.claude-haiku-5-5
   bifrostUrl: http://bifrost.bifrost.svc.cluster.local:8080/v1
   virtualKey:
     # Judge-only Bifrost virtual key, so judge spend has its own budget and is

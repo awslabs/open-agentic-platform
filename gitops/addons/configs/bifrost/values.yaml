@@ -130,6 +130,13 @@ bifrost:
               # access is enabled on this account. The dashboard breaks pass ratios
               # down by judge model, so a swap stays measurable.
               judge-default: us.amazon.nova-pro-v1:0
+              # Second working judge, offered so the choice can be MEASURED
+              # rather than argued: an agent sets `evaluation.judge.modelId:
+              # judge-haiku` and the Agent Evaluation dashboard compares pass
+              # ratios by judge model. Same family as the agents, so it carries
+              # the self-preference risk judge-default avoids, and it is the
+              # small tier rather than the mid tier.
+              judge-haiku: us.anthropic.claude-haiku-5-5
             bedrock_key_config:
               region: us-west-2
 
