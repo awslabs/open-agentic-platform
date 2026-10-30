@@ -32,7 +32,7 @@ identityCenter:
 
 # Agentic platform git repo (this repo — used by ArgoCD)
 agenticRepo:
-  url: "https://github.com/aws-samples/sample-open-agentic-platform.git"
+  url: "https://github.com/awslabs/open-agentic-platform.git"
   revision: "main"
   basepath: "gitops/addons/"
 
