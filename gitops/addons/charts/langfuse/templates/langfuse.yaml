@@ -32,6 +32,43 @@ data:
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ .Values.global.awsRegion }}"
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://langfuse-minio:9000"
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  # Allow the continuous-evaluation judge's LLM connection to reach Bifrost
+  # in-cluster. Langfuse validates every LLM connection's base URL and blocks
+  # private and cluster-internal addresses as SSRF protection, so without this
+  # the judge connection cannot be saved at all.
+  #
+  # Deliberately a single host, not a CIDR or a wildcard: this is an exemption
+  # from an SSRF control, so it names exactly the one in-cluster service the
+  # judge uses and nothing else. Any other internal base URL is still refused.
+  # Both the web and worker containers load this ConfigMap, so one key covers
+  # both, and it belongs here rather than in a manual `kubectl set env`.
+  LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ .Values.evaluation.judgeGatewayHost }}"
+  # ─── v4 migration (see values.yaml migrationV4) ─────────────────────────
+  # Set explicitly rather than left to v4's defaults: the default write mode is
+  # events_only, which is a one-way cutover that would break the OTel
+  # collector's ingestion path and every v1 read endpoint the moment the image
+  # was bumped.
+  {{- if and (eq .Values.migrationV4.writeMode "legacy") .Values.migrationV4.enableHistoricBackfill }}
+  {{- fail "langfuse: migrationV4.enableHistoricBackfill must be false while migrationV4.writeMode is 'legacy' — the upgrade guide requires the backfill to stay disabled in legacy mode." }}
+  {{- end }}
+  {{- if not (has .Values.migrationV4.writeMode (list "legacy" "dual" "events_only")) }}
+  {{- fail (printf "langfuse: migrationV4.writeMode must be legacy, dual or events_only, got %q" .Values.migrationV4.writeMode) }}
+  {{- end }}
+  {{- if not (has .Values.migrationV4.nativeOtelBehaviour (list "direct" "dual_write")) }}
+  {{- fail (printf "langfuse: migrationV4.nativeOtelBehaviour must be direct or dual_write, got %q" .Values.migrationV4.nativeOtelBehaviour) }}
+  {{- end }}
+  {{- /*
+  Caught here rather than at runtime: v4 validates this pair on startup and the
+  WORKER exits on a bad combination, so the judge silently stops running behind
+  a CrashLoopBackOff. Failing the render names the fix instead.
+  */}}
+  {{- if and (eq .Values.migrationV4.nativeOtelBehaviour "direct") (eq .Values.migrationV4.writeMode "legacy") }}
+  {{- fail "langfuse: migrationV4.nativeOtelBehaviour 'direct' requires writeMode 'dual' or 'events_only' — direct OTel writes target events_full, which legacy mode does not read. Set nativeOtelBehaviour: dual_write while in legacy mode." }}
+  {{- end }}
+  LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ .Values.migrationV4.writeMode }}"
+  LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: "{{ .Values.migrationV4.nativeOtelBehaviour }}"
+  LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL: "{{ .Values.migrationV4.enableHistoricBackfill }}"
+  LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "{{ .Values.migrationV4.allowPreviewOptIn }}"
 ---
 # ─── Secret (credentials — overridable via values) ────────────────────────
 apiVersion: v1
@@ -66,6 +103,26 @@ spec:
     metadata:
       labels:
         app: langfuse
+      annotations:
+        # Roll the pods when langfuse-config or langfuse-secrets changes.
+        #
+        # Both are consumed with envFrom, and Kubernetes does NOT restart a pod
+        # when a ConfigMap it reads as env changes — the running container keeps
+        # the values it started with. Without this, adding a key (for example
+        # LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST, which continuous agent
+        # evaluation needs) updates the ConfigMap and changes nothing about the
+        # running Langfuse, and the next unrelated restart silently applies it
+        # minutes or days later. Observed exactly that: the key was present in
+        # the ConfigMap while the 93-minute-old pod still refused the judge
+        # connection.
+        #
+        # Hashes the VALUES that langfuse-config and langfuse-secrets are built
+        # from, not the rendered template: this file defines both of them plus
+        # these Deployments, so `include`-ing it here would recurse forever.
+        # Scoped to those inputs rather than all of .Values so that a change
+        # which only affects the Deployment (image tag, resources) does not roll
+        # the pods twice.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -120,6 +177,17 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # ENCRYPTION_KEY, without which the LLM-connection API fails closed
+            # with a 500 (see templates/encryption-key.yaml). Optional so a
+            # cluster whose generator Job or ExternalSecret has not landed yet
+            # still boots and serves traces, instead of the whole Langfuse web
+            # pod sitting in CreateContainerConfigError over a key that only the
+            # evaluation feature needs.
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+                optional: true
+            {{- end }}
           env:
             - name: HOSTNAME
               value: "0.0.0.0"
@@ -241,6 +309,12 @@ spec:
     metadata:
       labels:
         app: langfuse-worker
+      annotations:
+        # Same reason as the web Deployment above: the worker also loads
+        # langfuse-config with envFrom, and it is the container that actually
+        # runs the evaluation judge, so a stale allowlist here is what silently
+        # blocks scoring.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -259,6 +333,14 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # The worker needs it as much as the web pod: it is the container
+            # that runs the evaluation judge, so it decrypts the LLM connection
+            # secret on every judge call.
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+                optional: true
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
 

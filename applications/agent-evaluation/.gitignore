@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+
+# Virtualenvs and test caches
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/

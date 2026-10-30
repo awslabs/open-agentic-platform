@@ -1,0 +1,34 @@
+{{- /*
+The Agent Evaluation dashboard, imported by grafana-operator into the same
+instance and folder as the platform's other dashboards — no manual import, and a
+new agent appears in the `agent` variable as soon as it turns evaluation on (D5).
+
+The JSON is read from files/ rather than written inline. Helm does not template
+file contents, so the dashboard's own Grafana variables (the double-brace
+legendFormat placeholders) survive verbatim; inlining them would need every one
+escaped, which is how Dark Factory's dashboard has to do it. The file is a copy
+of docs/architecture/diagrams/src/agent-evaluation-dashboard.json, which stays
+the source of truth for review.
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.grafana.enabled }}
+{{- $dashboard := .Files.Get "files/agent-evaluation-dashboard.json" }}
+{{- if not $dashboard }}
+{{- fail "agent-evaluation: files/agent-evaluation-dashboard.json is missing from the chart; the dashboard would be imported empty." }}
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: agent-evaluation
+  namespace: {{ .Values.grafana.namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  allowCrossNamespaceImport: true
+  folder: {{ .Values.grafana.folder | quote }}
+  instanceSelector:
+    matchLabels:
+      {{- toYaml .Values.grafana.instanceSelector | nindent 6 }}
+  resyncPeriod: 10m
+  json: |
+    {{- $dashboard | nindent 4 }}
+{{- end }}

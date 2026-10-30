@@ -578,6 +578,14 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 def _trace_attributes(session_id: str, actor_id: str) -> dict:
     source = "rca" if (session_id or "").startswith("incident-") else "chat"
     tags = [f"source:{source}", config.AGENT_NAME]
+    # Cluster-scoped identity for continuous agent evaluation: the evaluation
+    # rules filter on this tag, and the reports group by it. Added ALONGSIDE the
+    # bare agent name, which stays so existing Langfuse filters and dashboards
+    # keep working. None outside the platform (a local run has no cluster), so
+    # nothing here depends on the platform being present.
+    scoped = config.scoped_agent_tag()
+    if scoped:
+        tags.append(scoped)
     return {
         # Raw session id (what we echo back as contextId) so the Langfuse
         # Session groups by conversation/incident. Langfuse has no AgentCore
