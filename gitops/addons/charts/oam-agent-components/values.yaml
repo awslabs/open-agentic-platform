@@ -1,6 +1,19 @@
 global:
   awsRegion: us-west-2
   clusterName: ""
+  # Default container image for the `agent` component, so an ordinary
+  # Application does not name one ("imageless"). A cluster that mirrors the
+  # image into its own registry overrides this once here, rather than every
+  # Application setting `image` or the CUE default naming one account's
+  # private ECR.
+  #
+  # It must be an image that emits the cluster-scoped
+  # `agent:<cluster>/<namespace>/<name>` Langfuse trace tag, or continuous agent
+  # evaluation cannot match the agent's traces: evaluation is then configured
+  # and silently never scored. The tag is emitted by
+  # applications/strands-agent-base (app/agent.py), so this default must point
+  # at a build that includes it.
+  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.3.3-main
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.

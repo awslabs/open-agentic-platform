@@ -95,17 +95,59 @@ error and republishes the definition to clear it.
 
 ---
 
-## 3. Turn evaluation on for an agent
+## 3. Turn evaluation on for an agent — both examples
 
-A ready-made smoke test is committed:
+Two smoke tests are committed, and **both should be tested**. They differ in one
+line and exercise the same chain:
+
+| Example | `image:` | Proves |
+|---|---|---|
+| `example-agent-evaluation-smoketest.yaml` | pinned | evaluation works when an Application names its own image |
+| `example-agent-evaluation-imageless.yaml` | **absent** | evaluation works in the shape an ordinary Application has |
 
 ```bash
 kubectl apply -f platform/oam/examples/example-agent-evaluation-smoketest.yaml
+kubectl apply -f platform/oam/examples/example-agent-evaluation-imageless.yaml
 ```
 
-It uses `sampling: 1` and a single evaluator so a score appears in about a
+Both use `sampling: 1` and a single evaluator so a score appears in about a
 minute. Both are wrong for production — judging every trace costs a judge call
 per request, which is what `coverage` exists to control.
+
+### Why imageless is the one that can silently fail
+
+The scoped `agent:<cluster>/<namespace>/<name>` trace tag that evaluation rules
+filter on is emitted by the **image**, while the rule is created by the
+**platform**. The two can drift: an image predating the tag is configured for
+evaluation and never scored, and nothing errors — the rule is valid, the agent
+is healthy, there are simply no scores.
+
+Imageless uses the platform default, `global.agentImage` on the
+oam-agent-components chart, so that default has to be an image carrying the tag.
+Check which image an imageless agent actually resolved to:
+
+```bash
+kubectl get pods -n agents -o yaml | grep -E '^\s+image: .*strands-agent' | sort -u
+kubectl get componentdefinition agent -n vela-system -o yaml | grep -oE 'image: \*\\"[^\\]*'
+```
+
+Measured on this cluster: the published `public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10`
+emits only `['<agent>', 'source:chat']` — **no scoped tag** — so imageless does
+not score against it. The hub's `global.agentImage` is therefore pointed at
+`940019131157.dkr.ecr.us-west-2.amazonaws.com/strands-agent:v1.3.4-tracetag`,
+built from this branch. Once the tag ships in the public image, set
+`global.agentImage` back to it and the override disappears.
+
+> Current hub state: `oam-agent-components-hub` has auto-sync **paused** and the
+> `agent` ComponentDefinition is hand-applied with that image, because the app
+> otherwise syncs from `feat/agent-long-term-memory` and reverts it. Restore
+> with:
+> ```bash
+> kubectl patch applicationset oam-agent-components -n argocd --type merge \
+>   -p '{"spec":{"template":{"spec":{"syncPolicy":{"automated":{"allowEmpty":true,"prune":true,"selfHeal":true}}}}}}'
+> ```
+> Auto-sync was paused rather than repointing that app, so the
+> `agentcore-memory` component on `feat/agent-long-term-memory` is untouched.
 
 Check the component rendered the declaration:
 
@@ -134,12 +176,24 @@ curl -s http://127.0.0.1:9098/metrics | grep oap_agent_eval_cluster_info
 **Use the A2A endpoint.** `/chat` answers correctly but is not the traced path,
 so it produces no trace and nothing to score. This cost an hour the first time.
 
+Pinned-image agent:
+
 ```bash
 kubectl port-forward -n agents svc/eval-smoketest-stable 8083:8083 &
 curl -s -X POST http://127.0.0.1:8083/ -H 'Content-Type: application/json' -d '{
   "jsonrpc":"2.0","id":"1","method":"message/send",
   "params":{"message":{"role":"user","kind":"message","messageId":"m1",
     "parts":[{"kind":"text","text":"In one sentence, what is Kubernetes RBAC for?"}]}}}'
+```
+
+Imageless agent (note the different local port, so both can run at once):
+
+```bash
+kubectl port-forward -n agents svc/eval-imageless-stable 8084:8083 &
+curl -s -X POST http://127.0.0.1:8084/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc":"2.0","id":"2","method":"message/send",
+  "params":{"message":{"role":"user","kind":"message","messageId":"m2",
+    "parts":[{"kind":"text","text":"One sentence: what is a Kubernetes namespace?"}]}}}'
 ```
 
 ---
@@ -150,7 +204,15 @@ curl -s -X POST http://127.0.0.1:8083/ -H 'Content-Type: application/json' -d '{
 curl -s -u "$PK:$SK" "$LF/api/public/traces?limit=3" | jq -r '.data[] | "\(.timestamp) \(.tags)"'
 ```
 
-Expect `["agent:hub/agents/eval-smoketest","eval-smoketest","source:chat"]`.
+Expect the scoped tag on **both** agents:
+
+```
+["agent:hub/agents/eval-smoketest","eval-smoketest","source:chat"]
+["agent:hub/agents/eval-imageless","eval-imageless","source:chat"]
+```
+
+If the pinned one has it and the imageless one does not, the platform default
+image is the problem, not the platform — see §3.
 
 The scoped `agent:<cluster>/<namespace>/<name>` tag is what the rule filters on,
 and it is what keeps the same Application on dev and prod from sharing one
@@ -247,10 +309,23 @@ the same family as the agents, so it reintroduces the self-preference bias
 
 ---
 
-## Tearing the smoke test down
+## What was verified on the hub
+
+Both examples, end to end, on 2026-10-30:
+
+| | Pinned image | Imageless |
+|---|---|---|
+| Declaration ConfigMap rendered | yes | yes |
+| Rule created by the reconciler | yes | yes |
+| Image used | `…/strands-agent:eval-tracetag` | `…/strands-agent:v1.3.4-tracetag` (platform default) |
+| Scoped trace tag | `agent:hub/agents/eval-smoketest` | `agent:hub/agents/eval-imageless` |
+| Score from the judge | `helpfulness = 1` | `helpfulness = 1` |
+
+## Tearing the smoke tests down
 
 ```bash
 kubectl delete -f platform/oam/examples/example-agent-evaluation-smoketest.yaml
+kubectl delete -f platform/oam/examples/example-agent-evaluation-imageless.yaml
 ```
 
 The declaration ConfigMap is a KubeVela output, so deleting the Application

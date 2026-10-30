@@ -132,6 +132,25 @@ For example, always use the time tool when asked about the current time or date.
     # A2A configuration
     A2A_BASE_PATH: str = ""  # Mount at root
     
+    def scoped_agent_tag(self) -> Optional[str]:
+        """Cluster-scoped identity for this agent, or None off-platform.
+
+        `agent:<cluster>/<namespace>/<name>`. Continuous agent evaluation's
+        Langfuse rules select an agent's traces by exactly this tag, and the
+        reports group by it.
+
+        Returns None unless BOTH halves are present. A local run has no cluster,
+        and emitting something like `agent://support` would be worse than
+        emitting nothing: it would match a rule's tag filter for an agent on no
+        cluster.
+
+        Lives here, not in agent.py, so it is importable and testable without
+        the model and AWS SDK stack that module pulls in.
+        """
+        if self.CLUSTER_NAME and self.AGENT_NAMESPACE:
+            return f"agent:{self.CLUSTER_NAME}/{self.AGENT_NAMESPACE}/{self.AGENT_NAME}"
+        return None
+
     def __repr__(self) -> str:
         """String representation of config (hiding sensitive data)."""
         return (

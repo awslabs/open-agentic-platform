@@ -452,8 +452,23 @@ spec:
         	description:   string
         	systemMessage: string
 
-        	// Image
-        	image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.3.3-main" | string
+        	// +usage=Agent container image. Defaults to the PLATFORM's agent image, so
+        	// an ordinary Application never names one ("imageless").
+        	//
+        	// The default is a platform value rather than a literal pinned here, for
+        	// the same reason region and account are (.kiro/steering/oam-authoring.md
+        	// §1): which registry a cluster can pull from is ambient environment
+        	// config. A cluster that mirrors the agent image into its own ECR sets
+        	// global.agentImage once on the oam-agent-components chart, instead of
+        	// every Application overriding `image` or the CUE default being edited to
+        	// name one account's private registry.
+        	//
+        	// This matters for continuous agent evaluation specifically: the scoped
+        	// `agent:<cluster>/<ns>/<name>` trace tag that evaluation rules filter on
+        	// is emitted by the IMAGE. An image predating that tag is configured for
+        	// evaluation and silently never scored, so a cluster needs to be able to
+        	// point at an image that has it without touching any Application.
+        	image: *"{{ .Values.global.agentImage }}" | string
 
         	// Optional fields with defaults
         	// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
