@@ -50,6 +50,10 @@ vars:
   ARGO_PROJECT: '{{.ARGO_PROJECT | default "spoke-workloads"}}'
   APPS:
     sh: for d in */deployment; do [ -d "$d" ] && echo "${d%/deployment}"; done | tr '\n' ' '
+  # Hub kubectl context. Declared here so a CLI `KUBE_CONTEXT=<ctx>` is visible to
+  # RESOLVE_CLUSTER below (go-task renders a global var only from vars declared
+  # before it, so an undeclared CLI var was silently ignored). Empty = current context.
+  KUBE_CONTEXT: '{{.KUBE_CONTEXT | default ""}}'
   # Shell function shared by wire and apply: prints the cluster for an environment,
   # or nothing when none is registered on the hub. Resolved at run time, so
   # `task --dry` never calls kubectl.
@@ -217,7 +221,14 @@ tasks:
         SPOKE_CTX="{{.SPOKE_CONTEXT}}"
         SPOKE_CTX="${SPOKE_CTX:-$CLUSTER}"
         if [ -z "$SPOKE_CTX" ]; then
-          echo "No dev spoke found on the hub. Set SPOKE_CONTEXT=<kubectl context of the dev spoke>." >&2
+          HUB_CTX="{{.KUBE_CONTEXT}}"
+          HUB_CTX="${HUB_CTX:-$(kubectl config current-context 2>/dev/null || echo '<none>')}"
+          echo "No dev spoke found on the hub (kubectl context: ${HUB_CTX}). Set SPOKE_CONTEXT=<kubectl context of the dev spoke>." >&2
+          N=$($KUBECTL -n {{.ARGO_NAMESPACE}} get secret -l argocd.argoproj.io/secret-type=cluster \
+            -o name 2>/dev/null | wc -l | tr -d ' ') || N=""
+          if [ "$N" = 0 ]; then
+            echo "  Context ${HUB_CTX} has no Argo CD cluster secrets in namespace {{.ARGO_NAMESPACE}}: it is probably not the hub. Pass KUBE_CONTEXT=<hub context>." >&2
+          fi
           exit 1
         fi
         for APP in {{.APPS}}; do
