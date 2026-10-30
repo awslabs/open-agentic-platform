@@ -124,6 +124,10 @@ spec:
         app: otel-collector
       annotations:
         checksum/config: {{ printf "%s-%s-%s-%s" (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
+        {{- if and (include "otel-collector.ampLiteral" .) .Values.amp.clusterName }}
+        # external_labels.cluster is rendered into the config above; roll on a change.
+        checksum/amp-labels: {{ .Values.amp.clusterName | sha256sum | trunc 8 }}
+        {{- end }}
         # Tracks the content-addressed auth Secret name (token template + SM key),
         # so any change to either rolls the collector.
         checksum/langfuse-auth: {{ include "otel-collector.langfuseAuthSecretName" . | sha256sum | trunc 8 }}
