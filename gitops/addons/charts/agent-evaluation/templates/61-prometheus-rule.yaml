@@ -1,0 +1,105 @@
+{{- /*
+Alerts. The design leaves "where quality alerts live" open (Q7) between a
+PrometheusRule and a Grafana alert CR; this takes the PrometheusRule, because the
+observability domain already installs the prometheus-operator CRDs and AMP
+ingests the rules without a second mechanism.
+
+These alert on the PIPELINE, not on agent quality. A pass ratio falling is a
+product signal for the owning team to read on the dashboard, and it would be
+wrong for the platform to page on it: a deliberately strict evaluator on a
+hard task is supposed to score low. What the platform owns is whether the
+numbers are current and real — which is exactly what the staleness alert and the
+error-rate alert say.
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agent-evaluation
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: agent-evaluation
+      rules:
+        - alert: AgentEvaluationDataStale
+          # Per cluster, so one stalled cluster is not hidden by a healthy one.
+          expr: >-
+            time() - max by (cluster)
+            (oap_agent_eval_last_success_timestamp_seconds{loop="metrics"})
+            > {{ .Values.alerts.dataAgeSeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              Agent evaluation scores on cluster {{ `{{ $labels.cluster }}` }}
+              have not refreshed for over
+              {{ div .Values.alerts.dataAgeSeconds 60 }} minutes.
+            description: >-
+              The metrics loop has not completed a full pass. The dashboard is
+              showing the last good values, so pass ratios are stale rather than
+              wrong. Usual causes: Langfuse rate-limiting the metrics endpoint
+              (check oap_agent_eval_errors_total{loop="metrics"} and raise
+              metrics.intervalSeconds), Langfuse unreachable, or the reconciler
+              not running.
+
+        - alert: AgentEvaluationReconcileErrors
+          expr: >-
+            sum by (cluster, loop) (rate(oap_agent_eval_errors_total[15m])) > 0
+          for: 30m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              Agent evaluation {{ `{{ $labels.loop }}` }} loop is failing on
+              cluster {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              Langfuse calls have been failing for 30 minutes. For loop="rules"
+              new or changed agents are not being evaluated; for loop="project"
+              the hub cannot publish judge prompts, so every cluster keeps
+              scoring on the previous version. Check the reconciler's logs in the
+              {{ .Release.Namespace }} namespace.
+
+        - alert: AgentEvaluationRuleBudgetHigh
+          # The cap is per Langfuse project and the whole fleet shares one, so
+          # this sums every cluster's owned rules rather than alerting per
+          # cluster.
+          expr: sum(oap_agent_eval_rules_active) > {{ div (mul .Values.maxActiveRules 8) 10 }}
+          for: 15m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The shared Langfuse project is near its evaluation rule cap
+              ({{ .Values.maxActiveRules }}).
+            description: >-
+              Rules are grouped by (evaluator, judge, sampling) per cluster, so
+              this rises when teams use many distinct sampling rates or judges.
+              Prefer the three coverage levels over explicit `sampling` values,
+              which group far better. Past the cap, new agents' rules are not
+              created and the reconciler reports it.
+{{- if eq (include "agent-evaluation.role" .) "hub" }}
+
+        - alert: AgentEvaluationJudgeKeyMissing
+          # Hub only: the hub owns the judge LLM connection, so it is the only
+          # instance for which this is actionable.
+          expr: max by (cluster) (oap_agent_eval_judge_key_present) == 0
+          for: 1h
+          labels:
+            severity: info
+            component: agent-evaluation
+          annotations:
+            summary: Judge LLM calls are running without a Bifrost virtual key.
+            description: >-
+              Judge spend is reaching Bedrock through Bifrost but is not
+              attributed to a budget or rate limit, because no judge virtual key
+              is mounted. Evaluation still works. To fix, create the Secrets
+              Manager entry and set judge.virtualKey.enabled with its
+              secretManagerKey on the agent-evaluation addon.
+{{- end }}
+{{- end }}

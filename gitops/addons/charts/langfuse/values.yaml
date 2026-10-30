@@ -19,15 +19,23 @@ replicas: 1
 
 image:
   repository: langfuse/langfuse
-  # Pinned to a concrete 3.x (was a floating "3", so each fresh install could pull a
-  # different 3.x image, making the init-time/CPU behaviour non-reproducible). #1057
-  tag: "3.225.11"
+  # Pinned to a concrete version (was a floating "3", so each fresh install could
+  # pull a different build, making the init-time/CPU behaviour non-reproducible).
+  # #1057
+  #
+  # v4 requires ClickHouse >= 25.12, which the clickhouse block below now pins.
+  # Do not raise this above the ClickHouse floor in the same change: the server
+  # runs its ClickHouse schema migrations on startup.
+  tag: "4.72.0"
   pullPolicy: IfNotPresent
 
 worker:
   image:
     repository: langfuse/langfuse-worker
-    tag: "3"
+    # Pinned for the same reason as the web image above, which had been fixed
+    # while this one was left floating on "3" — so the worker could silently run
+    # a different build from the web container it is supposed to match.
+    tag: "4.72.0"
   replicas: 1
   resources:
     requests:
@@ -110,11 +118,19 @@ postgres:
       cpu: "1"
       memory: 512Mi
 
-# ClickHouse (required for Langfuse v3 — OLAP trace storage)
+# ClickHouse (required for Langfuse v3+ — OLAP trace storage)
 clickhouse:
   image:
     repository: clickhouse/clickhouse-server
-    tag: "24.12"
+    # Langfuse v4 requires ClickHouse >= 25.12 and its schema migrations run
+    # automatically on server startup, so ClickHouse MUST be upgraded BEFORE the
+    # Langfuse image. Current v3 releases work fine against 25.12, which is what
+    # makes that ordering safe to do as a separate step.
+    #
+    # Pinned to a full patch version, not "25.12": a floating tag means a fresh
+    # install and an existing one can run different builds, which is the same
+    # reproducibility problem #1057 fixed for the Langfuse image itself.
+    tag: "25.12.11.4"
   password: clickhouse
   storage: 20Gi
   resources:
@@ -190,3 +206,91 @@ seed:
     id: "ak-otel-collector"
     publicKey: "pk-lf-otel-platform"
     secretKey: "sk-lf-otel-platform-2026"
+
+# Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+# Langfuse itself runs no evaluation here; it only needs to be allowed to reach
+# the judge's model gateway, which is a cluster-internal address its SSRF check
+# blocks by default.
+# Langfuse v4 migration controls.
+# https://langfuse.com/self-hosting/upgrade/upgrade-guides/upgrade-v3-to-v4
+#
+# v4 introduces a new event-based storage model and three write modes. The
+# platform upgraded the SERVER to v4 while deliberately staying in `legacy`
+# write mode, because those are two independent decisions:
+#
+#   - the server version is what exposes the STABLE /api/public/v2 evaluator
+#     API that continuous agent evaluation needs (on v3 it was /unstable/, and
+#     its preflight could not resolve a provider config at all)
+#   - the write mode is what changes ingestion and read behaviour, and
+#     `events_only` is a ONE-WAY cutover that breaks the legacy ingestion and
+#     read endpoints
+#
+# So the version moves now and the cutover is a later, deliberate change rather
+# than a side effect of a bump.
+migrationV4:
+  # legacy | dual | events_only  (v4's own default is events_only)
+  #
+  # `legacy` keeps full v3 ingestion and read behaviour: the OTel collector's
+  # ingestion path and every v1 read endpoint keep working untouched.
+  #
+  # Before moving to events_only, these have to be dealt with first:
+  #   - the agent-evaluation reconciler's metrics loop uses /api/public/metrics,
+  #     which refuses requests in events_only mode (it has to move to v2/v3)
+  #   - producers need Python SDK >= 4.7.0 / JS-TS >= 5.4.0
+  #   - trace-level and legacy-dataset LLM-as-a-judge evaluators stop running
+  # `dual`, not `legacy`, and this is load-bearing for continuous agent
+  # evaluation rather than a preference.
+  #
+  # v4's online evaluation pipeline consumes the NEW events stream. In `legacy`
+  # mode nothing writes it, so an evaluation rule can be active, enabled, with
+  # sampling 1 and a filter that matches the trace — and no evaluation job is
+  # ever created. Observed exactly that on the hub: the trace arrived with the
+  # right tag, the rule was correct, and the worker logged no evaluation
+  # activity at all.
+  #
+  # `dual` writes BOTH the old and the new tables, so every v3 read surface
+  # keeps working (the UI, the v1 read APIs, this addon's metrics loop) AND the
+  # evaluation pipeline has the events it needs. It is the documented
+  # transitional mode and is reversible, unlike `events_only`.
+  writeMode: dual
+  # direct | dual_write
+  #
+  # MUST be dual_write whenever writeMode is legacy, and this is not advisory:
+  # v4 validates the combination at startup and the WORKER exits with
+  #   Invalid V4 config: LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR=direct
+  #   requires LANGFUSE_MIGRATION_V4_WRITE_MODE in {dual, events_only}.
+  #   Direct OTel writes target events_full, which is not read in legacy mode.
+  # so leaving v4's `direct` default in place crash-loops the worker — which is
+  # the container that runs the evaluation judge. `dual_write` keeps the
+  # server-side propagation that makes OTel-ingested traces readable through the
+  # v3 read path, which is exactly what legacy mode means.
+  nativeOtelBehaviour: dual_write
+  # The historic backfill must stay off while in `legacy` mode. It also wants
+  # roughly 3x the current ClickHouse volume as working space.
+  enableHistoricBackfill: false
+  # Gates the v4 UI toggle and the /api/public/v2 APIs. Required for the stable
+  # evaluator API, which is the whole reason for this upgrade, and harmless in
+  # legacy mode.
+  allowPreviewOptIn: true
+
+evaluation:
+  # The one host exempted from Langfuse's LLM-connection SSRF check: Bifrost's
+  # in-cluster Service. Keep this a single host — it is an exemption from a
+  # security control, not a convenience setting. Must match the host in the
+  # agent-evaluation addon's judge.bifrostUrl.
+  judgeGatewayHost: "bifrost.bifrost.svc.cluster.local"
+
+# ENCRYPTION_KEY: Langfuse encrypts stored secrets at rest with it, and without
+# it the whole LLM-connection API returns 500 "Missing environment variable:
+# ENCRYPTION_KEY" — so no evaluation judge can be registered. Langfuse still
+# boots and serves traces without it, which is why its absence is invisible
+# until something writes a connection.
+#
+# The key is generated in-cluster into Secrets Manager and read back through an
+# ExternalSecret; it is never a chart value, so no copy of it is in git. See
+# templates/encryption-key.yaml, and note that it must NEVER be rotated.
+encryptionKey:
+  enabled: true
+  # Name of the Secret the ExternalSecret creates, loaded by the web and worker
+  # Deployments with envFrom.
+  secretRef: langfuse-encryption

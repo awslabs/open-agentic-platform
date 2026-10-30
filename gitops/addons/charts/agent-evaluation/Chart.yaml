@@ -1,0 +1,9 @@
+apiVersion: v2
+name: agent-evaluation
+description: >-
+  Continuous agent evaluation: turns the agent component's evaluation block into
+  Langfuse online LLM-as-a-judge evaluators and rules, and reports pass ratios to
+  Grafana. See docs/architecture/agent-evaluation.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

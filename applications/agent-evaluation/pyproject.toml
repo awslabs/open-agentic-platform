@@ -1,0 +1,27 @@
+[project]
+name = "agent-evaluation-reconciler"
+version = "0.1.0"
+description = "Reconciles OAM agent evaluation declarations into Langfuse evaluators and online evaluation rules"
+requires-python = ">=3.11"
+dependencies = [
+    "kubernetes==37.0.1",
+    "httpx==0.28.1",
+    "prometheus-client==0.24.1",
+    "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=9.1",
+    "respx~=0.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

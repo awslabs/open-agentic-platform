@@ -1,0 +1,46 @@
+# Smoke test for continuous agent evaluation — IMAGELESS.
+#
+# Identical to example-agent-evaluation-smoketest.yaml except that it names no
+# `image`, so it uses the platform's default agent image
+# (global.agentImage on the oam-agent-components chart). That is the shape an
+# ordinary Application has, and this file exists to prove evaluation works in
+# it, not only when an image is pinned.
+#
+# It only scores if the platform default image emits the cluster-scoped
+# `agent:<cluster>/<namespace>/<name>` Langfuse trace tag, which the evaluation
+# rule filters on. An older image is configured for evaluation and silently
+# never scored — nothing errors, there are simply no scores. See
+# applications/agent-evaluation/TESTING.md for how to tell the two apart.
+#
+# As with the pinned smoke test, `sampling: 1` and a single evaluator are set so
+# a score appears within a minute. Both are wrong for production: judging every
+# trace costs a judge call per request, which is what `coverage` is for.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: eval-imageless
+  namespace: agents
+spec:
+  components:
+    - name: eval-imageless
+      type: agent
+      properties:
+        description: "Imageless smoke-test agent for continuous evaluation"
+        systemMessage: >-
+          You are a concise assistant. Answer in one or two sentences.
+        modelConfig:
+          modelId: claude-sonnet
+        # NOTE: no `image:` — that is the point of this example.
+        evaluation:
+          enabled: true
+          strictness: medium
+          sampling: 1
+          evaluators:
+            - helpfulness
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
