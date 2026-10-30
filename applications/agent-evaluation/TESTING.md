@@ -16,6 +16,33 @@ Everything below was run on the `hub` cluster and passed. If you are re-running
 it after a change, work top to bottom: each step's failure mode is distinct, and
 checking them in order tells you which link broke.
 
+## Start here — the hub is already set up
+
+Nothing needs installing or applying. Langfuse v4 is deployed in `dual` write
+mode, the reconciler is running, the four catalog evaluators are published, and
+**both** smoke-test agents (`eval-smoketest`, `eval-imageless`) are deployed and
+have already been scored.
+
+So for a confirmation run, go straight to **§4 → §5 → §6 → §7**: send a request,
+watch the trace arrive, watch the score land, see the pass ratio. Roughly two
+minutes.
+
+§0–§3 are the diagnostic path — read them when something does *not* work, or
+when setting this up on another cluster. Any `kubectl apply` in this document is
+for a fresh cluster or a re-run after teardown; on the hub today those resources
+already exist and applying them again is a no-op.
+
+Two environment variables are used throughout:
+
+```bash
+kubectl port-forward -n langfuse svc/langfuse 3999:3000 &
+export LF=http://127.0.0.1:3999
+export PK=$(aws secretsmanager get-secret-value --secret-id peeks-hub/langfuse-otel \
+  --query SecretString --output text | jq -r .LANGFUSE_PUBLIC_KEY)
+export SK=$(aws secretsmanager get-secret-value --secret-id peeks-hub/langfuse-otel \
+  --query SecretString --output text | jq -r .LANGFUSE_SECRET_KEY)
+```
+
 ---
 
 ## 0. Prerequisites
@@ -97,13 +124,36 @@ error and republishes the definition to clear it.
 
 ## 3. Turn evaluation on for an agent — both examples
 
-Two smoke tests are committed, and **both should be tested**. They differ in one
-line and exercise the same chain:
+> **Both are ALREADY DEPLOYED on the hub.** Nothing to apply — skip to the
+> verification below, then go to §4. The `kubectl apply` commands are only for
+> recreating them on a fresh cluster, or after §"Tearing the smoke tests down".
+
+Two smoke tests exist, and **both should be tested**. They differ in one line
+and exercise the same chain:
 
 | Example | `image:` | Proves |
 |---|---|---|
 | `example-agent-evaluation-smoketest.yaml` | pinned | evaluation works when an Application names its own image |
 | `example-agent-evaluation-imageless.yaml` | **absent** | evaluation works in the shape an ordinary Application has |
+
+Confirm what is running:
+
+```bash
+kubectl get applications.core.oam.dev -n agents
+# eval-smoketest   eval-smoketest   agent   running   true
+# eval-imageless   eval-imageless   agent   running   true
+
+# the declaration the component rendered for each
+kubectl get configmap -n agents -l evaluation.oap.io/agent
+kubectl get configmap eval-smoketest-evaluation eval-imageless-evaluation -n agents \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" evaluators="}{.data.evaluators}{" sampling="}{.data.sampling}{"\n"}{end}'
+```
+
+A third agent, `my-agent`, also runs in that namespace with **no** `evaluation`
+block — no ConfigMap, no tag in the rule, never judged. That is the opt-in
+behaviour working, not a fault.
+
+Only if they are absent (fresh cluster, or after teardown):
 
 ```bash
 kubectl apply -f platform/oam/examples/example-agent-evaluation-smoketest.yaml
@@ -149,24 +199,49 @@ built from this branch. Once the tag ships in the public image, set
 > Auto-sync was paused rather than repointing that app, so the
 > `agentcore-memory` component on `feat/agent-long-term-memory` is untouched.
 
-Check the component rendered the declaration:
+### The rule the reconciler built
+
+Check the rule itself, not the logs. The rule already exists, so
+`grep "created rule"` finds nothing — the reconciler is level-triggered and logs
+only when it changes something. Silence here means "already correct".
 
 ```bash
-kubectl get configmap eval-smoketest-evaluation -n agents -o jsonpath='{.data}' | jq
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=10" | jq '.data[] | {name, enabled, sampling, filter}'
 ```
 
-Then watch the reconciler turn it into a rule (within one 60s pass):
+Expect **one** rule covering **both** agents:
 
-```bash
-kubectl logs -n agent-evaluation deploy/agent-evaluation-reconciler --tail=50 | grep -E "created rule|updated rule"
-# created rule oap-08d33503-helpfulness-8c49ba7c (evaluator=helpfulness judge=judge-default sampling=1.0 agents=1)
 ```
+name:     oap-08d33503-helpfulness-8c49ba7c
+enabled:  true
+sampling: 1
+filter:   type any of [AGENT]
+          tags any of ["agent:hub/agents/eval-imageless","agent:hub/agents/eval-smoketest"]
+```
+
+One rule for two agents is correct, not a bug: rules are grouped by
+`(evaluator, judge, sampling)`, and both agents asked for the same
+`(helpfulness, judge-default, 1)`, so they share one rule and appear as two tags
+in its filter. Give one of them a different `sampling` or `judge` and you get a
+second rule.
+
+Note also that the catalog publishes **four** evaluators
+(`goal-completion`, `helpfulness`, `safety`, `tool-use`) while only one rule
+exists — evaluators are reusable definitions, rules are usage. Three are
+published and unused.
 
 `oap-08d33503-…` — the second segment is this cluster's owner token, not its
 name. Map it with:
 
 ```bash
 curl -s http://127.0.0.1:9098/metrics | grep oap_agent_eval_cluster_info
+```
+
+If you *did* just recreate the Applications, then the logs are worth watching:
+
+```bash
+kubectl logs -n agent-evaluation deploy/agent-evaluation-reconciler --tail=50 | grep -E "created rule|updated rule"
+# created rule oap-08d33503-helpfulness-8c49ba7c (evaluator=helpfulness judge=judge-default sampling=1.0 agents=1)
 ```
 
 ---
