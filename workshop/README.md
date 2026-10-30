@@ -93,16 +93,10 @@ Deliberately not required, do not pre-create these:
 
 ## Provider
 
-Set `platform.clusterProvider` in `../config.local.yaml` to `kind-kro-ack`. That is the
-provider this flow was tested end to end on. `kind-crossplane` is expected to work, since
-nothing here needs a pre-existing VPC, but is unverified for CloudFront. `task reserve` warns
-if you are on anything else and continues.
-
-Be aware that appmod's `config.schema.json` restricts `clusterProvider` to `kind-crossplane`
-and `byoc`, so an editor will flag `kind-kro-ack` even though `cluster-providers/kind-kro-ack`
-exists and appmod's own `workshop/create-config.sh` defaults to it. The schema is an editor
-hint (`config.yaml:3`) and is not enforced at install, so this is an upstream schema defect
-rather than a real constraint.
+`platform.clusterProvider` defaults to `kind-kro-ack`, the provider this flow was tested end
+to end on. `kind-crossplane` stays selectable by setting it in `../config.local.yaml`; it is
+expected to work, since nothing here needs a pre-existing VPC, but is unverified for CloudFront.
+`task reserve` warns if you are on anything other than `kind-kro-ack` and continues.
 
 ## Re-running
 

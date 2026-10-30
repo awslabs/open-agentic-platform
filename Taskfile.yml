@@ -20,7 +20,7 @@ vars:
   PLATFORM_REF:
     sh: yq -r '.platform.ref // .repo.revision' {{.CONFIG_FILE}}
   CLUSTER_PROVIDER:
-    sh: yq -r '.platform.clusterProvider // .clusterProvider' {{.CONFIG_FILE}}
+    sh: yq -r '.platform.clusterProvider // .clusterProvider // "kind-kro-ack"' {{.CONFIG_FILE}}
   AWS_REGION:
     sh: yq -r '.aws.region' {{.CONFIG_FILE}}
   AWS_ACCOUNT_ID:
@@ -198,10 +198,15 @@ tasks:
   # ─── Spokes ──────────────────────────────────────────────────────────────────
 
   spokes:install:
-    desc: Provision spoke clusters via Crossplane PlatformCluster claims
+    desc: Provision spoke clusters via Crossplane PlatformCluster claims (kind-crossplane only)
     cmds:
       - task: agentic:ensure-kubeconfig
       - |
+        if [ "{{.CLUSTER_PROVIDER}}" != "kind-crossplane" ]; then
+          printf '✓ clusterProvider is "%s": spokes are not Crossplane claims, skipping.\n' "{{.CLUSTER_PROVIDER}}"
+          printf '  Declare spokes in the fleet repo (see gitops/fleet/members/_example/README.md).\n'
+          exit 0
+        fi
         SPOKES=$(yq -r '.spokes // {}' {{.CONFIG_FILE}})
         if [ "$SPOKES" = "{}" ] || [ "$SPOKES" = "null" ]; then
           printf '✓ No spokes configured (hub-only).\n'
@@ -239,7 +244,13 @@ tasks:
     desc: Check spoke cluster provisioning status
     cmds:
       - task: agentic:ensure-kubeconfig
-      - kubectl get platformclusters.platform.gitops.io -n crossplane-system --no-headers 2>/dev/null || printf 'No PlatformCluster claims found.\n'
+      - |
+        if [ "{{.CLUSTER_PROVIDER}}" != "kind-crossplane" ]; then
+          printf '✓ clusterProvider is "%s": spokes are not Crossplane claims, skipping.\n' "{{.CLUSTER_PROVIDER}}"
+          printf '  Declare spokes in the fleet repo (see gitops/fleet/members/_example/README.md).\n'
+          exit 0
+        fi
+        kubectl get platformclusters.platform.gitops.io -n crossplane-system --no-headers 2>/dev/null || printf 'No PlatformCluster claims found.\n'
 
   spokes:destroy:
     desc: Delete spoke clusters
@@ -252,6 +263,11 @@ tasks:
       # one is still deleting. Stop the generator first, then delete the claims so
       # they stay deleted and Crossplane can drain the spokes cleanly.
       - |
+        if [ "{{.CLUSTER_PROVIDER}}" != "kind-crossplane" ]; then
+          printf '✓ clusterProvider is "%s": spokes are not Crossplane claims, skipping.\n' "{{.CLUSTER_PROVIDER}}"
+          printf '  Declare spokes in the fleet repo (see gitops/fleet/members/_example/README.md).\n'
+          exit 0
+        fi
         CTX={{.HUB_CLUSTER_NAME}}
         # Pause the ApplicationSet so it stops regenerating the clusters Application(s).
         if kubectl --context "$CTX" get applicationset clusters -n argocd >/dev/null 2>&1; then

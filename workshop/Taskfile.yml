@@ -40,7 +40,7 @@ vars:
   PLATFORM_REF:
     sh: yq -r '.platform.ref' {{.OAP_CONFIG}}
   CLUSTER_PROVIDER:
-    sh: yq -r '.platform.clusterProvider' {{.OAP_CONFIG}}
+    sh: yq -r '.platform.clusterProvider // "kind-kro-ack"' {{.OAP_CONFIG}}
 env:
   AWS_PAGER: ""
 
