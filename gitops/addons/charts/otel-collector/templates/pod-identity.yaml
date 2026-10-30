@@ -1,12 +1,13 @@
-{{- if and .Values.amp.enabled .Values.amp.remoteWriteEndpoint }}
-# IAM Role for OTel Collector (AMP remote write)
+{{- if include "otel-collector.ampActive" . }}
+# IAM Role for OTel Collector (AMP remote write). Named after the cluster: IAM role
+# names are account-global, and the hub and every spoke each render this role.
 apiVersion: iam.aws.upbound.io/v1beta1
 kind: Role
 metadata:
-  name: {{ .Release.Namespace }}-otel-collector-role
+  name: {{ .Values.amp.clusterName | default .Release.Namespace }}-otel-collector-role
   annotations:
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-    crossplane.io/external-name: {{ .Release.Namespace }}-otel-collector-role
+    crossplane.io/external-name: {{ .Values.amp.clusterName | default .Release.Namespace }}-otel-collector-role
 spec:
   forProvider:
     assumeRolePolicy: |
@@ -48,6 +49,6 @@ spec:
     namespace: {{ .Release.Namespace }}
     region: {{ .Values.global.awsRegion }}
     roleArnRef:
-      name: {{ .Release.Namespace }}-otel-collector-role
+      name: {{ .Values.amp.clusterName | default .Release.Namespace }}-otel-collector-role
     serviceAccount: otel-collector
 {{- end }}

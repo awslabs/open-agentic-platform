@@ -19,3 +19,17 @@ stale token (fresh env race, or an upgrade that changes the template).
 {{- define "otel-collector.langfuseAuthSecretName" -}}
 {{- printf "langfuse-otel-auth-%s" (printf "%s|%s" (include "otel-collector.langfuseAuthTemplate" .) (.Values.langfuse.secretManagerKey | default "") | sha256sum | trunc 8) -}}
 {{- end -}}
+
+{{/*
+AMP remote write is on when enabled and an endpoint source exists: the literal
+amp.remoteWriteEndpoint, or the amp.secretManagerKey Secrets Manager secret
+(read by ESO into the otel-collector-amp Secret). Returns "true" or "".
+*/}}
+{{- define "otel-collector.ampActive" -}}
+{{- if and .Values.amp.enabled (or .Values.amp.remoteWriteEndpoint .Values.amp.secretManagerKey) -}}true{{- end -}}
+{{- end -}}
+
+{{/* True when the endpoint comes from Secrets Manager (no literal endpoint). */}}
+{{- define "otel-collector.ampFromSecret" -}}
+{{- if and (include "otel-collector.ampActive" .) (not .Values.amp.remoteWriteEndpoint) -}}true{{- end -}}
+{{- end -}}
