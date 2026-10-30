@@ -106,7 +106,8 @@ otel-collector:
       # seeds once AMP exists (amp-workspace + amp-region), already read by the spoke
       # amp-workspace-secrets ExternalSecrets. Same key on hub and spokes. Without it the
       # metrics pipeline falls back to the debug exporter and AMP gets no bifrost series.
-      secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}/platform/amp'
+      # Only with a resource_prefix: without one there is no such secret to wait for.
+      secretManagerKey: '{{ with index .metadata.annotations "resource_prefix" }}{{ . }}/platform/amp{{ end }}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
 
 prometheus-operator-crds:

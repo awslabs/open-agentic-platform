@@ -33,3 +33,24 @@ amp.remoteWriteEndpoint, or the amp.secretManagerKey Secrets Manager secret
 {{- define "otel-collector.ampFromSecret" -}}
 {{- if and (include "otel-collector.ampActive" .) (not .Values.amp.remoteWriteEndpoint) -}}true{{- end -}}
 {{- end -}}
+
+{{/* AMP with a literal endpoint (amp_endpoint_url annotation): exported from the main collector, as before. */}}
+{{- define "otel-collector.ampLiteral" -}}
+{{- if and (include "otel-collector.ampActive" .) .Values.amp.remoteWriteEndpoint -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Endpoint from Secrets Manager: the bifrost metrics pipeline runs in its own
+Deployment (otel-collector-metrics, amp-metrics.yaml). Only that Deployment waits
+for the otel-collector-amp Secret, so a missing or late AMP secret never holds up
+the traces collector.
+*/}}
+{{- define "otel-collector.metricsSplit" -}}
+{{- if and (include "otel-collector.ampFromSecret" .) .Values.bifrost.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/* The main collector scrapes bifrost itself unless that moved to otel-collector-metrics. */}}
+{{- define "otel-collector.metricsInMain" -}}
+{{- if and .Values.bifrost.enabled (not (include "otel-collector.ampFromSecret" .)) -}}true{{- end -}}
+{{- end -}}
+
