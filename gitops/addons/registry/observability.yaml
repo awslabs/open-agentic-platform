@@ -17,7 +17,7 @@ langfuse:
   valuesObject:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
-      insecure: '{{default "false" .metadata.annotations.insecure}}'
+      insecure: '{{default "false" (index .metadata.annotations "insecure")}}'
       # Used by push-otel-secret.yaml to name the OTEL SM secret
       # <resourcePrefix>-hub/langfuse-otel (prefix-scoped so two events in one account
       # don't collide; must match the otel-collector secretManagerKey above).
