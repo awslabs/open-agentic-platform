@@ -101,6 +101,12 @@ otel-collector:
     amp:
       enabled: true
       remoteWriteEndpoint: '{{with (index .metadata.annotations "amp_endpoint_url")}}{{.}}{{end}}'
+      # amp_endpoint_url is empty on KRO-provisioned clusters (hub and spokes), so the
+      # endpoint comes from <resource_prefix>/platform/amp instead: the secret the platform
+      # seeds once AMP exists (amp-workspace + amp-region), already read by the spoke
+      # amp-workspace-secrets ExternalSecrets. Same key on hub and spokes. Without it the
+      # metrics pipeline falls back to the debug exporter and AMP gets no bifrost series.
+      secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}/platform/amp'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
 
 prometheus-operator-crds:

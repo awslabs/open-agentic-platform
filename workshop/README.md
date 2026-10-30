@@ -144,8 +144,22 @@ trusting the exit code.
 Each subfolder with a `deployment/` directory is one app. Today there is one,
 `agents`: an agent and an MCP server, both from prebuilt images, so nothing is built.
 
-`task -d applications seed` creates a GitLab project per app, pushes the folder into
-it when the project is empty, optionally clones it, and applies two Argo CD
-Applications on the hub (`<app>-dev-cd`, `<app>-prod-cd`) that sync
-`deployment/dev` and `deployment/prod` to the dev and prod spokes. Every input is a
-variable; see the header of `applications/Taskfile.yml`.
+Pick the task that matches what the install has. Every input is a variable; see the
+header of `applications/Taskfile.yml`.
+
+| Install | Task | What it does |
+|---|---|---|
+| With GitLab (the workshop) | `task -d applications seed GIT_URL=… GIT_TOKEN=…` | Creates a GitLab project per app, pushes the folder into it when the project is empty, optionally clones it, then runs `wire` |
+| Any git host | `task -d applications wire APP_REPO_BASE=https://<host>/<owner>` | Applies the Argo CD Applications `<app>-dev-cd` / `<app>-prod-cd` on the hub, syncing `deployment/dev` and `deployment/prod` of `<APP_REPO_BASE>/<app>.git`. Push the app folder there yourself first |
+| No git server (OAP-only install) | `task -d applications apply` | Applies `<app>/deployment/templates/application.yaml` to the dev spoke, namespace `team-<app>`. Not GitOps: Argo CD does not track it, so re-run after each edit |
+
+The OAP-only install (root `task install`) deploys no GitLab, so `seed` stops with an
+error that points at `wire` and `apply`.
+
+Spoke names are not assumed. `DEV_CLUSTER` / `PROD_CLUSTER` win when set. Otherwise the
+tasks read the hub's Argo CD cluster secrets: the cluster labelled `environment=dev` (or
+`prod`) whose `resource_prefix` annotation matches `RESOURCE_PREFIX`. Failing that they
+use `<RESOURCE_PREFIX>-spoke-dev` / `-prod`. An environment with no registered cluster,
+often prod, is skipped with a message. `RESOURCE_PREFIX` defaults to `resourcePrefix` in
+`../config.local.yaml`, then to `peeks`. `apply` uses the dev cluster name as the
+kubectl context unless `SPOKE_CONTEXT` is set.
