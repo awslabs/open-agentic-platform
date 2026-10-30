@@ -1,0 +1,32 @@
+{{- /*
+Metrics Service: ClusterIP, discovered by the platform's AMP scraper through the
+prometheus.io/scrape annotations, exactly like Dark Factory's
+(gitops/addons/charts/dark-factory/templates/70-metrics-service.yaml).
+
+ClusterIP and nothing else on purpose. No NodePort, no LoadBalancer, no Ingress
+and no hostPort anywhere in this chart: the reconciler's /metrics carries agent
+and namespace names and is only ever read from inside the cluster.
+*/ -}}
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-evaluation-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.metrics.port | quote }}
+    prometheus.io/path: /metrics
+    prometheus.io/scheme: http
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agent-evaluation.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: http-metrics
+      protocol: TCP
+{{- end }}

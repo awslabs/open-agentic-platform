@@ -1,0 +1,62 @@
+{{- /*
+RBAC for the reconciler.
+
+Cluster-wide ConfigMap read is unavoidable and deliberate: Kubernetes RBAC
+cannot scope a list/watch by label, and the agents' evaluation ConfigMaps are
+spread across every team's namespace. The grant is therefore narrowed in the
+other three directions instead — only configmaps, only get/list/watch, and the
+reconciler always lists with the `evaluation.oap.io/agent` selector so it never
+reads another ConfigMap's contents. If that read is still too broad for an
+environment, the CRD option in D4 removes it.
+
+Both roles get it: the hub runs agents too
+(gitops/overlays/environments/control-plane/enabled-addons.yaml sets
+agent_platform: true), so it reconciles its own cluster's rules like any spoke.
+
+Events are namespaced and written into the agents' own namespaces, which is how
+a team sees "evaluator not published" with kubectl describe on their own
+ConfigMap and no access to platform logs.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-evaluation-reconciler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-evaluation-reconciler
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  # Read the agents' evaluation declarations. No create/update/delete: the
+  # ConfigMaps are KubeVela outputs owned by each agent's Application.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Report an unusable declaration on the agent's own ConfigMap. patch is needed
+  # to bump an existing Event's count rather than writing one per 60s pass.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "get"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-evaluation-reconciler
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-evaluation-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: agent-evaluation-reconciler
+    namespace: {{ .Release.Namespace }}

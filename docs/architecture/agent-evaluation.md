@@ -2,12 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted; continuous online evaluation implemented and verified end to end |
+| **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/`, test guide `applications/agent-evaluation/TESTING.md` |
 | **Author** | @elamaran11 |
-| **Reviewers** | TBD |
+| **Reviewers** | @allamand, @shapirov103 |
 | **Target** | OAP agent platform: `agent` component, new `agent-evaluation` addon |
 | **Date** | 2026-10-22 |
-| **Revision** | 4 (the hub also evaluates its own agents; one evaluator per judge alias, since the rule has no model; write-on-change evaluator `POST`; spokes reach Langfuse through the hub domain) |
+| **Revision** | 6 (verified end to end on the `hub` cluster: declaration → rule → trace → judge → score → `/metrics` → AMG, for both a pinned-image and an imageless Application; rule ownership moved from a cluster-name prefix to an exact owner token, which closes the `dev` / `dev-2` prefix overlap) |
 | **Issue** | #79 |
 
 ## Scope
@@ -290,7 +291,7 @@ evaluation?: {
 	// cannot see catalog entries teams add.
 	// A bare name is a platform catalog entry. The `<namespace>/<name>` form is
 	// reserved for team-defined evaluators (D4, "Planned follow-up") and is not
-	// accepted in Phase 1, so widening #EvaluatorName is part of that follow-up.
+	// accepted yet, so widening #EvaluatorName is part of that follow-up.
 	evaluators: *["goal-completion", "helpfulness"] | [...(#EvaluatorName | {
 		name:        #EvaluatorName
 		strictness?: "low" | "medium" | "high"
@@ -435,7 +436,7 @@ Every project-wide object therefore has exactly one writer:
 |---|---|---|
 | Catalog evaluators (prompts, scales, judge model) | **hub** reconciler (`role: hub`) | One per catalog entry per judge alias, for the whole project; prompts come from the hub's chart version |
 | Judge LLM connection and its `x-bf-vk` virtual key | **hub** reconciler | One per project, next to Langfuse and Bifrost |
-| Evaluation rules `oap-<cluster>-…` | the reconciler of that cluster, hub included | Only its own prefix (steps 4 and 5) |
+| Evaluation rules `oap-<owner token>-…` | the reconciler of that cluster, hub included | Only its own owner token, compared exactly (steps 4 and 5) |
 | Score metrics `oap_agent_eval_*` | every reconciler, for the agents on its own cluster | `cluster`-labelled, so no object is shared (D5) |
 
 The same image runs in both roles, selected by `role: hub | spoke` in the addon
@@ -476,13 +477,31 @@ The **per-cluster** loop, run by every instance (hub included) each interval:
    `agent:<cluster>/<namespace>/<name>` tags (see "Agent identity in traces"
    below). Create
    new rules and `PATCH` changed ones, so the operation is idempotent. Each rule
-   is named `oap-<cluster>-<evaluator>-<hash of judge and sampling>`, so its owner
-   is readable from the name.
+   is named `oap-<owner token>-<evaluator>-<hash of judge and sampling>`, where
+   the owner token identifies the cluster (see "Owner token" below).
    `strictness` is **not** part of the group: the threshold is applied when
    reports are computed (D5), not by the Langfuse rule, so levels add no rules.
-5. Delete rules whose group is now empty, **only among rules named `oap-<this cluster>-`**.
-   A rule another cluster owns is never touched, even though this reconciler sees
-   no ConfigMap for it.
+5. Delete rules whose group is now empty, **only among rules whose owner token is
+   this cluster's**, compared exactly. A rule another cluster owns is never
+   touched, even though this reconciler sees no ConfigMap for it.
+
+**Owner token: an exact token, not a cluster-name prefix.** An earlier revision
+named rules `oap-<cluster>-…` and scoped deletion to that prefix. That is unsafe,
+because EKS cluster names may contain hyphens: `oap-dev-` is also a prefix of
+every rule belonging to a cluster named `dev-2`, so the `dev` reconciler would
+see `oap-dev-2-safety-abc12345` as its own, find no ConfigMap for it, and delete
+another cluster's rule — the exact cross-cluster deletion per-cluster ownership
+exists to prevent. The owner token is therefore the first 8 hex characters of
+SHA-256 over the cluster name. Fixed length and a fixed alphabet mean no
+cluster's token can extend another's, so the comparison is exact. A separator
+EKS names cannot contain (`.`) would also work, but only if Langfuse accepts it
+in an object name, which is unverified at the pin; hex is accepted anywhere.
+
+The cost is that the cluster is no longer legible in the Langfuse UI. The
+reconciler therefore logs `cluster=<name> owner_token=<token>` at startup and
+publishes the pair as labels on `oap_agent_eval_cluster_info`, so an operator can
+map a token back to a cluster. The same reasoning applies to the Phase 4
+team-evaluator names.
 
 The **project** loop runs only on the hub instance, next to Langfuse, in addition
 to its per-cluster loop. It ensures every catalog evaluator exists with the
@@ -531,7 +550,7 @@ existing bare-name tag, which stays for existing filters. The cluster name comes
 from the platform, not the developer: `oam-agent-components` already receives
 `global.clusterName` from the cluster secret's `aws_cluster_name` annotation
 (`gitops/addons/registry/agentcore.yaml`), and the component passes it to the
-agent as `CLUSTER_NAME`. This is the one agent change Phase 1 needs.
+agent as `CLUSTER_NAME`. This is the one change the agent image needs.
 
 File: `platform/oam/definitions/components/agent.cue` (proposed env entry, next to `PROPAGATE_CALLER_TOKEN`)
 
@@ -597,7 +616,7 @@ File: `gitops/addons/charts/agent-evaluation/values.yaml` (proposed)
 
 ```yaml
 # Both roles watch this cluster's ConfigMaps, own only this cluster's
-# oap-<cluster>- rules and export metrics for this cluster's agents.
+# oap-<owner token>- rules and export metrics for this cluster's agents.
 # hub additionally owns the catalog evaluators and the judge LLM connection.
 role: spoke                       # hub on the cluster that runs Langfuse
 langfuse:
@@ -717,15 +736,15 @@ the component is the one writer of that object.
 
 That reference is cluster-free for the same reason the `evaluation` block is: the
 platform supplies the cluster. The Langfuse object is named
-`oap-<cluster>-<namespace>-<name>`, flattened the way rules already are, and is
+`oap-<owner token>-<namespace>-<name>`, flattened the way rules already are, and is
 owned by the reconciler on the cluster the component is deployed to. Ownership is
 then one rule for every object in the project, read off the name:
 
 | Object name | Written by |
 |---|---|
 | `<evaluator>` and `<evaluator>--<alias>` from the catalog | hub reconciler, project loop |
-| `oap-<cluster>-<namespace>-<name>` | that cluster's reconciler, hub included |
-| `oap-<cluster>-<evaluator>-<hash>` (a rule) | that cluster's reconciler, hub included |
+| `oap-<owner token>-<namespace>-<name>` | that cluster's reconciler, hub included |
+| `oap-<owner token>-<evaluator>-<hash>` (a rule) | that cluster's reconciler, hub included |
 
 Keeping the cluster in the object name also means `dev` and `prod` can carry
 different versions of a team's prompt while it is being iterated, which is the
@@ -1055,7 +1074,7 @@ sequenceDiagram
 | Defines the evaluator catalog, the judge alias and the judge budget | Platform engineer |
 | Renders the declaration ConfigMap | KubeVela |
 | Creates and updates the catalog evaluators (one per judge alias) and the judge LLM connection | Evaluation reconciler, `role: hub`, one for the project |
-| Creates and updates its own cluster's `oap-<cluster>-` rules | Evaluation reconciler on every cluster that runs agents, the hub included |
+| Creates and updates its own cluster's `oap-<owner token>-` rules | Evaluation reconciler on every cluster that runs agents, the hub included |
 | Samples traces and calls the judge | Langfuse worker |
 | Exports score aggregates as metrics | Evaluation reconciler |
 | Imports the dashboard into AMG | grafana-operator |
@@ -1079,35 +1098,58 @@ sequenceDiagram
 
 ## 6. Phases
 
-| Phase | Delivers |
-|---|---|
-| **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<cluster>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check |
-| **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged |
-| **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step |
-| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<cluster>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges |
+Phase 1 is delivered and is what this change implements; 2–4 remain roadmap.
+Phase 2 is additionally blocked on `provider-upjet-aws`, which is at `v2.5.3`
+on the hub against the `v2.7.0` the AgentCore `OnlineEvaluationConfig` needs.
+
+| Phase | Delivers | Status |
+|---|---|---|
+| **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<owner token>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check | **Done** |
+| **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged | Blocked on provider `v2.7.0` |
+| **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step | Roadmap |
+| **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<owner token>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges | Roadmap |
 
 ---
 
 ## 7. Validation plan
 
-- [ ] CUE renders with `evaluation` absent, with it off, and with it on, using non-default `judge`, `strictness`, `coverage` and `sampling` values, and a per-evaluator `strictness` override
-- [ ] Two agents with the same `coverage` but different `strictness` share **one** rule per evaluator, and their pass ratios use different thresholds
-- [ ] Turning on evaluation for two agents with the same settings produces **one** rule per evaluator, filtered to both tags
-- [ ] Deleting one agent's Application removes its tag from the rule, and deleting the last agent removes the rule
-- [ ] The same Application on `dev` and `prod` produces two `agent:<cluster>/...` tags, separate rules per cluster, and separate `cluster`-labelled series
-- [ ] Deleting every evaluated agent on `dev` removes only `oap-<dev cluster>-` rules; `prod`'s rules survive the `dev` reconciler's next pass
-- [ ] A spoke reconciler creates and updates no evaluator and no LLM connection: editing a catalog prompt on the hub is reflected in the project, and a spoke pass afterwards leaves it unchanged
-- [ ] A spoke running a chart version whose catalog has an evaluator the hub does not yet have records an Event on that agent's ConfigMap, skips only that evaluator, and creates the rule on its own next pass once the hub lands it
-- [ ] The judge virtual-key Secret is present only in the hub's `agent-evaluation` namespace, and a spoke reconciler runs without it
-- [ ] An agent deployed on the hub with `evaluation` on gets `oap-<hub>-` rules and `cluster`-labelled metrics from the hub instance
-- [ ] Two hub passes with an unchanged catalog create no new evaluator version; editing one prompt creates exactly one, and every cluster's rules for that evaluator move to it
-- [ ] An agent with `judge.modelId` set to a second alias in `judge.aliases` gets a rule on `<evaluator>--<alias>`; an alias not in the list records an Event and creates no rule
-- [ ] A spoke reconciler reaches Langfuse at the hub domain with no hub-local DNS, and its rule calls succeed through the platform ALB
-- [ ] A sampled trace from the agent gets a score in Langfuse, and the judge call appears in Bifrost under the judge key, not as an un-keyed request
-- [ ] An agent with evaluation turned off gets no scores
-- [ ] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves, and runs, with only the allowlisted host. Any other in-cluster base URL is still refused
-- [ ] `oap_agent_eval_scores` and `oap_agent_eval_pass_ratio` for one agent match a hand count of that agent's scores in Langfuse over the same window
-- [ ] The metrics Service is scraped into AMP, and the `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import
+Step-by-step reproduction, with the failure mode of each link, is in
+`applications/agent-evaluation/TESTING.md`. The split below is deliberate: a
+reviewer should be able to tell a claim backed by a live run from one backed
+only by a unit test, and from one not yet exercised at all.
+
+### Verified live on the `hub` cluster
+
+- [x] CUE renders with `evaluation` absent (`my-agent`), on with defaults, and on with non-default `judge`, `sampling` and a per-evaluator `strictness` override (`vela dry-run` over the three `example-agent-evaluation-*.yaml` files)
+- [x] Turning on evaluation for two agents with the same settings produces **one** rule, filtered to both tags (`eval-smoketest` + `eval-imageless` → `oap-08d33503-helpfulness-8c49ba7c`)
+- [x] An agent deployed on the hub with `evaluation` on gets `oap-<owner token>-` rules and `cluster`-labelled metrics from the hub instance
+- [x] A sampled trace from the agent gets a score in Langfuse — exactly one per trace, on the `type=AGENT` observation that carries the request and the final answer
+- [x] An agent with evaluation turned off gets no scores (`my-agent`: no ConfigMap, no tag in any rule, never judged)
+- [x] The judge LLM connection to `bifrost.bifrost.svc.cluster.local` saves and runs with only the allowlisted host; all eight catalog evaluators report `active` rather than `paused`
+- [x] An agent with `judge.modelId` set to a second alias gets rules on `<evaluator>--<alias>` (`eval-multidim` on `judge-haiku` → four new rules, leaving the shared `judge-default` rule untouched)
+- [x] Evaluation works for an **imageless** Application, not only one that pins its own image — provided the platform default image emits the scoped tag
+- [x] A per-evaluator `strictness` override changes the reported `pass_threshold` and creates **no** additional rule
+- [x] The `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import, via grafana-operator
+
+### Covered by unit tests (`pytest tests/`, 75 tests, no cluster needed)
+
+- [x] Two agents with the same `coverage` but different `strictness` share one rule, and their pass ratios use different thresholds
+- [x] Deleting one agent's Application removes its tag from the rule; deleting the last agent removes the rule
+- [x] Deleting every evaluated agent on `dev` removes only rules carrying `dev`'s owner token
+- [x] Two clusters whose names are prefixes of each other (`dev` and `dev-2`) do not delete each other's rules (`tests/test_naming.py`)
+- [x] A spoke reconciler creates and updates no evaluator and no LLM connection — enforced in `langfuse_client`, so it is a property of the program rather than of a credential
+- [x] A spoke whose catalog has an evaluator the hub lacks records an Event on that agent's ConfigMap and skips only that evaluator
+- [x] A successful-but-empty evaluator catalog leaves this cluster's rules untouched and fails the pass, instead of deleting and recreating every rule
+
+### Not yet exercised
+
+- [ ] **The metrics Service is scraped into AMP.** The AMP managed scraper is `ACTIVE` on the hub and its config has a `kubernetes-service-endpoints` job that honours the `prometheus.io/*` annotations the Service carries, but no `oap_agent_eval_*` series has been read back out of AMP yet. Until it is, the dashboard is wired but unproven end to end
+- [ ] The same Application on `dev` and `prod` produces two `agent:<cluster>/...` tags and separate `cluster`-labelled series — needs a second cluster
+- [ ] A spoke reconciler reaches Langfuse at the hub domain with no hub-local DNS, and its rule calls succeed through the platform ALB — needs a spoke
+- [ ] The judge virtual-key Secret is present only in the hub's `agent-evaluation` namespace, and a spoke reconciler runs without it — needs a spoke
+- [ ] Two hub passes with an unchanged catalog create no new evaluator version; editing one prompt creates exactly one, and every cluster's rules move to it. The write-only fields Langfuse does not echo back (prompt, `outputDefinition` beyond `dataType`) are normalised for comparison, so this needs confirming against a real prompt edit
+- [ ] The judge call appears in Bifrost under the judge key rather than as an un-keyed request
+- [ ] `oap_agent_eval_scores` and `oap_agent_eval_pass_ratio` match a hand count of one agent's scores in Langfuse over the same window
 - [ ] A second agent turning on evaluation appears in the dashboard's `agent` list with no dashboard change
 - [ ] An idle agent shows no pass ratio (not 0%), and stopping the reconciler turns the data-age panel amber and fires the staleness alert
 - [ ] The metrics loop stays within the `public-api-metrics` rate limit at the expected agent count and `metrics.intervalSeconds`
@@ -1116,17 +1158,62 @@ sequenceDiagram
 
 ## 8. Open questions
 
-1. **Judge family.** Should `judge-default` be a stronger model in the same family
-   (for example Opus judging a Sonnet agent, as in the issue), or a different
-   family to remove self-preference entirely? For reference, a common setup uses one
-   Claude Sonnet judge for both Claude and Qwen agents, while OAP's Dark Factory
-   holdout judge deliberately uses a different family.
-2. **Langfuse version.** At the pinned `3.225.11` the evaluator APIs are under
-   `/api/public/unstable/`. They became stable on Langfuse `main` on 2026-08-27,
-   and releases are now on `v4.x`. Should the platform upgrade Langfuse before
-   Phase 1, or ship on the unstable endpoints with a version pin? The unstable
-   surface already disagrees with itself: its spec documents 50 active rules and
-   its code enforces 500 (D4).
+1. **Judge family.** Decided, and by constraint rather than preference:
+   `judge-default` is `us.amazon.nova-pro-v1:0`, a different family from the
+   agents' Claude. Langfuse validates an LLM-as-a-judge evaluator by making a
+   real model call that demands **structured output**, and Bifrost translates
+   that into a Bedrock forced tool call. Measured against Bedrock through
+   Bifrost on the hub:
+
+   | Judge candidate | Structured-output call |
+   |---|---|
+   | `us.amazon.nova-pro-v1:0` | Valid structured JSON |
+   | `us.anthropic.claude-haiku-5-5` | Valid structured JSON |
+   | `us.anthropic.claude-sonnet-5-5` | Rejected: `tool_choice: type "tool" and "any" are not supported for this model` |
+   | `us.anthropic.claude-opus-5-5` | Rejected, same reason |
+   | `us.anthropic.claude-fable-5`, `-5-1` | Rejected by the **account**, not the capability: `data retention mode 'default' is not available for this model`. It fails a plain chat call too, so Fable needs Bedrock model access resolved before it can be judged on merit |
+   | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `404` end of life |
+
+   This is **not** a Claude-family limitation: Haiku 5.5 accepts forced tool
+   choice while Sonnet and Opus 5.5 refuse it. A model that refuses makes
+   Langfuse pause the evaluator with `EVAL_MODEL_CONFIG_INVALID`.
+
+   Nova Pro is chosen over Haiku 5.5 because it is the stronger of the two
+   working options — D3's own argument is that a small model makes a weak judge
+   — and because a different family removes self-preference bias outright
+   rather than trusting one Claude to grade another. The original idea of "a
+   stronger model of the same family" (Opus judging Sonnet) is simply not
+   reachable through this path today.
+
+   Revisit when any of these changes: Bifrost stops forcing `tool_choice`
+   (`auto` would likely satisfy Sonnet and Opus), those models start accepting
+   it on Bedrock, or Fable's data-retention access is enabled on the account.
+   The dashboard breaks pass ratios down by judge model, so a swap stays
+   measurable.
+2. **Langfuse version.** Decided: upgraded to v4. On the previously pinned
+   `3.225.11` the evaluator API is under `/api/public/unstable/` and could not
+   be used at all — its preflight fails with
+   `failed to get config for provider: not found` even for a catalog model such
+   as `openai/gpt-4o-mini` on a connection named `openai`, so it was not
+   specific to a Bifrost alias or a custom provider name. v4 exposes the same
+   surface as the stable `/api/public/v2/evaluators` and
+   `/api/public/v2/evaluation-rules`.
+
+   The upgrade is deliberately split from the storage-model cutover: the server
+   runs v4 while `LANGFUSE_MIGRATION_V4_WRITE_MODE` stays `legacy`, so every v3
+   ingestion and read surface keeps working (including the OTel collector's path
+   and this addon's metrics loop). Moving to `events_only` is a separate,
+   one-way decision, and it requires this reconciler's metrics loop to move off
+   `/api/public/metrics` first.
+
+   Three v4 API differences change D4's mechanics: evaluators are identified by
+   a stable **id** rather than by name (names are explicitly not identifiers),
+   a new version is published through `POST /evaluators/{id}/versions` rather
+   than by re-posting the name, and the variable mapping now lives on the
+   evaluator as a default that a rule's `evaluatorAssignments` may inherit. The
+   property D4 depends on survives: a rule always uses the latest version of
+   each evaluator it is assigned, so a hub prompt change still reaches every
+   cluster with no spoke action.
 3. **One shared project, or one per team.** Decided: one shared project for every
    cluster. Cluster-scoped tags and per-cluster rule ownership (D4) keep clusters
    apart within it. A project per cluster would need a project, key pair and
