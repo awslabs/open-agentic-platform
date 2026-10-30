@@ -168,6 +168,50 @@ def test_another_clusters_rules_are_never_deleted(settings, catalog, metrics):
     assert not [c for c in langfuse.calls if c.startswith("delete_rule")]
 
 
+def test_an_empty_evaluator_catalog_never_deletes_rules(
+    settings, catalog, metrics
+):
+    """A successful-but-empty list_evaluators() must not tear down rules.
+
+    An error aborts the pass, but an empty `{"data": []}` used to look exactly
+    like "the project has no catalog": every evaluator resolved to
+    not-published, `desired` came out empty, and the reconcile deleted every
+    rule this cluster owns, recreating them next pass. Because a Langfuse rule
+    only judges observations arriving AFTER it exists, the traffic in that
+    window is permanently unscored.
+    """
+    decls = [declaration(agent="a")]
+    loop, langfuse, _ = build(settings, catalog, metrics, decls)
+    assert loop.run_once()
+    assert len(langfuse.rules) == 1
+    before = [dict(r) for r in langfuse.rules]
+
+    # Same declarations, same rules — only the catalog read comes back empty.
+    langfuse.evaluators = []
+    langfuse.calls.clear()
+
+    # The pass fails, so readiness reports it rather than going fake-green...
+    assert not loop.run_once()
+    # ...and the rules are left exactly as they were.
+    assert langfuse.rules == before
+    assert not [c for c in langfuse.calls if c.startswith("delete_rule")]
+
+
+def test_the_real_teardown_path_still_deletes(settings, catalog, metrics):
+    """The guard above must not block a legitimate full teardown.
+
+    Every agent dropping its `evaluation` block also yields an empty `desired`,
+    but there the catalog is readable — so that deletion must still happen.
+    """
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration(agent="a")])
+    assert loop.run_once()
+    assert len(langfuse.rules) == 1
+
+    loop._reader = FakeReader([])
+    assert loop.run_once()
+    assert langfuse.rules == []
+
+
 def test_unknown_evaluator_is_evented_and_skipped(settings, catalog, metrics):
     decls = [declaration(evaluators=("goal-completion", "does-not-exist"))]
     loop, langfuse, recorder = build(settings, catalog, metrics, decls)

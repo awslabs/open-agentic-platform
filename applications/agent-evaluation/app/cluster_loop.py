@@ -362,6 +362,41 @@ class ClusterLoop:
         plan.skipped += len(malformed)
         self.last_plan = plan
 
+        # A SUCCESSFUL but empty evaluator list is not evidence that this
+        # cluster's rules should go away.
+        #
+        # An error from list_evaluators() aborts the pass above, but an empty
+        # `{"data": []}` used to fall through as if the project legitimately had
+        # no catalog: every evaluator resolved to not-published, so `desired`
+        # came out empty, and the reconcile loop below deleted every rule this
+        # cluster owns — recreating them on the next pass. That is worse than it
+        # sounds. A Langfuse rule only judges observations that arrive AFTER it
+        # exists, so every request in that window is permanently unscored, and
+        # the only trace of it is a pair of delete/create log lines.
+        #
+        # Deleting needs positive evidence, so it requires a catalog we could
+        # actually read. Nothing is lost by returning early: with no published
+        # evaluators every group is unresolvable, so there is nothing to create
+        # or update either, and plan() has already raised the per-agent events
+        # that say which evaluator is missing.
+        #
+        # The legitimate teardown path — every agent dropped its `evaluation`
+        # block — is unaffected: the catalog is still readable there, so
+        # `published` is non-empty and `desired` is empty for the real reason.
+        if not published:
+            self._metrics.errors.labels(cluster, "rules").inc()
+            logger.error(
+                "evaluator catalog came back empty: leaving this cluster's rules "
+                "untouched (%d agent(s) had asked for evaluation). Either the hub "
+                "has not published its catalog yet, or this is a transient empty "
+                "read; neither is a reason to stop evaluating agents that asked "
+                "for it.",
+                plan.declared,
+            )
+            self._metrics.agents_declared.labels(cluster).set(plan.declared)
+            self._metrics.agents_skipped.labels(cluster).set(plan.skipped)
+            return False
+
         try:
             existing_rules = self._client.list_evaluation_rules()
         except LangfuseError as exc:
