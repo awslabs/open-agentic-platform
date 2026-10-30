@@ -32,6 +32,13 @@ when setting this up on another cluster. Any `kubectl apply` in this document is
 for a fresh cluster or a re-run after teardown; on the hub today those resources
 already exist and applying them again is a no-op.
 
+If what you want is not "does the chain work" but **"show me every object"** —
+the reconciler, both ConfigMaps, the credentials, the agents, the Langfuse
+evaluators and rules, the metrics endpoint — go to
+[Appendix A](#appendix-a--inspect-every-object-one-command-at-a-time). It is a
+flat, read-only inventory: every command is a `get`, a `describe` or a `GET`,
+in dependency order, with the expected shape of each answer.
+
 Two environment variables are used throughout:
 
 ```bash
@@ -511,3 +518,637 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 `live_check.py` runs the real loops against a real project and reports each step,
 so API drift shows up as a named failure instead of a silent one. See the README.
+
+---
+
+# Appendix A — inspect every object, one command at a time
+
+A read-only inventory of the whole feature. Nothing here changes state: every
+command is `get`, `describe`, `logs` or an HTTP `GET`. Work down it and you have
+seen every object the feature consists of.
+
+Ordered by dependency — catalog before reconciler, reconciler before rules,
+rules before scores — so the first thing that looks wrong is usually the cause
+of everything below it, not a separate problem.
+
+## A.0 Set up once
+
+```bash
+export EVAL_NS=agent-evaluation     # where the reconciler runs
+export AGENT_NS=agents              # where the agents run
+export CLUSTER=hub                  # must match global.clusterName
+
+# the reconciler's own HTTP surface
+kubectl port-forward -n $EVAL_NS svc/agent-evaluation-metrics 9098:9090 &
+export EV=http://127.0.0.1:9098
+
+# the Langfuse public API (same two vars as the top of this document)
+kubectl port-forward -n langfuse svc/langfuse 3999:3000 &
+export LF=http://127.0.0.1:3999
+export PK=$(aws secretsmanager get-secret-value --secret-id peeks-hub/langfuse-otel \
+  --query SecretString --output text | jq -r .LANGFUSE_PUBLIC_KEY)
+export SK=$(aws secretsmanager get-secret-value --secret-id peeks-hub/langfuse-otel \
+  --query SecretString --output text | jq -r .LANGFUSE_SECRET_KEY)
+```
+
+`$PK`/`$SK` are the project's API key pair. They are in your shell, so prefer
+`history -d` over leaving them in a shared terminal, and never paste the values
+into a ticket or a PR.
+
+## A.1 Is the addon installed on this cluster at all
+
+The addon is opt-in per cluster, keyed off a cluster-secret annotation, so
+"nothing is running" is more often "never selected" than "crashed".
+
+```bash
+# the ArgoCD Application that renders the chart
+kubectl get applications -n argocd | grep agent-evaluation
+
+# the annotation that selects it (enable_agent_evaluation: 'true')
+kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.enable_agent_evaluation}{"\t"}{.metadata.annotations.ingress_domain_name}{"\n"}{end}'
+```
+
+`ingress_domain_name` in the third column is what makes a cluster the **hub**:
+the registry entry derives `role: hub` from a non-empty value and `role: spoke`
+from an empty one. Exactly one cluster should be hub.
+
+```bash
+# everything the chart created, in one listing
+kubectl get all,configmap,secret,externalsecret,prometheusrule -n $EVAL_NS
+```
+
+Expected: one Deployment, one ReplicaSet, one Pod, one Service, the
+`agent-evaluation-catalog` ConfigMap, the `langfuse-evaluation-keys` Secret, the
+`agent-evaluation-langfuse` ExternalSecret, and the `agent-evaluation`
+PrometheusRule.
+
+## A.2 The reconciler
+
+```bash
+kubectl get deploy,rs,pod -n $EVAL_NS -l app=agent-evaluation-reconciler
+kubectl describe deploy agent-evaluation-reconciler -n $EVAL_NS
+```
+
+`app=agent-evaluation-reconciler` is the selector label; the `app.kubernetes.io/*`
+labels are on the objects too but are not the selector.
+
+One replica and `strategy: Recreate` are both deliberate — two reconcilers would
+PATCH the same Langfuse rules. A `replicas: 2` here is a misconfiguration, not
+extra safety.
+
+**Which image it is actually running**, which is worth checking first on a fresh
+cluster, because the published tag may not exist yet:
+
+```bash
+kubectl get deploy agent-evaluation-reconciler -n $EVAL_NS \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+kubectl get pod -n $EVAL_NS -l app=agent-evaluation-reconciler \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}{"\n"}'
+```
+
+`ImagePullBackOff` with `manifest unknown` means the tag is not published;
+`repository does not exist` means the repo itself is not there. The chart default
+is `public.ecr.aws/z0a4o2j5/agent-evaluation`.
+
+**Its configuration**, all of which arrives as environment:
+
+```bash
+kubectl set env deploy/agent-evaluation-reconciler -n $EVAL_NS --list
+```
+
+| Variable | Meaning |
+|---|---|
+| `ROLE` | `hub` or `spoke`. A hub also owns the project-wide objects. |
+| `CLUSTER_NAME` | scopes rule names, trace tags and metric series |
+| `LANGFUSE_URL` | in-cluster Service on the hub, HTTPS hub domain on a spoke |
+| `BIFROST_URL` | gateway the judge is called through |
+| `RECONCILE_INTERVAL_SECONDS` | rules/project loop period (default 60) |
+| `METRICS_INTERVAL_SECONDS` | score-aggregation period (default 300) |
+| `METRICS_WINDOWS` | rolling windows reported (default `24h,7d`) |
+| `METRICS_PORT` | listener port (default 9090) |
+| `MAX_ACTIVE_RULES` | per-project rule cap treated as the contract (50) |
+| `CATALOG_PATH` | `/etc/agent-evaluation/catalog.yaml` |
+| `CREDENTIALS_DIR` | `/etc/agent-evaluation/credentials` |
+
+**Its three loops.** `rules` and `metrics` run everywhere; `project` runs only on
+a hub. Readiness is per loop:
+
+```bash
+curl -s $EV/readyz | jq
+curl -s -o /dev/null -w '%{http_code}\n' $EV/readyz   # 200 ready, 503 not
+curl -s $EV/healthz | jq                              # always 200 by design
+```
+
+Ready on a hub needs **both** `rules` and `project`. A `waitingOn` key names the
+loop and the reason. `/healthz` never consults Langfuse, so a slow dependency
+cannot turn into a restart loop — which is why a pod can be `Running` and
+`0/1 READY` for minutes on a first install and that is correct.
+
+```bash
+# startup banner: role, cluster, owner token, evaluator count, judge aliases
+kubectl logs -n $EVAL_NS deploy/agent-evaluation-reconciler | head -5
+
+# only the passes that changed something; silence means "already correct"
+kubectl logs -n $EVAL_NS deploy/agent-evaluation-reconciler --tail=200 \
+  | grep -E "created|updated|deleted|skipp|error|WARN"
+
+# follow one pass
+kubectl logs -n $EVAL_NS deploy/agent-evaluation-reconciler -f
+```
+
+The reconciler is level-triggered: it logs only on change. An idle log is the
+expected steady state, not a stuck loop — use `oap_agent_eval_last_success_*`
+(A.12) to tell "idle" from "stuck".
+
+## A.3 ConfigMap 1 of 2 — the catalog (platform policy)
+
+One per cluster, rendered from chart values, holding the judge prompts, the
+coverage rates and the judge aliases. This is the file that makes a prompt change
+a reviewed chart change rather than a per-agent setting.
+
+```bash
+kubectl get configmap agent-evaluation-catalog -n $EVAL_NS
+
+# the whole thing
+kubectl get configmap agent-evaluation-catalog -n $EVAL_NS \
+  -o jsonpath='{.data.catalog\.yaml}'
+
+# just the structure: evaluator names, coverage rates, judge aliases
+kubectl get configmap agent-evaluation-catalog -n $EVAL_NS \
+  -o jsonpath='{.data.catalog\.yaml}' \
+  | yq '{"evaluators": (.catalog|keys), "coverage": .coverage, "judge": .judge}'
+
+# thresholds per evaluator per strictness
+kubectl get configmap agent-evaluation-catalog -n $EVAL_NS \
+  -o jsonpath='{.data.catalog\.yaml}' \
+  | yq '.catalog | to_entries | map({"name": .key, "thresholds": .value.passThreshold})'
+
+# one judge prompt as the hub publishes it
+kubectl get configmap agent-evaluation-catalog -n $EVAL_NS \
+  -o jsonpath='{.data.catalog\.yaml}' | yq -r '.catalog.helpfulness.prompt'
+```
+
+Expect four evaluators (`goal-completion`, `helpfulness`, `safety`, `tool-use`),
+coverage `low: 0.01 / medium: 0.1 / high: 0.5`, and two judge aliases.
+
+Do not edit this in the cluster — the next Argo sync overwrites it. A catalog
+change is a chart change, and the Deployment carries a `checksum/catalog`
+annotation so the edit actually restarts the pod:
+
+```bash
+kubectl get deploy agent-evaluation-reconciler -n $EVAL_NS \
+  -o jsonpath='{.spec.template.metadata.annotations.checksum/catalog}{"\n"}'
+```
+
+If that checksum is unchanged after a chart bump, the prompt edit did not reach
+the pod and the hub is still publishing the old prompt.
+
+## A.4 ConfigMap 2 of 2 — the per-agent declarations
+
+One per agent with evaluation on, rendered by the `agent` component as a KubeVela
+output, named `<agent>-evaluation`, labelled `evaluation.oap.io/agent`. The
+reconciler lists on that label **alone** — an agent whose ConfigMap lacks it is
+invisible to the feature.
+
+```bash
+# every declaration on the cluster, all namespaces
+kubectl get configmap -A -l evaluation.oap.io/agent
+
+# what each one asks for, as a table
+kubectl get configmap -A -l evaluation.oap.io/agent -o json | jq -r '
+  .items[] | [.metadata.namespace, .metadata.name,
+               .data.evaluators, (.data.strictness // "-"),
+               (.data.coverage // "-"), (.data.sampling // "-"),
+               (.data.judge // "(default)")] | @tsv' | column -t
+
+# one agent in full
+kubectl get configmap eval-smoketest-evaluation -n $AGENT_NS -o yaml
+```
+
+The data keys, and who reads them:
+
+| Key | Set from | Used for |
+|---|---|---|
+| `agent` | component name | the series and the trace tag |
+| `backend` | `observability.mode` | `centralized` = Langfuse |
+| `model` | `modelConfig.modelId` | comparing quality by agent model |
+| `strictness` | `evaluation.strictness` | resolves the pass **threshold** only |
+| `coverage` | `evaluation.coverage` | preset sampling rate |
+| `evaluators` | JSON list | names, or `{name, strictness}` overrides |
+| `sampling` | optional | overrides `coverage`; must be in (0, 1] |
+| `judge` | optional | absent means the platform default judge |
+
+Two keys are commonly misread. `strictness` creates **no** Langfuse rule — it is
+applied when the pass ratio is computed. Only `(evaluator, judge, sampling)`
+groups into rules, which is why four agents can share one rule.
+
+An agent with **no** `evaluation` block has no ConfigMap here at all. That is the
+opt-in working; `my-agent` on the hub is the example.
+
+## A.5 Credentials (presence, never values)
+
+```bash
+kubectl get externalsecret -n $EVAL_NS
+kubectl describe externalsecret agent-evaluation-langfuse -n $EVAL_NS
+
+# which keys landed — names only
+kubectl get secret langfuse-evaluation-keys -n $EVAL_NS \
+  -o jsonpath='{range $k,$v := .data}{$k}{"\n"}{end}'
+```
+
+Expect `SyncedReady=True` and the keys `LANGFUSE_PUBLIC_KEY` and
+`LANGFUSE_SECRET_KEY`. A `SecretSyncedError` here is the usual cause of a
+reconciler sitting at 401 — the langfuse addon's key-push hook has not run yet.
+The ExternalSecret refreshes every 1m for exactly that reason.
+
+Do not `base64 -d` these into your terminal. The reconciler reads them as mounted
+files rather than env vars precisely so they do not show up in a
+`kubectl describe pod`:
+
+```bash
+kubectl exec -n $EVAL_NS deploy/agent-evaluation-reconciler -- \
+  ls -l /etc/agent-evaluation/credentials/
+```
+
+The judge virtual key is **optional** and off by default — Bifrost runs with
+`is_vk_mandatory: false`, so without it the judge still works and only loses
+budget attribution:
+
+```bash
+kubectl get externalsecret agent-evaluation-judge-key -n $EVAL_NS 2>/dev/null \
+  || echo "judge virtual key disabled (expected default)"
+curl -s $EV/metrics | grep oap_agent_eval_judge_key_present
+```
+
+## A.6 RBAC
+
+```bash
+kubectl get sa agent-evaluation-reconciler -n $EVAL_NS
+kubectl describe clusterrole agent-evaluation-reconciler
+kubectl get clusterrolebinding agent-evaluation-reconciler -o yaml
+```
+
+Cluster-wide ConfigMap `get/list/watch` is intentional and is the broadest grant
+in the chart: agents' ConfigMaps live in every team's namespace and Kubernetes
+RBAC cannot scope a list by label. It is narrowed everywhere else — configmaps
+only, read only, and the code always lists with the label selector. Confirm the
+grant is actually read-only:
+
+```bash
+kubectl auth can-i --as=system:serviceaccount:$EVAL_NS:agent-evaluation-reconciler \
+  list configmaps --all-namespaces      # yes
+kubectl auth can-i --as=system:serviceaccount:$EVAL_NS:agent-evaluation-reconciler \
+  delete configmaps --all-namespaces    # no
+kubectl auth can-i --as=system:serviceaccount:$EVAL_NS:agent-evaluation-reconciler \
+  create events -n $AGENT_NS            # yes
+```
+
+A `yes` on that middle one is a finding — report it rather than working around it.
+
+## A.7 The agents
+
+```bash
+kubectl get applications.core.oam.dev -n $AGENT_NS
+kubectl get pods,svc -n $AGENT_NS
+
+# which image each agent pod actually resolved to
+kubectl get pods -n $AGENT_NS -o json | jq -r '
+  .items[] | "\(.metadata.name)\t\(.spec.containers[0].image)"' | column -t
+
+# the platform default an imageless Application falls back to
+kubectl get componentdefinition agent -n vela-system -o yaml \
+  | grep -oE 'image: \*\\"[^\\]*'
+```
+
+This is the check that catches the quiet failure. The scoped trace tag is emitted
+by the **image**, so an imageless agent running a pre-tag default image is
+configured for evaluation and never scored, with nothing erroring anywhere.
+
+**The three env vars that make the tag**, read off a running pod:
+
+```bash
+kubectl get pod -n $AGENT_NS -l app.kubernetes.io/name=eval-imageless -o json | jq -r '
+  .items[0].spec.containers[0].env[]
+  | select(.name=="CLUSTER_NAME" or .name=="AGENT_NAMESPACE" or .name=="AGENT_NAME")
+  | "\(.name)=\(.value // "(fieldRef)")"'
+```
+
+All three must be present. The agent composes `agent:<cluster>/<ns>/<name>` from
+them and emits **no** scoped tag if the cluster or namespace half is missing — a
+local run deliberately emits nothing rather than a half-formed tag that would
+match a real cluster's rule.
+
+## A.8 Langfuse — the evaluators (the hub publishes these)
+
+```bash
+curl -s $LF/api/public/health | jq        # expect "version":"4.x"
+
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators?limit=100" | jq -r '
+  .data[] | "\(.name)\tv\(.version)\t\(.status)\t\(.modelConfig.provider)\t\(.modelConfig.model)"' \
+  | column -t
+```
+
+Expect every row `active`. What to read in each column:
+
+- **name** — bare (`helpfulness`) for the default judge, `<evaluator>--<alias>`
+  (`helpfulness--judge-haiku`) for any other. The judge is a property of the
+  *evaluator*, not the rule, so there is one object per catalog entry per alias.
+- **status** — a `paused` row with `EVAL_MODEL_CONFIG_INVALID` means that judge
+  model failed Langfuse's structured-output preflight (§2). It scores nothing.
+- **provider** — `oap-bifrost-judge` is the ownership marker. In v4 a name is not
+  an identifier, so "is this evaluator ours?" is answered by the provider, not
+  the name. An evaluator of ours without it will be duplicated on the next pass.
+
+```bash
+# version history for one evaluator — a prompt change mints a new version
+EV_ID=$(curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators?limit=100" \
+  | jq -r '.data[] | select(.name=="helpfulness") | .id')
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators/$EV_ID/versions?limit=100" \
+  | jq -r '.data[] | "v\(.version)\t\(.createdAt)"'
+
+# duplicate detection: any name appearing twice is a bug worth reporting
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators?limit=100" \
+  | jq -r '.data[].name' | sort | uniq -d
+```
+
+Four catalog evaluators and two judge aliases mean up to eight evaluator objects,
+while rules exist only for what agents actually asked for. Published-and-unused
+is normal: evaluators are definitions, rules are usage.
+
+> **Pagination.** The `v2` list endpoints cursor-paginate — `limit` caps at 100
+> and the next page needs `meta.cursor`, which is omitted on the last page.
+> `?limit=100` alone silently truncates past 100 objects:
+> ```bash
+> curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators?limit=100" | jq '.meta'
+> ```
+> A non-null `cursor` there means you are not seeing everything.
+
+## A.9 Langfuse — the judge LLM connection (hub only)
+
+```bash
+# the whole object, so you see whatever field names this Langfuse version uses
+curl -s -u "$PK:$SK" "$LF/api/public/llm-connections" | jq '.data'
+
+# just the provider names
+curl -s -u "$PK:$SK" "$LF/api/public/llm-connections" | jq -r '.data[].provider'
+```
+
+Expect a `oap-bifrost-judge` connection pointing at the Bifrost Service URL and
+listing every judge model id from the catalog. Langfuse will only accept an
+evaluator whose model is listed here, so a judge alias added to chart values but
+missing from this connection is the failure to look for.
+
+Unlike the `v2` endpoints this one is page-numbered (`page`/`meta.totalPages`).
+
+## A.10 Langfuse — the evaluation rules (each cluster owns its own)
+
+```bash
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=100" \
+  | jq '.data[] | {name, enabled, sampling, evaluator: .evaluator.name, filter}'
+
+# just the shape: name, sampling, and which agents each rule covers
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=100" | jq -r '
+  .data[] | "\(.name)\tsampling=\(.sampling)\tenabled=\(.enabled)\t\(
+    [.filter[]? | select(.column=="tags") | .value[]?] | join(","))"' | column -t
+```
+
+Read a rule as four things:
+
+- **name** `oap-<owner-token>-<evaluator>-<config-hash>` — see A.15 to derive it.
+- **sampling** the fraction of matching observations judged.
+- **filter** `type any of [AGENT]` plus `tags any of [...]`. The `AGENT` type
+  filter is load-bearing: one agent turn emits ~28 observations, and without it
+  you get a score per span instead of one per turn.
+- **one rule, many tags** — rules group by `(evaluator, judge, sampling)`, so
+  agents asking for the same three share a rule and appear as sibling tags.
+  Change one agent's `sampling` or `judge` and it splits off into its own rule.
+
+```bash
+# rules this cluster owns, vs. another cluster's (never touch those)
+MY=$(python3 -I -c "import hashlib,os;print(hashlib.sha256(os.environ['CLUSTER'].encode()).hexdigest()[:8])")
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=100" \
+  | jq -r --arg t "$MY" '.data[].name | select(startswith("oap-"))
+      | if startswith("oap-" + $t + "-") then "MINE  " + . else "OTHER " + . end'
+
+# against the cap (50 per project, fleet-wide)
+curl -s $EV/metrics | grep oap_agent_eval_rules_active
+```
+
+The owner token is an exact-length hash, not the cluster name, so one cluster's
+prefix can never match another's — the reason `dev` cannot delete `dev-2`'s rules.
+
+## A.11 Langfuse — traces and scores
+
+```bash
+# do traces arrive, and do they carry the scoped tag
+curl -s -u "$PK:$SK" "$LF/api/public/traces?limit=5" \
+  | jq -r '.data[] | "\(.timestamp)\t\(.name)\t\(.tags|join(","))"' | column -t
+
+# scores, newest first
+curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=20" \
+  | jq -r '.data[] | "\(.timestamp)\t\(.name)=\(.value)\t\(.comment[0:60])"' | column -t
+
+# which rule produced each score
+curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=20" \
+  | jq -r '.data[] | "\(.name)\t\(.metadata.job_configuration_id)"' | column -t
+
+# count scores per name, to see all dimensions at once
+curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=100" \
+  | jq -r '.data[].name' | sort | uniq -c | sort -rn
+```
+
+Three absences and what each means:
+
+| Symptom | Where the chain broke |
+|---|---|
+| no traces | collector cannot reach Langfuse (§5) |
+| traces, no scoped tag | agent image predates the tag (A.7) |
+| scoped tag, no scores | no rule matches it, or the judge is paused (A.8/A.10) |
+| scores, but 3+ per trace | the `type=AGENT` filter is missing from the rule |
+
+A rule only judges observations that arrive **after** it exists, so a
+freshly-created rule reports nothing however long you wait. Send a request first.
+
+## A.12 The metrics endpoint
+
+```bash
+# every family the reconciler publishes
+curl -s $EV/metrics | grep '^# HELP oap_'
+
+# everything, values included
+curl -s $EV/metrics | grep '^oap_'
+```
+
+| Metric | Labels | Reads as |
+|---|---|---|
+| `oap_agent_eval_scores` | +`window` | traces scored in the window |
+| `oap_agent_eval_passed` | +`window` | at or above the threshold |
+| `oap_agent_eval_pass_ratio` | +`window` | passed / scores |
+| `oap_agent_eval_score_avg` | +`window` | mean score |
+| `oap_agent_eval_pass_threshold` | no window | resolved from `strictness` |
+| `oap_agent_eval_info` | agent + judge model, strictness, coverage | always 1; join in PromQL |
+| `oap_agent_eval_rules_active` | `cluster` | against the 50 cap |
+| `oap_agent_eval_agents_declared` | `cluster` | agents with evaluation on |
+| `oap_agent_eval_agents_skipped` | `cluster` | declarations that failed to reconcile |
+| `oap_agent_eval_errors_total` | `cluster`,`loop` | failed Langfuse calls, per loop |
+| `oap_agent_eval_last_success_timestamp_seconds` | `cluster`,`loop` | liveness of each loop |
+| `oap_agent_eval_cluster_info` | +`owner_token`,`role` | maps a token to a cluster |
+| `oap_agent_eval_judge_key_present` | `cluster` | 0 = judge runs un-budgeted |
+
+```bash
+# per-agent quality
+curl -s $EV/metrics | grep -E '^oap_agent_eval_(scores|passed|pass_ratio|score_avg)'
+
+# thresholds, which come from strictness and not from a window
+curl -s $EV/metrics | grep '^oap_agent_eval_pass_threshold'
+
+# are the loops alive — compare to `date +%s`
+curl -s $EV/metrics | grep '^oap_agent_eval_last_success_timestamp_seconds'; date +%s
+
+# anything skipped, and errors by loop
+curl -s $EV/metrics | grep -E '^oap_agent_eval_(agents_skipped|errors_total)'
+```
+
+Two readings that look like faults and are not. An **idle** agent has no
+`pass_ratio` series at all rather than 0 — a 0 would read as "every answer
+failed". And a non-zero `errors_total` that is not growing is a healed transient;
+the figure to watch is `last_success_timestamp_seconds` falling behind
+`METRICS_INTERVAL_SECONDS`, which is what the staleness alert fires on.
+
+The AMP scraper finds this endpoint through annotations on the Service, not a
+ServiceMonitor:
+
+```bash
+kubectl get svc agent-evaluation-metrics -n $EVAL_NS \
+  -o jsonpath='{.metadata.annotations}' | jq
+kubectl get endpoints agent-evaluation-metrics -n $EVAL_NS
+```
+
+An empty `endpoints` means the Service selector matches no ready pod — the
+metrics exist in the pod and nothing is scraping them.
+
+## A.13 Dashboard and alerts
+
+```bash
+kubectl get grafanadashboard agent-evaluation -n grafana-operator
+kubectl describe grafanadashboard agent-evaluation -n grafana-operator | tail -20
+```
+
+It is imported by grafana-operator into the **Agent Platform** folder, so it
+appears without a manual import. AMG → Agent Platform → Agent Evaluation.
+
+```bash
+kubectl get prometheusrule agent-evaluation -n $EVAL_NS
+kubectl get prometheusrule agent-evaluation -n $EVAL_NS \
+  -o jsonpath='{range .spec.groups[*].rules[*]}{.alert}{"\t"}{.for}{"\n"}{end}'
+```
+
+Four alerts, and all four are about the **pipeline**, never about agent quality:
+
+| Alert | Fires when |
+|---|---|
+| `AgentEvaluationDataStale` | no successful pass within `alerts.dataAgeSeconds` |
+| `AgentEvaluationReconcileErrors` | Langfuse calls failing in a loop |
+| `AgentEvaluationRuleBudgetHigh` | active rules past 80% of the cap |
+| `AgentEvaluationJudgeKeyMissing` | the judge is running un-budgeted |
+
+A falling pass ratio deliberately does not page: a strict evaluator on a hard
+task is *supposed* to score low, and that is the owning team's signal to read on
+the dashboard, not the platform's to wake someone for.
+
+## A.14 Events — what a team sees without platform access
+
+Events are written onto the agent's own ConfigMap, in the agent's namespace, so a
+team diagnoses their own declaration with no access to the reconciler's logs.
+
+```bash
+kubectl get events -n $AGENT_NS --field-selector involvedObject.kind=ConfigMap \
+  --sort-by=.lastTimestamp
+
+kubectl describe configmap eval-smoketest-evaluation -n $AGENT_NS | tail -20
+```
+
+| Reason | Means |
+|---|---|
+| `EvaluationReconciled` | normal; the declaration is in effect |
+| `UnknownEvaluator` | name is not in the catalog (A.3) |
+| `EvaluatorNotPublished` | in the catalog, but the hub has not published it |
+| `UnknownJudge` | `judge.modelId` is not a chart judge alias |
+| `InvalidEvaluationDeclaration` | malformed — bad `sampling`, duplicate evaluator |
+| `EvaluationRuleLimitReached` | project is at the rule cap |
+
+They are deduplicated by (object, reason, message) with a count, so a persistent
+problem shows a rising count rather than one Event per 60s pass.
+
+## A.15 Deriving the names yourself
+
+Langfuse object names are hashes, which is good for safety and bad for reading.
+Both are reproducible locally:
+
+```bash
+# owner token = first 8 hex of sha256(cluster name)
+python3 -I -c 'import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' hub
+# 08d33503
+
+# config hash = first 8 hex of sha256("<judge>\0<sampling to 6dp>")
+python3 -I -c 'import hashlib;print(hashlib.sha256(b"judge-default\x001.000000").hexdigest()[:8])'
+# 8c49ba7c
+
+# so the rule is: oap-08d33503-helpfulness-8c49ba7c
+```
+
+Or read the mapping straight off the metrics, which is why
+`oap_agent_eval_cluster_info` carries the token as a label:
+
+```bash
+curl -s $EV/metrics | grep oap_agent_eval_cluster_info
+```
+
+## A.16 One pass over everything
+
+Read-only; prints the whole inventory in order. Requires A.0 to have been run.
+
+```bash
+cat <<'EOS' > /tmp/eval-inventory.sh
+#!/usr/bin/env bash
+# Read-only inventory of continuous agent evaluation. No writes.
+set -uo pipefail
+h() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+
+h "reconciler";      kubectl get deploy,pod,svc -n "$EVAL_NS" -l app=agent-evaluation-reconciler
+h "image";           kubectl get deploy agent-evaluation-reconciler -n "$EVAL_NS" \
+                       -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+h "readyz";          curl -s "$EV/readyz" | jq -c
+h "catalog";         kubectl get cm agent-evaluation-catalog -n "$EVAL_NS" \
+                       -o jsonpath='{.data.catalog\.yaml}' \
+                       | yq -c '{"evaluators":(.catalog|keys),"coverage":.coverage,"judge":.judge}'
+h "declarations";    kubectl get cm -A -l evaluation.oap.io/agent -o json | jq -r '
+                       .items[] | [.metadata.namespace,.metadata.name,.data.evaluators,
+                                   (.data.sampling//"-"),(.data.judge//"(default)")] | @tsv'
+h "credentials";     kubectl get externalsecret -n "$EVAL_NS"
+h "agents";          kubectl get applications.core.oam.dev -n "$AGENT_NS"
+h "agent images";    kubectl get pods -n "$AGENT_NS" -o json | jq -r '
+                       .items[] | "\(.metadata.name)\t\(.spec.containers[0].image)"'
+h "evaluators";      curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluators?limit=100" | jq -r '
+                       .data[] | "\(.name)\t\(.status)\t\(.modelConfig.model)"'
+h "llm connection";  curl -s -u "$PK:$SK" "$LF/api/public/llm-connections" | jq -r '.data[].provider'
+h "rules";           curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=100" | jq -r '
+                       .data[] | "\(.name)\tsampling=\(.sampling)\t\([.filter[]?
+                         | select(.column=="tags") | .value[]?] | join(","))"'
+h "recent scores";   curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=10" | jq -r '
+                       .data[] | "\(.name)=\(.value)"'
+h "metrics";         curl -s "$EV/metrics" | grep -E '^oap_agent_eval_(pass_ratio|rules_active|agents_declared|agents_skipped|judge_key_present)'
+h "alerts";          kubectl get prometheusrule agent-evaluation -n "$EVAL_NS" \
+                       -o jsonpath='{range .spec.groups[*].rules[*]}{.alert}{"\n"}{end}'
+h "events";          kubectl get events -n "$AGENT_NS" \
+                       --field-selector involvedObject.kind=ConfigMap --sort-by=.lastTimestamp \
+                       | tail -10
+EOS
+bash /tmp/eval-inventory.sh
+```
+
+Reading the output top to bottom: a blank **declarations** block with healthy
+everything else means no agent has opted in; declarations present but no
+**rules** means the reconciler cannot write to Langfuse; rules present but no
+**scores** means either no traffic or no trace carrying the matching tag.
