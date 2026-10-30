@@ -28,7 +28,10 @@ ingress:
   className: platform
   host: ""
   # Dedicated hostname for agent routes (e.g. agents.peeks.dev.shapirov.people.a2z.com).
-  # Covered by the wildcard ACM cert. ExternalDNS creates the Route53 record automatically.
+  # Covered by the wildcard ACM cert. ExternalDNS creates the Route53 record only if
+  # its domain filter covers this host. The registry default derives a sibling
+  # "agents.<parent>" (gitops/addons/registry/gateway.yaml), so external-dns must
+  # manage the parent zone; see https://github.com/awslabs/open-agentic-platform/issues/116
   # Defaults to "agents.<host>" if not set.
   agentHost: ""
 
