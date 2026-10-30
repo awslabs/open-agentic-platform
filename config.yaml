@@ -36,6 +36,24 @@ agenticRepo:
   revision: "main"
   basepath: "gitops/addons/"
 
+# Optional: your own fleet repo (see "Use your own fleet repo" in README.md).
+# Omit it and this repo (agenticRepo.url / .revision, path gitops/) is the fleet
+# repo, which is the default. When set, the fleet repo holds the spoke definitions
+# (name, region, resourcePrefix, k8sVersion, CIDR) and the hub/spoke addon
+# enablement, so you change them without committing to this repo. It is passed
+# unchanged to the platform's own fleetRepo.* keys.
+# Set url AND revision together; an omitted field falls back to agenticRepo.
+# fleetRepo:
+#   url: "https://github.com/<org>/<fleet-repo>.git"
+#   revision: "main"
+#   basepath: "gitops/"                # must end with "/", or "" for the repo root
+#
+# Optional, only for a fleet repo SHARED by several hubs: set it to true on EVERY
+# hub that reads the repo. Each hub then discovers only
+# .../kro-clusters/clusters/<resourcePrefix>/*.json and fleet/members/<resourcePrefix>/.
+# Without it, one hub can pick up another hub's spokes.
+# fleetScopeByPrefix: true
+
 # Spoke clusters (optional — hub-only by default)
 # Each entry is applied by `task spokes:install` as a Crossplane PlatformCluster claim, so it
 # only takes effect with platform.clusterProvider: kind-crossplane. With kind-kro-ack, declare
