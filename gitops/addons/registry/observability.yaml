@@ -29,6 +29,10 @@ langfuse:
     keycloak:
       issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" .metadata.annotations.ingress_domain_name) (index .metadata.annotations "oidc_issuer_url")}}'
       secretManagerKey: '{{.metadata.annotations.aws_cluster_name}}/keycloak-clients'
+      # SSO-only (local email/password off) only where the Keycloak addon is
+      # deployed: same enable_keycloak label that selects it. Without it,
+      # local login stays on so an OAP-only install can still sign in.
+      disableUsernamePassword: '{{default "false" (index .metadata.labels "enable_keycloak")}}'
   ignoreDifferences:
     - group: external-secrets.io
       kind: ExternalSecret
