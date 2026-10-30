@@ -203,6 +203,22 @@ that, `-`, 16 hex characters of a hash of cluster, region, app and component, an
 do two regions that reuse a cluster name. The policy name begins with the cluster name,
 so a sweep that matches the resource prefix reclaims it.
 
+The same naming applies to the IAM policy emitted by `agentcore-browser`,
+`agentcore-code-interpreter` and `eks-read-access`: object `<appName>-<component>-iam-policy`
+(what `accessFor` finds), AWS name `<cluster>.<region>.<appName>-<component>-iam-policy`.
+The browser and interpreter names themselves (`browserName`, `interpreterName`) are chosen by
+the developer and are also unique per AWS account: two installs in one account that deploy the
+same Application must give them different names, because the platform does not derive them.
+
+**Collision risk that remains.** Everything above depends on `global.clusterName`. When it is
+empty (the chart rendered standalone, or by a platform that does not pass the cluster secret's
+`aws_cluster_name`), the names are exactly the previous ones and nothing is installed-scoped:
+two installs in one AWS account then collide as before. The memory name collides (the second
+memory cannot be created and stays `Synced=False`), and the policies are shared, so removing
+one install deletes a policy the other still uses. Set `global.clusterName` on every install
+that shares an account. Separately, within one cluster, two namespaces that use the same
+`appName` and component still share the Policy object, hence the AWS policy.
+
 The AWS memory name is derived, not set, and is one-to-one with the install, namespace
 and component. AgentCore requires it to be unique within the AWS account, so it carries
 the install too: `M<first 30 characters of <cluster>_<namespace>_<component>>_<16-character
