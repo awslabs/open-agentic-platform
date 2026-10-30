@@ -241,4 +241,4 @@ kubectl run test --image=curlimages/curl --rm -it --restart=Never -- \
 | No traces in CloudWatch | Pod Identity association exists (`kubectl get podidentityassociation -n vela-system`). Agent logs for ADOT init. Transaction Search enabled. |
 | Cost shows $0 in Langfuse | Seed CronJob logs (`kubectl logs -n langfuse -l app=langfuse-seed`). Check 401 auth errors. |
 | Agent crashes on startup | Check if image has ADOT packages. Verify port 4318 (not 4317) for centralized. |
-| Metrics not in Grafana | Check `amp_endpoint_url` annotation on cluster secret. Collector logs for AMP errors. |
+| Metrics not in Grafana | The collector takes the AMP endpoint from the `amp_endpoint_url` cluster-secret annotation, else from the `<resource_prefix>/platform/amp` Secrets Manager secret (`otel-collector-amp` ExternalSecret in `otel`). Check that ExternalSecret is synced, then the collector logs for AMP errors. |

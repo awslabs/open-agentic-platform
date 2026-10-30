@@ -43,9 +43,14 @@ data:
     extensions:
       health_check:
         endpoint: 0.0.0.0:13133
-      {{- if and .Values.amp.enabled .Values.amp.remoteWriteEndpoint }}
+      {{- if include "otel-collector.ampActive" . }}
       sigv4auth:
+        {{- if .Values.amp.remoteWriteEndpoint }}
         region: {{ .Values.global.awsRegion }}
+        {{- else }}
+        # The workspace region, which can differ from this cluster's region.
+        region: ${env:AMP_REGION}
+        {{- end }}
       {{- end }}
 
     exporters:
@@ -66,17 +71,25 @@ data:
       debug:
         verbosity: basic
       {{- end }}
-      {{- if and .Values.amp.enabled .Values.amp.remoteWriteEndpoint }}
+      {{- if include "otel-collector.ampActive" . }}
       prometheusremotewrite/amp:
+        {{- if .Values.amp.remoteWriteEndpoint }}
         endpoint: "{{ .Values.amp.remoteWriteEndpoint }}api/v1/remote_write"
+        {{- else }}
+        endpoint: "${env:AMP_WORKSPACE}api/v1/remote_write"
+        {{- end }}
         auth:
           authenticator: sigv4auth
+        {{- with .Values.amp.clusterName }}
+        external_labels:
+          cluster: {{ . | quote }}
+        {{- end }}
       {{- end }}
 
     service:
       extensions:
         - health_check
-        {{- if and .Values.amp.enabled .Values.amp.remoteWriteEndpoint }}
+        {{- if include "otel-collector.ampActive" . }}
         - sigv4auth
         {{- end }}
       pipelines:
@@ -92,7 +105,7 @@ data:
           receivers: [prometheus]
           processors: [batch]
           exporters:
-            {{- if and .Values.amp.enabled .Values.amp.remoteWriteEndpoint }}
+            {{- if include "otel-collector.ampActive" . }}
             - prometheusremotewrite/amp
             {{- else }}
             - debug
@@ -120,6 +133,9 @@ spec:
         app: otel-collector
       annotations:
         checksum/config: {{ printf "%s-%s-%s-%s" (.Values.langfuse.endpoint | default "") (.Values.bifrost.scrapeEndpoint | default "") (.Values.amp.remoteWriteEndpoint | default "") (.Values.amp.enabled | toString) | sha256sum | trunc 32 }}
+        {{- if include "otel-collector.ampFromSecret" . }}
+        checksum/amp: {{ printf "%s|%s" .Values.amp.secretManagerKey (.Values.amp.clusterName | default "") | sha256sum | trunc 8 }}
+        {{- end }}
         # Tracks the content-addressed auth Secret name (token template + SM key),
         # so any change to either rolls the collector.
         checksum/langfuse-auth: {{ include "otel-collector.langfuseAuthSecretName" . | sha256sum | trunc 8 }}
@@ -140,6 +156,22 @@ spec:
           env:
             - name: AWS_REGION
               value: {{ .Values.global.awsRegion }}
+            {{- if include "otel-collector.ampFromSecret" . }}
+            # From the otel-collector-amp ExternalSecret. optional: false so the collector
+            # waits for ESO instead of starting with an empty AMP endpoint.
+            - name: AMP_WORKSPACE
+              valueFrom:
+                secretKeyRef:
+                  name: otel-collector-amp
+                  key: AMP_WORKSPACE
+                  optional: false
+            - name: AMP_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: otel-collector-amp
+                  key: AMP_REGION
+                  optional: false
+            {{- end }}
             {{- /* Same condition as the ExternalSecret, so the referenced Secret is always one ESO will create. */}}
             {{- if and .Values.langfuse.enabled .Values.langfuse.endpoint .Values.langfuse.secretManagerKey }}
             - name: LANGFUSE_OTEL_AUTH
