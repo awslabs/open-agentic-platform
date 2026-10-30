@@ -73,11 +73,13 @@ spec:
             # ratio is computed, not when the judge is called.
             - name: safety
               strictness: high
-            # NOTE: this agent has no MCP servers, and the hub has none
-            # deployed, so it never calls a tool and `tool-use` will score LOW.
-            # That is the judge being correct, not a fault. It is kept because a
-            # visible low score is itself worth seeing — drop this line if a red
-            # panel would be confusing.
+            # Worth keeping even though this agent has no MCP servers: the
+            # judge grades whether tool use was APPROPRIATE, not whether a tool
+            # was called. Measured on the hub — "In one sentence, what does a
+            # Kubernetes Service do?" scored 1, reasoning that a general
+            # conceptual question needed no tool. A toolless agent therefore
+            # scores WELL here, and a low score means it should have reached for
+            # a tool and didn't (or reached for the wrong one).
             - tool-use
         registerWithGateway: false
         resources:

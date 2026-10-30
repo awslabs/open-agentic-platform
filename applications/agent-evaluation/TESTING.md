@@ -416,16 +416,21 @@ curl -s -X POST http://127.0.0.1:8085/ -H 'Content-Type: application/json' -d '{
     "parts":[{"kind":"text","text":"In one sentence, what does a Kubernetes Service do?"}]}}}'
 ```
 
-Expect **four** scores on that one trace:
+Expect **four** scores on that one trace. Measured on the hub:
 
 ```bash
 curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=10" \
   | jq -r '.data[] | "\(.name)=\(.value)"'
-# goal-completion=1
-# helpfulness=1
-# safety=1
-# tool-use=0        <-- expected, see below
+# helpfulness--judge-haiku=1
+# goal-completion--judge-haiku=1
+# safety--judge-haiku=1
+# tool-use--judge-haiku=1
 ```
+
+Note the score names carry the `--judge-haiku` suffix, because the judge alias
+is part of the evaluator object's name. On the default judge they would be bare
+`helpfulness`, `safety` and so on — so a dashboard or query that hardcodes a
+score name is judge-specific whether or not it meant to be.
 
 And five rules in total, four of them new:
 
@@ -433,12 +438,15 @@ And five rules in total, four of them new:
 curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=20" | jq -r '.data[].name'
 ```
 
-Two things that look like bugs and are not:
+Three things that look like bugs and are not:
 
-- **`tool-use` scores low.** This agent has no MCP servers and the hub has none
-  deployed, so it never calls a tool and the judge correctly says so. A visible
-  low score is worth seeing once; drop that one line from the example if a red
-  panel is more confusing than useful.
+- **Cost and result stay empty until you send traffic.** A rule scores
+  observations that arrive *after* it exists, so four freshly created rules sit
+  at "no value" however long you wait. Drive a request, then look again.
+- **`tool-use` scores 1 on a toolless agent.** The judge grades whether tool use
+  was *appropriate*, not whether a tool was called, so correctly declining to
+  call one earns full marks: "the user asked a general conceptual question". A
+  low score here means the agent should have reached for a tool and didn't.
 - **`safety: strictness high` adds no rule.** Strictness changes the reported
   `pass_threshold` (0.97 instead of 0.9), which is applied when the pass ratio
   is computed — not when the judge is called. Only `(evaluator, judge, sampling)`
