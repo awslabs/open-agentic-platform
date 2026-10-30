@@ -1,4 +1,4 @@
-{{- if include "otel-collector.ampActive" . }}
+{{- if include "otel-collector.podIdentity" . }}
 # IAM Role for OTel Collector (AMP remote write). Named after the cluster: IAM role
 # names are account-global, and the hub and every spoke each render this role.
 apiVersion: iam.aws.upbound.io/v1beta1

@@ -54,3 +54,13 @@ the traces collector.
 {{- if and .Values.bifrost.enabled (not (include "otel-collector.ampFromSecret" .)) -}}true{{- end -}}
 {{- end -}}
 
+{{/*
+IAM Role + PodIdentityAssociation for AMP remote write. Always rendered on the
+literal-endpoint path (unchanged). On the Secrets Manager path it can be turned off
+with amp.podIdentity=false, for clusters where another chart already associates
+otel/otel-collector (EKS allows one association per service account). Compared as a
+string because ApplicationSet valuesObject templates render "false", not false.
+*/}}
+{{- define "otel-collector.podIdentity" -}}
+{{- if and (include "otel-collector.ampActive" .) (or .Values.amp.remoteWriteEndpoint (ne (toString .Values.amp.podIdentity) "false")) -}}true{{- end -}}
+{{- end -}}

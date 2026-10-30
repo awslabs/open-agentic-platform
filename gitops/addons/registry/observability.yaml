@@ -109,6 +109,11 @@ otel-collector:
       # Only with a resource_prefix: without one there is no such secret to wait for.
       secretManagerKey: '{{ with index .metadata.annotations "resource_prefix" }}{{ . }}/platform/amp{{ end }}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      # appmod's crossplane pod_identities addon already associates otel/otel-collector
+      # on control-plane clusters that are not provider=kro-ack (its selector plus the
+      # control-plane overlay). EKS allows one association per service account, so the
+      # chart skips its own there. Only read on the Secrets Manager path.
+      podIdentity: '{{ if and (eq (index .metadata.labels "environment") "control-plane") (ne (index .metadata.labels "provider") "kro-ack") }}false{{ else }}true{{ end }}'
 
 prometheus-operator-crds:
   namespace: monitoring

@@ -37,3 +37,7 @@ amp:
   # Cluster name: Pod Identity target, IAM role name prefix and the `cluster` label on
   # every remote-written series (keeps hub and spoke series apart in one workspace).
   clusterName: ""
+  # Secrets Manager path only: render the IAM Role + PodIdentityAssociation for the
+  # collector service account. Set false where another chart already associates
+  # otel/otel-collector on this cluster. The literal-endpoint path always renders them.
+  podIdentity: true
