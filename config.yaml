@@ -5,7 +5,9 @@
 platform:
   repo: "https://github.com/aws-samples/appmod-blueprints.git"
   ref: "main"                          # Branch or tag (e.g., "main" or "v1.0.0"). A moving branch like "main" tracks latest; pin a tag for reproducibility.
-  clusterProvider: "kind-crossplane"
+  # Cluster provider (appmod-blueprints cluster-providers/<name>). Default: kind-kro-ack.
+  # Other selectable providers: kind-crossplane, terraform, byoc. Override in config.local.yaml.
+  clusterProvider: "kind-kro-ack"
 
 # AWS
 aws:
@@ -30,12 +32,14 @@ identityCenter:
 
 # Agentic platform git repo (this repo — used by ArgoCD)
 agenticRepo:
-  url: "https://github.com/aws-samples/sample-open-agentic-platform.git"
+  url: "https://github.com/awslabs/open-agentic-platform.git"
   revision: "main"
   basepath: "gitops/addons/"
 
 # Spoke clusters (optional — hub-only by default)
-# Each entry provisions a spoke cluster via Crossplane from the hub.
+# Each entry is applied by `task spokes:install` as a Crossplane PlatformCluster claim, so it
+# only takes effect with platform.clusterProvider: kind-crossplane. With kind-kro-ack, declare
+# spokes in the fleet repo instead (see gitops/fleet/members/_example/README.md).
 spokes: {}
   # Example:
   # spoke-dev:

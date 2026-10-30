@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Optional
 
@@ -37,7 +38,15 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
-from .identity import WORKLOAD_KEY, HeadersProvider, outbound
+from .identity import (
+    CALLER_IDENTITY_HEADER,
+    WORKLOAD_KEY,
+    HeadersProvider,
+    caller_key,
+    caller_subject,
+    is_no_identity_key,
+    outbound,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +101,9 @@ class _McpPool:
         # /ready probe (mcp_readiness) checks this against the configured set.
         self.connected_urls: set = set()
         self.connected_at: float = 0.0
+        # Set by _close. A cached agent still holds this pool's tool objects, so
+        # agent_is_stale() tells the caches to rebuild it rather than reuse it.
+        self.closed = False
         # Guards clients/tools mutation (the /ready probe thread may run
         # concurrently with the request path).
         self.lock = threading.Lock()
@@ -212,6 +224,7 @@ def _open(pool: "_McpPool", urls: list) -> None:
 
 
 def _close(pool: _McpPool) -> None:
+    pool.closed = True
     for client in pool.clients:
         try:
             # Detach so the session-teardown DELETE is not parented to the
@@ -288,9 +301,15 @@ def mcp_readiness() -> tuple[bool, dict]:
 
 def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
     """Tools from the MCP pool for *key*, connecting or recycling as needed."""
+    pool = _get_mcp_pool(key, headers)
+    return pool.tools if pool is not None else []
+
+
+def _get_mcp_pool(key: str, headers: HeadersProvider) -> Optional[_McpPool]:
+    """The MCP pool for *key*, connecting or recycling as needed. None without MCP servers."""
     urls = config.MCP_SERVER_URLS
     if not urls:
-        return []
+        return None
 
     pool = _pools.pop(key, None)
     if pool is None:
@@ -328,10 +347,117 @@ def _get_mcp_tools(key: str, headers: HeadersProvider) -> list:
     # the /ready probe (mcp_readiness) keeps the pod out of the Service until the
     # workload pool has every configured server, so an autonomous request only
     # reaches a pod whose toolset is complete. Chat pools degrade gracefully.
-    return pool.tools
+    return pool
 
 
 # ── per-session agent creation ───────────────────────────────────────────
+
+# AgentCore accepts actor ids matching (CreateEvent model in botocore):
+#   [a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*, max 255
+# This is narrower on purpose: "/" is excluded. Long-term retrieval matches
+# namespaces by prefix (RetrieveMemoryRecords namespacePath), and namespaces embed
+# the actor as /facts/{actorId}/, so an actor "a" would also match the records of
+# an actor "a/b". Keycloak subjects (UUIDs) and ServiceAccount subjects
+# (system:serviceaccount:<ns>:<name>) match and pass through unchanged.
+# Anything else, such as an e-mail-shaped subject from another identity provider,
+# becomes "h:<sha256>". Hashing keeps the mapping one-to-one: replacing characters
+# would let distinct subjects (a@b.c, a_b.c) share one actor and its memories.
+# A subject that itself starts with the hash prefix (in any case) is hashed too, so
+# no caller can choose a subject equal to another caller's hashed actor.
+_ACTOR_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9\-_]*(?::[a-zA-Z0-9\-_]+)*[a-zA-Z0-9\-_]*")
+
+
+def memory_actor(raw: str) -> str:
+    """Map a caller id onto a valid AgentCore actorId, one-to-one."""
+    if len(raw) <= 255 and _ACTOR_PATTERN.fullmatch(raw) and not raw.lower().startswith("h:"):
+        return raw
+    return "h:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+# Retrieval defaults per long-term namespace, overridable through MEMORY_CONFIG
+# (retrievalTopK, retrievalRelevanceScore). 10 and 0.2 are the SDK's own defaults.
+_RETRIEVAL_TOP_K = 10
+_RETRIEVAL_RELEVANCE = 0.2
+
+# Strategy namespaces per memory id. Strategies belong to the memory resource, not
+# to this agent, so they are read from the service (GetMemory) rather than
+# configured twice. Cached for _NAMESPACES_TTL seconds: strategies are created one
+# at a time after the memory (AgentCore allows a single update in flight), so an
+# agent that starts mid-provisioning must notice the rest a few minutes later
+# without a restart.
+#
+# When a refresh fails, the last good answer is kept for up to _NAMESPACES_MAX_STALE
+# (a strategy deleted meanwhile drops out once that runs out), and the next attempt
+# waits _NAMESPACES_RETRY, so a sustained AgentCore error costs one call per
+# interval rather than one per agent construction.
+_NAMESPACES_TTL = 300.0
+_NAMESPACES_RETRY = 30.0
+_NAMESPACES_MAX_STALE = 3600.0
+# memory id -> (fetched_at, namespaces, next_attempt_at)
+_namespaces: dict[str, tuple[float, list[tuple[str, Optional[str]]], float]] = {}
+
+
+def _memory_namespaces(memory_id: str, region: str) -> list[tuple[str, Optional[str]]]:
+    """Return [(namespace template, strategy id)] for the memory's strategies.
+
+    Empty when the memory has no long-term strategies, or when they cannot be
+    read: the agent then keeps short-term memory only instead of failing.
+    """
+    now = time.monotonic()
+    cached = _namespaces.get(memory_id)
+
+    def last_good() -> list[tuple[str, Optional[str]]]:
+        return cached[1] if cached and now - cached[0] < _NAMESPACES_MAX_STALE else []
+
+    if cached and (now - cached[0] < _NAMESPACES_TTL or now < cached[2]):
+        return last_good()
+    found: list[tuple[str, Optional[str]]] = []
+    try:
+        from bedrock_agentcore.memory import MemoryClient
+
+        for strategy in MemoryClient(region_name=region).get_memory_strategies(memory_id):
+            for ns in strategy.get("namespaces") or []:
+                found.append((ns, strategy.get("strategyId")))
+    except Exception as e:  # noqa: BLE001 — degrade to short-term memory
+        keep = last_good()
+        logger.warning(
+            "Could not read strategies for memory %s (retry in %ds), using %s: %s",
+            memory_id, _NAMESPACES_RETRY, [ns for ns, _ in keep] or "none (long-term retrieval off)", e,
+        )
+        _namespaces[memory_id] = (cached[0] if cached else 0.0, cached[1] if cached else [], now + _NAMESPACES_RETRY)
+        return keep
+    _namespaces[memory_id] = (now, found, 0.0)
+    if not cached or cached[1] != found:
+        logger.info("Memory %s long-term namespaces: %s", memory_id, [ns for ns, _ in found] or "none")
+    return found
+
+
+def _knob(mem_config: dict, key: str, kind, default):
+    """A retrieval setting from MEMORY_CONFIG. A typo falls back to the default with a
+    warning instead of failing agent construction (the A2A factory runs at startup)."""
+    raw = mem_config.get(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return kind(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r in MEMORY_CONFIG, using %r", key, raw, default)
+        return default
+
+
+def _retrieval_config(memory_id: str, region: str, mem_config: dict) -> Optional[dict]:
+    from bedrock_agentcore.memory.integrations.strands.config import RetrievalConfig
+
+    top_k = _knob(mem_config, "retrievalTopK", int, _RETRIEVAL_TOP_K)
+    relevance = _knob(mem_config, "retrievalRelevanceScore", float, _RETRIEVAL_RELEVANCE)
+    namespaces = _memory_namespaces(memory_id, region)
+    if not namespaces:
+        return None
+    return {
+        ns: RetrievalConfig(top_k=top_k, relevance_score=relevance, strategy_id=strategy_id)
+        for ns, strategy_id in namespaces
+    }
+
 
 # AgentCore Memory constrains sessionId / actorId to
 # ``[a-zA-Z0-9][a-zA-Z0-9-_]*`` with a maximum length of 100. The contextId we
@@ -361,13 +487,22 @@ def _sanitize_agentcore_id(value: str) -> str:
         cleaned = "s-" + cleaned.lstrip("-_")
         changed = True
     if changed or len(cleaned) > _AGENTCORE_ID_MAX_LEN:
-        digest = hashlib.sha1(original.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
         cleaned = cleaned[: _AGENTCORE_ID_MAX_LEN - 1 - len(digest)].rstrip("-_") + "-" + digest
     return cleaned
 
 
-def _build_session_manager(session_id: str, actor_id: str):
-    """Build an AgentCoreMemorySessionManager for a specific session."""
+def _build_session_manager(session_id: str, actor_id: Optional[str]):
+    """Build an AgentCoreMemorySessionManager for a specific session.
+
+    Short-term memory (the conversation, keyed by session) is on when a memory is
+    configured and the caller is known. Long-term retrieval is on when the memory
+    resource has strategies; the developer opts in on the agentcore-memory component.
+
+    No caller (no gateway identity header) means no memory at all: such requests did
+    not come through the gateway, and pooling them under one actor would share their
+    memories with each other.
+    """
     if config.MEMORY_PROVIDER != "agentcore":
         return None
 
@@ -387,28 +522,37 @@ def _build_session_manager(session_id: str, actor_id: str):
         logger.warning("MEMORY_PROVIDER=agentcore but no memoryId in MEMORY_CONFIG")
         return None
 
+    if not actor_id:
+        logger.warning(
+            "No caller identity (%s header) on this request; memory is off for session %r",
+            CALLER_IDENTITY_HEADER, session_id,
+        )
+        return None
+
     from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
     from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
-    # Sanitize before handing the ids to AgentCore: the raw contextId may carry
-    # '|' or exceed 100 chars (autonomous-incident fingerprints), which
-    # AgentCore rejects. The raw session_id is still what we cache and echo back
-    # as contextId to the caller; only the memory-backend id is normalized.
+    # Session id: sanitized (AgentCore SessionId is [a-zA-Z0-9][a-zA-Z0-9-_]*, max 100; the
+    # raw contextId may carry '|' or be longer, e.g. autonomous-incident fingerprints).
+    # The raw session_id is still what we cache and echo back as contextId.
+    # Actor id: memory_actor, not the session sanitizer. ActorId allows ':' and 255 chars,
+    # so ServiceAccount subjects pass through, and memory_actor keeps the caller mapping
+    # one-to-one (see above).
     safe_session_id = _sanitize_agentcore_id(session_id)
-    safe_actor_id = _sanitize_agentcore_id(actor_id)
-
+    actor = memory_actor(actor_id)
     agentcore_config = AgentCoreMemoryConfig(
         memory_id=memory_id,
         session_id=safe_session_id,
-        actor_id=safe_actor_id,
+        actor_id=actor,
+        retrieval_config=_retrieval_config(memory_id, region, mem_config),
     )
     sm = AgentCoreMemorySessionManager(
         agentcore_memory_config=agentcore_config,
         region_name=region,
     )
     logger.info(
-        f"AgentCore session manager created (memory={memory_id}, "
-        f"session={safe_session_id}, actor={safe_actor_id}, raw_context={session_id!r})"
+        "AgentCore session manager created (memory=%s, session=%s, actor=%s, long_term=%s, raw_context=%r)",
+        memory_id, safe_session_id, actor, bool(agentcore_config.retrieval_config), session_id,
     )
     return sm
 
@@ -424,6 +568,13 @@ def _build_session_manager(session_id: str, actor_id: str):
 # reliable, transport-agnostic discriminator. This lets Langfuse filter
 # tags=source:rca vs source:chat in one click, which neither session_id nor
 # name filtering could do before (session_id was empty and untagged).
+#
+# Memory for that autonomous path: the bridge posts to the agent's Service
+# directly (see the readiness note near _mcp_server_name), not through the gateway,
+# so it carries no X-Forwarded-User. Such a request fails closed: no long-term
+# memory, and no agent kept across turns even with a stable incident-<fingerprint>
+# contextId. A bridge that needs either must call through the gateway with its own
+# ServiceAccount token, which the gateway turns into a stable subject.
 def _trace_attributes(session_id: str, actor_id: str) -> dict:
     source = "rca" if (session_id or "").startswith("incident-") else "chat"
     tags = [f"source:{source}", config.AGENT_NAME]
@@ -525,7 +676,8 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     """
     session_manager = _build_session_manager(session_id, actor_id)
     headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
-    tools = _get_mcp_tools(key, headers) or None
+    pool = _get_mcp_pool(key, headers)
+    tools = (pool.tools if pool is not None else None) or None
     agent = Agent(
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT,
@@ -537,17 +689,36 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
         trace_attributes=_trace_attributes(session_id, actor_id),
     )
     _install_truncation_guard(agent)
+    agent._oap_mcp_pool = pool
     return agent
 
 
-def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Agent:
+def agent_is_stale(agent) -> bool:
+    """True when the MCP pool this agent's tools belong to has been closed.
+
+    Pools are capped (MCP_MAX_POOLS) separately from the agent caches
+    (MAX_CACHED_AGENTS, the A2A executor's max_contexts). When the caller's token is
+    forwarded, each caller has its own pool, so a pool can be evicted while an agent
+    built on it is still cached; reusing that agent would call stopped clients. Both
+    caches check this on a hit and rebuild instead, which also reopens the pool.
+    """
+    pool = getattr(agent, "_oap_mcp_pool", None)
+    return pool is not None and pool.closed
+
+
+def create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> Agent:
     """Create a Strands agent for a given session.
+
+    Also the A2AServer agent_factory, which calls it with the context id only.
 
     Args:
         session_id: Conversation session id. A new UUID is generated when None.
-        actor_id: Identity of the caller (default "user").
+        actor_id: Memory actor. Defaults to the caller identity the gateway set on
+            this request (identity.caller_subject), so memory is per caller. None
+            when the request carries no identity: the agent then has no memory.
     """
     session_id = session_id or str(uuid.uuid4())
+    actor_id = actor_id or caller_subject()
     agent = _construct_agent(session_id, actor_id)
     logger.info(f"Agent created: {config.AGENT_NAME} session={session_id}")
     return agent
@@ -555,10 +726,16 @@ def create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> Ag
 
 # ── session cache ────────────────────────────────────────────────────────
 
-_agents: dict[tuple, Agent] = {}
+# Bounded LRU, like the A2A executor's own context cache (same default bound). An
+# evicted agent is only dropped from this cache: its conversation is in AgentCore
+# when memory is on, and its MCP connections live in the separate, bounded pools.
+# Requests with no identity are never cached (their key is unique to the request),
+# and an agent whose MCP pool was closed is rebuilt on its next hit (agent_is_stale).
+_MAX_AGENTS = int(os.getenv("MAX_CACHED_AGENTS", "1000"))
+_agents: "OrderedDict[tuple, Agent]" = OrderedDict()
 
 
-def get_or_create_agent(session_id: Optional[str] = None, actor_id: str = "user") -> tuple[Agent, str]:
+def get_or_create_agent(session_id: Optional[str] = None, actor_id: Optional[str] = None) -> tuple[Agent, str]:
     """Return a cached agent for *session_id*, creating one if needed.
 
     Cached per (caller, session) rather than per session alone. `session_id`
@@ -568,18 +745,28 @@ def get_or_create_agent(session_id: Optional[str] = None, actor_id: str = "user"
 
     Returns (agent, session_id).
     """
-    # Key on the INBOUND caller, whatever credential goes OUTBOUND. With
-    # PROPAGATE_CALLER_TOKEN=false the outbound key is the constant workload key,
-    # so keying on it let two users who send the same contextId share one agent
-    # and its conversation history.
-    _, caller = outbound(True)
+    # Key on the INBOUND caller (identity.caller_key), never on the outbound
+    # credential alone: with PROPAGATE_CALLER_TOKEN=false that is the constant
+    # workload key, which would let two users who send the same contextId share one
+    # agent and its conversation history.
+    caller = caller_key(config.PROPAGATE_CALLER_TOKEN)
 
     if session_id and (caller, session_id) in _agents:
-        return _agents[(caller, session_id)], session_id
+        cached = _agents[(caller, session_id)]
+        if not agent_is_stale(cached):
+            _agents.move_to_end((caller, session_id))
+            return cached, session_id
+        del _agents[(caller, session_id)]
 
     sid = session_id or str(uuid.uuid4())
     agent = create_agent(session_id=sid, actor_id=actor_id)
+    if is_no_identity_key(caller):
+        # The key is unique to this request, so no later request can look it up.
+        # Caching it would only evict the agents of callers who do have an identity.
+        return agent, sid
     _agents[(caller, sid)] = agent
+    while len(_agents) > _MAX_AGENTS:
+        _agents.popitem(last=False)
     return agent, sid
 
 
