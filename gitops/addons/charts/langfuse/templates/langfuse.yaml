@@ -128,7 +128,20 @@ spec:
                 secretKeyRef:
                   name: langfuse-keycloak-secret
                   key: LANGFUSE_CLIENT_SECRET
+                  {{- /*
+                  Optional on purpose: this Secret only exists once the platform has
+                  written <cluster>/keycloak-clients, and the web pod also serves the OTLP
+                  endpoint (/api/public/otel), so it must start without it. With a
+                  secretManagerKey, the liveness probe below restarts the container once if
+                  it booted without the client secret and the Secret has appeared since.
+                  */}}
                   optional: true
+          {{- if .Values.keycloak.secretManagerKey }}
+          volumeMounts:
+            - name: keycloak-client-secret
+              mountPath: /var/run/langfuse-keycloak
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
@@ -156,9 +169,28 @@ spec:
             timeoutSeconds: 20
             failureThreshold: 60
           livenessProbe:
+            {{- if .Values.keycloak.secretManagerKey }}
+            # Same health check as the httpGet probe it replaces, plus one condition:
+            # Langfuse reads AUTH_KEYCLOAK_CLIENT_SECRET only at boot, so a container that
+            # started before langfuse-keycloak-secret existed keeps SSO off. The optional
+            # volume above is filled by the kubelet once the Secret appears; the probe then
+            # fails and the kubelet restarts the container, which resolves the env from the
+            # Secret. Ingestion keeps running until then, and nothing happens on a hub
+            # where the Secret never appears.
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  if [ -z "${AUTH_KEYCLOAK_CLIENT_SECRET:-}" ] && [ -s /var/run/langfuse-keycloak/LANGFUSE_CLIENT_SECRET ]; then
+                    echo "Keycloak client secret appeared after start; restarting to enable SSO"; exit 1
+                  fi
+                  exec wget -q -T 18 -O /dev/null http://127.0.0.1:3000/api/public/health
+            {{- else }}
             httpGet:
               path: /api/public/health
               port: 3000
+            {{- end }}
             periodSeconds: 30
             timeoutSeconds: 20
             failureThreshold: 20
@@ -169,6 +201,16 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 20
             failureThreshold: 6
+      {{- if .Values.keycloak.secretManagerKey }}
+      volumes:
+        - name: keycloak-client-secret
+          secret:
+            secretName: langfuse-keycloak-secret
+            optional: true
+            items:
+              - key: LANGFUSE_CLIENT_SECRET
+                path: LANGFUSE_CLIENT_SECRET
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
