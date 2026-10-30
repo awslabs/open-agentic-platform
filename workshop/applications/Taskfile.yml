@@ -1,59 +1,104 @@
 version: '3'
 
-# Seed workshop sample applications into a GitLab instance and wire them to
-# Argo CD. Each subfolder here that has a deployment/ directory is one app.
+# Workshop sample applications. Each subfolder here that has a deployment/
+# directory is one app.
 #
-# For every app, `task seed`:
-#   1. creates the GitLab project <GIT_USERNAME>/<app> (skipped if it exists)
-#   2. pushes this folder's content to main, only if the project is empty
-#   3. clones it into CLONE_DIR/<app> (only when CLONE_DIR is set)
-#   4. applies two Argo CD Applications on the hub: <app>-dev-cd and
-#      <app>-prod-cd, syncing deployment/dev and deployment/prod to the spokes
+# Three ways to deploy them, depending on what the install has:
 #
-# Nothing is built: these apps use prebuilt images, so there is no CI pipeline.
-# Every step is idempotent and never overwrites commits already in GitLab.
+#   seed   GitLab installs (the Platform Engineering on Amazon EKS workshop).
+#          For every app: creates the GitLab project <GIT_USERNAME>/<app>
+#          (skipped if it exists), pushes this folder only if the project is
+#          empty, clones it into CLONE_DIR/<app> (when set), then runs `wire`.
+#          Needs GIT_URL and GIT_TOKEN.
+#   wire   Any git host. Applies the Argo CD Applications <app>-dev-cd and
+#          <app>-prod-cd on the hub, syncing deployment/dev and deployment/prod
+#          of <APP_REPO_BASE>/<app>.git to the spokes. Push the app folder to
+#          that repo yourself first.
+#   apply  No git server at all (an OAP-only install has none). Applies
+#          <app>/deployment/templates/application.yaml straight to the dev
+#          spoke, in namespace team-<app>. Not GitOps: Argo CD does not track it.
 #
-# Every input is a variable. Nothing is read from CloudFormation, WS_* variables,
-# or fixed IDE paths. See .kiro/steering/platform-portability.md.
+# Spoke names are not assumed. DEV_CLUSTER / PROD_CLUSTER win when given;
+# otherwise the hub's Argo CD cluster secrets labelled environment=dev|prod
+# (and annotated with this resource prefix, when they carry one) are used;
+# otherwise <RESOURCE_PREFIX>-spoke-dev|prod. An environment with no
+# registered cluster (often prod) is skipped with a message.
+# RESOURCE_PREFIX defaults to resourcePrefix in ../../config.local.yaml, then
+# to "peeks".
+#
+# Nothing is built: these apps use prebuilt images. Every step is idempotent and
+# never overwrites commits already in git. Nothing is read from CloudFormation,
+# WS_* variables, or fixed IDE paths. See .kiro/steering/platform-portability.md.
 #
 # Usage:
 #   task -d workshop/applications seed \
 #     GIT_URL=https://<gitlab-host> GIT_TOKEN=<token> \
 #     [GIT_USERNAME=user1] [CLONE_DIR=~/environment/applications] \
-#     [RESOURCE_PREFIX=peeks] [KUBE_CONTEXT=<hub context>]
+#     [RESOURCE_PREFIX=<prefix>] [KUBE_CONTEXT=<hub context>]
+#   task -d workshop/applications wire APP_REPO_BASE=https://<host>/<owner> \
+#     [KUBE_CONTEXT=<hub context>]
+#   task -d workshop/applications apply \
+#     [KUBE_CONTEXT=<hub context>] [SPOKE_CONTEXT=<dev spoke context>]
 
 vars:
+  OAP_CONFIG: '{{.OAP_CONFIG | default "../../config.local.yaml"}}'
+  CONFIG_PREFIX:
+    sh: '[ -f "{{.OAP_CONFIG}}" ] && yq -r ".resourcePrefix // \"\"" "{{.OAP_CONFIG}}" 2>/dev/null || true'
   GIT_USERNAME: '{{.GIT_USERNAME | default "user1"}}'
-  RESOURCE_PREFIX: '{{.RESOURCE_PREFIX | default "peeks"}}'
-  DEV_CLUSTER: '{{.DEV_CLUSTER | default (printf "%s-spoke-dev" .RESOURCE_PREFIX)}}'
-  PROD_CLUSTER: '{{.PROD_CLUSTER | default (printf "%s-spoke-prod" .RESOURCE_PREFIX)}}'
+  RESOURCE_PREFIX: '{{.RESOURCE_PREFIX | default .CONFIG_PREFIX | default "peeks"}}'
   ARGO_NAMESPACE: '{{.ARGO_NAMESPACE | default "argocd"}}'
   ARGO_PROJECT: '{{.ARGO_PROJECT | default "spoke-workloads"}}'
   APPS:
     sh: for d in */deployment; do [ -d "$d" ] && echo "${d%/deployment}"; done | tr '\n' ' '
+  # Hub kubectl context. Declared here so a CLI `KUBE_CONTEXT=<ctx>` is visible to
+  # RESOLVE_CLUSTER below (go-task renders a global var only from vars declared
+  # before it, so an undeclared CLI var was silently ignored). Empty = current context.
+  KUBE_CONTEXT: '{{.KUBE_CONTEXT | default ""}}'
+  # Shell function shared by wire and apply: prints the cluster for an environment,
+  # or nothing when none is registered on the hub. Resolved at run time, so
+  # `task --dry` never calls kubectl.
+  RESOLVE_CLUSTER: |
+    KUBECTL="kubectl{{if .KUBE_CONTEXT}} --context {{.KUBE_CONTEXT}}{{end}}"
+    resolve_cluster() {
+      ENV="$1"; EXPLICIT="$2"
+      if [ -n "$EXPLICIT" ]; then echo "$EXPLICIT"; return; fi
+      LEGACY="{{.RESOURCE_PREFIX}}-spoke-${ENV}"
+      # Argo CD cluster secrets on the hub: name, environment label, prefix annotation.
+      # If they cannot be read (no RBAC on secrets), keep the historical name unchecked.
+      ALL=$($KUBECTL -n {{.ARGO_NAMESPACE}} get secret -l argocd.argoproj.io/secret-type=cluster \
+        -o jsonpath='{range .items[*]}{.metadata.annotations.aws_cluster_name}{"|"}{.metadata.annotations.resource_prefix}{"|"}{.metadata.labels.environment}{"\n"}{end}' 2>/dev/null) \
+        || { echo "$LEGACY"; return; }
+      PICK=$(printf '%s\n' "$ALL" | awk -F'|' -v p="{{.RESOURCE_PREFIX}}" -v e="$ENV" '$1!="" && $3==e && ($2=="" || $2==p) {print $1; exit}')
+      if [ -n "$PICK" ]; then echo "$PICK"; return; fi
+      if printf '%s\n' "$ALL" | cut -d'|' -f1 | grep -qx "$LEGACY"; then echo "$LEGACY"; fi
+    }
 
 tasks:
   default:
     desc: Show usage
     silent: true
     cmds:
-      - sed -n '3,23p' Taskfile.yml | sed 's/^# \{0,1\}//'
+      - sed -n '3,41p' Taskfile.yml | sed 's/^# \{0,1\}//'
 
   seed:
-    desc: Create, push, clone and wire every sample app (idempotent)
+    desc: GitLab only. Create, push, clone and wire every sample app (idempotent)
     # silent: the commands carry the GitLab token, keep them out of logs
     silent: true
     cmds:
       - |
         set -euo pipefail
-        [ -n "{{.GIT_URL}}" ]   || { echo "GIT_URL is required (https://<gitlab-host>)" >&2; exit 1; }
-        [ -n "{{.GIT_TOKEN}}" ] || { echo "GIT_TOKEN is required" >&2; exit 1; }
+        if [ -z "{{.GIT_URL}}" ] || [ -z "{{.GIT_TOKEN}}" ]; then
+          echo "seed needs a GitLab: GIT_URL=https://<gitlab-host> and GIT_TOKEN=<token>." >&2
+          echo "An OAP-only install has no GitLab. Use instead:" >&2
+          echo "  task apply                            (direct apply to the dev spoke, no GitOps)" >&2
+          echo "  task wire APP_REPO_BASE=<git-owner>   (GitOps from a repo you pushed yourself)" >&2
+          exit 1
+        fi
         GIT_URL="{{.GIT_URL}}"; GIT_URL="${GIT_URL%/}"
         HOST="${GIT_URL#https://}"; HOST="${HOST#http://}"
         SCHEME="${GIT_URL%%://*}"
         USER_NAME="{{.GIT_USERNAME}}"
         TOKEN="{{.GIT_TOKEN}}"
-        KUBECTL="kubectl{{if .KUBE_CONTEXT}} --context {{.KUBE_CONTEXT}}{{end}}"
         for APP in {{.APPS}}; do
           echo "▸ $APP"
           REPO_URL="${SCHEME}://${USER_NAME}:${TOKEN}@${HOST}/${USER_NAME}/${APP}.git"
@@ -101,10 +146,31 @@ tasks:
             echo "  ✓ cloned to $DEST"
           fi
           {{end}}
+        done
+      # 4. Argo CD Applications on the hub. The token stays out of repoURL.
+      - task: wire
+        vars:
+          APP_REPO_BASE: '{{.GIT_URL | default "" | trimSuffix "/"}}/{{.GIT_USERNAME}}'
 
-          # 4. Argo CD Applications on the hub, one per environment.
+  wire:
+    desc: Apply the <app>-dev-cd / <app>-prod-cd Argo CD Applications on the hub (any git host)
+    silent: true
+    requires:
+      vars: [APP_REPO_BASE]
+    cmds:
+      - |
+        set -euo pipefail
+        {{.RESOLVE_CLUSTER}}
+        BASE="{{.APP_REPO_BASE}}"; BASE="${BASE%/}"
+        for APP in {{.APPS}}; do
+          echo "▸ $APP"
           for ENV in dev prod; do
-            if [ "$ENV" = dev ]; then CLUSTER="{{.DEV_CLUSTER}}"; else CLUSTER="{{.PROD_CLUSTER}}"; fi
+            if [ "$ENV" = dev ]; then EXPLICIT="{{.DEV_CLUSTER}}"; else EXPLICIT="{{.PROD_CLUSTER}}"; fi
+            CLUSTER=$(resolve_cluster "$ENV" "$EXPLICIT")
+            if [ -z "$CLUSTER" ]; then
+              echo "  - no ${ENV} cluster registered on the hub, skipping ${APP}-${ENV}-cd (set $(echo $ENV | tr a-z A-Z)_CLUSTER to force)"
+              continue
+            fi
             $KUBECTL apply -f - >/dev/null <<APPEOF
         apiVersion: argoproj.io/v1alpha1
         kind: Application
@@ -123,7 +189,7 @@ tasks:
             name: ${CLUSTER}
             namespace: team-${APP}
           source:
-            repoURL: ${SCHEME}://${HOST}/${USER_NAME}/${APP}.git
+            repoURL: ${BASE}/${APP}.git
             targetRevision: main
             path: deployment/${ENV}
           syncPolicy:
@@ -143,3 +209,34 @@ tasks:
             echo "  ✓ Argo CD app ${APP}-${ENV}-cd -> ${CLUSTER}"
           done
         done
+
+  apply:
+    desc: No git server. Apply each app's starting manifest straight to the dev spoke (not GitOps)
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        {{.RESOLVE_CLUSTER}}
+        CLUSTER=$(resolve_cluster dev "{{.DEV_CLUSTER}}")
+        SPOKE_CTX="{{.SPOKE_CONTEXT}}"
+        SPOKE_CTX="${SPOKE_CTX:-$CLUSTER}"
+        if [ -z "$SPOKE_CTX" ]; then
+          HUB_CTX="{{.KUBE_CONTEXT}}"
+          HUB_CTX="${HUB_CTX:-$(kubectl config current-context 2>/dev/null || echo '<none>')}"
+          echo "No dev spoke found on the hub (kubectl context: ${HUB_CTX}). Set SPOKE_CONTEXT=<kubectl context of the dev spoke>." >&2
+          N=$($KUBECTL -n {{.ARGO_NAMESPACE}} get secret -l argocd.argoproj.io/secret-type=cluster \
+            -o name 2>/dev/null | wc -l | tr -d ' ') || N=""
+          if [ "$N" = 0 ]; then
+            echo "  Context ${HUB_CTX} has no Argo CD cluster secrets in namespace {{.ARGO_NAMESPACE}}: it is probably not the hub. Pass KUBE_CONTEXT=<hub context>." >&2
+          fi
+          exit 1
+        fi
+        for APP in {{.APPS}}; do
+          MANIFEST="$APP/deployment/templates/application.yaml"
+          [ -f "$MANIFEST" ] || { echo "▸ $APP: no $MANIFEST, skipped"; continue; }
+          kubectl --context "$SPOKE_CTX" create namespace "team-${APP}" --dry-run=client -o yaml \
+            | kubectl --context "$SPOKE_CTX" apply -f - >/dev/null
+          kubectl --context "$SPOKE_CTX" -n "team-${APP}" apply -f "$MANIFEST" >/dev/null
+          echo "▸ $APP: ✓ applied $MANIFEST to context ${SPOKE_CTX}, namespace team-${APP}"
+        done
+        echo "Not tracked by Argo CD: re-run after editing the manifest, or move to 'wire' for GitOps."

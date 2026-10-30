@@ -101,7 +101,19 @@ otel-collector:
     amp:
       enabled: true
       remoteWriteEndpoint: '{{with (index .metadata.annotations "amp_endpoint_url")}}{{.}}{{end}}'
+      # amp_endpoint_url is empty on KRO-provisioned clusters (hub and spokes), so the
+      # endpoint comes from <resource_prefix>/platform/amp instead: the secret the platform
+      # seeds once AMP exists (amp-workspace + amp-region), already read by the spoke
+      # amp-workspace-secrets ExternalSecrets. Same key on hub and spokes. Without it the
+      # metrics pipeline falls back to the debug exporter and AMP gets no bifrost series.
+      # Only with a resource_prefix: without one there is no such secret to wait for.
+      secretManagerKey: '{{ with index .metadata.annotations "resource_prefix" }}{{ . }}/platform/amp{{ end }}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+      # appmod's crossplane pod_identities addon already associates otel/otel-collector
+      # on control-plane clusters that are not provider=kro-ack (its selector plus the
+      # control-plane overlay). EKS allows one association per service account, so the
+      # chart skips its own there. Only read on the Secrets Manager path.
+      podIdentity: '{{ if and (eq (index .metadata.labels "environment") "control-plane") (ne (index .metadata.labels "provider") "kro-ack") }}false{{ else }}true{{ end }}'
 
 prometheus-operator-crds:
   namespace: monitoring
