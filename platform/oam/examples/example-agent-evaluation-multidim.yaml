@@ -1,0 +1,88 @@
+# Multi-dimension smoke test for continuous agent evaluation.
+#
+# The other two smoke tests ask for ONE evaluator, so the whole cluster has one
+# Langfuse rule and one score name. This one asks for all four catalog
+# evaluators, to show what a real agent's evaluation looks like: four score
+# names on every trace, four thresholds, and a per-evaluator strictness
+# override.
+#
+# It is deliberately isolated from the existing smoke tests:
+#
+#   * `eval-multidim` is a new name, so its trace tag
+#     `agent:<cluster>/agents/eval-multidim` is new and no existing rule's
+#     filter changes.
+#   * `judge: judge-haiku` puts it on the `*--judge-haiku` evaluator variants,
+#     so it gets four BRAND NEW rules rather than joining
+#     `oap-<token>-helpfulness-<hash>`, which the other two agents share.
+#     Drop the `judge` block and `helpfulness` would instead be added as a third
+#     tag on that shared rule — harmless, and the designed grouping behaviour,
+#     but it mutates an object the other agents depend on, which is not what you
+#     want while testing.
+#
+# `sampling: 1` is set so all four scores appear within about a minute. It is
+# wrong for production: four evaluators at sampling 1 cost FOUR judge calls per
+# request. The commented `coverage: medium` below is the production shape.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: eval-multidim
+  namespace: agents
+spec:
+  components:
+    - name: eval-multidim
+      type: agent
+      properties:
+        description: "Multi-dimension smoke-test agent for continuous evaluation"
+        systemMessage: >-
+          You are a concise assistant. Answer in one or two sentences.
+        modelConfig:
+          modelId: claude-sonnet
+        # No `image:` — uses the platform default, like an ordinary Application.
+        evaluation:
+          enabled: true
+
+          # Judge for every evaluator below. judge-haiku keeps this agent's
+          # rules separate from the shared ones (see header). The platform
+          # default is judge-default (Nova Pro), which avoids the same-family
+          # self-preference bias judge-haiku has against a claude-sonnet agent,
+          # so prefer judge-default in production.
+          judge:
+            modelId: judge-haiku
+
+          # How high a score must be to count as passed. The platform catalog
+          # defines what each level means per evaluator, so `high` is a stricter
+          # bar for safety (0.97) than for helpfulness (0.85).
+          strictness: medium
+
+          # Judge every trace, so all four scores land on the first request.
+          # Costs four judge calls per request — smoke test only.
+          sampling: 1
+          # Production shape instead of `sampling` above: low / medium / high
+          # map to platform sampling rates (1% / 10% / 50%). This is the cost
+          # dial. Prefer these to an explicit `sampling` number — the three
+          # preset rates group into far fewer Langfuse rules, and the project
+          # has a cap.
+          # coverage: medium
+
+          evaluators:
+            - goal-completion
+            - helpfulness
+            # Per-evaluator strictness override: hold safety to the high bar
+            # (0.97) while the rest stay at the agent's `medium` (0.7).
+            # This creates NO extra rule — strictness is applied when the pass
+            # ratio is computed, not when the judge is called.
+            - name: safety
+              strictness: high
+            # NOTE: this agent has no MCP servers, and the hub has none
+            # deployed, so it never calls a tool and `tool-use` will score LOW.
+            # That is the judge being correct, not a fault. It is kept because a
+            # visible low score is itself worth seeing — drop this line if a red
+            # panel would be confusing.
+            - tool-use
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi

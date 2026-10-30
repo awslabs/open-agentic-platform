@@ -384,6 +384,86 @@ the same family as the agents, so it reintroduces the self-preference bias
 
 ---
 
+## 9. See all four dimensions at once
+
+§4–§7 show one evaluator, because both smoke tests ask for one. To see what a
+real agent's evaluation looks like — four score names per trace, four
+thresholds, a per-evaluator override — apply the third example:
+
+```bash
+kubectl apply -f platform/oam/examples/example-agent-evaluation-multidim.yaml
+```
+
+It is built to not disturb anything already running:
+
+| Choice | Why |
+|---|---|
+| name `eval-multidim` | new trace tag, so no existing rule's filter changes |
+| `judge: judge-haiku` | lands on the `*--judge-haiku` evaluator variants, so it gets **four new rules** instead of joining the shared `oap-<token>-helpfulness-<hash>` |
+| `sampling: 1` | all four scores land on the first request |
+
+Drop the `judge` block and `helpfulness` is instead added as a third tag on
+that shared rule. That is the designed grouping behaviour and harmless, but it
+mutates an object the other two agents depend on — not what you want mid-test.
+
+Drive it the same way as §4 (A2A, not `/chat`):
+
+```bash
+kubectl port-forward -n agents svc/eval-multidim-stable 8085:8083 &
+curl -s -X POST http://127.0.0.1:8085/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc":"2.0","id":"3","method":"message/send",
+  "params":{"message":{"role":"user","kind":"message","messageId":"m3",
+    "parts":[{"kind":"text","text":"In one sentence, what does a Kubernetes Service do?"}]}}}'
+```
+
+Expect **four** scores on that one trace:
+
+```bash
+curl -s -u "$PK:$SK" "$LF/api/public/v2/scores?limit=10" \
+  | jq -r '.data[] | "\(.name)=\(.value)"'
+# goal-completion=1
+# helpfulness=1
+# safety=1
+# tool-use=0        <-- expected, see below
+```
+
+And five rules in total, four of them new:
+
+```bash
+curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=20" | jq -r '.data[].name'
+```
+
+Two things that look like bugs and are not:
+
+- **`tool-use` scores low.** This agent has no MCP servers and the hub has none
+  deployed, so it never calls a tool and the judge correctly says so. A visible
+  low score is worth seeing once; drop that one line from the example if a red
+  panel is more confusing than useful.
+- **`safety: strictness high` adds no rule.** Strictness changes the reported
+  `pass_threshold` (0.97 instead of 0.9), which is applied when the pass ratio
+  is computed — not when the judge is called. Only `(evaluator, judge, sampling)`
+  creates rules. Confirm with:
+
+```bash
+curl -s http://127.0.0.1:9098/metrics | grep 'oap_agent_eval_pass_threshold.*eval-multidim'
+```
+
+Catalog thresholds, for reading those numbers:
+
+| Evaluator | low | medium | high |
+|---|---|---|---|
+| `goal-completion` | 0.5 | 0.7 | 0.85 |
+| `helpfulness` | 0.5 | 0.7 | 0.85 |
+| `tool-use` | 0.5 | 0.7 | 0.85 |
+| `safety` | 0.8 | 0.9 | 0.97 |
+
+Coverage presets map to sampling `low` 1% / `medium` 10% / `high` 50%.
+
+Tear down with `kubectl delete -f` on the same file; the four rules disappear
+once no agent needs them.
+
+---
+
 ## What was verified on the hub
 
 Both examples, end to end, on 2026-10-30:
