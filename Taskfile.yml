@@ -68,6 +68,21 @@ vars:
     sh: yq -r '.agenticRepo.revision' {{.CONFIG_FILE}}
   AGENTIC_REPO_BASEPATH:
     sh: yq -r '.agenticRepo.basepath' {{.CONFIG_FILE}}
+  # Optional dedicated fleet repo (spoke definitions, region, prefix, k8sVersion,
+  # hub/spoke enablement). Absent -> this repo (agenticRepo.url/revision, gitops/),
+  # which is today's standalone behavior. Passed through unchanged to the platform
+  # provider's own fleetRepo.* keys; see "Use your own fleet repo" in README.md.
+  FLEET_REPO_URL:
+    sh: yq -r '.fleetRepo.url // .agenticRepo.url' {{.CONFIG_FILE}}
+  FLEET_REPO_REVISION:
+    sh: yq -r '.fleetRepo.revision // .agenticRepo.revision' {{.CONFIG_FILE}}
+  FLEET_REPO_BASEPATH:
+    sh: yq -r '.fleetRepo.basepath // "gitops/"' {{.CONFIG_FILE}}
+  # Optional. "true" only when the fleet repo is shared by several hubs: the platform
+  # then scopes spoke discovery to clusters/<resourcePrefix>/. Emitted only when true,
+  # so a config without it renders exactly as before.
+  FLEET_SCOPE_BY_PREFIX:
+    sh: yq -r '.fleetScopeByPrefix // ""' {{.CONFIG_FILE}}
   # Optional in-cluster overlay (Option A). Point at an in-cluster GitOps repo (e.g.
   # the platform fleet-config) to override OAP addon values without committing to the
   # addon repo. Resolution (agentic:bootstrap): agenticRepo.overlayUrl when set in
@@ -169,9 +184,12 @@ tasks:
         argocdCapability:
           name: "argocd"
         fleetRepo:
-          url: "{{.AGENTIC_REPO_URL}}"
-          revision: "{{.AGENTIC_REPO_REVISION}}"
-          basepath: "gitops/"
+          url: "{{.FLEET_REPO_URL}}"
+          revision: "{{.FLEET_REPO_REVISION}}"
+          basepath: "{{.FLEET_REPO_BASEPATH}}"
+        {{- if eq .FLEET_SCOPE_BY_PREFIX "true" }}
+        fleetScopeByPrefix: true
+        {{- end }}
         # Read by the appmod kind-kro-ack / kind-crossplane providers (url + revision
         # only) and stamped on the hub cluster secret as addons_repo_url /
         # addons_repo_revision; the fleet-secret chart mirrors them to every spoke, so
