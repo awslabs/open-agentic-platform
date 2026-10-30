@@ -49,26 +49,29 @@ template: {
 	// Automatic wiring, which would remove the need for a developer to name this at all, is
 	// tracked in issue #55.
 
-	// AWS name of the IAM policy. IAM policy names are unique per ACCOUNT, not per region or
-	// cluster, so two installs in one account that derive <appName>-<component>-iam-policy
-	// ask for the same policy. With an install identity (global.clusterName, the cluster
-	// secret's aws_cluster_name annotation, which the platform already passes):
-	// <cluster>.<region>.<appName>-<component>-iam-policy. Cluster names (alphanumerics, "-"
-	// and "_") and regions contain no ".", so the first two "."-separated fields identify the
-	// install without ambiguity; the region is there because one account can hold the same
-	// cluster name in two regions. It starts with the cluster name, hence with the resource
-	// prefix. Past IAM's 128 characters: its first 100 characters, "-", 16 hex characters of
-	// sha256(cluster/region/appName/component), "-iam-policy" (128). Without an install
-	// identity: <appName>-<component>-iam-policy, as before.
-	// Only the AWS name changes. The Policy OBJECT keeps <appName>-<component>-iam-policy,
-	// which aws-service-identity's accessFor looks up (policyArnRef), so nothing that
-	// references the policy moves.
+	// AWS name of the IAM policy. IAM policy names are unique per ACCOUNT, so two installs
+	// in one account that derive <appName>-<component>-iam-policy ask for the same policy.
+	// With an install identity (global.clusterName and global.awsRegion, the cluster
+	// secret's aws_cluster_name and aws_region annotations, which the platform already
+	// passes) the AWS name follows the platform's component-iam-policy trait (appmod
+	// platform/oam/definitions/traits/component-policy.cue), byte for byte:
+	//   <first 100 chars of "<cluster>-<appName>-<component>">-<8 hex>-iam-policy   (<= 128)
+	// where the 8 hex chars are sha256("<region>/<cluster>/<namespace>/<appName>/<component>").
+	// The hash is always present. It is set through crossplane.io/external-name: an IAM
+	// Policy takes its AWS name from the external name, and the provider's schema has no
+	// forProvider.name (it is pruned). The Policy OBJECT keeps <appName>-<component>-iam-policy,
+	// which aws-service-identity's accessFor looks up (policyArnRef).
+	// Without an install identity (global.clusterName empty) nothing changes: the object and
+	// the AWS name stay <appName>-<component>-iam-policy, and the legacy forProvider.name is
+	// still rendered as before.
 	let _install = "{{ .Values.global.clusterName }}"
 	let _installRegion = "{{ .Values.global.awsRegion }}"
 	let _policyLegacy = context.appName + "-" + context.name + "-iam-policy"
-	let _policyPlain = _install + "." + _installRegion + "." + _policyLegacy
-	let _policyHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_install + "/" + _installRegion + "/" + context.appName + "/" + context.name)), 0, 16)
-	let _policyName = [if _install == "" {_policyLegacy}, if len(_policyPlain) <= 128 {_policyPlain}, strings.SliceRunes(_policyPlain, 0, 100) + "-" + _policyHash + "-iam-policy"][0]
+	let _policyKey = _installRegion + "/" + _install + "/" + context.namespace + "/" + context.appName + "/" + context.name
+	let _policyHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_policyKey)), 0, 8)
+	let _policyBase = _install + "-" + context.appName + "-" + context.name
+	let _policyHead = [if len(_policyBase) > 100 {strings.SliceRunes(_policyBase, 0, 100)}, _policyBase][0]
+	let _policyName = _policyHead + "-" + _policyHash + "-iam-policy"
 
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
@@ -90,10 +93,17 @@ template: {
 	outputs: "\(context.name)-iam-policy": {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
-		metadata: name: "\(context.appName)-\(context.name)-iam-policy"
+		metadata: {
+			name: _policyLegacy
+			if _install != "" {
+				annotations: "crossplane.io/external-name": _policyName
+			}
+		}
 		spec: {
 			forProvider: {
-				name: _policyName
+				if _install == "" {
+					name: _policyLegacy
+				}
 				// Least privilege: exactly the four actions code-interpreter-mcp calls, no more.
 				// Verified against src/agentcore.js, which constructs only
 				// ListCodeInterpretersCommand, StartCodeInterpreterSessionCommand,

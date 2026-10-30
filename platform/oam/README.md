@@ -193,19 +193,24 @@ is no longer accepted (see below), and the memory is recreated under the derived
 
 The component's IAM Policy object keeps the name `<appName>-<component>-iam-policy`,
 because `aws-service-identity`'s `accessFor` finds it by that object name (`policyArnRef`).
-Its **AWS** name (`forProvider.name`) is not looked up by anything, and IAM policy names
-are unique per AWS account, so it carries the install:
-`<cluster>.<region>.<appName>-<component>-iam-policy` (`<cluster>` is the chart's
-`global.clusterName`, the cluster secret's `aws_cluster_name` annotation, which the
-platform already passes). Past IAM's 128 characters it is the first 100 characters of
-that, `-`, 16 hex characters of a hash of cluster, region, app and component, and
-`-iam-policy`. Two installs in one account therefore never share a policy, and neither
-do two regions that reuse a cluster name. The policy name begins with the cluster name,
-so a sweep that matches the resource prefix reclaims it.
+Its **AWS** name is the Policy's external name (`crossplane.io/external-name`; the provider's
+schema has no `forProvider.name` for an IAM Policy, so that field is ignored). IAM policy
+names are unique per AWS account, so it carries the install, by the same rule as the
+platform's `component-iam-policy` trait (appmod), byte for byte:
 
-The same naming applies to the IAM policy emitted by `agentcore-browser`,
-`agentcore-code-interpreter` and `eks-read-access`: object `<appName>-<component>-iam-policy`
-(what `accessFor` finds), AWS name `<cluster>.<region>.<appName>-<component>-iam-policy`.
+```
+<first 100 chars of "<cluster>-<appName>-<component>">-<8 hex>-iam-policy      (<= 128)
+8 hex = sha256("<region>/<cluster>/<namespace>/<appName>/<component>")[:8]
+```
+
+`<cluster>` and `<region>` are the chart's `global.clusterName` and `global.awsRegion` (the
+cluster secret's `aws_cluster_name` and `aws_region` annotations, which the platform already
+passes). The hash is always present. Two installs in one account never share a policy, nor do
+two regions that reuse a cluster name. The name begins with the cluster name, so a sweep that
+matches the resource prefix reclaims it.
+
+The same rule applies to the IAM policy emitted by `agentcore-browser`,
+`agentcore-code-interpreter` and `eks-read-access`.
 The browser and interpreter names themselves (`browserName`, `interpreterName`) are chosen by
 the developer and are also unique per AWS account: two installs in one account that deploy the
 same Application must give them different names, because the platform does not derive them.
