@@ -5,6 +5,7 @@ kind: Role
 metadata:
   name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
   annotations:
+    argocd.argoproj.io/sync-wave: "-10"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
     crossplane.io/external-name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
 spec:
@@ -41,6 +42,7 @@ kind: PodIdentityAssociation
 metadata:
   name: hub-langfuse-seed
   annotations:
+    argocd.argoproj.io/sync-wave: "-10"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
   forProvider:

@@ -30,18 +30,31 @@ metadata:
   name: langfuse-generate-encryption-key
   namespace: {{ .Release.Namespace }}
   annotations:
-    # PreSync, not Sync: the Deployments below consume the Secret this feeds, so
-    # the entry has to exist before they are applied. A PreSync hook blocks the
-    # sync until it completes, which is the ordering guarantee a Sync hook in a
-    # later wave does not give.
-    argocd.argoproj.io/hook: PreSync
+    # Sync hook in wave -5, NOT PreSync. The Job runs as the langfuse-seed SA
+    # through the hub-langfuse-seed pod identity, and both are ordinary
+    # Sync-phase resources of this chart (wave -10). A PreSync hook runs before
+    # any Sync-phase resource exists: the pod could not be created
+    # ("serviceaccount langfuse-seed not found"), the PreSync phase never ended
+    # and the SA was never created -- a first-install deadlock.
+    # The order on a first install is therefore:
+    #   -10  SA + Role + PodIdentityAssociation
+    #   -5   this Job (ArgoCD waits for the hook to complete)
+    #   -4   ExternalSecret langfuse-encryption (waits for Ready)
+    #   0    web/worker Deployments, which find the Secret already there and
+    #        start with ENCRYPTION_KEY, so no restart is ever needed.
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     argocd.argoproj.io/sync-wave: "-5"
 spec:
-  backoffLimit: 3
+  # Pod Identity credentials are injected when the pod is CREATED, so if the
+  # association was not effective yet a restarted container would never get
+  # them. restartPolicy Never makes the Job controller create a fresh pod per
+  # attempt; backoffLimit 6 (10s,20s,40s,80s,160s,320s) outlasts the Crossplane
+  # reconcile of the PodIdentityAssociation.
+  backoffLimit: 6
   template:
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
       # Reuses the seed SA, which already carries the pod identity granting
       # Secrets Manager write for this chart.
       serviceAccountName: langfuse-seed
@@ -68,6 +81,14 @@ spec:
             - -c
             - |
               set -eu
+
+              # No pod-identity credentials injected = the association was not
+              # effective when this pod was created. Fail fast so the Job
+              # controller retries with a new pod.
+              if [ -z "${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}" ]; then
+                echo "pod identity credentials not injected yet; retrying with a new pod" >&2
+                exit 1
+              fi
 
               # Create-only. An existing entry is left exactly as it is: see the
               # header -- rotating this key destroys access to everything it has
@@ -101,6 +122,11 @@ kind: ExternalSecret
 metadata:
   name: langfuse-encryption
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # Wave -4: right after the generator Job (-5) and before the Deployments
+    # (0); ArgoCD waits for the ExternalSecret to be Ready, so the Secret the
+    # Deployments load with envFrom exists when their pods start.
+    argocd.argoproj.io/sync-wave: "-4"
 spec:
   secretStoreRef:
     kind: ClusterSecretStore

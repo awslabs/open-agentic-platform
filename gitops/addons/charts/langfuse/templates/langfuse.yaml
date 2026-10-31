@@ -8,6 +8,10 @@ kind: ServiceAccount
 metadata:
   name: langfuse-seed
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # Wave -10: the langfuse-generate-encryption-key Job (Sync hook, wave -5)
+    # runs as this SA and needs its pod identity, so both exist before it.
+    argocd.argoproj.io/sync-wave: "-10"
 ---
 # ─── Shared ConfigMap (non-secret configuration only) ─────────────────────
 apiVersion: v1
