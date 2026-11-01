@@ -17,7 +17,11 @@ SPOKE_KUBECONFIG="${SPOKE_KUBECONFIG:-${KUBECONFIG:?set SPOKE_KUBECONFIG or KUBE
 HUB_KUBECONFIG="${HUB_KUBECONFIG:-$SPOKE_KUBECONFIG}"
 ks() { KUBECONFIG="$SPOKE_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
 kh() { KUBECONFIG="$HUB_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
-NS=agents; AGENT=my-agent; MEM=agents.agentcore-short-memory  # <namespace>.<component>
+NS=agents; AGENT=my-agent
+# Memory object: <namespace>.<component>, plus .<8 hex> on a cluster that passes
+# global.clusterName (agentcore-memory.cue, _objName). Exactly one must exist.
+MEM=$(ks get memories.bedrockagentcore.aws.upbound.io -o name | sed 's|.*/||' | grep -E '^agents\.agentcore-short-memory(\.[0-9a-f]{8})?$')
+[ "$(printf '%s\n' "$MEM" | grep -c .)" = 1 ] || { echo "expected exactly one agentcore-short-memory Memory object, found: ${MEM:-none}" >&2; exit 1; }
 GW=http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
 STATE="${STATE:-${TMPDIR:-/tmp}/memory-matrix.env}"; FAILS=0
 row() { if [ "$3" = "$4" ]; then printf 'PASS  %-4s %-66s %s\n' "$1" "$2" "$3"; else printf 'FAIL  %-4s %-66s expected=%s actual=%s\n' "$1" "$2" "$3" "$4"; FAILS=$((FAILS+1)); fi; }
