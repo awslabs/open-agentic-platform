@@ -30,13 +30,20 @@ metadata:
   name: langfuse-generate-encryption-key
   namespace: {{ .Release.Namespace }}
   annotations:
-    # PreSync, not Sync: the Deployments below consume the Secret this feeds, so
-    # the entry has to exist before they are applied. A PreSync hook blocks the
-    # sync until it completes, which is the ordering guarantee a Sync hook in a
-    # later wave does not give.
-    argocd.argoproj.io/hook: PreSync
+    # Sync hook, wave 5, the same as langfuse-push-otel-keys. NOT PreSync: this Job
+    # runs as the langfuse-seed ServiceAccount, and that SA, its IAM Role and its
+    # PodIdentityAssociation are plain Sync-phase resources. ArgoCD completes every
+    # PreSync hook before it applies any Sync-phase resource, so on a fresh install
+    # a PreSync Job cannot create its pod (serviceaccount "langfuse-seed" not
+    # found), PreSync never finishes, and the SA is never created: a deadlock.
+    # Wave 5 runs after those resources are applied.
+    #
+    # Consequence: the web and worker pods can start before the key exists. They
+    # load the Secret as optional, so they boot without ENCRYPTION_KEY and only
+    # pick it up on their next restart (envFrom is read at container start).
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   backoffLimit: 3
   template:
