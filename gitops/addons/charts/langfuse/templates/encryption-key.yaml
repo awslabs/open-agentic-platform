@@ -80,14 +80,46 @@ spec:
             - |
               set -eu
 
+              # Pod Identity credentials can lag the pod by a few seconds: the Role
+              # and PodIdentityAssociation are Crossplane resources applied just
+              # before this Job. Wait for them rather than burn the Job's retries.
+              n=0
+              until aws sts get-caller-identity >/dev/null 2>&1; do
+                n=$((n + 1))
+                if [ "$n" -ge 60 ]; then
+                  echo "no AWS credentials after 5 minutes (pod identity not ready?)" >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+
               # Create-only. An existing entry is left exactly as it is: see the
               # header -- rotating this key destroys access to everything it has
               # already encrypted.
-              if aws secretsmanager describe-secret \
-                   --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null 2>&1; then
-                echo "$SECRET_ID already exists; leaving it untouched (rotating ENCRYPTION_KEY would make stored Langfuse secrets undecryptable)"
+              #
+              # describe-secret also succeeds for a secret that is scheduled for
+              # deletion (destroy then reinstall inside the recovery window), and
+              # ESO cannot read such a secret. Its DeletedDate is then set: restore
+              # it, key unchanged, instead of reporting "already exists".
+              if DELETED=$(aws secretsmanager describe-secret \
+                   --secret-id "$SECRET_ID" --region "$AWS_REGION" \
+                   --query DeletedDate --output text 2>&1); then
+                if [ -n "$DELETED" ] && [ "$DELETED" != "None" ]; then
+                  echo "$SECRET_ID is scheduled for deletion; restoring it with its existing key"
+                  aws secretsmanager restore-secret \
+                    --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null
+                  echo "restored $SECRET_ID"
+                else
+                  echo "$SECRET_ID already exists; leaving it untouched (rotating ENCRYPTION_KEY would make stored Langfuse secrets undecryptable)"
+                fi
                 exit 0
               fi
+              # Only "not found" means create. Any other failure (access denied,
+              # throttling) must not fall through to a create.
+              case "$DELETED" in
+                *ResourceNotFoundException*) ;;
+                *) echo "describe-secret failed: $DELETED" >&2; exit 1 ;;
+              esac
 
               # 32 random bytes as 64 hex characters, which is the AES-256 key
               # length Langfuse expects. Read straight from /dev/urandom so this

@@ -32,6 +32,7 @@ spec:
                 "secretsmanager:CreateSecret",
                 "secretsmanager:PutSecretValue",
                 "secretsmanager:DescribeSecret",
+                "secretsmanager:RestoreSecret",
                 "secretsmanager:GetSecretValue"
               ],
               "Resource": "arn:aws:secretsmanager:*:*:secret:{{ include "langfuse.resourcePrefix" . }}-hub/langfuse-*"
