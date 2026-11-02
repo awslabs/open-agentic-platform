@@ -4,50 +4,11 @@ externalSecret:
     environment: control-plane
     tenant: control-plane
 
-# External overlay repo ("layer 5") — points the PLATFORM appset at THIS repo so we
-# can override values for platform-owned addons (chart + registry live in
-# appmod-blueprints) without editing that repo.
-#
-# This is what makes gitops/overlays/clusters/hub/karpenter/values.yaml take
-# effect: bootstrap/addons.yaml reads these annotations into the appset-chart's
-# overlayRepoURLGit*, which appends a $overlay source plus, per addon,
-#   $overlay/<basepath>configs/<addon>/values.yaml
-#   $overlay/<basepath>overlays/environments/<env>/<addon>/values.yaml
-#   $overlay/<basepath>overlays/clusters/<cluster>/<addon>/values.yaml
-# AFTER the platform's own layers, so our file wins. All are
-# ignoreMissingValueFiles, so paths we don't populate are silent no-ops.
-#
-# SCOPE: only the PLATFORM appset consumes these. The agentic appset
-# (gitops/bootstrap/agent-platform-app.yaml) never sets overlayRepoURLGit,
-# so agentic addons keep resolving overlays via layer 4 exactly as before — no
-# double-read of files like overlays/clusters/hub/agent-gateway/values.yaml.
-#
-# SIDE EFFECT: this also repoints the appset-level $overlay/...overrides.yaml
-# files from the platform repo to this one. Verified safe — the platform's
-# control-plane/overrides.yaml is comments-only and its clusters/hub/overrides.yaml
-# does not exist, so nothing of substance is lost.
-#
-# Safe to enable: $overlay becomes a REAL ArgoCD source, and this repo is public
-# and already read by ArgoCD (fleet-secret-hub and clusters-default already carry
-# a `ref: overlay` source pointing at this same URL).
-#
-# WARNING — this also drives SPOKE DISCOVERY. The clusters-kro ApplicationSet
-# resolves its git generator as
-#   repoURL:  or overlay_repo_url  fleetRepoURL
-#   revision: or overlay_repo_revision fleetRepoRevision
-#   basepath: or overlay_repo_basepath fleetRepoBasepath
-# so if these point at a repo or revision that lacks
-# fleet/spoke-values/tenants/*/kro-clusters/clusters/*.json, the appset globs a
-# valid-but-wrong tree, finds no files, and generates ZERO spoke applications with
-# ErrorOccurred=False and no warning anywhere. useFleetRepo below makes that drift
-# impossible by construction: there is only one URL/revision to get wrong.
-overlay:
-  # This repo IS the fleet repo, so inherit hub.fleetRepoURL / hub.fleetRepoRevision
-  # rather than restating them. Those trace back to a single source, config.local.yaml's
-  # agenticRepo.url / .revision, so the coordinates are declared exactly once and
-  # cannot drift out of step with the cluster secret's fleetRepo* annotations.
-  # Set repoURL/revision explicitly only for a genuinely separate overlay repo;
-  # an explicit value still wins over this flag.
-  useFleetRepo: true
-  # Repo-relative root holding configs/ + overlays/. Matches addonsRepoBasepath.
-  basepath: gitops/
+# No `overlay:` block here on purpose. The fleet-secret chart can stamp
+# overlay_repo_* annotations from overlay.repoURL, or from hub.fleetRepoURL when
+# overlay.useFleetRepo is true, but the platform's hub-fleet-secret ApplicationSet
+# passes no hub.fleetRepoURL, so useFleetRepo had no effect. In OAP standalone the
+# fleet repo IS this repo, and OAP deliberately does not layer it on itself as an
+# overlay. A dedicated fleet repo (config `fleetRepo`) is picked up as the overlay
+# by the platform and by `agentic:bootstrap` without any setting in this file.
+# To use a separate overlay repo, set the hub's overlay_repo_url/revision/basepath.

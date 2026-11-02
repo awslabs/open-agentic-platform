@@ -23,6 +23,10 @@ a chart value, so no copy of it lands in git. Spokes have no Langfuse of their
 own, so unlike the OTEL keys this is only ever read by the hub.
 */ -}}
 {{- if .Values.encryptionKey.enabled }}
+{{- /* The key Job runs as the langfuse-seed ServiceAccount, whose IAM Role and PodIdentityAssociation are only rendered when seed.enabled. Without them the Job (a blocking wave -2 hook) can never reach Secrets Manager. */ -}}
+{{- if not .Values.seed.enabled }}
+{{- fail "langfuse: encryptionKey.enabled requires seed.enabled: the key Job needs the langfuse-seed ServiceAccount and Pod Identity" }}
+{{- end }}
 {{- $secretId := printf "%s-hub/langfuse-encryption" (include "langfuse.resourcePrefix" .) }}
 apiVersion: batch/v1
 kind: Job
@@ -30,13 +34,24 @@ metadata:
   name: langfuse-generate-encryption-key
   namespace: {{ .Release.Namespace }}
   annotations:
-    # PreSync, not Sync: the Deployments below consume the Secret this feeds, so
-    # the entry has to exist before they are applied. A PreSync hook blocks the
-    # sync until it completes, which is the ordering guarantee a Sync hook in a
-    # later wave does not give.
-    argocd.argoproj.io/hook: PreSync
+    # Sync hook in wave -2, i.e. BEFORE the web and worker Deployments (wave 0),
+    # so the key exists, and ESO has copied it into the cluster, before those pods
+    # start. They read it with envFrom at container start and a running pod never
+    # re-reads it, so starting them first would leave them without the key until
+    # someone restarted them.
+    #
+    # NOT PreSync: this Job runs as the langfuse-seed ServiceAccount, and that SA,
+    # its IAM Role and its PodIdentityAssociation are plain Sync-phase resources.
+    # ArgoCD completes every PreSync hook before it applies any Sync-phase
+    # resource, so on a fresh install a PreSync Job cannot create its pod
+    # (serviceaccount "langfuse-seed" not found), PreSync never finishes, and the
+    # SA is never created: a deadlock. As a Sync hook in wave -2 it is ordered
+    # against those resources by wave instead: SA, Role and PodIdentityAssociation
+    # are wave -3. Nothing in waves -3 or -2 depends on anything in a later wave,
+    # so the order cannot wait on itself.
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   backoffLimit: 3
   template:
@@ -69,14 +84,46 @@ spec:
             - |
               set -eu
 
+              # Pod Identity credentials can lag the pod by a few seconds: the Role
+              # and PodIdentityAssociation are Crossplane resources applied just
+              # before this Job. Wait for them rather than burn the Job's retries.
+              n=0
+              until aws sts get-caller-identity >/dev/null 2>&1; do
+                n=$((n + 1))
+                if [ "$n" -ge 60 ]; then
+                  echo "no AWS credentials after 5 minutes (pod identity not ready?)" >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+
               # Create-only. An existing entry is left exactly as it is: see the
               # header -- rotating this key destroys access to everything it has
               # already encrypted.
-              if aws secretsmanager describe-secret \
-                   --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null 2>&1; then
-                echo "$SECRET_ID already exists; leaving it untouched (rotating ENCRYPTION_KEY would make stored Langfuse secrets undecryptable)"
+              #
+              # describe-secret also succeeds for a secret that is scheduled for
+              # deletion (destroy then reinstall inside the recovery window), and
+              # ESO cannot read such a secret. Its DeletedDate is then set: restore
+              # it, key unchanged, instead of reporting "already exists".
+              if DELETED=$(aws secretsmanager describe-secret \
+                   --secret-id "$SECRET_ID" --region "$AWS_REGION" \
+                   --query DeletedDate --output text 2>&1); then
+                if [ -n "$DELETED" ] && [ "$DELETED" != "None" ]; then
+                  echo "$SECRET_ID is scheduled for deletion; restoring it with its existing key"
+                  aws secretsmanager restore-secret \
+                    --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null
+                  echo "restored $SECRET_ID"
+                else
+                  echo "$SECRET_ID already exists; leaving it untouched (rotating ENCRYPTION_KEY would make stored Langfuse secrets undecryptable)"
+                fi
                 exit 0
               fi
+              # Only "not found" means create. Any other failure (access denied,
+              # throttling) must not fall through to a create.
+              case "$DELETED" in
+                *ResourceNotFoundException*) ;;
+                *) echo "describe-secret failed: $DELETED" >&2; exit 1 ;;
+              esac
 
               # 32 random bytes as 64 hex characters, which is the AES-256 key
               # length Langfuse expects. Read straight from /dev/urandom so this
@@ -101,12 +148,18 @@ kind: ExternalSecret
 metadata:
   name: langfuse-encryption
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # Wave -1: after the generator Job (-2), before the Deployments (0). Where
+    # ArgoCD has a health check for ExternalSecret it also waits for the Secret to
+    # be synced; where it does not, the Deployments' non-optional secretRef covers
+    # the gap (the pod waits for the Secret, then starts).
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   secretStoreRef:
     kind: ClusterSecretStore
     name: aws-secrets-manager
   # Short, for the same reason as the collector's: on a fresh environment the
-  # generator Job may land only moments before this first syncs.
+  # generator Job lands only moments before this first syncs.
   refreshInterval: "1m"
   target:
     name: {{ .Values.encryptionKey.secretRef }}

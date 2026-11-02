@@ -28,4 +28,16 @@ bifrost:
 # AMP remote write for Grafana dashboards (requires Pod Identity with AMP write permissions)
 amp:
   enabled: false
+  # Workspace endpoint ending in "/" (".../workspaces/ws-xxx/"). When set it wins.
   remoteWriteEndpoint: ""
+  # Otherwise, Secrets Manager secret the platform already seeds with the AMP workspace:
+  # properties `amp-workspace` (endpoint ending in "/") and `amp-region`. Read via the
+  # ClusterSecretStore, so the endpoint never has to be known in git.
+  secretManagerKey: ""
+  # Cluster name: Pod Identity target, IAM role name prefix and the `cluster` label on
+  # every remote-written series (keeps hub and spoke series apart in one workspace).
+  clusterName: ""
+  # Secrets Manager path only: render the IAM Role + PodIdentityAssociation for the
+  # collector service account. Set false where another chart already associates
+  # otel/otel-collector on this cluster. The literal-endpoint path always renders them.
+  podIdentity: true

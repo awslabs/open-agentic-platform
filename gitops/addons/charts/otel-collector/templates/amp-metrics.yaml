@@ -1,0 +1,126 @@
+{{- if include "otel-collector.metricsSplit" . }}
+# Bifrost metrics -> AMP when the workspace comes from Secrets Manager. A separate
+# Deployment so that only it waits for the otel-collector-amp Secret: until the
+# platform seeds <prefix>/platform/amp (or on an install with no AMP at all), this pod
+# stays in CreateContainerConfigError and the traces collector runs normally.
+# kubelet retries on its own once ESO writes the Secret, so no restart is needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-metrics-config
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: bifrost-llm-gateway
+              scrape_interval: 15s
+              static_configs:
+                - targets: ["{{ .Values.bifrost.scrapeEndpoint }}"]
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 500ms
+        send_batch_max_size: 2048
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      sigv4auth:
+        # The workspace region, which can differ from this cluster's region.
+        region: ${env:AMP_REGION}
+
+    exporters:
+      prometheusremotewrite/amp:
+        endpoint: "${env:AMP_WORKSPACE}api/v1/remote_write"
+        auth:
+          authenticator: sigv4auth
+        {{- with .Values.amp.clusterName }}
+        external_labels:
+          cluster: {{ . | quote }}
+        {{- end }}
+
+    service:
+      extensions:
+        - health_check
+        - sigv4auth
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: [batch]
+          exporters:
+            - prometheusremotewrite/amp
+      telemetry:
+        logs:
+          level: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector-metrics
+spec:
+  # One scraper: more replicas would scrape bifrost N times and write duplicate series.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector-metrics
+  template:
+    metadata:
+      labels:
+        app: otel-collector-metrics
+      annotations:
+        checksum/config: {{ printf "%s|%s|%s" .Values.bifrost.scrapeEndpoint .Values.amp.secretManagerKey (.Values.amp.clusterName | default "") | sha256sum | trunc 32 }}
+    spec:
+      # Same service account as the traces collector: the AMP PodIdentityAssociation
+      # binds otel/otel-collector.
+      serviceAccountName: otel-collector
+      containers:
+        - name: collector
+          image: {{ .Values.collector.image }}
+          args:
+            - '--config=/conf/config.yaml'
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.global.awsRegion }}
+            # From the otel-collector-amp ExternalSecret. optional: false so this pod
+            # waits for ESO instead of starting with an empty AMP endpoint.
+            - name: AMP_WORKSPACE
+              valueFrom:
+                secretKeyRef:
+                  name: otel-collector-amp
+                  key: AMP_WORKSPACE
+                  optional: false
+            - name: AMP_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: otel-collector-amp
+                  key: AMP_REGION
+                  optional: false
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-metrics-config
+{{- end }}
