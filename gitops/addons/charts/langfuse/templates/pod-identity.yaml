@@ -5,6 +5,9 @@ kind: Role
 metadata:
   name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
   annotations:
+    {{- if .Values.encryptionKey.enabled }}
+    argocd.argoproj.io/sync-wave: "-3"
+    {{- end }}
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
     crossplane.io/external-name: {{ include "langfuse.resourcePrefix" . }}-hub-langfuse-seed-role
 spec:
@@ -29,6 +32,7 @@ spec:
                 "secretsmanager:CreateSecret",
                 "secretsmanager:PutSecretValue",
                 "secretsmanager:DescribeSecret",
+                "secretsmanager:RestoreSecret",
                 "secretsmanager:GetSecretValue"
               ],
               "Resource": "arn:aws:secretsmanager:*:*:secret:{{ include "langfuse.resourcePrefix" . }}-hub/langfuse-*"
@@ -41,6 +45,9 @@ kind: PodIdentityAssociation
 metadata:
   name: hub-langfuse-seed
   annotations:
+    {{- if .Values.encryptionKey.enabled }}
+    argocd.argoproj.io/sync-wave: "-3"
+    {{- end }}
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
   forProvider:
