@@ -23,6 +23,10 @@ a chart value, so no copy of it lands in git. Spokes have no Langfuse of their
 own, so unlike the OTEL keys this is only ever read by the hub.
 */ -}}
 {{- if .Values.encryptionKey.enabled }}
+{{- /* The key Job runs as the langfuse-seed ServiceAccount, whose IAM Role and PodIdentityAssociation are only rendered when seed.enabled. Without them the Job (a blocking wave -2 hook) can never reach Secrets Manager. */ -}}
+{{- if not .Values.seed.enabled }}
+{{- fail "langfuse: encryptionKey.enabled requires seed.enabled: the key Job needs the langfuse-seed ServiceAccount and Pod Identity" }}
+{{- end }}
 {{- $secretId := printf "%s-hub/langfuse-encryption" (include "langfuse.resourcePrefix" .) }}
 apiVersion: batch/v1
 kind: Job
