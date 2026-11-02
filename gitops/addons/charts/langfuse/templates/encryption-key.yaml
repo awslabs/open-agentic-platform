@@ -30,20 +30,24 @@ metadata:
   name: langfuse-generate-encryption-key
   namespace: {{ .Release.Namespace }}
   annotations:
-    # Sync hook, wave 5, the same as langfuse-push-otel-keys. NOT PreSync: this Job
-    # runs as the langfuse-seed ServiceAccount, and that SA, its IAM Role and its
-    # PodIdentityAssociation are plain Sync-phase resources. ArgoCD completes every
-    # PreSync hook before it applies any Sync-phase resource, so on a fresh install
-    # a PreSync Job cannot create its pod (serviceaccount "langfuse-seed" not
-    # found), PreSync never finishes, and the SA is never created: a deadlock.
-    # Wave 5 runs after those resources are applied.
+    # Sync hook in wave -2, i.e. BEFORE the web and worker Deployments (wave 0),
+    # so the key exists, and ESO has copied it into the cluster, before those pods
+    # start. They read it with envFrom at container start and a running pod never
+    # re-reads it, so starting them first would leave them without the key until
+    # someone restarted them.
     #
-    # Consequence: the web and worker pods can start before the key exists. They
-    # load the Secret as optional, so they boot without ENCRYPTION_KEY and only
-    # pick it up on their next restart (envFrom is read at container start).
+    # NOT PreSync: this Job runs as the langfuse-seed ServiceAccount, and that SA,
+    # its IAM Role and its PodIdentityAssociation are plain Sync-phase resources.
+    # ArgoCD completes every PreSync hook before it applies any Sync-phase
+    # resource, so on a fresh install a PreSync Job cannot create its pod
+    # (serviceaccount "langfuse-seed" not found), PreSync never finishes, and the
+    # SA is never created: a deadlock. As a Sync hook in wave -2 it is ordered
+    # against those resources by wave instead: SA, Role and PodIdentityAssociation
+    # are wave -3. Nothing in waves -3 or -2 depends on anything in a later wave,
+    # so the order cannot wait on itself.
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   backoffLimit: 3
   template:
@@ -108,12 +112,18 @@ kind: ExternalSecret
 metadata:
   name: langfuse-encryption
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # Wave -1: after the generator Job (-2), before the Deployments (0). Where
+    # ArgoCD has a health check for ExternalSecret it also waits for the Secret to
+    # be synced; where it does not, the Deployments' non-optional secretRef covers
+    # the gap (the pod waits for the Secret, then starts).
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   secretStoreRef:
     kind: ClusterSecretStore
     name: aws-secrets-manager
   # Short, for the same reason as the collector's: on a fresh environment the
-  # generator Job may land only moments before this first syncs.
+  # generator Job lands only moments before this first syncs.
   refreshInterval: "1m"
   target:
     name: {{ .Values.encryptionKey.secretRef }}

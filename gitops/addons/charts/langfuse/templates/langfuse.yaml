@@ -8,6 +8,13 @@ kind: ServiceAccount
 metadata:
   name: langfuse-seed
   namespace: {{ .Release.Namespace }}
+  {{- if .Values.encryptionKey.enabled }}
+  annotations:
+    # Wave -3: the ENCRYPTION_KEY generator Job (wave -2, encryption-key.yaml)
+    # runs as this SA, so it, its IAM Role and its PodIdentityAssociation must be
+    # applied before that Job's pod is created.
+    argocd.argoproj.io/sync-wave: "-3"
+  {{- end }}
 ---
 # ─── Shared ConfigMap (non-secret configuration only) ─────────────────────
 apiVersion: v1
@@ -124,14 +131,15 @@ spec:
                 name: langfuse-secrets
             {{- if .Values.encryptionKey.enabled }}
             # ENCRYPTION_KEY, without which the LLM-connection API fails closed
-            # with a 500 (see templates/encryption-key.yaml). Optional so a
-            # cluster whose generator Job or ExternalSecret has not landed yet
-            # still boots and serves traces, instead of the whole Langfuse web
-            # pod sitting in CreateContainerConfigError over a key that only the
-            # evaluation feature needs.
+            # with a 500 (see templates/encryption-key.yaml). NOT optional: the
+            # generator Job and the ExternalSecret are applied in waves before this
+            # Deployment, so the Secret is normally there already. If it is not yet
+            # (ESO still syncing), the pod waits in CreateContainerConfigError and
+            # the kubelet starts it as soon as the Secret appears. An optional ref
+            # would let it boot without the key and never pick it up (envFrom is
+            # read once, at container start).
             - secretRef:
                 name: {{ .Values.encryptionKey.secretRef }}
-                optional: true
             {{- end }}
           env:
             - name: HOSTNAME
@@ -278,7 +286,6 @@ spec:
             # secret on every judge call.
             - secretRef:
                 name: {{ .Values.encryptionKey.secretRef }}
-                optional: true
             {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
