@@ -31,39 +31,97 @@ import (
 
 template: {
 	// AWS memory name. It must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ and must be one-to-one
-	// with (namespace, component): the IAM policy grants memory/<name>-*, so two pairs
-	// sharing a name would share a memory.
+	// with (install, namespace, component): the IAM policy grants memory/<name>-*, so two
+	// triples sharing a name would share a memory. AgentCore requires the name to be
+	// unique within the AWS account (CreateMemory), so two installs in one account
+	// (different clusters, same namespace and component) must not derive the same name.
 	//
+	// _install is the install's identity: the cluster name the platform already passes
+	// to this chart as global.clusterName (from the cluster secret's aws_cluster_name
+	// annotation, as for the other cluster-scoped addons). EKS cluster names are unique
+	// per account and region, and a memory is regional, so (cluster, namespace,
+	// component) is unique wherever AgentCore requires it. No new parameter. Nothing in
+	// an Application sets it.
+	//
+	// With an install identity: "M", the first 30 characters of
+	// <cluster>_<namespace>_<component> ("-" -> "_"), "_", and 16 hex characters of
+	// sha256(cluster/namespace/component). At most 48 characters. The name always
+	// carries the hash, so no truncation or "-" -> "_" mapping can make two triples meet
+	// (cluster names, namespaces and components never contain "/").
+	//
+	// Without one (global.clusterName empty: the chart rendered standalone, or by a
+	// platform that does not pass it), the names are the ones this component derived
+	// before the install was part of them, so nothing changes there:
 	// Plain form <namespace>_<component> with "-" -> "_", used only when the namespace
 	// has no "-": namespaces and components never contain "_", so the first "_" then
 	// separates the two and the mapping is one-to-one. Without that condition team/a-memory
-	// and team-a/memory would both be team_a_memory. Existing memories in such namespaces
-	// keep their names.
-	//
+	// and team-a/memory would both be team_a_memory.
 	// Otherwise, or when the plain form is too long or starts with a digit: "M", the
 	// first 30 characters of the plain form, "_", and 16 hex characters of
-	// sha256(namespace/component). The upper-case "M" cannot occur in a plain name
-	// (Kubernetes names are lower case), so the two forms never meet, and the 64-bit hash
-	// separates fallback names. At most 48 characters.
+	// sha256(namespace/component).
+	// The upper-case "M" cannot occur in a plain name (Kubernetes names are lower case),
+	// so the plain and hashed forms never meet, and the 64-bit hash separates hashed names.
+	let _install = "{{ .Values.global.clusterName }}"
 	let _rawName = strings.Replace(context.namespace + "_" + context.name, "-", "_", -1)
 	let _plainOK = !strings.Contains(context.namespace, "-") && (_rawName =~ "^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
 	let _hash = strings.SliceRunes(hex.Encode(sha256.Sum256(context.namespace + "/" + context.name)), 0, 16)
 	let _head = [if len(_rawName) > 30 {strings.SliceRunes(_rawName, 0, 30)}, _rawName][0]
-	let _autoName = [if _plainOK {_rawName}, "M" + _head + "_" + _hash][0]
+	let _legacyName = [if _plainOK {_rawName}, "M" + _head + "_" + _hash][0]
+	let _scopedRaw = strings.Replace(_install, "-", "_", -1) + "_" + _rawName
+	let _scopedHead = [if len(_scopedRaw) > 30 {strings.SliceRunes(_scopedRaw, 0, 30)}, _scopedRaw][0]
+	let _scopedHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_install + "/" + context.namespace + "/" + context.name)), 0, 16)
+	let _autoName = [if _install != "" {"M" + _scopedHead + "_" + _scopedHash}, _legacyName][0]
 	// Memory and MemoryStrategy here are the cluster-scoped Upbound kinds
 	// (*.aws.upbound.io), so their object names carry the namespace to stay unique
 	// across namespaces (oam-authoring.md section 3). "." separates the two because
 	// neither a namespace nor a component name can contain one, so <namespace>.<component>
-	// is one-to-one; "-" would let team/a-memory take team-a/memory's object. The IAM
-	// Policy keeps <appName>-<component>-iam-policy: aws-service-identity's accessFor
-	// looks it up by exactly that name, so it changes only together with that trait
-	// (appmod). IAM policy names are account-global, so the same appName and component
-	// in two namespaces collide on that Policy until the convention changes upstream.
+	// is one-to-one; "-" would let team/a-memory take team-a/memory's object. These are
+	// Kubernetes object names, so they need not carry the install: they live in one
+	// cluster.
 	//
-	// Upgrading from a version that named the Memory <component>: the object name
-	// changes, so KubeVela deletes the old Memory and creates a new one. The AWS memory
-	// and its stored events are deleted with it and a new memoryId is issued.
-	let _objName = context.namespace + "." + context.name
+	// An existing Memory object must never see its forProvider.name change: the memory
+	// name is RequiresReplace in the Terraform provider, and the Crossplane provider
+	// refuses replace plans, so the Memory would stay on the old memory, Synced=False,
+	// while the IAM policy below grants only memory/<new name>-*. So the object name
+	// follows the AWS name: with an install identity it ends in ".<8 hex of
+	// sha256(memoryName)>". A different memory name is then a different object, and
+	// KubeVela creates the new Memory (and its MemoryStrategies, which reference it by
+	// object name) and garbage-collects the old ones, which deletes the old AWS memory.
+	// The agent gets the new memoryId through the component output (status.atProvider.id).
+	// Without an install identity the memory name is the one this component always
+	// derived, so the object keeps its <namespace>.<component> name and nothing changes.
+	//
+	// With an install identity the IAM Policy OBJECT is named after the policy's AWS name
+	// (see _policyName): aws-service-identity's accessFor looks it up by that name
+	// (policyArnRef), and IAM policy names are unique per account.
+	let _objBase = context.namespace + "." + context.name
+	let _objName = [if _install != "" {_objBase + "." + strings.SliceRunes(hex.Encode(sha256.Sum256(_autoName)), 0, 8)}, _objBase][0]
+
+	// AWS name of the IAM policy. IAM policy names are unique per ACCOUNT, so two installs
+	// in one account that derive <appName>-<component>-iam-policy ask for the same policy.
+	// With an install identity (global.clusterName and global.awsRegion, the cluster
+	// secret's aws_cluster_name and aws_region annotations, which the platform already
+	// passes) the AWS name follows the platform's component-iam-policy trait (appmod
+	// platform/oam/definitions/traits/component-policy.cue), byte for byte:
+	//   <first 100 chars of "<cluster>-<appName>-<component>">-<8 hex>-iam-policy   (<= 128)
+	// where the 8 hex chars are sha256("<region>/<cluster>/<namespace>/<appName>/<component>").
+	// The hash is always present. It is set through crossplane.io/external-name: an IAM
+	// Policy takes its AWS name from the external name, and the provider's schema has no
+	// forProvider.name (it is pruned). With an install identity the Policy OBJECT is named
+	// after its AWS name, so aws-service-identity's accessFor (policyArnRef, same rule in
+	// appmod's trait) finds it by that name, and an upgrade gets a new object whose ARN the
+	// attachment waits for instead of latching the old policy's ARN. Keep in step with
+	// appmod platform/oam/definitions/traits/component-policy.cue.
+	// Without an install identity (global.clusterName empty) nothing changes: the object and
+	// the AWS name stay <appName>-<component>-iam-policy, and the legacy forProvider.name is
+	// still rendered as before.
+	let _installRegion = "{{ .Values.global.awsRegion }}"
+	let _policyLegacy = context.appName + "-" + context.name + "-iam-policy"
+	let _policyKey = _installRegion + "/" + _install + "/" + context.namespace + "/" + context.appName + "/" + context.name
+	let _policyHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_policyKey)), 0, 8)
+	let _policyBase = _install + "-" + context.appName + "-" + context.name
+	let _policyHead = [if len(_policyBase) > 100 {strings.SliceRunes(_policyBase, 0, 100)}, _policyBase][0]
+	let _policyName = _policyHead + "-" + _policyHash + "-iam-policy"
 
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
@@ -119,7 +177,7 @@ template: {
 	// retrieve_memory_records), on this memory only. AgentCore ids are
 	// "<memoryName>-<suffix>" and memoryName never contains "-", so the "-*" suffix
 	// matches this memory and no other. memoryName is always derived, one-to-one, from
-	// the namespace and component (see _autoName; it cannot be overridden), so an
+	// the install, namespace and component (see _autoName; it cannot be overridden), so an
 	// Application cannot name, and so be granted, another namespace's memory.
 	//
 	// No bedrock:InvokeModel: the strategies emitted here are AgentCore built-ins,
@@ -128,10 +186,17 @@ template: {
 	outputs: "\(context.name)-iam-policy": {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
-		metadata: name: "\(context.appName)-\(context.name)-iam-policy"
+		metadata: {
+			name: [if _install != "" {_policyName}, _policyLegacy][0]
+			if _install != "" {
+				annotations: "crossplane.io/external-name": _policyName
+			}
+		}
 		spec: {
 			forProvider: {
-				name: "\(context.appName)-\(context.name)-iam-policy"
+				if _install == "" {
+					name: _policyLegacy
+				}
 				policy: """
 					{
 					  "Version": "2012-10-17",
@@ -157,7 +222,7 @@ template: {
 	}
 
 	parameter: {
-		// +usage=Memory name in AWS. Derived from the namespace and component and cannot be overridden: any other value is rejected. <namespace>_<component> ("-" replaced by "_") when the namespace has no "-", else M<first 30 characters>_<16-character hash>
+		// +usage=Memory name in AWS. Derived from the cluster, namespace and component and cannot be overridden: any other value is rejected. M<first 30 characters of <cluster>_<namespace>_<component>>_<16-character hash>. When the platform gives no cluster name: <namespace>_<component> ("-" replaced by "_") when the namespace has no "-", else M<first 30 characters>_<16-character hash>
 		// Fixed rather than overridable because the IAM policy grants memory/<memoryName>-*:
 		// an override could name another namespace's memory and be granted access to it.
 		memoryName: _autoName & =~"^[a-zA-Z][a-zA-Z0-9_]{0,47}$"

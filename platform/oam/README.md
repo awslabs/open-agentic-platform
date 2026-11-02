@@ -186,25 +186,106 @@ The `agentcore-memory` component reports healthy only once the memory and all it
 strategies exist, so an agent that `dependsOn` it starts with every strategy in place.
 Removing a strategy from the list deletes it in AgentCore.
 
-Upgrading from an earlier version of this component renames the Memory object to
-`<namespace>.<component>`, so the AWS memory is recreated with a new memoryId and its
-stored events are lost. An Application that set `memoryName` must drop it: the field
+Upgrading from an earlier version of this component renames the Memory object (to
+`<namespace>.<component>`, and with an install identity to the form described under
+"Upgrading an existing install" below), so the AWS memory is recreated with a new
+memoryId and its stored events are lost. An Application that set `memoryName` must drop it: the field
 is no longer accepted (see below), and the memory is recreated under the derived name.
 
-The component's IAM Policy is still named `<appName>-<component>-iam-policy`, without the
-namespace, because `aws-service-identity`'s `accessFor` finds it by that name. IAM
-policy names are global to the AWS account, so two namespaces deploying the same
-Application name and component name collide on it. Until that convention changes
-upstream, keep that pair unique per account.
+With an install identity the component's IAM Policy object is named after the policy's
+**AWS** name, and `aws-service-identity`'s `accessFor` finds it by that name
+(`policyArnRef`; appmod's trait computes the same name). Without one, the object keeps
+`<appName>-<component>-iam-policy`. The AWS name is the Policy's external name
+(`crossplane.io/external-name`; the provider's schema has no `forProvider.name` for an IAM
+Policy, so that field is ignored). IAM policy names are unique per AWS account, so it
+carries the install, by the same rule as the
+platform's `component-iam-policy` trait (appmod), byte for byte:
 
-The AWS memory name is derived, not set, and is one-to-one with the namespace and
-component: `<namespace>_<component>` with `-` replaced by `_` when the namespace has no
-`-`, otherwise `M<first 30 characters>_<16-character hash>`. The second form is also used
-when the first would start with a digit or exceed AgentCore's 48 characters, so the same
-Application deploys in any namespace. `memoryName` cannot be overridden: the IAM policy
-grants `memory/<memoryName>-*`, so a chosen or colliding name could reach another
-namespace's memory. `eventExpiryDuration` must be 3 to 365 days. KubeVela rejects other
-values when the Application is applied.
+```
+<first 100 chars of "<cluster>-<appName>-<component>">-<8 hex>-iam-policy      (<= 128)
+8 hex = sha256("<region>/<cluster>/<namespace>/<appName>/<component>")[:8]
+```
+
+`<cluster>` and `<region>` are the chart's `global.clusterName` and `global.awsRegion` (the
+cluster secret's `aws_cluster_name` and `aws_region` annotations, which the platform already
+passes). The hash is always present. Two installs in one account never share a policy, nor do
+two regions that reuse a cluster name. The name begins with the cluster name, so a sweep that
+matches the resource prefix reclaims it.
+
+The same rule applies to the IAM policy emitted by `agentcore-browser`,
+`agentcore-code-interpreter` and `eks-read-access`.
+The browser and interpreter names themselves (`browserName`, `interpreterName`) are chosen by
+the developer and are also unique per AWS account: two installs in one account that deploy the
+same Application must give them different names, because the platform does not derive them.
+
+**Collision risk that remains.** Everything above depends on `global.clusterName`. When it is
+empty (the chart rendered standalone, or by a platform that does not pass the cluster secret's
+`aws_cluster_name`), the names are exactly the previous ones and nothing is installed-scoped:
+two installs in one AWS account then collide as before. The memory name collides (the second
+memory cannot be created and stays `Synced=False`), and the policies are shared, so removing
+one install deletes a policy the other still uses. Set `global.clusterName` on every install
+that shares an account. Separately, within one cluster, two namespaces that use the same
+`appName` and component still share the Policy object, hence the AWS policy.
+
+The AWS memory name is derived, not set, and is one-to-one with the install, namespace
+and component. AgentCore requires it to be unique within the AWS account, so it carries
+the install too: `M<first 30 characters of <cluster>_<namespace>_<component>>_<16-character
+hash>`, with `-` replaced by `_` and the hash taken over `cluster/namespace/component`.
+It is at most 48 characters and starts with a letter, as AgentCore requires. When the
+platform passes no cluster name (`global.clusterName` empty, for example the chart rendered
+standalone) the names are the ones this component derived before: `<namespace>_<component>`
+with `-` replaced by `_` when the namespace has no `-`, otherwise `M<first 30
+characters>_<16-character hash>`, and policy `<appName>-<component>-iam-policy`.
+`memoryName` cannot be overridden: the IAM policy grants `memory/<memoryName>-*`, so a
+chosen or colliding name could reach another namespace's memory. `eventExpiryDuration`
+must be 3 to 365 days. KubeVela rejects other values when the Application is applied.
+
+**Upgrading an existing install.** On a cluster that passes `global.clusterName`, upgrading
+from a version that derived the names without the install changes the AWS memory name of
+every `agentcore-memory` component, and the AWS policy name of every `agentcore-memory`,
+`agentcore-browser`, `agentcore-code-interpreter` and `eks-read-access` component. On a
+cluster that does not pass it, nothing changes.
+
+- Memory. A memory cannot be renamed (the name is `RequiresReplace` in the provider, and the
+  Crossplane provider refuses replace plans), so the component never changes the name of an
+  existing Memory object. The Memory object name follows the AWS name
+  (`<namespace>.<component>.<8 hex of sha256(memoryName)>` with an install identity,
+  `<namespace>.<component>` without one), and so do its MemoryStrategy objects. A new
+  memory name is therefore a new object: KubeVela creates the new Memory and strategies and
+  garbage-collects the old ones, which deletes the old AWS memory. The agent receives the
+  new memoryId through the component output and rolls. The old memory's stored events are
+  lost: plan the upgrade as a replace.
+- IAM policy. The Policy object is renamed with its AWS name, so KubeVela creates a new
+  object and policy and garbage-collects the old object, which deletes the old AWS policy
+  once it is detached. A policy still attached by another cluster's old attachments stays
+  until that cluster upgrades. The new object has no ARN until its policy exists, so an
+  attachment cannot latch the old policy's ARN. Merge with appmod's matching trait change:
+  the trait looks the object up by the new name.
+- Attachments. A `RolePolicyAttachment` resolves `policyArnRef` once and keeps that ARN
+  (`policy_arn` is immutable), so an existing attachment stays on the old AWS policy. The
+  role reaches the new policy only through a new attachment. The platform's
+  `aws-service-identity` trait creates new attachments when it moves to per-cluster role
+  names (appmod, per-cluster IAM role and policy names), so deploy this version with, or
+  after, that trait version. With an older trait the role keeps the old policy, which grants
+  only the old memory name: the agent is denied access to the new memory.
+
+**Environments that ran an earlier revision of this PR.** Only environments that already
+ran an earlier revision of this change (07b8145e or older) with `global.clusterName` set are
+affected. They keep the same AWS memory name, but the Memory object name now carries the
+`<8 hex>` suffix, so the new Memory asks AgentCore for a name the old Memory still holds
+(memory names are unique per account). The new Memory then cannot become healthy, and the
+Application can wait in `apply-component` instead of replacing the old one. Recovery: delete
+the old Memory object by hand, then let KubeVela retry:
+
+```
+kubectl --context <cluster> get memories.bedrockagentcore.aws.upbound.io | grep '<namespace>.<component>'
+kubectl --context <cluster> delete memories.bedrockagentcore.aws.upbound.io <namespace>.<component>
+```
+
+The old object is the one named `<namespace>.<component>` without the `.<8 hex>` suffix. Its
+MemoryStrategy objects (`memorystrategies.bedrockagentcore.aws.upbound.io`) follow it.
+This is expected from the naming logic and has not been observed live. Fresh installs and
+upgrades from main are not affected.
 
 Run the agent with **one replica** (the `agent` component's default), with or without memory,
 and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the
