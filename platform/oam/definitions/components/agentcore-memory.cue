@@ -91,10 +91,9 @@ template: {
 	// Without an install identity the memory name is the one this component always
 	// derived, so the object keeps its <namespace>.<component> name and nothing changes.
 	//
-	// The IAM Policy OBJECT keeps <appName>-<component>-iam-policy: aws-service-identity's
-	// accessFor looks it up by exactly that object name (policyArnRef). The policy's AWS
-	// name is its external name, which nothing looks up, and IAM policy names are unique
-	// per account, so it carries the install (see _policyName).
+	// With an install identity the IAM Policy OBJECT is named after the policy's AWS name
+	// (see _policyName): aws-service-identity's accessFor looks it up by that name
+	// (policyArnRef), and IAM policy names are unique per account.
 	let _objBase = context.namespace + "." + context.name
 	let _objName = [if _install != "" {_objBase + "." + strings.SliceRunes(hex.Encode(sha256.Sum256(_autoName)), 0, 8)}, _objBase][0]
 
@@ -108,8 +107,11 @@ template: {
 	// where the 8 hex chars are sha256("<region>/<cluster>/<namespace>/<appName>/<component>").
 	// The hash is always present. It is set through crossplane.io/external-name: an IAM
 	// Policy takes its AWS name from the external name, and the provider's schema has no
-	// forProvider.name (it is pruned). The Policy OBJECT keeps <appName>-<component>-iam-policy,
-	// which aws-service-identity's accessFor looks up (policyArnRef).
+	// forProvider.name (it is pruned). With an install identity the Policy OBJECT is named
+	// after its AWS name, so aws-service-identity's accessFor (policyArnRef, same rule in
+	// appmod's trait) finds it by that name, and an upgrade gets a new object whose ARN the
+	// attachment waits for instead of latching the old policy's ARN. Keep in step with
+	// appmod platform/oam/definitions/traits/component-policy.cue.
 	// Without an install identity (global.clusterName empty) nothing changes: the object and
 	// the AWS name stay <appName>-<component>-iam-policy, and the legacy forProvider.name is
 	// still rendered as before.
@@ -185,7 +187,7 @@ template: {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
 		metadata: {
-			name: _policyLegacy
+			name: [if _install != "" {_policyName}, _policyLegacy][0]
 			if _install != "" {
 				annotations: "crossplane.io/external-name": _policyName
 			}

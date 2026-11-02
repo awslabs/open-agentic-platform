@@ -192,11 +192,13 @@ Upgrading from an earlier version of this component renames the Memory object (t
 memoryId and its stored events are lost. An Application that set `memoryName` must drop it: the field
 is no longer accepted (see below), and the memory is recreated under the derived name.
 
-The component's IAM Policy object keeps the name `<appName>-<component>-iam-policy`,
-because `aws-service-identity`'s `accessFor` finds it by that object name (`policyArnRef`).
-Its **AWS** name is the Policy's external name (`crossplane.io/external-name`; the provider's
-schema has no `forProvider.name` for an IAM Policy, so that field is ignored). IAM policy
-names are unique per AWS account, so it carries the install, by the same rule as the
+With an install identity the component's IAM Policy object is named after the policy's
+**AWS** name, and `aws-service-identity`'s `accessFor` finds it by that name
+(`policyArnRef`; appmod's trait computes the same name). Without one, the object keeps
+`<appName>-<component>-iam-policy`. The AWS name is the Policy's external name
+(`crossplane.io/external-name`; the provider's schema has no `forProvider.name` for an IAM
+Policy, so that field is ignored). IAM policy names are unique per AWS account, so it
+carries the install, by the same rule as the
 platform's `component-iam-policy` trait (appmod), byte for byte:
 
 ```
@@ -253,11 +255,12 @@ cluster that does not pass it, nothing changes.
   garbage-collects the old ones, which deletes the old AWS memory. The agent receives the
   new memoryId through the component output and rolls. The old memory's stored events are
   lost: plan the upgrade as a replace.
-- IAM policy. The Policy object keeps its name (`accessFor` finds it by that name) and its
-  external name changes, so the provider creates a new AWS policy under the new name and
-  the object tracks it. The old AWS policy is not deleted: it is left in the account,
-  detached once the role's attachments are replaced, and must be deleted by hand
-  (`<appName>-<component>-iam-policy`, the former name).
+- IAM policy. The Policy object is renamed with its AWS name, so KubeVela creates a new
+  object and policy and garbage-collects the old object, which deletes the old AWS policy
+  once it is detached. A policy still attached by another cluster's old attachments stays
+  until that cluster upgrades. The new object has no ARN until its policy exists, so an
+  attachment cannot latch the old policy's ARN. Merge with appmod's matching trait change:
+  the trait looks the object up by the new name.
 - Attachments. A `RolePolicyAttachment` resolves `policyArnRef` once and keeps that ARN
   (`policy_arn` is immutable), so an existing attachment stays on the old AWS policy. The
   role reaches the new policy only through a new attachment. The platform's

@@ -49,8 +49,11 @@ template: {
 	// where the 8 hex chars are sha256("<region>/<cluster>/<namespace>/<appName>/<component>").
 	// The hash is always present. It is set through crossplane.io/external-name: an IAM
 	// Policy takes its AWS name from the external name, and the provider's schema has no
-	// forProvider.name (it is pruned). The Policy OBJECT keeps <appName>-<component>-iam-policy,
-	// which aws-service-identity's accessFor looks up (policyArnRef).
+	// forProvider.name (it is pruned). With an install identity the Policy OBJECT is named
+	// after its AWS name, so aws-service-identity's accessFor (policyArnRef, same rule in
+	// appmod's trait) finds it by that name, and an upgrade gets a new object whose ARN the
+	// attachment waits for instead of latching the old policy's ARN. Keep in step with
+	// appmod platform/oam/definitions/traits/component-policy.cue.
 	// Without an install identity (global.clusterName empty) nothing changes: the object and
 	// the AWS name stay <appName>-<component>-iam-policy, and the legacy forProvider.name is
 	// still rendered as before.
@@ -84,7 +87,7 @@ template: {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
 		metadata: {
-			name: _policyLegacy
+			name: [if _install != "" {_policyName}, _policyLegacy][0]
 			if _install != "" {
 				annotations: "crossplane.io/external-name": _policyName
 			}
