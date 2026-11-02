@@ -188,7 +188,7 @@ aws ecr-public create-repository --repository-name agent-evaluation \
 
 # 4. Build and push both architectures.
 cd applications/agent-evaluation
-VERSION=0.1.1 REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
+VERSION=0.1.0 REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
 ```
 
 Then set `image.tag` in `gitops/addons/charts/agent-evaluation/values.yaml` to
@@ -206,7 +206,7 @@ aws ecr get-login-password --region us-west-2 \
   | podman login --username AWS --password-stdin \
       <account>.dkr.ecr.us-west-2.amazonaws.com
 
-VERSION=0.1.1 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+VERSION=0.1.0 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
 ```
 
 Point the addon at it with a values override rather than editing the chart
@@ -216,7 +216,7 @@ default, so the test registry never lands in git:
 helm upgrade --install agent-evaluation \
   gitops/addons/charts/agent-evaluation -n agent-evaluation \
   --set image.repository=<account>.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation \
-  --set image.tag=0.1.1 \
+  --set image.tag=0.1.0 \
   --set global.clusterName=<cluster> --set role=hub \
   --set langfuse.url=http://langfuse.langfuse.svc.cluster.local:3000 \
   --set langfuse.secretManagerKey=<prefix>-hub/langfuse-otel

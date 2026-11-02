@@ -19,7 +19,13 @@
 #                             own account before publishing.
 set -euo pipefail
 
-VERSION="${VERSION:-0.1.1}"
+# Keep in lockstep with the chart's image.tag
+# (gitops/addons/charts/agent-evaluation/values.yaml), Chart.yaml's
+# version/appVersion, the registry entry's defaultVersion and pyproject.toml. A
+# build that defaults to a different tag than the chart pulls is published to a
+# tag nothing references, and the addon stays in ImagePullBackOff looking like a
+# registry problem.
+VERSION="${VERSION:-0.1.0}"
 REGISTRY="${REGISTRY:-public.ecr.aws/z0a4o2j5}"
 IMAGE="agent-evaluation"
 PLATFORMS=("linux/arm64" "linux/amd64")

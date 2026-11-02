@@ -30,13 +30,34 @@ metadata:
   name: langfuse-generate-encryption-key
   namespace: {{ .Release.Namespace }}
   annotations:
-    # PreSync, not Sync: the Deployments below consume the Secret this feeds, so
-    # the entry has to exist before they are applied. A PreSync hook blocks the
-    # sync until it completes, which is the ordering guarantee a Sync hook in a
-    # later wave does not give.
-    argocd.argoproj.io/hook: PreSync
+    # Sync wave 5, NOT PreSync. The ordering this needs is "after the
+    # ServiceAccount, before the Deployments", and PreSync cannot express the
+    # first half: ArgoCD completes every PreSync hook before it applies any
+    # Sync-phase resource, but `langfuse-seed` (templates/langfuse.yaml) and its
+    # IAM Role and PodIdentityAssociation (templates/pod-identity.yaml) are all
+    # plain Sync-phase resources. On a FRESH install the hook therefore cannot
+    # create its pod --
+    #     serviceaccount "langfuse-seed" not found
+    # -- PreSync never completes, so the SA is never created, and the app sits
+    # OutOfSync with this Job as the only object in the namespace. It deadlocks
+    # rather than retrying, and only on first install: a cluster that already has
+    # the SA upgrades cleanly, which is why this looked healthy everywhere it had
+    # been run before.
+    #
+    # Wave 5 is the same wave as langfuse-push-otel-keys
+    # (templates/push-otel-secret.yaml), which runs this identical SA and its pod
+    # identity successfully today -- so it is a proven-good point for both to be
+    # ready, rather than a guess.
+    #
+    # The other half of the ordering is kept by pushing what consumes the key to
+    # later waves instead: the ExternalSecret below to 6 and the web/worker
+    # Deployments to 8 (ingress stays last at 10). The Deployments' secretRef is
+    # `optional: true`, so even if the Secret were late they boot and serve
+    # traces -- they would just refuse LLM connections until a restart, which is
+    # exactly what the wave ordering now avoids.
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   backoffLimit: 3
   template:
@@ -101,6 +122,12 @@ kind: ExternalSecret
 metadata:
   name: langfuse-encryption
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # After the generator Job (wave 5) that creates the Secrets Manager entry
+    # this reads, and before the Deployments (wave 8) that consume the Secret it
+    # produces. The refreshInterval below is still the backstop for the case
+    # where the entry lands a moment late.
+    argocd.argoproj.io/sync-wave: "6"
 spec:
   secretStoreRef:
     kind: ClusterSecretStore

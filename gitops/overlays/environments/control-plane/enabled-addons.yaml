@@ -144,7 +144,17 @@ enabledAddons:
   # and the judge LLM connection) because every cluster shares one project. The
   # registry entry derives role=hub from this cluster having an
   # ingress_domain_name, so no flag here chooses the role.
-  agent_evaluation: true
+  #
+  # OFF UNTIL THE IMAGE IS PUBLISHED. The chart's default image,
+  # public.ecr.aws/z0a4o2j5/agent-evaluation, does not exist in the public
+  # registry yet -- the repository itself answers NAME_UNKNOWN, so there is no
+  # tag to fall back to. Enabling it here puts the reconciler in
+  # ImagePullBackOff the moment this environment syncs the chart: a stuck
+  # addon, not a degraded one. Same reasoning as judge.virtualKey.enabled
+  # defaulting off -- a dangling dependency is a worse first-run experience
+  # than an addon a cluster opts into.
+  # Flip to true in the same change that points image.tag at the published tag.
+  agent_evaluation: false
   agent_core: true
   agent_gateway: true
   oam_components: true
