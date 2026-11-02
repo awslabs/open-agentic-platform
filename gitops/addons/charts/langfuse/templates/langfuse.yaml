@@ -94,14 +94,6 @@ kind: Deployment
 metadata:
   name: langfuse
   namespace: {{ .Release.Namespace }}
-  annotations:
-    # After the ENCRYPTION_KEY generator Job (wave 5) and its ExternalSecret
-    # (wave 6), both in templates/encryption-key.yaml, so this pod starts with
-    # the key already in its envFrom rather than picking it up on a later
-    # restart. The secretRef is `optional: true`, so a late key degrades
-    # (LLM connections refused) instead of blocking startup -- this ordering is
-    # what keeps that degraded window from happening on a fresh install.
-    argocd.argoproj.io/sync-wave: "8"
 spec:
   replicas: {{ .Values.replicas }}
   selector:
@@ -308,10 +300,6 @@ kind: Deployment
 metadata:
   name: langfuse-worker
   namespace: {{ .Release.Namespace }}
-  annotations:
-    # Same wave as the web Deployment, and for the same reason: start after the
-    # ENCRYPTION_KEY Job and its ExternalSecret so the key is present at boot.
-    argocd.argoproj.io/sync-wave: "8"
 spec:
   replicas: {{ .Values.worker.replicas }}
   selector:
