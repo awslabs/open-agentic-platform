@@ -93,7 +93,8 @@ print(max(t) if len(t)==2 else "")')
   echo "      strategies Ready at $STRAT_READY, pod created at $POD_CREATED"
   POL=$(ks get policies.iam.aws.upbound.io -o json | python3 -c 'import json,sys
 for i in json.load(sys.stdin)["items"]:
-    if i["metadata"]["name"].endswith("-agentcore-short-memory-iam-policy"): print(i["spec"]["forProvider"]["policy"])')
+    import re
+    if re.search(r"-agentcore-short-memory(-[0-9a-f]{8})?-iam-policy$", i["metadata"]["name"]): print(i["spec"]["forProvider"]["policy"])')
   row P7 "memory IAM policy: AgentCore actions only, no bedrock:InvokeModel" "yes no" "$(yn "$(echo "$POL" | grep RetrieveMemoryRecords)") $(yn "$(echo "$POL" | grep InvokeModel)")"
   echo "=== no caller identity (bypassing the gateway) ==="
   ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \

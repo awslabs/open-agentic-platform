@@ -206,6 +206,10 @@ platform's `component-iam-policy` trait (appmod), byte for byte:
 8 hex = sha256("<region>/<cluster>/<namespace>/<appName>/<component>")[:8]
 ```
 
+In the name, `<cluster>` is lowercased and `_` becomes `-`, so the object name is a valid Kubernetes
+name for any EKS cluster name (EKS allows uppercase and `_`). The hash input keeps the cluster name
+as given. appmod's trait applies the same mapping.
+
 `<cluster>` and `<region>` are the chart's `global.clusterName` and `global.awsRegion` (the
 cluster secret's `aws_cluster_name` and `aws_region` annotations, which the platform already
 passes). The hash is always present. Two installs in one account never share a policy, nor do
@@ -224,8 +228,9 @@ empty (the chart rendered standalone, or by a platform that does not pass the cl
 two installs in one AWS account then collide as before. The memory name collides (the second
 memory cannot be created and stays `Synced=False`), and the policies are shared, so removing
 one install deletes a policy the other still uses. Set `global.clusterName` on every install
-that shares an account. Separately, within one cluster, two namespaces that use the same
-`appName` and component still share the Policy object, hence the AWS policy.
+that shares an account. Separately, without it, two namespaces that use the same
+`appName` and component share the Policy object, hence the AWS policy (with it, the
+namespace is part of the hash, so each gets its own).
 
 The AWS memory name is derived, not set, and is one-to-one with the install, namespace
 and component. AgentCore requires it to be unique within the AWS account, so it carries

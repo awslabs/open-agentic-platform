@@ -55,7 +55,7 @@ spec:
         let _policyLegacy = context.appName + "-" + context.name + "-iam-policy"
         let _policyKey = _installRegion + "/" + _install + "/" + context.namespace + "/" + context.appName + "/" + context.name
         let _policyHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_policyKey)), 0, 8)
-        let _policyBase = _install + "-" + context.appName + "-" + context.name
+        let _policyBase = strings.ToLower(strings.Replace(_install, "_", "-", -1)) + "-" + context.appName + "-" + context.name
         let _policyHead = [if len(_policyBase) > 100 {strings.SliceRunes(_policyBase, 0, 100)}, _policyBase][0]
         let _policyName = _policyHead + "-" + _policyHash + "-iam-policy"
 
