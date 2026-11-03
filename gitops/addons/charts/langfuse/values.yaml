@@ -139,7 +139,31 @@ clickhouse:
     # restart that applied exactly that, trace_log was recreated and collected
     # 119,289 rows in 11 hours. The TTLs in the same file applied correctly, so
     # retention is the mechanism that holds.
-    bound: true
+    # OFF BY DEFAULT, because every attempt to express this in config.d has
+    # taken ClickHouse down and none of the failures are visible without a
+    # restart:
+    #
+    #   `<trace_log remove="1"/>`   silently ineffective (config element is
+    #                               dropped, compiled-in default re-enables it)
+    #   `<profiles><default>`       CrashLoopBackOff; profiles is a users.d
+    #                               concept, not accepted in config.d
+    #   TTL on every system log     ClickHouse exits 36 two seconds after
+    #                               merging the file, with the reason only in
+    #                               /var/log/clickhouse-server/err.log, which is
+    #                               unreachable on a crash-looping pod
+    #
+    # The last one is probably a per-table detail (ClickHouse ALTERs existing
+    # system tables to apply a config TTL at startup, and one of them rejects
+    # it) but diagnosing it needs console logging enabled first, and each
+    # attempt costs a Langfuse outage. Landing it properly is tracked as its own
+    # issue rather than retried here.
+    #
+    # Turning this off is safe: the protection that actually matters is the
+    # PrometheusRule below, which alerts at 20% free with room to act, plus the
+    # documented recovery in applications/agent-evaluation/TESTING.md section
+    # 5a. The hub's volume is at ~2% used after the manual cleanup, so there is
+    # no near-term risk.
+    bound: false
     # Short on purpose: long enough to investigate a live incident, not long
     # enough to consume the volume. A TTL bounds a table whatever its write
     # rate, which matters because the rate swings with load -- trace_log grew
