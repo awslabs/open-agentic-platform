@@ -474,8 +474,24 @@ spec:
           volumeMounts:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
+            {{- if .Values.clickhouse.systemLogs.bound }}
+            # Bounds ClickHouse's own system log tables. Without this they are
+            # unbounded and filled this volume in ten days, which silently took
+            # down every trace and every evaluation score -- see
+            # templates/clickhouse-system-logs.yaml for the measurements.
+            - name: system-logs-config
+              mountPath: /etc/clickhouse-server/config.d/system-logs.xml
+              subPath: system-logs.xml
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+      {{- if .Values.clickhouse.systemLogs.bound }}
+      volumes:
+        - name: system-logs-config
+          configMap:
+            name: langfuse-clickhouse-system-logs
+      {{- end }}
   volumeClaimTemplates:
     - apiVersion: v1
       kind: PersistentVolumeClaim

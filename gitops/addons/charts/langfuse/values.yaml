@@ -117,6 +117,25 @@ clickhouse:
     # reproducibility problem #1057 fixed for the Langfuse image itself.
     tag: "25.12.11.4"
   password: clickhouse
+  # ClickHouse's own diagnostic tables, which ship enabled and UNBOUNDED.
+  #
+  # Measured on the hub: system.trace_log reached 15.08 GiB / 675M rows and
+  # system.text_log another 3.3 GiB, filling the 20 GiB volume in ten days
+  # against 712 KiB of actual Langfuse data. The failure is silent in every
+  # place an operator looks -- the collector reports spans sent and 0 failed,
+  # because the web tier accepts and enqueues them, and only the worker log
+  # shows `NOT_ENOUGH_SPACE` as it drops every record. Traces stop existing, no
+  # agent is scored, and the evaluation gauges all read a believable 0.
+  #
+  # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
+  # instance cannot be cleaned up without DROP TABLE.
+  systemLogs:
+    # Disables trace_log (the largest writer, and nothing here reads it) and puts
+    # a TTL on the rest. Leave on unless debugging ClickHouse itself.
+    bound: true
+    # Short on purpose: long enough to investigate a live incident, not long
+    # enough to consume the volume.
+    ttlDays: 3
   storage: 20Gi
   resources:
     requests:

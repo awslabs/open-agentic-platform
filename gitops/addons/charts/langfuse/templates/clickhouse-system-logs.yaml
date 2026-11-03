@@ -1,0 +1,81 @@
+{{- /*
+Bound ClickHouse's own system log tables.
+
+WHY THIS EXISTS. ClickHouse ships with every system log table enabled and NONE
+of them bounded. On the hub that filled the 20 GiB data volume in ten days and
+took the whole telemetry path down:
+
+  system.trace_log   15.08 GiB   675,133,331 rows
+  system.text_log     2.37 GiB    29,709,126 rows
+  system.text_log_0   0.93 GiB    23,983,027 rows
+  system.part_log     0.42 GiB     2,626,471 rows
+  ---------------------------------------------------
+  default.events_full  712 KiB         3,117 rows   <- the actual Langfuse data
+
+So 19 of 20 GiB was ClickHouse talking to itself, against 712 KiB of user data.
+
+HOW IT FAILED, which is the part worth preventing. Nothing reported an error
+where anyone would look:
+
+  - the OTel Collector kept exporting happily: 300 spans sent, 0 failed, because
+    Langfuse's web tier accepts a span and enqueues it
+  - the Langfuse worker then dropped every record on insert --
+    `Cannot reserve 1.00 MiB, not enough space (code 243, NOT_ENOUGH_SPACE)` --
+    visible ONLY in the worker's own log
+  - so traces silently stopped existing, no agent was ever scored again, and
+    every oap_agent_eval_* gauge read a plausible 0
+  - and because TRUNCATE itself needs ~1 MiB of metadata space, the database
+    could not even be cleaned up once full: recovery needed DROP TABLE, which
+    unlinks rather than writes
+
+`trace_log` is the query-level sampling profiler. It is a performance-debugging
+aid, it is by far the largest writer, and nothing in this platform reads it, so
+it is turned OFF rather than merely trimmed. The rest keep a short TTL: still
+useful for debugging a live incident, no longer able to consume the volume.
+
+TTLs apply to existing tables too -- ClickHouse picks up the new setting and
+prunes on the next merge -- so this heals a cluster that is already filling up,
+as long as it has enough free space to merge.
+*/ -}}
+{{- if .Values.clickhouse.systemLogs.bound }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-clickhouse-system-logs
+  namespace: {{ .Release.Namespace }}
+data:
+  # Dropped into /etc/clickhouse-server/config.d/, which ClickHouse merges over
+  # its packaged defaults. Disabling a log needs the `remove` attribute: an empty
+  # element would leave the default in place.
+  system-logs.xml: |
+    <clickhouse>
+      <!-- The 15 GiB writer. Nothing here reads it. -->
+      <trace_log remove="1"/>
+
+      <!-- Kept, but bounded. flush_interval_milliseconds is left at the default;
+           only retention changes. -->
+      <text_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+        <level>warning</level>
+      </text_log>
+      <part_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </part_log>
+      <metric_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </metric_log>
+      <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </asynchronous_metric_log>
+      <query_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </query_log>
+      <!-- Langfuse v4's "legacy API usage" job reads query_log, so that one stays
+           enabled; it is only 6 MiB and the TTL is what keeps it that way. -->
+      <processors_profile_log remove="1"/>
+      <opentelemetry_span_log remove="1"/>
+      <error_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </error_log>
+    </clickhouse>
+{{- end }}
