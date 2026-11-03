@@ -150,6 +150,32 @@ clickhouse:
     # where removing the config element did not. Nothing in this platform reads
     # trace_log; set false to get it back for ClickHouse performance work.
     disableQueryProfiler: true
+  # Size of the ClickHouse data volume.
+  #
+  # CHANGING THIS DOES NOT RESIZE AN EXISTING CLUSTER, and getting it wrong
+  # blocks the whole chart. A StatefulSet's volumeClaimTemplates are immutable,
+  # so any drift here makes every later sync fail with
+  #   StatefulSet.apps "langfuse-clickhouse" is invalid:
+  #   spec.volumeClaimTemplates: Invalid value
+  # and nothing else in the chart lands either -- including a fix you are trying
+  # to deploy. Dropping this key accidentally renders `storage: 0`, which fails
+  # the same way; that is how it was found.
+  #
+  # To grow an existing volume, patch the PVC directly
+  # (`kubectl patch pvc clickhouse-data-langfuse-clickhouse-0 -n langfuse ...`),
+  # gp3 allows online expansion, and update this value so a fresh install agrees.
+  #
+  # 20Gi is comfortable for traces and scores: the hub's real data was 712 KiB
+  # after ten days. It was ClickHouse's own unbounded system logs that filled
+  # the volume, which `systemLogs` above now prevents.
+  storage: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
 
 # PrometheusRule for the datastores (templates/prometheus-rule.yaml). Needs the
 # prometheus-operator CRDs, which the observability domain already installs.
