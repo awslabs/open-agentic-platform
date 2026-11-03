@@ -301,14 +301,164 @@ and it is what keeps the same Application on dev and prod from sharing one
 series. If it is missing, the agent image predates it — the platform default
 image does; the smoke test pins one that has it.
 
-No trace at all means the collector cannot reach Langfuse. On the hub it must
-export **in-cluster**; exporting via the public domain hangs and silently drops
-every trace:
+No trace at all has **two** causes, and they look identical from here. Check
+them in this order, because the second one is the one that fooled us.
+
+**(a) The collector cannot reach Langfuse.** On the hub it must export
+**in-cluster**; exporting via the public domain hangs and silently drops every
+trace:
 
 ```bash
 kubectl get cm -n otel -o yaml | grep -o 'https\?://[^ "]*api/public/otel'
 # http://langfuse.langfuse.svc.cluster.local:3000/api/public/otel
 ```
+
+**(b) ClickHouse is full, and every upstream hop still reports success.** See
+§5a — read it before concluding anything about the collector or the agent.
+
+---
+
+## 5a. When the whole chain reports healthy and no trace exists
+
+> This cost three days of silently scoring nothing on the hub. It is the single
+> most misleading failure in this stack, because **every component an operator
+> would check says it is fine.**
+
+### What it looks like
+
+- the agent answers normally, HTTP 200, correct content
+- the agent's env is correct: `CLUSTER_NAME`, `AGENT_NAMESPACE`, `AGENT_NAME`
+- the collector reports **spans sent and zero failed**
+- Langfuse's write mode is correct (`dual` / `dual_write`)
+- the Langfuse worker pod is `1/1 Running`
+- `/readyz` on the reconciler is `ready`, with the right rule and agent counts
+- every `oap_agent_eval_*` gauge reads a perfectly believable `0`
+
+Nothing is red. The dashboard looks like an idle agent.
+
+### Why the collector lies about it
+
+Langfuse's **web** tier accepts an OTLP POST and enqueues it; the **worker**
+writes it to ClickHouse later. So a full ClickHouse is invisible to the
+collector — it got its 200:
+
+```bash
+# collector's own counters: sent is high, failed is ZERO, and it means nothing
+POD=$(kubectl get pod -n otel -o jsonpath='{.items[0].metadata.name}')
+kubectl port-forward -n otel "pod/$POD" 8888:8888 &
+curl -s http://127.0.0.1:8888/metrics | grep -E '^otelcol_(receiver_accepted|exporter_sent|exporter_send_failed)_spans'
+#   otelcol_receiver_accepted_spans{...}   300
+#   otelcol_exporter_sent_spans{...}       300
+#   otelcol_exporter_send_failed_spans{..}   0     <-- still 0 while everything is dropped
+```
+
+### The one place the truth is
+
+```bash
+kubectl logs -n langfuse deploy/langfuse-worker --tail=200 | grep -iE "NOT_ENOUGH_SPACE|dropped"
+```
+
+```
+Cannot reserve 1.00 MiB, not enough space  (code 243, NOT_ENOUGH_SPACE)
+ClickhouseWriter: Max attempts reached, dropped 35 observations record(s)
+ClickhouseWriter: Max attempts reached, dropped 62 events_full record(s)
+```
+
+### Confirm it
+
+```bash
+kubectl exec -n langfuse langfuse-clickhouse-0 -- df -h /var/lib/clickhouse
+# /dev/nvme3n1  20G  20G  1000K 100% /var/lib/clickhouse
+
+# what is actually using it
+kubectl exec -n langfuse langfuse-clickhouse-0 -- clickhouse-client --query "
+SELECT database, table, formatReadableSize(sum(bytes_on_disk)) AS size, sum(rows) AS rows
+FROM system.parts WHERE active GROUP BY database, table
+ORDER BY sum(bytes_on_disk) DESC LIMIT 10 FORMAT PrettyCompactMonoBlock"
+```
+
+Measured on the hub, ten days after install:
+
+| table | size | rows |
+|---|---|---|
+| `system.trace_log` | **15.08 GiB** | 675,133,331 |
+| `system.text_log` | 2.37 GiB | 29,709,126 |
+| `system.text_log_0` | 0.93 GiB | 23,983,027 |
+| `system.part_log` | 0.42 GiB | 2,626,471 |
+| **`default.events_full`** — the actual Langfuse data | **712 KiB** | 3,117 |
+
+**19 of 20 GiB was ClickHouse's own diagnostics**, against 712 KiB of real data.
+ClickHouse enables every system log table by default and bounds none of them.
+
+### Recovering a FULL instance — `TRUNCATE` will not work
+
+This is the part that surprises people. `TRUNCATE` needs about 1 MiB of metadata
+space to record itself, so on a full volume it fails with the very error you are
+trying to clear:
+
+```
+TRUNCATE TABLE system.trace_log
+-> Code: 243. DB::Exception: Cannot reserve 1.00 MiB, not enough space.
+```
+
+`DROP TABLE` unlinks part directories instead of writing, so it succeeds. Drop
+the biggest table first to buy space, then truncate the rest normally:
+
+```bash
+# 1. DROP the largest one -- this is what breaks the deadlock
+kubectl exec -n langfuse langfuse-clickhouse-0 -- \
+  clickhouse-client --query "DROP TABLE IF EXISTS system.trace_log SYNC"
+
+# 2. with space available, the rest truncate normally
+for t in text_log text_log_0 trace_log_0 part_log metric_log metric_log_0 \
+         asynchronous_metric_log asynchronous_metric_log_0 \
+         processors_profile_log processors_profile_log_0 \
+         opentelemetry_span_log error_log; do
+  kubectl exec -n langfuse langfuse-clickhouse-0 -- \
+    clickhouse-client --query "TRUNCATE TABLE IF EXISTS system.$t"
+done
+
+kubectl exec -n langfuse langfuse-clickhouse-0 -- df -h /var/lib/clickhouse
+```
+
+Measured: `100%` → `1%`, 15 GiB reclaimed by the `DROP` alone.
+
+**This touches no Langfuse data.** `system.*` tables are ClickHouse's own
+diagnostics and are recreated on demand. Verify afterwards:
+
+```bash
+kubectl exec -n langfuse langfuse-clickhouse-0 -- clickhouse-client --query "
+SELECT table, sum(rows) FROM system.parts WHERE active AND database='default'
+GROUP BY table ORDER BY table FORMAT PrettyCompactMonoBlock"
+# traces 200 | scores 171 | observations 3485 | events_full 3117  (unchanged)
+```
+
+The worker recovers on its own — no restart needed — and queued traces that were
+already dropped are gone for good, so re-drive traffic to re-test.
+
+### Preventing it
+
+`gitops/addons/charts/langfuse/templates/clickhouse-system-logs.yaml` disables
+`trace_log` and puts a TTL on the rest (`clickhouse.systemLogs` in the chart's
+values). TTLs apply to existing tables, so deploying it also heals an instance
+partway to full — provided it still has room to merge, which is why the manual
+recovery above exists for one that is already at 100%.
+
+```bash
+# is the guard deployed?
+kubectl get cm langfuse-clickhouse-system-logs -n langfuse
+kubectl exec -n langfuse langfuse-clickhouse-0 -- \
+  clickhouse-client --query "SELECT count() FROM system.tables WHERE database='system' AND name='trace_log'"
+# 0 once the config is in effect
+```
+
+### Worth watching
+
+There is no alert for this today, and it is a gap worth closing: a ClickHouse
+disk-usage alarm would have caught it on day one, where `oap_agent_eval_*` could
+not — a full database and an idle agent produce the same zero. `oap_agent_eval_*`
+cannot detect it **by design**: the reconciler is reading Langfuse successfully,
+and Langfuse is honestly reporting that there are no scores.
 
 ---
 

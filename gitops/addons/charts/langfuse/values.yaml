@@ -136,6 +136,17 @@ clickhouse:
     # Short on purpose: long enough to investigate a live incident, not long
     # enough to consume the volume.
     ttlDays: 3
+
+# PrometheusRule for the datastores (templates/prometheus-rule.yaml). Needs the
+# prometheus-operator CRDs, which the observability domain already installs.
+#
+# The ClickHouse disk alerts are load-bearing rather than nice-to-have: a full
+# ClickHouse makes Langfuse drop every trace and score while the OTel Collector
+# still reports zero send failures and every oap_agent_eval_* gauge reads 0. The
+# evaluation metrics cannot detect it -- a full database and an idle agent are
+# the same number -- so the volume is the only place the signal exists.
+alerts:
+  enabled: true
   storage: 20Gi
   resources:
     requests:
