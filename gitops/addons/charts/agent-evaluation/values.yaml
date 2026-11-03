@@ -27,7 +27,15 @@ global:
 
 image:
   repository: public.ecr.aws/z0a4o2j5/agent-evaluation
-  tag: "0.1.0"
+  # Keep in lockstep with Chart.yaml's appVersion, pyproject.toml's version and
+  # build.sh's VERSION default. This is the IMAGE line (0.2.x) and is NOT the
+  # chart version in Chart.yaml, which tracks the templates.
+  #
+  # NOTE: this repository does not exist in the public registry yet -- it answers
+  # NAME_UNKNOWN -- which is why agent_evaluation defaults to false in all three
+  # environment overlays. 0.2.1-0.2.3 exist only in a private ECR used for
+  # testing. Publishing 0.2.4 publicly is the outstanding handoff ("Ask 2").
+  tag: "0.2.4"
   pullPolicy: IfNotPresent
 
 replicaCount: 1

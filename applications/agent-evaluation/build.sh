@@ -19,13 +19,17 @@
 #                             own account before publishing.
 set -euo pipefail
 
-# Keep in lockstep with the chart's image.tag
-# (gitops/addons/charts/agent-evaluation/values.yaml), Chart.yaml's
-# version/appVersion, the registry entry's defaultVersion and pyproject.toml. A
-# build that defaults to a different tag than the chart pulls is published to a
-# tag nothing references, and the addon stays in ImagePullBackOff looking like a
-# registry problem.
-VERSION="${VERSION:-0.1.0}"
+# THE IMAGE VERSION LINE. Keep in lockstep with exactly three things:
+#   - image.tag in gitops/addons/charts/agent-evaluation/values.yaml
+#   - appVersion in that chart's Chart.yaml
+#   - version in this package's pyproject.toml
+#
+# NOT with the chart's own `version`, nor the registry entry's `defaultVersion`:
+# those track the TEMPLATES and move independently. Conflating the two lines is
+# how this drifted in the first place -- a build defaulting to a tag the chart
+# does not pull publishes to a tag nothing references, and the addon sits in
+# ImagePullBackOff looking like a registry or credentials problem.
+VERSION="${VERSION:-0.2.4}"
 REGISTRY="${REGISTRY:-public.ecr.aws/z0a4o2j5}"
 IMAGE="agent-evaluation"
 PLATFORMS=("linux/arm64" "linux/amd64")
