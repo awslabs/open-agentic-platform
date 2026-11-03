@@ -274,24 +274,6 @@ cluster that does not pass it, nothing changes.
   after, that trait version. With an older trait the role keeps the old policy, which grants
   only the old memory name: the agent is denied access to the new memory.
 
-**Environments that ran an earlier revision of this PR.** Only environments that already
-ran an earlier revision of this change (07b8145e or older) with `global.clusterName` set are
-affected. They keep the same AWS memory name, but the Memory object name now carries the
-`<8 hex>` suffix, so the new Memory asks AgentCore for a name the old Memory still holds
-(memory names are unique per account). The new Memory then cannot become healthy, and the
-Application can wait in `apply-component` instead of replacing the old one. Recovery: delete
-the old Memory object by hand, then let KubeVela retry:
-
-```
-kubectl --context <cluster> get memories.bedrockagentcore.aws.upbound.io | grep '<namespace>.<component>'
-kubectl --context <cluster> delete memories.bedrockagentcore.aws.upbound.io <namespace>.<component>
-```
-
-The old object is the one named `<namespace>.<component>` without the `.<8 hex>` suffix. Its
-MemoryStrategy objects (`memorystrategies.bedrockagentcore.aws.upbound.io`) follow it.
-This is expected from the naming logic and has not been observed live. Fresh installs and
-upgrades from main are not affected.
-
 Run the agent with **one replica** (the `agent` component's default), with or without memory,
 and do not add an `hpa` or `cpuscaler` trait to it. With memory, AgentCore restores the
 conversation on any pod, but A2A tasks and contexts live in the memory of the pod that served them, so
