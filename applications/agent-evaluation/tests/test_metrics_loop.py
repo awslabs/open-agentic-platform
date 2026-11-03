@@ -8,9 +8,11 @@ from app.cluster_loop import ClusterPlan
 from app.langfuse_client import LangfuseError
 from app.metrics import ThresholdRow
 from app.metrics_loop import (
+    TAG_QUERY_BUDGET_BYTES,
     MetricsLoop,
     MetricsSchemaError,
     agent_from_tags,
+    chunk_tags,
     row_count_and_avg,
     window_delta,
 )
@@ -328,6 +330,78 @@ def test_another_clusters_scores_in_the_shared_project_are_ignored(
         cluster="dev", namespace="team-a", agent="support",
         evaluator="safety", window="24h",
     ) == 3
+
+
+# ── request-line budget ────────────────────────────────────────────────────
+
+
+def test_a_large_fleet_is_split_below_the_request_line_limit(
+    settings, catalog, metrics
+):
+    """The query travels in the URL, so a big tag list is an HTTP 431, not a slow query.
+
+    Measured against Langfuse v4.72.0: 339 thirty-character tags (16208 URL
+    bytes) succeeded and 340 answered `431 Request Header Fields Too Large`.
+    Batching every agent into one query would therefore have capped a cluster at
+    ~339 agents -- fewer with long names -- and past it EVERY pass would fail
+    rather than degrade.
+    """
+    import json as _json
+    import urllib.parse as _urlparse
+
+    # 600 agents with realistic, long-ish names.
+    agents = [
+        (f"team-with-a-long-namespace-{i:03d}", f"customer-support-agent-{i:03d}",
+         "safety", "safety", 0.9)
+        for i in range(600)
+    ]
+    scored = [
+        {"tags": tags_for("dev", ns, agent), "name": "safety",
+         "count_count": 2, "avg_value": 0.95}
+        for ns, agent, _c, _o, _t in agents
+    ]
+    passed = [
+        {"tags": tags_for("dev", ns, agent), "count_count": 2}
+        for ns, agent, _c, _o, _t in agents
+    ]
+    langfuse = ScriptedLangfuse(scored, passed)
+    assert MetricsLoop(
+        settings, catalog, langfuse, metrics, lambda: plan_with(agents)
+    ).run_once()
+
+    # It took more than one query, and every one fits the budget.
+    assert len(langfuse.scored_queries) > len(settings.metrics_windows)
+    for query in langfuse.queries:
+        tags = next(f for f in query["filters"] if f["column"] == "tags")["value"]
+        encoded = len(_urlparse.quote(_json.dumps(tags)))
+        assert encoded <= TAG_QUERY_BUDGET_BYTES, (
+            f"a query carried {encoded} encoded bytes of tags"
+        )
+
+    # Still far cheaper than per-agent, and every agent is still reported.
+    assert len(langfuse.queries) < len(agents)
+    for ns, agent, _c, _o, _t in agents:
+        assert sample(
+            metrics.registry, "oap_agent_eval_scores",
+            cluster="dev", namespace=ns, agent=agent,
+            evaluator="safety", window="24h",
+        ) == 2
+
+
+def test_a_group_split_across_chunks_merges_its_passed_counts():
+    """Overwriting instead of merging would report 0 passed for all but the last chunk."""
+    tags = [f"agent:dev/ns/agent-{i:04d}" for i in range(400)]
+    chunks = chunk_tags(tags, budget=1000)
+    assert len(chunks) > 1
+    # No tag lost, none duplicated, order preserved.
+    flat = [t for chunk in chunks for t in chunk]
+    assert flat == tags
+
+
+def test_chunking_never_drops_an_oversized_tag():
+    huge = "agent:dev/" + ("x" * 5000)
+    assert chunk_tags([huge], budget=100) == [[huge]]
+    assert chunk_tags([], budget=100) == []
 
 
 # ── strict response parsing ────────────────────────────────────────────────

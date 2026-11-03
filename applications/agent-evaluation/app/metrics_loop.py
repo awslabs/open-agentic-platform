@@ -29,7 +29,9 @@ the health row shows "rate-limited, data ageing" instead.
 
 from __future__ import annotations
 
+import json
 import logging
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -64,6 +66,58 @@ AVG_KEY = "avg_value"
 # query cover the whole cluster; it returns the observation's WHOLE tag array, so
 # the agent has to be recovered from it (see `agent_from_tags`).
 TAGS_DIMENSION = "tags"
+
+# How many bytes of URL-ENCODED tag list one query may carry.
+#
+# THE QUERY GOES IN THE URL. `GET /api/public/metrics?query=<json>` puts the
+# whole query, tag list included, in the request line, and Langfuse's Node server
+# enforces the default 16 KiB header limit. Measured against v4.72.0 with
+# 30-character tags: 339 tags (16208 URL bytes) succeeded and 340 answered
+#
+#   HTTP 431 Request Header Fields Too Large
+#
+# So batching every agent into one query -- the whole point of the grouping above
+# -- silently acquires a ceiling of roughly 339 agents per cluster, and past it
+# EVERY pass fails rather than degrading. Worse, the real ceiling depends on name
+# length: a tag is `agent:<cluster>/<namespace>/<name>`, each label up to 63
+# characters, and URL-encoding expands `/` and `:` threefold, so a fleet with long
+# names would hit it far sooner than 339.
+#
+# Hence a byte budget rather than a tag count: chunks are sized by the actual
+# encoded length, so the limit holds whatever the names look like. 8000 is half
+# the 16 KiB, leaving room for the rest of the query and for headers.
+TAG_QUERY_BUDGET_BYTES = 8000
+
+
+def encoded_len(tags: list[str]) -> int:
+    """Encoded length of a tag list exactly as it travels in the URL."""
+    return len(urllib.parse.quote(json.dumps(tags)))
+
+
+def chunk_tags(tags: list[str], budget: int = TAG_QUERY_BUDGET_BYTES) -> list[list[str]]:
+    """Split a tag list so each chunk's encoded length fits in one request line.
+
+    Measures the WHOLE candidate list rather than summing per-tag costs. Summing
+    undercounts: the JSON separators and brackets are URL-encoded too (`,`
+    becomes `%2C`), which ran ~7% over budget on a 600-agent fleet and would have
+    put the very queries this is meant to bound back over the limit.
+
+    A single tag longer than the budget is still returned on its own: one
+    oversized query that fails loudly beats silently dropping an agent from the
+    report.
+    """
+    if not tags:
+        return []
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    for tag in tags:
+        if current and encoded_len(current + [tag]) > budget:
+            chunks.append(current)
+            current = []
+        current.append(tag)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 class WindowError(Exception):
@@ -298,11 +352,17 @@ class MetricsLoop:
                 self._metrics.errors.labels(cluster, "metrics").inc()
                 return False
 
-            # ── one query for counts and means across every agent ──────────
+            # ── counts and means across every agent ────────────────────────
+            # One query, unless the tag list would overflow the request line
+            # (see TAG_QUERY_BUDGET_BYTES), in which case as few as fit.
+            scored_rows: list[dict] = []
             try:
-                scored_rows = self._client.query_metrics(
-                    scored_query(all_tags, all_objects, start, now)
-                )
+                for chunk in chunk_tags(all_tags):
+                    scored_rows.extend(
+                        self._client.query_metrics(
+                            scored_query(chunk, all_objects, start, now)
+                        )
+                    )
             except LangfuseError as exc:
                 self._fail(exc, f"scores over {window}")
                 return False
@@ -394,10 +454,19 @@ class MetricsLoop:
         if not groups:
             return results
 
-        def one(group: _PassedGroup) -> tuple[_PassedGroup, list[dict]]:
+        # One unit of work per (group, tag chunk): a group with more agents than
+        # fit in a request line becomes several queries whose rows are merged.
+        units = [
+            (group, chunk)
+            for group in groups
+            for chunk in chunk_tags(list(group.tags))
+        ]
+
+        def one(unit: tuple[_PassedGroup, list[str]]) -> tuple[_PassedGroup, list[dict]]:
+            group, chunk = unit
             return group, self._client.query_metrics(
                 passed_query(
-                    list(group.tags),
+                    chunk,
                     group.evaluator_object,
                     group.threshold,
                     start,
@@ -405,17 +474,23 @@ class MetricsLoop:
                 )
             )
 
-        workers = max(1, min(self._settings.metrics_concurrency, len(groups)))
+        workers = max(1, min(self._settings.metrics_concurrency, len(units)))
         if workers == 1:
-            produced = [one(group) for group in groups]
+            produced = [one(unit) for unit in units]
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 # list() re-raises the first worker exception here, so a failure
                 # still aborts the pass rather than publishing a partial set.
-                produced = list(pool.map(one, groups))
+                produced = list(pool.map(one, units))
 
         for group, raw in produced:
-            per_agent: dict[str, int] = {}
+            # setdefault, not assignment: a group split across several chunks
+            # returns several result sets that all belong to the same key, and
+            # overwriting here would keep only the last chunk -- reporting 0
+            # passed for every agent outside it.
+            per_agent = results.setdefault(
+                (group.evaluator_object, group.threshold), {}
+            )
             for row in raw:
                 agent_key = agent_from_tags(row.get(TAGS_DIMENSION), cluster)
                 if agent_key is None:
@@ -423,7 +498,6 @@ class MetricsLoop:
                 per_agent[agent_key] = row_count(
                     row, f"passed count for {group.evaluator_object} over {window}"
                 )
-            results[(group.evaluator_object, group.threshold)] = per_agent
         return results
 
     def _fail(self, exc: LangfuseError, what: str) -> None:
