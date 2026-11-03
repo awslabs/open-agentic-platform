@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, Gw, port_forward, restarts, subject
+from conftest import GATEWAY_NS, REPO, Gw, port_forward, restarts, subject
 
 pytestmark = pytest.mark.delegation
 
@@ -251,6 +251,36 @@ def test_G2_timeout_is_reported_as_a_gap():
 def test_X1_example_passes_admission(kubectl):
     r = kubectl("apply", "--dry-run=server", "-f", str(REPO / "platform/oam/examples/example-supervisor-agent.yaml"))
     assert r.returncode == 0, r.stderr
+
+
+# ── gateway-only ingress (DESIGN.md section 5) ───────────────────────────
+
+def test_N2_policy_admits_only_the_gateway_namespace(custom, deployed):
+    from kubernetes import client as k8s
+    pol = k8s.NetworkingV1Api(custom.api_client).read_namespaced_network_policy(f"{SUP}-gateway-only", NS)
+    sources = [(f.namespace_selector.match_labels, f.pod_selector) for r in pol.spec.ingress for f in r._from]
+    ports = [(p.protocol, p.port) for r in pol.spec.ingress for p in r.ports]
+    assert pol.spec.pod_selector.match_labels == {"app.kubernetes.io/name": SUP}
+    assert sources == [({"kubernetes.io/metadata.name": GATEWAY_NS}, None)], sources
+    assert ports == [("TCP", 8083)], ports
+
+
+def test_N1_direct_call_with_a_forged_user_is_refused(core, kubectl, deployed, t):
+    """A pod that is not the gateway calls the supervisor's Service with a forged user."""
+    try:
+        cni = core.read_namespaced_config_map("amazon-vpc-cni", "kube-system").data or {}
+    except Exception:  # noqa: BLE001 - absent ConfigMap is the expected "not enforced" case
+        cni = {}
+    if cni.get("enable-network-policy-controller") != "true":
+        pytest.skip("NOT RUN: this cluster does not enforce NetworkPolicy "
+                    "(aws-samples/appmod-blueprints#1239)")
+    url = f"http://{SUP}-stable.{NS}.svc.cluster.local:8083/.well-known/agent-card.json"
+    r = kubectl("run", f"np-probe-{RUN}", "-n", NS, "--rm", "-i", "--restart=Never",
+                "--image=curlimages/curl:8.10.1", "--command", "--",
+                "curl", "-s", "-o", "/dev/null", "-m", "8", "-w", "code=%{http_code}",
+                "-H", f"X-Forwarded-User: {t['s1']}", url, timeout=150)
+    codes = re.findall(r"code=(\d{3})", r.stdout)
+    assert codes == ["000"], f"expected the connection to be refused, got {codes}: {r.stdout[-300:]}"
 
 
 def test_H1_no_restarts(core, runs):

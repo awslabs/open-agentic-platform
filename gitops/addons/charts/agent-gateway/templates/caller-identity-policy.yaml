@@ -25,11 +25,11 @@ still sees the calling agent in `X-Forwarded-User`, as before.
 
 `set`, not `add`: values are overwritten on every request, so headers a client sends
 itself never reach the backend. That is the whole trust contract, and it holds only for
-traffic through the gateway. Pods are reachable in-cluster by their Service, and nothing
-in this chart blocks that, so a workload that calls an agent directly can send any value
-(scripts/test-memory-matrix.sh row N1 does exactly that). Restricting agent ingress to
-agentgateway-system is the cluster operator's NetworkPolicy; this platform does not ship
-one yet.
+traffic through the gateway. The agent component therefore emits a NetworkPolicy that
+admits ingress only from the gateway namespace (agent.cue, gatewayOnlyIngress), effective
+on clusters that enforce NetworkPolicy (aws-samples/appmod-blueprints#1239). Where it is
+not enforced, a workload that calls an agent directly can send any value
+(scripts/test-memory-matrix.sh row N1 does exactly that).
 
 Scoped to the Gateway, like jwt-policy.yaml, so every hop is covered: client -> agent,
 agent -> MCP server, and agent -> agent.

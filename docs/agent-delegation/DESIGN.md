@@ -76,8 +76,9 @@ agents: *[] | [...{name: string}]
 
 The component emits `A2A_AGENT_NAMES=<name>,<name>`, built like `MCP_SERVER_NAMES`. The
 agent card ConfigMap (`agent.dev/type: agent-card`) records the list, as it does for
-`mcpServers`. Nothing else in the component changes: a supervisor is an agent with a
-non-empty `agents` list.
+`mcpServers`. Apart from that, a supervisor is an ordinary agent with a non-empty
+`agents` list. Every agent, supervisor or not, also gets the gateway-only NetworkPolicy
+from section 5. What delegation needs from the image is in section 9.
 
 No URLs, regions or cluster names appear in the Application, so it stays portable
 (`oam-authoring.md` section 1).
@@ -115,7 +116,8 @@ roster to start.
 
 ### 3. Supervisor behaviour
 
-The platform appends a short instruction to `SYSTEM_PROMPT` when `A2A_AGENT_NAMES` is set:
+The agent image appends a short instruction to `SYSTEM_PROMPT` when `A2A_AGENT_NAMES` is set
+(`app/agent.py`; the component passes `systemMessage` through unchanged):
 plan the steps the goal needs, delegate a step to the agent whose card fits it, call
 independent agents in the same turn so they run concurrently, combine the results, and
 check the combined answer against the goal. It says which agents were unavailable, so
@@ -182,6 +184,17 @@ Mitigations in the first version: only agents listed in `delegation.agents` are
 believed; `agentAccess` limits which agents a supervisor can reach at all; the gateway
 removes the header from everyone else.
 
+The supervisor names the user from its own inbound `X-Forwarded-User`, so that header must
+come from the gateway. A pod that called the supervisor's Service directly with a forged
+`X-Forwarded-User` would otherwise have the supervisor delegate as that user, and the
+gateway would believe it, reaching every agent the supervisor may call. No compromise of
+the supervisor is needed. The `agent` component therefore emits a NetworkPolicy admitting
+ingress only from the gateway namespace (`global.agentGateway.namespace`, platform-owned,
+so an Application cannot widen it). It is effective on clusters that enforce
+NetworkPolicy, which the base platform provides as part of its cluster contract
+(aws-samples/appmod-blueprints#1239). Until a cluster enforces it, this path stays open
+there.
+
 The stronger model, verifying the user's own token at the gateway (token exchange, ADR-6
 in `docs/architecture/agent-identity-and-token-exchange.md`), is a follow-up issue.
 
@@ -232,6 +245,33 @@ request, the supervisor's turn, each delegation, and each sub-agent's own calls.
 supervisor traces with the agents it delegated to is a follow-up; today each delegation
 is logged (`Delegated to <agent>: ok=... context=...`).
 
+### 9. Image contract
+
+Delegation is implemented by the agent image, not the component. The component passes
+configuration; `strands-agent-base` implements it. An image that does not implement this
+contract runs normally but does not delegate, and is not a safe hop in a chain.
+
+As a supervisor (an agent with `agents:`):
+
+- Read `A2A_AGENT_NAMES` and `GATEWAY_URL`.
+- Fetch `<GATEWAY_URL>/<name>/.well-known/agent-card.json` and call `<GATEWAY_URL>/<name>/`
+  (A2A `message/send`) with `Authorization: Bearer <own ServiceAccount token>`, read from
+  `WORKLOAD_TOKEN_PATH` (the `gateway-identity` trait).
+- Send `X-Delegated-User` set to the inbound `X-Forwarded-User`, and `X-Delegation-Depth`
+  set to the inbound depth plus one. Refuse to delegate past `MAX_DELEGATION_DEPTH`.
+
+As a delegation target:
+
+- Serve the A2A card at `/.well-known/agent-card.json` and `message/send` at `/`.
+- Key per-user state on `X-Forwarded-User`. Treat a call with depth above 0 where
+  `X-Forwarded-User` equals `X-Forwarded-Agent` as having no identity: the gateway did not
+  name a user.
+- Forward the depth on its own onward calls.
+
+The guardrails in section 7 are enforced by the image. The gateway does not enforce depth,
+so a hop that does not forward `X-Delegation-Depth` resets the loop guard for the rest of
+the chain.
+
 ## Scenario matrix
 
 Committed as the pytest suite `tests/live/test_delegation.py` (fixture `tests/live/fixtures/delegation.yaml`), run on a spoke with one supervisor and
@@ -259,6 +299,8 @@ two sub-agents. Expected outcomes:
 | G1 | request already at the depth limit | supervisor refuses to delegate |
 | G2 | sub-agent times out | tool error, supervisor answers. Unit test only |
 | X1 | shipped example | passes KubeVela admission |
+| N1 | pod in another namespace -> supervisor's Service directly, forged `X-Forwarded-User` | refused (connection times out). Only where the cluster enforces NetworkPolicy; reported as not run elsewhere |
+| N2 | the agent's NetworkPolicy | admits only the platform gateway namespace, port 8083 |
 | H1 | supervisor and sub-agent | no restarts |
 
 Regression: `tests/live/test_identity.py` and `scripts/test-memory-matrix.sh`.
@@ -285,5 +327,5 @@ Stacked on #66 (`feat/agent-long-term-memory`), whose identity code it extends; 
 - Readiness gating on sub-agents for autonomous supervisors.
 - Tagging supervisor traces with the agents it delegated to.
 - A live row for a sub-agent timeout (G2).
-- Restricting agent and MCP ingress to the gateway (the NetworkPolicy issue from #66),
-  which also protects the delegation headers from direct callers.
+- Restricting MCP server ingress to the gateway (#86). Agents are covered by the
+  NetworkPolicy the `agent` component emits (section 5).
