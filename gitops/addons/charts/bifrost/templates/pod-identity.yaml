@@ -16,6 +16,11 @@
   Requires the platform Crossplane AWS providers (provider-family-aws,
   provider-aws-iam, provider-aws-eks) — the same prerequisite documented for
   crossplane-agentcore.
+
+  The ListModels statement backs Bifrost's GET /v1/models: the Bedrock provider
+  calls ListFoundationModels (GET /foundation-models) for it and at startup to
+  build its model catalog. That action has no resource type in IAM, so it can
+  only be granted on "*". It is read-only and returns the public model list.
 */}}
 {{- if .Values.podIdentity.enabled }}
 apiVersion: iam.aws.upbound.io/v1beta1
@@ -53,6 +58,11 @@ spec:
                 "arn:aws:bedrock:*::foundation-model/*",
                 "arn:aws:bedrock:*:*:inference-profile/*"
               ]
+            }, {
+              "Sid": "ListModels",
+              "Effect": "Allow",
+              "Action": ["bedrock:ListFoundationModels"],
+              "Resource": "*"
             }]
           }
     tags:

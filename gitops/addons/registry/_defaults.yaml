@@ -21,8 +21,13 @@ syncPolicyAppSet:
 
 useSelectors: true
 
-repoURLGit: '{{default "https://github.com/awslabs/open-agentic-platform.git" .metadata.annotations.addons_repo_url}}'
-repoURLGitRevision: '{{default "main" .metadata.annotations.addons_repo_revision}}'
+# `index` (not .metadata.annotations.<key>): the appset-chart renders under
+# goTemplateOptions missingkey=error, where a field access on an ABSENT key fails
+# before `default` runs. `index` yields "" for an absent key, so `default` applies
+# whether the cluster secret carries the key empty (hub without agenticRepo) or not
+# at all (a spoke registered without it). Present + non-empty: unchanged.
+repoURLGit: '{{default "https://github.com/awslabs/open-agentic-platform.git" (index .metadata.annotations "addons_repo_url")}}'
+repoURLGitRevision: '{{default "main" (index .metadata.annotations "addons_repo_revision")}}'
 # Registry `path:` fields are literal (gitops/addons/charts/<name>), so this
 # basePath ONLY governs per-addon config value-file resolution:
 #   $values/{repoURLGitBasePath}/<addon>/values.yaml  →  gitops/addons/configs/<addon>/values.yaml

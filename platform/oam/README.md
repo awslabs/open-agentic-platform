@@ -214,12 +214,14 @@ a follow-up that lands on another pod gets "not found".
 Requests that reach the agent's Service without passing the gateway, such as an
 incident bridge posting to it directly, carry no `X-Forwarded-User`, so they get no
 memory and no agent kept between turns. Route such a caller through the gateway with its
-own ServiceAccount token if it needs either.
+own ServiceAccount token if it needs either. The A2A tasks such requests create can never
+be read back, so the agent keeps only the newest `MAX_UNOWNED_TASKS` of them (agent env,
+default `100`).
 
 The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. A
 workload that calls an agent's Service directly can set it to any caller; restrict agent
 ingress to `agentgateway-system` with a NetworkPolicy if other workloads share the
-cluster.
+cluster (enforcing this by default is tracked in #86).
 
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not

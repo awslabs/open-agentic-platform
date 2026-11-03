@@ -8,6 +8,13 @@ kind: ServiceAccount
 metadata:
   name: langfuse-seed
   namespace: {{ .Release.Namespace }}
+  {{- if .Values.encryptionKey.enabled }}
+  annotations:
+    # Wave -3: the ENCRYPTION_KEY generator Job (wave -2, encryption-key.yaml)
+    # runs as this SA, so it, its IAM Role and its PodIdentityAssociation must be
+    # applied before that Job's pod is created.
+    argocd.argoproj.io/sync-wave: "-3"
+  {{- end }}
 ---
 # ─── Shared ConfigMap (non-secret configuration only) ─────────────────────
 apiVersion: v1
@@ -23,6 +30,8 @@ data:
   AUTH_KEYCLOAK_ISSUER: "{{ .Values.keycloak.issuerUrl }}"
   AUTH_KEYCLOAK_ALLOW_ACCOUNT_LINKING: "true"
   AUTH_DISABLE_SIGNUP: "{{ .Values.keycloak.disableSignup | default "false" }}"
+  {{- /* Only an explicit "true"/true disables local accounts; unset means "false". */}}
+  AUTH_DISABLE_USERNAME_PASSWORD: {{ if eq (toString .Values.keycloak.disableUsernamePassword) "true" }}"true"{{ else }}"false"{{ end }}
   CLICKHOUSE_URL: "http://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:8123"
   CLICKHOUSE_MIGRATION_URL: "clickhouse://langfuse-clickhouse.{{ .Release.Namespace }}.svc.cluster.local.:9000"
   CLICKHOUSE_USER: "default"
@@ -120,6 +129,18 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # ENCRYPTION_KEY, without which the LLM-connection API fails closed
+            # with a 500 (see templates/encryption-key.yaml). NOT optional: the
+            # generator Job and the ExternalSecret are applied in waves before this
+            # Deployment, so the Secret is normally there already. If it is not yet
+            # (ESO still syncing), the pod waits in CreateContainerConfigError and
+            # the kubelet starts it as soon as the Secret appears. An optional ref
+            # would let it boot without the key and never pick it up (envFrom is
+            # read once, at container start).
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+            {{- end }}
           env:
             - name: HOSTNAME
               value: "0.0.0.0"
@@ -128,7 +149,20 @@ spec:
                 secretKeyRef:
                   name: langfuse-keycloak-secret
                   key: LANGFUSE_CLIENT_SECRET
+                  {{- /*
+                  Optional on purpose: this Secret only exists once the platform has
+                  written <cluster>/keycloak-clients, and the web pod also serves the OTLP
+                  endpoint (/api/public/otel), so it must start without it. With a
+                  secretManagerKey, the liveness probe below restarts the container once if
+                  it booted without the client secret and the Secret has appeared since.
+                  */}}
                   optional: true
+          {{- if .Values.keycloak.secretManagerKey }}
+          volumeMounts:
+            - name: keycloak-client-secret
+              mountPath: /var/run/langfuse-keycloak
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # NOTE: all probes set timeoutSeconds explicitly. The k8s default is 1s,
@@ -156,9 +190,28 @@ spec:
             timeoutSeconds: 20
             failureThreshold: 60
           livenessProbe:
+            {{- if .Values.keycloak.secretManagerKey }}
+            # Same health check as the httpGet probe it replaces, plus one condition:
+            # Langfuse reads AUTH_KEYCLOAK_CLIENT_SECRET only at boot, so a container that
+            # started before langfuse-keycloak-secret existed keeps SSO off. The optional
+            # volume above is filled by the kubelet once the Secret appears; the probe then
+            # fails and the kubelet restarts the container, which resolves the env from the
+            # Secret. Ingestion keeps running until then, and nothing happens on a hub
+            # where the Secret never appears.
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  if [ -z "${AUTH_KEYCLOAK_CLIENT_SECRET:-}" ] && [ -s /var/run/langfuse-keycloak/LANGFUSE_CLIENT_SECRET ]; then
+                    echo "Keycloak client secret appeared after start; restarting to enable SSO"; exit 1
+                  fi
+                  exec wget -q -T 18 -O /dev/null http://127.0.0.1:3000/api/public/health
+            {{- else }}
             httpGet:
               path: /api/public/health
               port: 3000
+            {{- end }}
             periodSeconds: 30
             timeoutSeconds: 20
             failureThreshold: 20
@@ -169,6 +222,16 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 20
             failureThreshold: 6
+      {{- if .Values.keycloak.secretManagerKey }}
+      volumes:
+        - name: keycloak-client-secret
+          secret:
+            secretName: langfuse-keycloak-secret
+            optional: true
+            items:
+              - key: LANGFUSE_CLIENT_SECRET
+                path: LANGFUSE_CLIENT_SECRET
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -217,6 +280,13 @@ spec:
                 name: langfuse-config
             - secretRef:
                 name: langfuse-secrets
+            {{- if .Values.encryptionKey.enabled }}
+            # The worker needs it as much as the web pod: it is the container
+            # that runs the evaluation judge, so it decrypts the LLM connection
+            # secret on every judge call.
+            - secretRef:
+                name: {{ .Values.encryptionKey.secretRef }}
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
 

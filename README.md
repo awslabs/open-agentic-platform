@@ -120,7 +120,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Browser** | `crossplane-agentcore` | ⚠️ CRD ready | Managed headless browser resource for agents that browse. |
 | **Agent Code Interpreter** | `crossplane-agentcore` / sandbox | ⚠️ CRD ready | Sandboxed code execution for agents. |
 | **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code. |
-| **Agent Evaluation** | (planned) | ⬜ | Eval tooling (AgentCore Evals / RAGAS) — roadmap. |
+| **Agent Evaluation** | (planned) `agent-evaluation` | ⬜ | Online LLM-as-a-judge on agent traces, configured from the agent's OAM `evaluation` block — [design](docs/architecture/agent-evaluation.md). |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
 keys, model routing); **LiteLLM** is included as an alternative chart. Both front Amazon Bedrock.
@@ -131,8 +131,9 @@ keys, model routing); **LiteLLM** is included as an alternative chart. Both fron
 
 OAP uses a **hub + spokes** model, provisioned declaratively:
 
-- **Hub cluster** — runs ArgoCD, Crossplane, the platform control plane, and (by default) the agentic
-  capabilities. Crossplane on the hub provisions the spokes.
+- **Hub cluster** — runs ArgoCD, the platform control plane, and (by default) the agentic
+  capabilities. The hub provisions the spokes through the configured cluster provider:
+  kro + ACK with the default `kind-kro-ack`, or Crossplane with `kind-crossplane`.
 - **Spoke clusters** (`dev`, `prod`, …) — workload environments; agentic addons deploy to them
   automatically based on their `environment` label.
 - **Kind bootstrap** — a throwaway local cluster that stands up the hub, then self-destructs.
@@ -160,12 +161,14 @@ enabledAddons:
 
 | Section | Key Fields | Description |
 |---------|-----------|-------------|
-| `platform` | `repo`, `ref` | Base platform repo (appmod-blueprints) + version |
+| `platform` | `repo`, `ref`, `clusterProvider` | Base platform repo (appmod-blueprints) + version, and cluster provider (default `kind-kro-ack`; `kind-crossplane`, `terraform`, `byoc` selectable) |
 | `aws` | `region`, `accountId`, `profile` | AWS settings |
 | `hub` | `clusterName`, `kubernetesVersion` | Hub cluster config |
 | `domain` | | Ingress domain (ACM cert + Route53 zone) |
 | `identityCenter` | `instanceArn`, `region`, `adminGroupId` | SSO for ArgoCD |
 | `agenticRepo` | `url`, `revision`, `basepath` | This repo's coordinates (for ArgoCD) |
+| `fleetRepo` | `url`, `revision`, `basepath` | Optional fleet repo; defaults to this repo (see below) |
+| `fleetScopeByPrefix` | | Optional; `true` on every hub sharing one fleet repo |
 | `spokes` | | Optional spoke clusters (below) |
 
 ```yaml
@@ -174,8 +177,52 @@ spokes:
   prod: { region: us-west-2, kubernetesVersion: "1.37", vpcCidr: "10.2.0.0/16", autoMode: true }
 ```
 
-Spokes are provisioned via Crossplane from the hub. Fleet member definitions in `gitops/fleet/members/`
+The `spokes` block is applied by `task spokes:install` as Crossplane `PlatformCluster` claims, so it
+only applies with `clusterProvider: kind-crossplane`. With the default `kind-kro-ack`, `spokes:install`
+skips and spokes are declared in the fleet repo instead (see
+`gitops/fleet/members/_example/README.md`). Fleet member definitions in `gitops/fleet/members/`
 control spoke discovery.
+
+### Use your own fleet repo
+
+By default this repo is also the fleet repo: spoke definitions (name, region, `resourcePrefix`,
+`k8sVersion`, CIDR) and addon enablement are read from `gitops/fleet/` and `gitops/overlays/`
+here, so changing them means a commit to this repo. To own them in a separate repo, set
+`fleetRepo` in `config.local.yaml`:
+
+```yaml
+fleetRepo:
+  url: "https://github.com/<org>/<fleet-repo>.git"
+  revision: "main"
+  basepath: "gitops/"
+```
+
+`task install` (or a re-run of `platform:install`) passes these to the platform's own `fleetRepo.*`
+settings. Without the block, the generated `.platform/config.local.yaml` is unchanged.
+
+The fleet repo needs the same layout as this repo, under `basepath`:
+
+```
+gitops/fleet/hub/values.yaml
+gitops/fleet/members/<spoke>/values.yaml
+gitops/fleet/spoke-values/tenants/<tenant>/kro-clusters/clusters/<spoke>.json
+gitops/fleet/spoke-values/tenants/<tenant>/kro-clusters/values.yaml
+gitops/overlays/environments/{control-plane,dev,prod}/enabled-addons.yaml
+```
+
+Start from a copy of `gitops/fleet/` and `gitops/overlays/` in this repo. Optional `configs/<addon>/values.yaml`
+and `overlays/...` files at the fleet repo **root** are layered on top of the addon values, for both
+platform and agentic addons.
+
+- **Upgrades:** your `enabled-addons.yaml` files are a copy. When you upgrade OAP, diff them against
+  `gitops/overlays/` in the new release, or new addons and enable flags will not reach your clusters.
+- **Shared fleet repo:** if several hubs read one fleet repo, set `fleetScopeByPrefix: true` on **every**
+  one of them and place each hub's files under `clusters/<resourcePrefix>/` and
+  `fleet/members/<resourcePrefix>/`. Without it, a hub discovers the other hubs' spokes.
+- **Region:** set `region` on every spoke. A spoke without it is created in `us-west-2`.
+- **Existing install:** before switching a running hub to a new fleet repo, make its spoke entries
+  identical to the live ones (region, prefix, `k8sVersion`, CIDR). Otherwise the next sync tries to
+  change the live spoke cluster to match the new entry.
 
 ---
 
@@ -185,7 +232,7 @@ control spoke discovery.
 |---------|-------------|
 | `task install` | Full install (platform + spokes + agentic) |
 | `task platform:install` | Provision base EKS platform only |
-| `task spokes:install` | Provision spoke clusters only |
+| `task spokes:install` | Provision spoke clusters only (kind-crossplane) |
 | `task spokes:status` | Check spoke provisioning progress |
 | `task agentic:install` | Deploy agentic capabilities only |
 | `task status` | Show ArgoCD application status |

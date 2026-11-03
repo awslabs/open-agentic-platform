@@ -120,7 +120,7 @@ agent-gateway:
         values: ['true']
   valuesObject:
     global:
-      insecure: '{{default "false" .metadata.annotations.insecure}}'
+      insecure: '{{default "false" (index .metadata.annotations "insecure")}}'
       keycloak:
         issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "oidc_issuer_url")}}'
         serviceName: '{{default "keycloak" (index .metadata.annotations "keycloak_service_name")}}'
@@ -136,6 +136,12 @@ agent-gateway:
       # NOT cover, so the ALB never provisioned: "no certificate found for host".)
       # If the domain has no parent (bare apex), fall back to "agents.<host>".
       # The agent_gateway_host annotation, when set, overrides this entirely.
+      # DNS: because the agents host is a sibling, the cluster's external-dns
+      # must be allowed to manage the PARENT zone. An external-dns domain filter
+      # scoped to ingress_domain_name only (a common default) silently skips
+      # this host, and no Route53 record is created. Either widen the consumer's
+      # external-dns domain filter to the parent zone, or create the record
+      # yourself. See https://github.com/awslabs/open-agentic-platform/issues/116
       agentHost: '{{ $d := index .metadata.annotations "ingress_domain_name" }}{{ $parent := splitList "." $d | rest | join "." }}{{ $auto := ternary (printf "agents.%s" $parent) (printf "agents.%s" $d) (gt (len (splitList "." $d)) 2) }}{{ default $auto (index .metadata.annotations "agent_gateway_host") }}'
     mcpAuth:
       resourceMetadata:
