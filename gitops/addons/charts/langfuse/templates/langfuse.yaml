@@ -445,6 +445,25 @@ spec:
     metadata:
       labels:
         app: langfuse-clickhouse
+      {{- if .Values.clickhouse.systemLogs.bound }}
+      annotations:
+        # ROLL CLICKHOUSE WHEN THE SYSTEM-LOG CONFIG CHANGES, for two reasons
+        # that compound:
+        #
+        #   1. the config is mounted with `subPath`, and a subPath mount NEVER
+        #      receives ConfigMap updates -- it is frozen at pod creation. So
+        #      editing the ConfigMap alone leaves the pod reading the old file
+        #      indefinitely. Measured: the ConfigMap carried the new TTLs while
+        #      `grep` inside the pod still found the previous content.
+        #   2. system log TTLs are applied when ClickHouse opens the tables at
+        #      startup, so even a hot-reloaded config would not retro-fit them.
+        #
+        # Without this, a retention change silently never takes effect -- the
+        # same shape of failure as the unbounded logs it is meant to prevent.
+        # subPath is kept deliberately: mounting the whole directory would
+        # shadow the image's own docker_related_config.xml.
+        checksum/system-logs: {{ include (print $.Template.BasePath "/clickhouse-system-logs.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       securityContext:
         runAsNonRoot: true
