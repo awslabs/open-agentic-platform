@@ -185,7 +185,20 @@ agent-evaluation:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
-    role: '{{ if index .metadata.annotations "ingress_domain_name" }}hub{{ else }}spoke{{ end }}'
+    # EXPLICIT FIRST, inference only as a fallback.
+    #
+    # An `agent_evaluation_role` annotation on the cluster secret wins outright.
+    # Inferring from `ingress_domain_name` is convenient but it decides something
+    # too important to leave implicit: the hub is the single writer of the
+    # project-wide Langfuse objects, so a spoke that is given its own public
+    # domain for an unrelated reason would silently promote itself to hub and
+    # start republishing the catalog evaluators and the judge connection that the
+    # real hub owns. Two hubs is the one state the ownership model has no answer
+    # for.
+    #
+    # Setting it explicitly on the hub, and leaving every spoke to infer, is the
+    # recommended configuration.
+    role: '{{ if index .metadata.annotations "agent_evaluation_role" }}{{ index .metadata.annotations "agent_evaluation_role" }}{{ else if index .metadata.annotations "ingress_domain_name" }}hub{{ else }}spoke{{ end }}'
     langfuse:
       # Hub: in-cluster Service. Spoke: the hub domain over HTTPS, resolved
       # exactly like the otel-collector's export endpoint above. Langfuse is

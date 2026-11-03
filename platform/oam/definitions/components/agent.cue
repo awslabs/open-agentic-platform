@@ -392,6 +392,22 @@ template: {
 		if parameter.evaluation != _|_ {
 			_evaluationEnabled: parameter.evaluation.enabled
 		}
+		// FAIL CLOSED ON AN UNSUPPORTED COMBINATION, rather than admitting an
+		// Application that can never be scored.
+		//
+		// Phase 1 evaluates traces in Langfuse, which only receives them in
+		// `centralized` observability mode. A `decentralized` agent sends its
+		// traces to CloudWatch instead, so an evaluation rule has nothing to
+		// match: the Application is healthy, the ConfigMap is correct, the rule
+		// exists, and no score is ever produced. That is the same silent shape as
+		// the trace-tag drift, and it belongs at admission where the developer
+		// sees it immediately.
+		//
+		// Unifying with the one supported value is what rejects it: for any other
+		// mode this is bottom, so the render fails and the webhook denies the
+		// Application. The annotation key below is named for the error message it
+		// produces. Remove this when Phase 2 (AgentCore Evaluations) can score
+		// the decentralized path.
 		if _evaluationEnabled {
 			evaluationSpec: {
 				apiVersion: "v1"
@@ -405,12 +421,23 @@ template: {
 						"evaluation.oap.io/agent": context.name
 						"app.kubernetes.io/name":  context.name
 					}
+					annotations: {
+						// Carries the unification, so the constraint is part of the
+						// rendered output and cannot be skipped by lazy evaluation
+						// the way a hidden field could.
+						"evaluation.oap.io/observability-mode": "centralized" & parameter.observability.mode
+					}
 				}
 				data: {
 					agent: context.name
-					// centralized -> Langfuse (Phase 1); decentralized -> AgentCore
-					// Evaluations (Phase 2), which reports the same metrics.
-					backend: parameter.observability.mode
+					// NO `backend` KEY. It used to carry observability.mode so a
+					// future AgentCore path could branch on it, but nothing ever
+					// read it and the mode is now constrained to `centralized`
+					// above -- so it could only ever have held one value. The
+					// backend is the reconciler's own concern, selected by which
+					// implementation the addon runs, not something an agent
+					// declares.
+					//
 					// The agent's model alias, so reports can compare quality by model.
 					model:      parameter.modelConfig.modelId
 					strictness: parameter.evaluation.strictness
@@ -569,7 +596,12 @@ template: {
 		}
 
 		// +usage=Online evaluation of this agent's live traces by an LLM judge.
-		// Requires the agent-evaluation addon on the cluster.
+		// Requires the agent-evaluation addon on the cluster, and
+		// observability.mode: centralized -- an Application that turns evaluation
+		// on with decentralized observability is REJECTED at admission rather
+		// than admitted and never scored, because the judge reads traces from
+		// Langfuse and the decentralized path sends them to CloudWatch instead.
+		// Scoring the decentralized path is Phase 2 (AgentCore Evaluations).
 		//
 		// The developer chooses WHICH evaluators run, HOW STRICT they are, HOW MANY
 		// traces are scored and optionally WHICH judge. What each evaluator means --

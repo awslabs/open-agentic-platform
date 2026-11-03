@@ -32,7 +32,6 @@ def declaration(
         agent=agent,
         namespace=namespace,
         configmap=f"{agent}-evaluation",
-        backend="centralized",
         model=model,
         strictness=strictness,
         coverage=coverage,

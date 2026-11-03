@@ -115,6 +115,11 @@ class Settings:
     metrics_interval: int
     metrics_windows: tuple[str, ...]
     metrics_port: int
+    # How many of the metrics loop's grouped passed-count queries may be in
+    # flight at once. Bounded because every cluster's loop reads the one shared
+    # hub backend, which is rate-limited: a 429 costs the whole pass. 1 is fully
+    # sequential.
+    metrics_concurrency: int
     catalog_path: str
     langfuse_timeout: float
     # Langfuse's documented cap on active evaluation rules per project. Checked
@@ -211,6 +216,7 @@ def load_settings() -> Settings:
         # hostPort and the Service is ClusterIP, so this listener is reachable
         # only from inside the cluster (the AMP scraper and the kubelet probes).
         metrics_port=_env_int("METRICS_PORT", 9090),
+        metrics_concurrency=_env_int("METRICS_CONCURRENCY", 4),
         catalog_path=_env("CATALOG_PATH", "/etc/agent-evaluation/catalog.yaml"),
         langfuse_timeout=float(_env("LANGFUSE_TIMEOUT_SECONDS", "30")),
         max_active_rules=_env_int("MAX_ACTIVE_RULES", 50),

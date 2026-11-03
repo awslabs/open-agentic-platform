@@ -17,7 +17,6 @@ def test_parses_the_components_output():
         cm(
             {
                 "agent": "support",
-                "backend": "centralized",
                 "model": "claude-sonnet",
                 "strictness": "high",
                 "coverage": "low",

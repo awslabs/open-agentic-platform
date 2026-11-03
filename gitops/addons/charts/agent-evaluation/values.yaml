@@ -5,6 +5,19 @@
 # evaluators and the judge LLM connection, which are project-wide (D4).
 # The registry entry sets this per cluster; `hub` goes on the cluster that runs
 # Langfuse.
+#
+# SET IT EXPLICITLY on the hub. The registry entry honours an
+# `agent_evaluation_role` annotation on the cluster secret first and only falls
+# back to inferring `hub` from the cluster having an `ingress_domain_name`. The
+# inference is convenient but decides too much to leave implicit: the hub is the
+# single writer of the project-wide Langfuse objects, so a spoke that is later
+# given its own public domain would silently promote itself and start
+# republishing the catalog evaluators and judge connection the real hub owns.
+# Two hubs is the one state the ownership model cannot resolve.
+#
+# Defaulting to `spoke` here is the safe direction: a spoke cannot write a
+# project-wide object at all (langfuse_client refuses it in code), so a
+# misconfigured cluster under-reaches rather than over-reaches.
 role: spoke
 
 global:
@@ -105,9 +118,19 @@ metrics:
   enabled: true
   port: 9090
   # Score aggregates for the dashboard. Each pass sends
-  # agents x windows x (1 + evaluators) queries to a rate-limited endpoint, so
-  # raise this before raising the agent count.
+  #   windows x (1 + distinct (evaluator, threshold) pairs)
+  # queries, NOT one per agent: the scores view groups by the `tags` dimension,
+  # so one query covers every agent in a window and the per-threshold queries
+  # group the agents sharing a threshold. The count is bounded by the catalog
+  # times the three strictness levels, so it does not grow with the fleet --
+  # ~20 queries a pass at 100 agents and 3 evaluators.
   intervalSeconds: 300
+  # How many of those grouped passed-count queries may be in flight at once.
+  # Bounded because every cluster's loop reads the one shared hub backend, which
+  # is rate-limited, and a 429 discards the whole pass (the loop is all or
+  # nothing by design). Batching is what made a pass cheap; concurrency only
+  # shortens its tail, so this stays small. Set to 1 for fully sequential.
+  concurrency: 4
   windows:
     - 24h
     - 7d

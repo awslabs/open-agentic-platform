@@ -181,7 +181,21 @@ class ThresholdRow:
     cluster: str
     namespace: str
     agent: str
+    # CATALOG name (`helpfulness`). This is the metric label, deliberately
+    # judge-independent: which judge scored an agent is carried by
+    # oap_agent_eval_info, so two agents on different judges stay one series per
+    # evaluator and a dashboard query does not have to know the judge.
     evaluator: str
+    # EVALUATOR OBJECT name (`helpfulness`, or `helpfulness--judge-haiku` for a
+    # non-default judge). This is what Langfuse names the SCORE, so it is what
+    # the metrics loop must filter on.
+    #
+    # The two are not interchangeable and conflating them is a silent zero: the
+    # loop filtered scores by the catalog name, which matches nothing for any
+    # agent on a non-default judge. Measured on the hub: eval-multidim
+    # (judge-haiku) had 3 scores for each of its four evaluators in Langfuse and
+    # reported 0 for all of them, in both windows, with no error anywhere.
+    evaluator_object: str
     threshold: float
 
 

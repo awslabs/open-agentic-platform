@@ -81,6 +81,8 @@ spec:
               value: {{ join "," .Values.metrics.windows | quote }}
             - name: METRICS_PORT
               value: {{ .Values.metrics.port | quote }}
+            - name: METRICS_CONCURRENCY
+              value: {{ .Values.metrics.concurrency | quote }}
             - name: MAX_ACTIVE_RULES
               value: {{ .Values.maxActiveRules | quote }}
             - name: CATALOG_PATH

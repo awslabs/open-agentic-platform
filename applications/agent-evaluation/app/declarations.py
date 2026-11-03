@@ -46,7 +46,12 @@ class AgentDeclaration:
     agent: str
     namespace: str
     configmap: str
-    backend: str
+    # No `backend`. The component used to emit observability.mode here so a
+    # future AgentCore path could branch on it, but nothing read it, and the
+    # component now constrains the mode to `centralized` at admission -- so it
+    # could only ever have carried one value. Which backend scores an agent is
+    # the addon's concern (which implementation it runs), not something an agent
+    # declares.
     model: str
     strictness: str
     coverage: str
@@ -140,7 +145,6 @@ def parse_declaration(cm) -> AgentDeclaration:
         agent=agent,
         namespace=meta.namespace,
         configmap=meta.name,
-        backend=data.get("backend", "centralized"),
         model=data.get("model", ""),
         strictness=strictness,
         coverage=coverage,

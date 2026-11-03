@@ -1082,6 +1082,97 @@ sequenceDiagram
 
 ---
 
+## 4a. The backend boundary, and the two public contracts
+
+Customers run many observability stacks — Langfuse, AgentCore, Datadog, Arize —
+so "which backend scores an agent" has to be a property of the addon a cluster
+installs, not something agents or the platform's generic code knows about.
+
+Everything vendor-specific sits behind one interface, `app/backend.py`:
+
+```python
+class EvaluationBackend(ABC):
+    def publish_catalog(self, requests)            -> list[str]
+    def reconcile_agents(self, specs)              -> ReconcileOutcome
+    def read_scores(self, specs, start, end)       -> list[ScoreReading]
+```
+
+| Generic — outside the boundary | Backend-specific — behind it |
+|---|---|
+| reading `evaluation.oap.io/agent` ConfigMaps | how a judge prompt is stored and versioned |
+| resolving names and strictness against the catalog | how a judge model is attached, and named |
+| deciding thresholds, sampling and grouping keys | how "score these traces" is expressed |
+| publishing `oap_agent_eval_*` gauges | how scores are read back and aggregated |
+| Events on an agent's own ConfigMap | what an object is called, and who may write it |
+
+Phase 2 (AgentCore) is therefore one new module implementing three methods,
+rather than a branch at every point where the loops touch a vendor concept.
+
+Two things are **contracts**, not implementation details. A backend may name its
+own objects however it likes; it must not change either of these, because the
+dashboard, the alerts and every team's expectations are built on them.
+
+### Contract 1 — the declaration ConfigMap schema
+
+Written by the `agent` component as a KubeVela output, named
+`<agent>-evaluation`, in the agent's own namespace. Discovered **only** by the
+label; a ConfigMap without it is invisible to evaluation.
+
+| | |
+|---|---|
+| label | `evaluation.oap.io/agent: <agent>` (required) |
+| annotation | `evaluation.oap.io/observability-mode: centralized` |
+
+| Data key | Required | Meaning |
+|---|---|---|
+| `agent` | yes | agent name; also the fallback if the label is read instead |
+| `model` | no | the agent's model alias, so reports can compare quality by model |
+| `strictness` | no, default `medium` | `low` \| `medium` \| `high`. Selects the pass **threshold** from the catalog. Creates no backend object |
+| `coverage` | no, default `medium` | `low` \| `medium` \| `high`. Preset sampling rate |
+| `evaluators` | yes | JSON array; each entry a catalog name, or `{"name": ..., "strictness": ...}` |
+| `sampling` | no | explicit fraction in (0, 1]; overrides `coverage` |
+| `judge` | no | judge alias; absent means the platform default |
+
+There is deliberately **no** `backend` key. It previously carried
+`observability.mode` so a future AgentCore path could branch on it, but nothing
+read it, and the component now rejects any mode other than `centralized` at
+admission — so it could only ever hold one value. Which backend scores an agent
+is the addon's concern, not the agent's.
+
+### Contract 2 — the metrics
+
+Every backend must publish these, with these names and labels. Common labels are
+`cluster`, `namespace`, `agent`; `evaluator` is always the **catalog** name, so a
+series is judge-independent and a dashboard query does not have to know which
+judge ran.
+
+| Metric | Extra labels | Meaning |
+|---|---|---|
+| `oap_agent_eval_scores` | `evaluator`, `window` | traces scored in the window |
+| `oap_agent_eval_passed` | `evaluator`, `window` | scores at or above the threshold |
+| `oap_agent_eval_pass_ratio` | `evaluator`, `window` | `passed / scores`. **Absent**, never 0, when nothing was scored |
+| `oap_agent_eval_score_avg` | `evaluator`, `window` | mean score |
+| `oap_agent_eval_pass_threshold` | `evaluator` | resolved from strictness; no `window` label |
+| `oap_agent_eval_info` | `gen_ai_request_model`, `eval_ai_request_model`, `strictness`, `coverage` | always 1; join in PromQL |
+| `oap_agent_eval_rules_active` | `cluster` | backend-side rules this cluster owns |
+| `oap_agent_eval_agents_declared` | `cluster` | agents with evaluation on |
+| `oap_agent_eval_agents_skipped` | `cluster` | declarations not fully reconciled |
+| `oap_agent_eval_errors_total` | `cluster`, `loop` | failed backend calls, by loop |
+| `oap_agent_eval_last_success_timestamp_seconds` | `cluster`, `loop` | liveness of each loop |
+
+Two rules bind any implementation:
+
+- **An idle agent is absent, not zero.** A 0 pass ratio reads as "every answer
+  failed"; absence reads as "no traffic". The staleness alert, not a zero, is
+  what reports a loop that has stopped.
+- **A response shape that is not understood is an error, not a zero.** Reading
+  aggregates by guessing across candidate key names turns a backend rename into
+  "no traffic" or a 0% pass rate with nothing logged — indistinguishable from a
+  real quality collapse. Implementations raise `BackendSchemaError` and publish
+  nothing, leaving the previous values and letting the staleness alert fire.
+
+---
+
 ## 5. Security and cost
 
 | Concern | Control |
@@ -1090,6 +1181,7 @@ sequenceDiagram
 | Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit, sent as `x-bf-vk` from the LLM connection's `extraHeaders`. Because the hub reconciler owns that connection (D4), the key exists only on the hub and never on a spoke. The judge never uses an agent's key. Because `is_vk_mandatory` is `false`, the validation plan checks that judge calls are attributed to that key |
 | Reconciler's read access | Kubernetes RBAC cannot scope a `list`/`watch` by label, so watching `evaluation.oap.io/agent` ConfigMaps needs cluster-wide ConfigMap read. The ClusterRole grants only `get`/`list`/`watch` on `configmaps`, and the reconciler always lists with the label selector. Every instance gets that ClusterRole, the hub included, because the hub runs agents too. If that read is too broad, the CRD option in D4 removes it |
 | A spoke changing how the fleet is scored | Judge prompts, scales and the judge connection are project-wide, so a single owner writes them (D4). A spoke resolves evaluators by name and never `POST`s one (there is no `PATCH` at the pin), which is what stops an out-of-date cluster from rolling a prompt back for every other cluster. The shared project key pair would allow the write, so the guarantee is the spoke code path, not the credential, and the validation plan checks it |
+| **Credential blast radius: every spoke holds a project-wide key** | Stated plainly because the control above is weaker than it reads. There is ONE Langfuse API key pair for the shared project, and every cluster running this addon has a copy of it in its own `agent-evaluation` namespace. That key pair is authorised to write every object in the project — the catalog evaluators, the judge LLM connection and **every other cluster's** evaluation rules. The only thing stopping a spoke from doing so is `allow_project_writes=False` in its own process (`langfuse_client._require_project_write`), i.e. a flag in code it is itself running. So the separation is a correctness guarantee against *bugs and drift*, not a security boundary against a *compromised spoke*: anyone who can read that Secret, or run code in that namespace, has full write access to how the entire fleet is scored. Per-cluster scoped keys are the real fix and Langfuse has no per-project-scope key model at `v4.72.0`; until then, treat the reconciler namespace on every cluster as carrying a fleet-wide credential, and note that the `oap-<owner token>-` naming limits *accidental* cross-cluster deletion but not deliberate use of the key |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
 | Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |
 | A developer weakening evaluation | The developer controls only `enabled`, `strictness`, `coverage` or `sampling`, the `judge` alias and evaluator names. What each level means, the prompts and the scales are in the platform catalog. A `low` strictness is visible on every report (D5) |

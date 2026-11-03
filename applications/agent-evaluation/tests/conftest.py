@@ -230,6 +230,9 @@ def settings() -> Settings:
         metrics_interval=300,
         metrics_windows=("24h",),
         metrics_port=9090,
+        # Sequential in tests, so query ORDER is deterministic and assertions
+        # about which query carried what stay stable.
+        metrics_concurrency=1,
         catalog_path="/etc/agent-evaluation/catalog.yaml",
         langfuse_timeout=30.0,
         max_active_rules=50,

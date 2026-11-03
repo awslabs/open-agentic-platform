@@ -274,7 +274,10 @@ class ClusterLoop:
                         cluster=cluster,
                         namespace=decl.namespace,
                         agent=decl.agent,
+                        # Catalog name for the metric label, object name for the
+                        # Langfuse score filter. See ThresholdRow.
                         evaluator=requested.name,
+                        evaluator_object=object_name,
                         threshold=threshold,
                     )
                 )
