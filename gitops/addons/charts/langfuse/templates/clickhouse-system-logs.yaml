@@ -29,9 +29,11 @@ where anyone would look:
     unlinks rather than writes
 
 Every system log gets a short TTL: still useful for debugging a live incident,
-no longer able to consume the volume. `trace_log`, by far the largest writer and
-read by nothing here, is additionally stopped at source by disabling the sampling
-query profiler that feeds it.
+no longer able to consume the volume. TTL is the ONLY mechanism used here, and
+deliberately so -- see the note on `clickhouse.systemLogs` in values.yaml for
+the two things that were tried and do not work: `remove="1"` (silently
+ineffective) and a `<profiles>` block (crash-loops the server, because
+`profiles` is not accepted in config.d).
 
 TTLs apply to existing tables too -- ClickHouse picks up the new setting and
 prunes on the next merge -- so this heals a cluster that is already filling up,
@@ -95,20 +97,5 @@ data:
         <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
       </error_log>
 
-      {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
-      <!-- Stop trace_log AT SOURCE. trace_log is fed by the sampling query
-           profiler, and these two settings are what drive it; zero disables
-           both. This is a settings change rather than a config-element removal,
-           which is why it takes effect where `remove` did not. Nothing in this
-           platform reads trace_log, so the profiler only costs disk here.
-           Set disableQueryProfiler: false to get it back for ClickHouse
-           performance work. -->
-      <profiles>
-        <default>
-          <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
-          <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
-        </default>
-      </profiles>
-      {{- end }}
     </clickhouse>
 {{- end }}

@@ -145,11 +145,18 @@ clickhouse:
     # rate, which matters because the rate swings with load -- trace_log grew
     # 1.5 GiB/day under the load that filled the hub's disk and ~5 MiB/day idle.
     ttlDays: 3
-    # Additionally stop trace_log being produced at all, by zeroing the sampling
-    # query profiler that feeds it. A SETTINGS change, which is why it works
-    # where removing the config element did not. Nothing in this platform reads
-    # trace_log; set false to get it back for ClickHouse performance work.
-    disableQueryProfiler: true
+    # NOTE: there is deliberately no "disable the query profiler" option here.
+    # An earlier version put <profiles><default> with
+    # query_profiler_real_time_period_ns: 0 into this config.d file. ClickHouse
+    # CRASH-LOOPED on it -- `profiles` is a users.xml / users.d concept and is
+    # not accepted in config.d, and a rejected config.d file stops the server
+    # coming up rather than being ignored. Langfuse went down until it was
+    # reverted.
+    #
+    # TTL alone is sufficient for the problem this solves (bounding the volume)
+    # and is verified working. Stopping trace_log at source would need a
+    # users.d mount, which is a larger change for a smaller benefit -- tracked
+    # separately rather than retried here.
   # Size of the ClickHouse data volume.
   #
   # CHANGING THIS DOES NOT RESIZE AN EXISTING CLUSTER, and getting it wrong
