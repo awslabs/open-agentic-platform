@@ -130,12 +130,26 @@ clickhouse:
   # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
   # instance cannot be cleaned up without DROP TABLE.
   systemLogs:
-    # Disables trace_log (the largest writer, and nothing here reads it) and puts
-    # a TTL on the rest. Leave on unless debugging ClickHouse itself.
+    # Puts a TTL on every system log table. Leave on unless debugging ClickHouse
+    # itself.
+    #
+    # MEASURED, and worth knowing before changing this: `<trace_log remove="1"/>`
+    # does NOT disable a system log. ClickHouse drops the config element and
+    # falls back to its compiled-in default, which is enabled -- after the
+    # restart that applied exactly that, trace_log was recreated and collected
+    # 119,289 rows in 11 hours. The TTLs in the same file applied correctly, so
+    # retention is the mechanism that holds.
     bound: true
     # Short on purpose: long enough to investigate a live incident, not long
-    # enough to consume the volume.
+    # enough to consume the volume. A TTL bounds a table whatever its write
+    # rate, which matters because the rate swings with load -- trace_log grew
+    # 1.5 GiB/day under the load that filled the hub's disk and ~5 MiB/day idle.
     ttlDays: 3
+    # Additionally stop trace_log being produced at all, by zeroing the sampling
+    # query profiler that feeds it. A SETTINGS change, which is why it works
+    # where removing the config element did not. Nothing in this platform reads
+    # trace_log; set false to get it back for ClickHouse performance work.
+    disableQueryProfiler: true
 
 # PrometheusRule for the datastores (templates/prometheus-rule.yaml). Needs the
 # prometheus-operator CRDs, which the observability domain already installs.

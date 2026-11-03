@@ -28,10 +28,10 @@ where anyone would look:
     could not even be cleaned up once full: recovery needed DROP TABLE, which
     unlinks rather than writes
 
-`trace_log` is the query-level sampling profiler. It is a performance-debugging
-aid, it is by far the largest writer, and nothing in this platform reads it, so
-it is turned OFF rather than merely trimmed. The rest keep a short TTL: still
-useful for debugging a live incident, no longer able to consume the volume.
+Every system log gets a short TTL: still useful for debugging a live incident,
+no longer able to consume the volume. `trace_log`, by far the largest writer and
+read by nothing here, is additionally stopped at source by disabling the sampling
+query profiler that feeds it.
 
 TTLs apply to existing tables too -- ClickHouse picks up the new setting and
 prunes on the next merge -- so this heals a cluster that is already filling up,
@@ -47,13 +47,27 @@ data:
   # Dropped into /etc/clickhouse-server/config.d/, which ClickHouse merges over
   # its packaged defaults. Disabling a log needs the `remove` attribute: an empty
   # element would leave the default in place.
+  # TTL ON EVERYTHING, rather than trying to disable individual logs.
+  #
+  # The first version of this used `<trace_log remove="1"/>`. MEASURED: it does
+  # not work. After the restart that applied it, trace_log was recreated and had
+  # collected 119,289 rows within 11 hours -- `remove` drops the config element,
+  # and ClickHouse then falls back to its compiled-in default, which is enabled.
+  # The TTLs in that same file DID apply, verified as
+  # `TTL event_date + toIntervalDay(3)` on every table carrying one.
+  #
+  # So retention is the mechanism that actually holds, and it is applied
+  # uniformly. A TTL bounds a table whatever its write rate, which matters here
+  # because the rate varies enormously with load: trace_log grew 1.5 GiB/day
+  # under the load that filled the disk, and ~5 MiB/day when idle. Disabling
+  # tables is left to the profiler settings below, which stop the data being
+  # produced instead of arguing with the config loader.
   system-logs.xml: |
     <clickhouse>
-      <!-- The 15 GiB writer. Nothing here reads it. -->
-      <trace_log remove="1"/>
-
-      <!-- Kept, but bounded. flush_interval_milliseconds is left at the default;
-           only retention changes. -->
+      <!-- Was 15.08 GiB / 675M rows. Bounded, not disabled — see above. -->
+      <trace_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </trace_log>
       <text_log>
         <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
         <level>warning</level>
@@ -67,15 +81,34 @@ data:
       <asynchronous_metric_log>
         <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
       </asynchronous_metric_log>
+      <!-- Langfuse v4's "legacy API usage" job reads query_log, so it stays. -->
       <query_log>
         <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
       </query_log>
-      <!-- Langfuse v4's "legacy API usage" job reads query_log, so that one stays
-           enabled; it is only 6 MiB and the TTL is what keeps it that way. -->
-      <processors_profile_log remove="1"/>
-      <opentelemetry_span_log remove="1"/>
+      <processors_profile_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </processors_profile_log>
+      <opentelemetry_span_log>
+        <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+      </opentelemetry_span_log>
       <error_log>
         <ttl>event_date + INTERVAL {{ .Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
       </error_log>
+
+      {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
+      <!-- Stop trace_log AT SOURCE. trace_log is fed by the sampling query
+           profiler, and these two settings are what drive it; zero disables
+           both. This is a settings change rather than a config-element removal,
+           which is why it takes effect where `remove` did not. Nothing in this
+           platform reads trace_log, so the profiler only costs disk here.
+           Set disableQueryProfiler: false to get it back for ClickHouse
+           performance work. -->
+      <profiles>
+        <default>
+          <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
+          <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
+        </default>
+      </profiles>
+      {{- end }}
     </clickhouse>
 {{- end }}
