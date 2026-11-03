@@ -218,10 +218,13 @@ own ServiceAccount token if it needs either. The A2A tasks such requests create 
 be read back, so the agent keeps only the newest `MAX_UNOWNED_TASKS` of them (agent env,
 default `100`).
 
-The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. A
-workload that calls an agent's Service directly can set it to any caller; restrict agent
-ingress to `agentgateway-system` with a NetworkPolicy if other workloads share the
-cluster (enforcing this by default is tracked in #86).
+The `X-Forwarded-User` header is trustworthy only on traffic through the gateway. The
+`agent` component emits a NetworkPolicy, `<component>-gateway-only`, that admits ingress
+only from the gateway namespace (`global.agentGateway.namespace`, default
+`agentgateway-system`, set by the platform, not the Application). It takes effect only on
+clusters that enforce NetworkPolicy, which is part of the base platform's cluster contract
+(aws-samples/appmod-blueprints#1239). A caller that reached agents directly, such as an
+incident bridge, must go through the gateway instead. MCP servers are tracked in #86.
 
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not
@@ -229,7 +232,7 @@ immediately.
 
 Live check: `scripts/test-memory-matrix.sh` (provisioning, fail-closed, per-caller
 recall, A2A context and task isolation). Run `PHASE=write`, wait for extraction, then
-`PHASE=read`. The gateway side is `scripts/test-identity-matrix.sh`.
+`PHASE=read`. The gateway side is `tests/live/test_identity.py`.
 
 ## Monitoring rollouts
 

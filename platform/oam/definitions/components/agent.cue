@@ -188,6 +188,12 @@ template: {
 									value: strings.Join([for s in parameter.mcpServers {s.name}], ",")
 								}
 							},
+							if len(parameter.agents) > 0 {
+								{
+									name:  "A2A_AGENT_NAMES"
+									value: strings.Join([for a in parameter.agents {a.name}], ",")
+								}
+							},
 							for e in parameter.env {e},
 						]])
 						livenessProbe: {
@@ -351,6 +357,41 @@ template: {
 			if parameter.mcpServers != _|_ && len(parameter.mcpServers) > 0 {
 				data: mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
 			}
+			if len(parameter.agents) > 0 {
+				data: agents: strings.Join([for a in parameter.agents {a.name}], ",")
+			}
+		}
+
+		// Ingress only from the gateway. The gateway sets X-Forwarded-User from the
+		// validated token (caller-identity-policy.yaml), and this agent trusts that
+		// header, so a pod that reached the Service directly could name any user. A
+		// supervisor would then pass that user on through the gateway in
+		// X-Delegated-User, reaching every agent it delegates to
+		// (docs/agent-delegation/DESIGN.md section 5).
+		//
+		// The namespace is platform configuration (global.agentGateway.namespace), not
+		// gatewayNamespace: a developer who could widen it would open that path to the
+		// sub-agents of other teams. kubernetes.io/metadata.name is set by the API
+		// server from the namespace name, so another namespace cannot carry it.
+		//
+		// Enforced only on clusters that enforce NetworkPolicy, which is part of the
+		// cluster contract the base platform provides (aws-samples/appmod-blueprints#1239).
+		gatewayOnlyIngress: {
+			apiVersion: "networking.k8s.io/v1"
+			kind:       "NetworkPolicy"
+			metadata: {
+				name:      context.name + "-gateway-only"
+				namespace: context.namespace
+				labels: "app.kubernetes.io/name": context.name
+			}
+			spec: {
+				podSelector: matchLabels: "app.kubernetes.io/name": context.name
+				policyTypes: ["Ingress"]
+				ingress: [{
+					from: [{namespaceSelector: matchLabels: "kubernetes.io/metadata.name": "{{ .Values.global.agentGateway.namespace }}"}]
+					ports: [{protocol: "TCP", port: 8083}]
+				}]
+			}
 		}
 
 		// HTTPRoute for AgentGateway registration (optional)
@@ -400,7 +441,7 @@ template: {
 		systemMessage: string
 
 		// Image
-		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10" | string
+		image: *"public.ecr.aws/z0a4o2j5/strands-agent:v1.5.3-delegation" | string
 
 		// Optional fields with defaults
 		// +usage=Number of replicas. Omitted means 1, and omitting it also lets an
@@ -449,7 +490,8 @@ template: {
 
 		// AgentGateway registration
 		registerWithGateway: *true | bool
-		gatewayNamespace:    *"agentgateway-system" | string
+		// +usage=Namespace of the agentgateway-proxy Gateway the route attaches to. Defaults to the platform's gateway namespace. Does not change which namespace may reach the agent: that is platform configuration
+		gatewayNamespace: *"{{ .Values.global.agentGateway.namespace }}" | string
 
 		// Model configuration
 		// Gateway is Bifrost (OpenAI-compatible endpoint at /v1). llmGatewayApiKey
@@ -501,6 +543,15 @@ template: {
 		// MCP servers
 		mcpServers: *[] | [...{
 			name: string
+		}]
+
+		// +usage=Agents this agent may delegate to, by component name (supervisor pattern,
+		// docs/agent-delegation/DESIGN.md). Each must be registered on this cluster's gateway.
+		// The agent fetches each one's A2A card through the gateway and gets one tool per
+		// agent; the workflow goal is the systemMessage. Calls carry this agent's own
+		// identity, act for the user, and are allowed by the gateway's agentAccess rules.
+		agents: *[] | [...{
+			name: =~"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 		}]
 
 		// Additional environment variables
