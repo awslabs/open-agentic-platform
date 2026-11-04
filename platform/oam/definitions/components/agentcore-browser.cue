@@ -53,7 +53,8 @@ template: {
 	// its AWS name, so aws-service-identity's accessFor (policyArnRef, same rule in
 	// appmod's trait) finds it by that name, and an upgrade gets a new object whose ARN the
 	// attachment waits for instead of latching the old policy's ARN. Keep in step with
-	// appmod platform/oam/definitions/traits/component-policy.cue.
+	// appmod platform/oam/definitions/traits/component-policy.cue; scripts/check-iam-names.sh
+	// checks that the two agree.
 	let _install = "{{ .Values.global.clusterName }}"
 	let _installRegion = "{{ .Values.global.awsRegion }}"
 

@@ -230,6 +230,13 @@ back to names that collide between installs (#92). appmod's `aws-service-identit
 KubeVela chart must receive it too: its values come from the hub's appmod platform
 revision, whose addon registry passes `aws_cluster_name` from v0.4.0-rc1 on.
 
+`scripts/check-iam-names.sh <appmod-blueprints checkout>` keeps the two repos in step. It
+renders these components and appmod's traits and aiops-agent chart for a matrix of
+installs, offline, and checks that every attachment finds its Policy object, that the
+names match an independent implementation of the rule, that no name is shared between
+installs, that label values stay within 63 characters, and that an empty cluster name is
+refused. Run it whenever the rule changes on either side.
+
 The AWS memory name is derived, not set, and is one-to-one with the install, namespace
 and component. AgentCore requires it to be unique within the AWS account, so it carries
 the install too: `M<first 30 characters of <cluster>_<namespace>_<component>>_<16-character
