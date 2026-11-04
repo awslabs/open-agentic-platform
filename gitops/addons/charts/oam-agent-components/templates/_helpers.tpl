@@ -8,14 +8,19 @@ install tag, so a prefix-based teardown left it behind.
 
   1. decentralizedObservability.roleName set  -> that name, unchanged (explicit override).
   2. global.clusterName set                    -> "<cluster>-agent-cw-observability-role".
-     EKS cluster names are unique per account and region. When that is longer than the
-     64-character IAM limit: "<first 43 chars of cluster>-<8 hex>-cw-obs-role", the hex
-     being sha256("<region>/<cluster>"), so two long names never truncate to one role.
+     <cluster> is the cluster name lowercased with "_" mapped to "-", the same rule as the
+     install-scoped component names (platform/oam/definitions/components/*.cue): the role
+     name is also the Crossplane object name, which must be a DNS-1123 subdomain, and EKS
+     allows uppercase and "_" in cluster names. EKS cluster names are unique per account
+     and region. When the name is longer than the 64-character IAM limit:
+     "<first 43 chars of cluster>-<8 hex>-cw-obs-role", the hex being
+     sha256("<region>/<cluster as given>"), so two long names never truncate to one role.
   3. neither                                   -> legacy "agent-cw-observability-role".
 */}}
 {{- define "oam-agent-components.cwObservabilityRoleName" -}}
 {{- $dobs := .Values.decentralizedObservability -}}
-{{- $cluster := lower (default "" .Values.global.clusterName) -}}
+{{- $rawCluster := default "" .Values.global.clusterName -}}
+{{- $cluster := lower (replace "_" "-" $rawCluster) -}}
 {{- if $dobs.roleName -}}
 {{- $dobs.roleName -}}
 {{- else if $cluster -}}
@@ -23,7 +28,7 @@ install tag, so a prefix-based teardown left it behind.
 {{- if le (len $name) 64 -}}
 {{- $name -}}
 {{- else -}}
-{{- $hash := trunc 8 (sha256sum (printf "%s/%s" (default "" .Values.global.awsRegion) $cluster)) -}}
+{{- $hash := trunc 8 (sha256sum (printf "%s/%s" (default "" .Values.global.awsRegion) $rawCluster)) -}}
 {{- printf "%s-%s-cw-obs-role" (trimSuffix "-" (trunc 43 $cluster)) $hash -}}
 {{- end -}}
 {{- else -}}
