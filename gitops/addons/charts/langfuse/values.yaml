@@ -174,8 +174,17 @@ clickhouse:
         extra:
           # Only warnings and above; this table was 3.3 GiB across two copies.
           level: warning
+      # ClickHouse's packaged config gives this table an explicit <engine>,
+      # because it has no event_time -- only start and finish. A sibling <ttl>
+      # is then rejected and the server EXITS 36 at startup, so the engine is
+      # restated here with the TTL rendered inside it. The engine body is copied
+      # from the image's own config.xml; keep it in step on a ClickHouse upgrade.
       - name: opentelemetry_span_log
         dateColumn: finish_date
+        engine: |
+          engine MergeTree
+          partition by toYYYYMM(finish_date)
+          order by (finish_date, finish_time_us)
   storage: 20Gi
   resources:
     requests:

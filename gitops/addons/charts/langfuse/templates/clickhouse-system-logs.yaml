@@ -63,7 +63,19 @@ data:
     <clickhouse>
       {{- range $log := .Values.clickhouse.systemLogs.logs }}
       <{{ $log.name }}>
+        {{- if $log.engine }}
+        <!-- This table ships with an <engine> in ClickHouse's own config, and
+             when one is present a sibling <ttl> is REJECTED: "If 'engine' is
+             specified for system table, TTL parameters should be specified
+             directly inside 'engine'". So the whole engine is restated with the
+             TTL inline. -->
+        <engine>
+            {{ $log.engine | trim | nindent 12 }}
+            TTL {{ $log.dateColumn | default "event_date" }} + INTERVAL {{ $ttl }} DAY DELETE
+        </engine>
+        {{- else }}
         <ttl>{{ $log.dateColumn | default "event_date" }} + INTERVAL {{ $ttl }} DAY DELETE</ttl>
+        {{- end }}
         {{- with $log.extra }}
         {{- range $k, $v := . }}
         <{{ $k }}>{{ $v }}</{{ $k }}>
