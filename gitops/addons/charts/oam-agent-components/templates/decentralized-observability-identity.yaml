@@ -60,8 +60,14 @@ spec:
     clusterName: "{{ .Values.global.clusterName }}"
     namespace: {{ .Values.decentralizedObservability.namespace }}
     region: "{{ .Values.global.awsRegion | default "us-west-2" }}"
+    # resolve: Always re-resolves the ARN on every reconcile. The default (IfNotPresent)
+    # keeps an already-set forProvider.roleArn, so on an upgrade that renames the role this
+    # existing association would stay on the old role while Argo CD prunes it. role_arn is
+    # updated in place (UpdatePodIdentityAssociation).
     roleArnRef:
       name: {{ $roleName }}
+      policy:
+        resolve: Always
     serviceAccount: {{ .Values.decentralizedObservability.serviceAccount }}
 {{- end }}
 ---
@@ -105,7 +111,12 @@ spec:
         			clusterName:    parameter.clusterName
         			namespace:      context.namespace
         			region:         parameter.region
-        			roleArnRef: name: parameter.roleName
+        			// resolve: Always so an existing association follows a renamed role
+        			// instead of keeping the ARN it resolved first (see the cluster PIA above).
+        			roleArnRef: {
+        				name: parameter.roleName
+        				policy: resolve: "Always"
+        			}
         			serviceAccount: context.name
         		}
         	}
