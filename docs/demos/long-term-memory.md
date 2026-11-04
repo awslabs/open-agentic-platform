@@ -52,8 +52,11 @@ DOMAIN=$(kubectl --context $HUB get secret -n argocd -l argocd.argoproj.io/secre
   -o jsonpath='{range .items[*]}{.metadata.annotations.ingress_domain_name}{"\n"}{end}' | grep -v '^$' | head -1)
 UPW=$(kubectl --context $HUB get secret keycloak-config -n keycloak -o jsonpath='{.data.USER_PASSWORD}' | base64 -d)
 
-# The AgentCore memory the example created
-MEMID=$(kubectl --context $SPOKE get memories.bedrockagentcore.aws.upbound.io agents.agentcore-short-memory \
+# The AgentCore memory the example created. Its object is agents.agentcore-short-memory,
+# with a .<8 hex> suffix on a cluster that passes global.clusterName.
+MEM=$(kubectl --context $SPOKE get memories.bedrockagentcore.aws.upbound.io -o name | sed 's|.*/||' \
+  | grep -E '^agents\.agentcore-short-memory(\.[0-9a-f]{8})?$')
+MEMID=$(kubectl --context $SPOKE get memories.bedrockagentcore.aws.upbound.io "$MEM" \
   -o jsonpath='{.metadata.annotations.crossplane\.io/external-name}')
 
 # Tokens for both users, and user1's subject (the memory actor)

@@ -1,5 +1,6 @@
 # Test: Provision AgentCore Memory in isolation
-# memoryName auto-generates to: agents_agentcore_memory_test
+# memoryName is derived (it cannot be set): M<cluster>_agents_agentcore_m_<hash> on a cluster
+# that passes global.clusterName, agents_agentcore_memory_test otherwise.
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
