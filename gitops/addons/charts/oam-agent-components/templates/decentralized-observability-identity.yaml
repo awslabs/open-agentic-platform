@@ -1,5 +1,12 @@
 {{- $roleName := include "oam-agent-components.cwObservabilityRoleName" . }}
-{{- if .Values.decentralizedObservability.enabled }}
+{{- /*
+FAIL CLOSED without global.clusterName: the Role and its association are not rendered, and
+the decentralized-observability-identity trait below fails the render of every Application
+that uses it. A role named without the cluster is shared by every install of the account
+(#92), so deleting one install's object deletes the role the others still use. The chart
+itself still renders, so its other definitions install; only what needs the cluster fails.
+*/}}
+{{- if and .Values.decentralizedObservability.enabled .Values.global.clusterName }}
 # IAM Role for agents using decentralized observability (CloudWatch GenAI)
 # Grants CW Logs, X-Ray, and CW Metrics write access.
 # One role per cluster, named after the cluster and tagged with the install prefix
@@ -89,6 +96,15 @@ spec:
   schematic:
     cue:
       template: |
+        // FAIL CLOSED without the install identity. The role is named after the cluster
+        // (templates/_helpers.tpl), and without global.clusterName the chart renders no role:
+        // a fixed name would be shared by every install of the account (#92). Fail the render
+        // instead of emitting an association to a role that does not exist. The two strings
+        // conflict on purpose: KubeVela prints both, so the error names the missing value.
+        let _install = "{{ .Values.global.clusterName }}"
+        if _install == "" {
+        	_installIdentity: "set" & "global.clusterName is empty: set it on the oam-agent-components chart (the cluster secret's aws_cluster_name annotation)"
+        }
         parameter: {
         	// +usage=IAM role name for CW/X-Ray write access (shared across all decentralized agents)
         	roleName: *"{{ $roleName }}" | string

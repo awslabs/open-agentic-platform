@@ -15,7 +15,11 @@ install tag, so a prefix-based teardown left it behind.
      and region. When the name is longer than the 64-character IAM limit:
      "<first 43 chars of cluster>-<8 hex>-cw-obs-role", the hex being
      sha256("<region>/<cluster as given>"), so two long names never truncate to one role.
-  3. neither                                   -> legacy "agent-cw-observability-role".
+  3. neither                                   -> "" (no name). global.clusterName is
+     required: without it the Role and its default/default association are not rendered,
+     and the decentralized-observability-identity trait fails the render (FAIL CLOSED in
+     decentralized-observability-identity.yaml), instead of falling back to a fixed name
+     shared by every install of the account (#92).
 */}}
 {{- define "oam-agent-components.cwObservabilityRoleName" -}}
 {{- $dobs := .Values.decentralizedObservability -}}
@@ -31,14 +35,13 @@ install tag, so a prefix-based teardown left it behind.
 {{- $hash := trunc 8 (sha256sum (printf "%s/%s" (default "" .Values.global.awsRegion) $rawCluster)) -}}
 {{- printf "%s-%s-cw-obs-role" (trimSuffix "-" (trunc 43 $cluster)) $hash -}}
 {{- end -}}
-{{- else -}}
-agent-cw-observability-role
 {{- end -}}
 {{- end -}}
 
 {{/*
-Name of the default/default PodIdentityAssociation OBJECT. Kept at its pre-existing name
-(the explicit roleName, else the legacy literal) so a change of role name updates the
+Name of the default/default PodIdentityAssociation OBJECT (a Kubernetes object name only, no
+AWS resource carries it). Kept at its pre-existing name (the explicit roleName, else the
+pre-existing literal) so a change of role name updates the
 existing association in place (UpdatePodIdentityAssociation) instead of creating a second
 association for the same namespace/ServiceAccount, which EKS rejects until the old one is
 pruned.
