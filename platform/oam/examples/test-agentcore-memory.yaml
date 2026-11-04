@@ -1,6 +1,6 @@
 # Test: Provision AgentCore Memory in isolation
-# memoryName is derived (it cannot be set): M<cluster>_agents_agentcore_m_<hash> on a cluster
-# that passes global.clusterName, agents_agentcore_memory_test otherwise.
+# memoryName is derived (it cannot be set): M<cluster>_agents_agentcore_m_<hash>. The chart
+# must receive global.clusterName, or the render fails.
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
