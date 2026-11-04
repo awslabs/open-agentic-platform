@@ -38,7 +38,8 @@ global:
 decentralizedObservability:
   enabled: true
   # AWS name of the role. Empty (default): derived per cluster,
-  # "<global.clusterName>-agent-cw-observability-role" (hashed when over 64 chars), or the
+  # "<global.clusterName>-agent-cw-observability-role" with the cluster name lowercased and
+  # "_" mapped to "-" (hashed when over 64 chars), or the
   # legacy "agent-cw-observability-role" when no clusterName is passed. IAM role names are
   # account-wide, so a fixed name here is shared by every cluster and install in the account.
   roleName: ""
