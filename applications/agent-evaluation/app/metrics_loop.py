@@ -84,9 +84,21 @@ TAGS_DIMENSION = "tags"
 # names would hit it far sooner than 339.
 #
 # Hence a byte budget rather than a tag count: chunks are sized by the actual
-# encoded length, so the limit holds whatever the names look like. 8000 is half
-# the 16 KiB, leaving room for the rest of the query and for headers.
-TAG_QUERY_BUDGET_BYTES = 8000
+# encoded length, so the limit holds whatever the names look like.
+#
+# THE BINDING LIMIT IS NOT ALWAYS LANGFUSE'S. A spoke reaches the hub's Langfuse
+# over its public domain, which in no-domain mode is CloudFront, and CloudFront
+# caps a request URL at 8,192 bytes -- tighter than the 16 KiB Node header limit
+# measured above, and it answers 494 rather than 431. The default is therefore
+# 6000 rather than 8000: under CloudFront's cap with room for the rest of the
+# query string, so the same number is safe from a hub (direct, in-cluster) and
+# from a spoke (through CloudFront) without the operator having to know which
+# path a given cluster takes.
+#
+# Configurable because neither limit is ours: a different CDN, an ALB, or a
+# future Langfuse that accepts POST for metrics all move it. Raise it only with
+# a measurement from the cluster that will use it.
+DEFAULT_TAG_QUERY_BUDGET_BYTES = 6000
 
 
 def encoded_len(tags: list[str]) -> int:
@@ -94,7 +106,7 @@ def encoded_len(tags: list[str]) -> int:
     return len(urllib.parse.quote(json.dumps(tags)))
 
 
-def chunk_tags(tags: list[str], budget: int = TAG_QUERY_BUDGET_BYTES) -> list[list[str]]:
+def chunk_tags(tags: list[str], budget: int = DEFAULT_TAG_QUERY_BUDGET_BYTES) -> list[list[str]]:
     """Split a tag list so each chunk's encoded length fits in one request line.
 
     Measures the WHOLE candidate list rather than summing per-tag costs. Summing
@@ -354,10 +366,10 @@ class MetricsLoop:
 
             # ── counts and means across every agent ────────────────────────
             # One query, unless the tag list would overflow the request line
-            # (see TAG_QUERY_BUDGET_BYTES), in which case as few as fit.
+            # (see DEFAULT_TAG_QUERY_BUDGET_BYTES), in which case as few as fit.
             scored_rows: list[dict] = []
             try:
-                for chunk in chunk_tags(all_tags):
+                for chunk in chunk_tags(all_tags, self._settings.tag_query_budget_bytes):
                     scored_rows.extend(
                         self._client.query_metrics(
                             scored_query(chunk, all_objects, start, now)
@@ -459,7 +471,7 @@ class MetricsLoop:
         units = [
             (group, chunk)
             for group in groups
-            for chunk in chunk_tags(list(group.tags))
+            for chunk in chunk_tags(list(group.tags), self._settings.tag_query_budget_bytes)
         ]
 
         def one(unit: tuple[_PassedGroup, list[str]]) -> tuple[_PassedGroup, list[dict]]:

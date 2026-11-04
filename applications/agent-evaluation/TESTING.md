@@ -438,23 +438,46 @@ already dropped are gone for good, so re-drive traffic to re-test.
 
 ### Preventing it
 
-`gitops/addons/charts/langfuse/templates/clickhouse-system-logs.yaml` disables
-`trace_log` and puts a TTL on the rest (`clickhouse.systemLogs` in the chart's
-values). TTLs apply to existing tables, so deploying it also heals an instance
-partway to full — provided it still has room to merge, which is why the manual
-recovery above exists for one that is already at 100%.
+The langfuse chart bounds the system logs by default (`clickhouse.systemLogs`),
+in **two files, because ClickHouse reads the two halves from different places**:
+
+| file | mounted at | does |
+|---|---|---|
+| `clickhouse-system-logs.yaml` | `config.d/system-logs.xml` | a TTL per system log table |
+| `clickhouse-users.yaml` | `users.d/no-query-profiler.xml` | zeroes the query profiler, the only producer of `trace_log` |
+
+The split is not cosmetic. `<profiles>` is a users concept and `config.d`
+**refuses to start the server** if it finds it — that is a CrashLoopBackOff, not
+a warning. And the TTL column is not uniform: `opentelemetry_span_log` uses
+`finish_date` where every other log uses `event_date`, so a blanket
+`event_date` TTL makes ClickHouse exit 36 about two seconds after merging the
+file, with the reason only in `err.log` inside a pod that is already restarting.
+Both are spelled out in the chart values for that reason.
+
+TTLs apply to existing tables, so deploying this also heals an instance partway
+to full — provided it still has room to merge, which is why the manual recovery
+above exists for one already at 100%.
 
 ```bash
-# is the guard deployed?
-kubectl get cm langfuse-clickhouse-system-logs -n langfuse
-kubectl exec -n langfuse langfuse-clickhouse-0 -- \
-  clickhouse-client --query "SELECT count() FROM system.tables WHERE database='system' AND name='trace_log'"
-# 0 once the config is in effect
+# both halves deployed?
+kubectl get cm langfuse-clickhouse-system-logs langfuse-clickhouse-users -n langfuse
+
+# TTLs in effect, and on the right column per table
+kubectl exec -n langfuse langfuse-clickhouse-0 -- clickhouse-client --query "
+SELECT name, extract(engine_full, 'TTL [^ ]+') AS ttl_col
+FROM system.tables WHERE database='system' AND name LIKE '%_log'
+  AND engine_full LIKE '%TTL%' ORDER BY name FORMAT PrettyCompactMonoBlock"
+# opentelemetry_span_log -> finish_date, everything else -> event_date
+
+# profiler off, so trace_log stops being produced rather than just expiring
+kubectl exec -n langfuse langfuse-clickhouse-0 -- clickhouse-client --query \
+  "SELECT name, value FROM system.settings WHERE name LIKE 'query_profiler%'"
+# both 0
 ```
 
 ### Worth watching
 
-There is no alert for this today, and it is a gap worth closing: a ClickHouse
+A ClickHouse
 disk-usage alarm would have caught it on day one, where `oap_agent_eval_*` could
 not — a full database and an idle agent produce the same zero. `oap_agent_eval_*`
 cannot detect it **by design**: the reconciler is reading Langfuse successfully,

@@ -233,6 +233,7 @@ def settings() -> Settings:
         # Sequential in tests, so query ORDER is deterministic and assertions
         # about which query carried what stay stable.
         metrics_concurrency=1,
+        tag_query_budget_bytes=6000,
         catalog_path="/etc/agent-evaluation/catalog.yaml",
         langfuse_timeout=30.0,
         max_active_rules=50,

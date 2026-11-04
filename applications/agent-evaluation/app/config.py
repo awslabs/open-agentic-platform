@@ -120,6 +120,11 @@ class Settings:
     # hub backend, which is rate-limited: a 429 costs the whole pass. 1 is fully
     # sequential.
     metrics_concurrency: int
+    # Bytes of URL-encoded tag list one metrics query may carry. The binding
+    # limit is the transport, not Langfuse: a spoke reaches the hub through
+    # CloudFront, which caps a request URL at 8,192 bytes. See
+    # metrics_loop.DEFAULT_TAG_QUERY_BUDGET_BYTES.
+    tag_query_budget_bytes: int
     catalog_path: str
     langfuse_timeout: float
     # Langfuse's documented cap on active evaluation rules per project. Checked
@@ -217,6 +222,7 @@ def load_settings() -> Settings:
         # only from inside the cluster (the AMP scraper and the kubelet probes).
         metrics_port=_env_int("METRICS_PORT", 9090),
         metrics_concurrency=_env_int("METRICS_CONCURRENCY", 4),
+        tag_query_budget_bytes=_env_int("TAG_QUERY_BUDGET_BYTES", 6000),
         catalog_path=_env("CATALOG_PATH", "/etc/agent-evaluation/catalog.yaml"),
         langfuse_timeout=float(_env("LANGFUSE_TIMEOUT_SECONDS", "30")),
         max_active_rules=_env_int("MAX_ACTIVE_RULES", 50),

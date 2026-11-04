@@ -83,6 +83,8 @@ spec:
               value: {{ .Values.metrics.port | quote }}
             - name: METRICS_CONCURRENCY
               value: {{ .Values.metrics.concurrency | quote }}
+            - name: TAG_QUERY_BUDGET_BYTES
+              value: {{ .Values.metrics.tagQueryBudgetBytes | quote }}
             - name: MAX_ACTIVE_RULES
               value: {{ .Values.maxActiveRules | quote }}
             - name: CATALOG_PATH

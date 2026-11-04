@@ -8,7 +8,7 @@ from app.cluster_loop import ClusterPlan
 from app.langfuse_client import LangfuseError
 from app.metrics import ThresholdRow
 from app.metrics_loop import (
-    TAG_QUERY_BUDGET_BYTES,
+    DEFAULT_TAG_QUERY_BUDGET_BYTES,
     MetricsLoop,
     MetricsSchemaError,
     agent_from_tags,
@@ -374,7 +374,7 @@ def test_a_large_fleet_is_split_below_the_request_line_limit(
     for query in langfuse.queries:
         tags = next(f for f in query["filters"] if f["column"] == "tags")["value"]
         encoded = len(_urlparse.quote(_json.dumps(tags)))
-        assert encoded <= TAG_QUERY_BUDGET_BYTES, (
+        assert encoded <= settings.tag_query_budget_bytes, (
             f"a query carried {encoded} encoded bytes of tags"
         )
 

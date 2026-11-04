@@ -1088,7 +1088,9 @@ Customers run many observability stacks — Langfuse, AgentCore, Datadog, Arize 
 so "which backend scores an agent" has to be a property of the addon a cluster
 installs, not something agents or the platform's generic code knows about.
 
-Everything vendor-specific sits behind one interface, `app/backend.py`:
+Everything vendor-specific sits behind one interface. The interface itself
+lands with the Langfuse implementation in #133; what is settled now, and what a
+second backend has to honour, is the shape and the two contracts below:
 
 ```python
 class EvaluationBackend(ABC):

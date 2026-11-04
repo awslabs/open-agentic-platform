@@ -462,7 +462,10 @@ spec:
         # same shape of failure as the unbounded logs it is meant to prevent.
         # subPath is kept deliberately: mounting the whole directory would
         # shadow the image's own docker_related_config.xml.
-        checksum/system-logs: {{ include (print $.Template.BasePath "/clickhouse-system-logs.yaml") . | sha256sum }}
+        checksum/system-logs: {{ printf "%s%s"
+          (include (print $.Template.BasePath "/clickhouse-system-logs.yaml") .)
+          (include (print $.Template.BasePath "/clickhouse-users.yaml") .)
+          | sha256sum }}
       {{- end }}
     spec:
       securityContext:
@@ -494,14 +497,22 @@ spec:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
             {{- if .Values.clickhouse.systemLogs.bound }}
-            # Bounds ClickHouse's own system log tables. Without this they are
-            # unbounded and filled this volume in ten days, which silently took
-            # down every trace and every evaluation score -- see
-            # templates/clickhouse-system-logs.yaml for the measurements.
+            # Retention for ClickHouse's own system log tables (config.d).
+            # Without this they are unbounded and filled this volume in ten
+            # days, which silently took down every trace and every evaluation
+            # score -- see templates/clickhouse-system-logs.yaml.
             - name: system-logs-config
               mountPath: /etc/clickhouse-server/config.d/system-logs.xml
               subPath: system-logs.xml
               readOnly: true
+            {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
+            # Profile settings go in users.d, NOT config.d. config.d does not
+            # accept <profiles> and refuses to start the server if it finds it.
+            - name: clickhouse-users-config
+              mountPath: /etc/clickhouse-server/users.d/no-query-profiler.xml
+              subPath: no-query-profiler.xml
+              readOnly: true
+            {{- end }}
             {{- end }}
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
@@ -510,6 +521,11 @@ spec:
         - name: system-logs-config
           configMap:
             name: langfuse-clickhouse-system-logs
+        {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
+        - name: clickhouse-users-config
+          configMap:
+            name: langfuse-clickhouse-users
+        {{- end }}
       {{- end }}
   volumeClaimTemplates:
     - apiVersion: v1

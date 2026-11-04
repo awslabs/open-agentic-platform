@@ -129,76 +129,53 @@ clickhouse:
   #
   # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
   # instance cannot be cleaned up without DROP TABLE.
+  # ClickHouse's own diagnostic tables, which ship enabled and UNBOUNDED.
+  #
+  # Measured on the hub: system.trace_log reached 15.08 GiB / 675M rows and
+  # system.text_log another 3.3 GiB, filling the 20 GiB volume in ten days
+  # against 712 KiB of actual Langfuse data. The failure is silent everywhere an
+  # operator looks -- the collector reports spans sent and 0 failed, because the
+  # web tier accepts and enqueues them, and only the worker log shows
+  # NOT_ENOUGH_SPACE as it drops every record. Traces stop existing, no agent is
+  # scored, and the evaluation gauges all read a believable 0.
+  #
+  # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
+  # instance cannot be cleaned up without DROP TABLE.
   systemLogs:
-    # Puts a TTL on every system log table. Leave on unless debugging ClickHouse
-    # itself.
-    #
-    # MEASURED, and worth knowing before changing this: `<trace_log remove="1"/>`
-    # does NOT disable a system log. ClickHouse drops the config element and
-    # falls back to its compiled-in default, which is enabled -- after the
-    # restart that applied exactly that, trace_log was recreated and collected
-    # 119,289 rows in 11 hours. The TTLs in the same file applied correctly, so
-    # retention is the mechanism that holds.
-    # OFF BY DEFAULT, because every attempt to express this in config.d has
-    # taken ClickHouse down and none of the failures are visible without a
-    # restart:
-    #
-    #   `<trace_log remove="1"/>`   silently ineffective (config element is
-    #                               dropped, compiled-in default re-enables it)
-    #   `<profiles><default>`       CrashLoopBackOff; profiles is a users.d
-    #                               concept, not accepted in config.d
-    #   TTL on every system log     ClickHouse exits 36 two seconds after
-    #                               merging the file, with the reason only in
-    #                               /var/log/clickhouse-server/err.log, which is
-    #                               unreachable on a crash-looping pod
-    #
-    # The last one is probably a per-table detail (ClickHouse ALTERs existing
-    # system tables to apply a config TTL at startup, and one of them rejects
-    # it) but diagnosing it needs console logging enabled first, and each
-    # attempt costs a Langfuse outage. Landing it properly is tracked as its own
-    # issue rather than retried here.
-    #
-    # Turning this off is safe: the protection that actually matters is the
-    # PrometheusRule below, which alerts at 20% free with room to act, plus the
-    # documented recovery in applications/agent-evaluation/TESTING.md section
-    # 5a. The hub's volume is at ~2% used after the manual cleanup, so there is
-    # no near-term risk.
-    bound: false
-    # Short on purpose: long enough to investigate a live incident, not long
-    # enough to consume the volume. A TTL bounds a table whatever its write
-    # rate, which matters because the rate swings with load -- trace_log grew
-    # 1.5 GiB/day under the load that filled the hub's disk and ~5 MiB/day idle.
+    bound: true
+    # Long enough to investigate a live incident, short enough that the volume
+    # cannot be consumed. A TTL bounds a table whatever its write rate, which
+    # matters because the rate swings with load: trace_log grew ~1.5 GiB/day
+    # under the load that filled the disk and ~5 MiB/day idle.
     ttlDays: 3
-    # NOTE: there is deliberately no "disable the query profiler" option here.
-    # An earlier version put <profiles><default> with
-    # query_profiler_real_time_period_ns: 0 into this config.d file. ClickHouse
-    # CRASH-LOOPED on it -- `profiles` is a users.xml / users.d concept and is
-    # not accepted in config.d, and a rejected config.d file stops the server
-    # coming up rather than being ignored. Langfuse went down until it was
-    # reverted.
-    #
-    # TTL alone is sufficient for the problem this solves (bounding the volume)
-    # and is verified working. Stopping trace_log at source would need a
-    # users.d mount, which is a larger change for a smaller benefit -- tracked
-    # separately rather than retried here.
-  # Size of the ClickHouse data volume.
-  #
-  # CHANGING THIS DOES NOT RESIZE AN EXISTING CLUSTER, and getting it wrong
-  # blocks the whole chart. A StatefulSet's volumeClaimTemplates are immutable,
-  # so any drift here makes every later sync fail with
-  #   StatefulSet.apps "langfuse-clickhouse" is invalid:
-  #   spec.volumeClaimTemplates: Invalid value
-  # and nothing else in the chart lands either -- including a fix you are trying
-  # to deploy. Dropping this key accidentally renders `storage: 0`, which fails
-  # the same way; that is how it was found.
-  #
-  # To grow an existing volume, patch the PVC directly
-  # (`kubectl patch pvc clickhouse-data-langfuse-clickhouse-0 -n langfuse ...`),
-  # gp3 allows online expansion, and update this value so a fresh install agrees.
-  #
-  # 20Gi is comfortable for traces and scores: the hub's real data was 712 KiB
-  # after ten days. It was ClickHouse's own unbounded system logs that filled
-  # the volume, which `systemLogs` above now prevents.
+    # Disables the sampling query profiler, the only producer of trace_log.
+    # Rendered into users.d, NOT config.d: <profiles> is a users concept and
+    # config.d rejects it by refusing to start the server. See
+    # templates/clickhouse-users.yaml.
+    disableQueryProfiler: true
+    # THE DATE COLUMN IS NOT UNIFORM, and a TTL naming a column a table does not
+    # have is rejected at startup -- ClickHouse exits 36 roughly two seconds
+    # after merging the file, with the reason only in a logfile that is
+    # unreachable on a crash-looping pod. Verified against v25.12 with
+    #   SELECT table, name FROM system.columns
+    #    WHERE database='system' AND name LIKE '%date%'
+    # opentelemetry_span_log is the one that breaks a blanket event_date TTL.
+    logs:
+      - name: trace_log
+      - name: part_log
+      - name: metric_log
+      - name: asynchronous_metric_log
+      - name: processors_profile_log
+      - name: error_log
+      # Langfuse v4's legacy-API-usage job reads query_log, so it stays enabled
+      # and the TTL is what keeps it small (it was only 6 MiB).
+      - name: query_log
+      - name: text_log
+        extra:
+          # Only warnings and above; this table was 3.3 GiB across two copies.
+          level: warning
+      - name: opentelemetry_span_log
+        dateColumn: finish_date
   storage: 20Gi
   resources:
     requests:

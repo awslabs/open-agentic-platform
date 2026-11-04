@@ -139,6 +139,20 @@ metrics:
   # nothing by design). Batching is what made a pass cheap; concurrency only
   # shortens its tail, so this stays small. Set to 1 for fully sequential.
   concurrency: 4
+  # Bytes of URL-encoded tag list one metrics query may carry before it is split.
+  #
+  # The binding limit is the TRANSPORT, not Langfuse. Measured against Langfuse
+  # v4.72.0 direct: 339 thirty-character tags (16208 URL bytes) succeed and 340
+  # answers HTTP 431, because the metrics API takes its query as a URL parameter
+  # against Node's 16 KiB header limit. But a SPOKE reaches the hub's Langfuse
+  # over its public domain, which in no-domain mode is CloudFront, and
+  # CloudFront caps a request URL at 8,192 bytes and answers 494.
+  #
+  # 6000 is under the tighter of the two with room for the rest of the query, so
+  # one default is correct whether the cluster talks to Langfuse in-cluster or
+  # through CloudFront. Raise it only with a measurement from the cluster that
+  # will use it.
+  tagQueryBudgetBytes: 6000
   windows:
     - 24h
     - 7d
