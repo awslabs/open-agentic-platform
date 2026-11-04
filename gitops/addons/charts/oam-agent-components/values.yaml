@@ -1,6 +1,10 @@
 global:
   awsRegion: us-west-2
   clusterName: ""
+  # Install prefix (cluster secret resource_prefix annotation). Only used to tag the AWS
+  # resources this chart creates with platform.gitops.io/prefix, the tag a prefix-scoped
+  # teardown uses to find them. Empty: no prefix tag.
+  resourcePrefix: ""
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
@@ -33,6 +37,10 @@ global:
 # observability.mode=decentralized (CloudWatch GenAI direct export).
 decentralizedObservability:
   enabled: true
-  roleName: "agent-cw-observability-role"
+  # AWS name of the role. Empty (default): derived per cluster,
+  # "<global.clusterName>-agent-cw-observability-role" (hashed when over 64 chars), or the
+  # legacy "agent-cw-observability-role" when no clusterName is passed. IAM role names are
+  # account-wide, so a fixed name here is shared by every cluster and install in the account.
+  roleName: ""
   namespace: "default"
   serviceAccount: "default"
