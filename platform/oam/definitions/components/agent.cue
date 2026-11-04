@@ -152,6 +152,9 @@ template: {
 							{name: "PORT", value: "8083"},
 							{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
 							{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
+							// The agent gateway the image calls for MCP servers and sub-agents. From the
+							// same platform value as the NetworkPolicy below, so moving the gateway moves both.
+							{name: "GATEWAY_URL", value: "http://agentgateway-proxy.{{ .Values.global.agentGateway.namespace }}.svc.cluster.local:8080"},
 							// Platform-owned, not a parameter. "false": the agent presents its OWN ServiceAccount
 							// identity to MCP servers, which mcpAccess grants match on. "true": it forwards the
 							// user's token (main's behaviour, the passthrough the MCP spec forbids).
@@ -376,6 +379,13 @@ template: {
 		//
 		// Enforced only on clusters that enforce NetworkPolicy, which is part of the
 		// cluster contract the base platform provides (aws-samples/appmod-blueprints#1239).
+		//
+		// global.agentGateway.extraIngressNamespaces (comma-separated, platform-owned,
+		// empty by default) admits further namespaces for callers that cannot go
+		// through the gateway yet, such as the aiops-agent's chat-ui and incident-bridge.
+		// Any pod in a listed namespace can name any user toward these agents, so the
+		// list is a platform decision, never an Application's.
+		let _extraIngress = [for ns in strings.Split("{{ .Values.global.agentGateway.extraIngressNamespaces }}", ",") if strings.TrimSpace(ns) != "" {strings.TrimSpace(ns)}]
 		gatewayOnlyIngress: {
 			apiVersion: "networking.k8s.io/v1"
 			kind:       "NetworkPolicy"
@@ -388,7 +398,7 @@ template: {
 				podSelector: matchLabels: "app.kubernetes.io/name": context.name
 				policyTypes: ["Ingress"]
 				ingress: [{
-					from: [{namespaceSelector: matchLabels: "kubernetes.io/metadata.name": "{{ .Values.global.agentGateway.namespace }}"}]
+					from: [for ns in list.Concat([["{{ .Values.global.agentGateway.namespace }}"], _extraIngress]) {namespaceSelector: matchLabels: "kubernetes.io/metadata.name": ns}]
 					ports: [{protocol: "TCP", port: 8083}]
 				}]
 			}

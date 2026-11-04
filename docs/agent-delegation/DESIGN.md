@@ -195,6 +195,15 @@ NetworkPolicy, which the base platform provides as part of its cluster contract
 (aws-samples/appmod-blueprints#1239). Until a cluster enforces it, this path stays open
 there.
 
+Callers that reach an agent's Service directly stop working under this policy. Agents
+with `registerWithGateway: false` are reachable only through a port-forward. A caller that
+cannot go through the gateway yet is admitted by namespace through
+`global.agentGateway.extraIngressNamespaces`, also platform-owned and empty by default.
+The registry adds `aiops-agent` on clusters running the aiops-agent addon, whose chat-ui
+and incident-bridge post to the agent directly; every pod in a listed namespace can then
+name any user toward these agents, so routing those callers through the gateway is the
+follow-up that removes the entry.
+
 The stronger model, verifying the user's own token at the gateway (token exchange, ADR-6
 in `docs/architecture/agent-identity-and-token-exchange.md`), is a follow-up issue.
 
@@ -257,8 +266,11 @@ As a supervisor (an agent with `agents:`):
 - Fetch `<GATEWAY_URL>/<name>/.well-known/agent-card.json` and call `<GATEWAY_URL>/<name>/`
   (A2A `message/send`) with `Authorization: Bearer <own ServiceAccount token>`, read from
   `WORKLOAD_TOKEN_PATH` (the `gateway-identity` trait).
-- Send `X-Delegated-User` set to the inbound `X-Forwarded-User`, and `X-Delegation-Depth`
-  set to the inbound depth plus one. Refuse to delegate past `MAX_DELEGATION_DEPTH`.
+- Send `X-Delegated-User` set to the inbound `X-Forwarded-User`, only when the caller is
+  an attributed user (not an unattributed delegated call, see the target rules below);
+  otherwise omit it, so unattributed callers are never merged into one identity. Send
+  `X-Delegation-Depth` set to the inbound depth plus one. Refuse to delegate past
+  `MAX_DELEGATION_DEPTH`.
 
 As a delegation target:
 

@@ -92,7 +92,14 @@ for i in json.load(sys.stdin)["items"]:
     if i["metadata"]["name"].endswith("-agentcore-short-memory-iam-policy"): print(i["spec"]["forProvider"]["policy"])')
   row P7 "memory IAM policy: AgentCore actions only, no bedrock:InvokeModel" "yes no" "$(yn "$(echo "$POL" | grep RetrieveMemoryRecords)") $(yn "$(echo "$POL" | grep InvokeModel)")"
   echo "=== no caller identity (bypassing the gateway) ==="
-  ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \
+  # Through a port-forward, not the probe pod: agents admit ingress only from the gateway
+  # namespace (agent component NetworkPolicy), so a pod in default cannot reach the Service.
+  PF_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+  ks port-forward -n $NS svc/$AGENT-stable $PF_PORT:8083 >/dev/null 2>&1 & PF_PID=$!
+  trap 'kill $PF_PID 2>/dev/null; ks delete pod $PROBE -n default --ignore-not-found --wait=false >/dev/null 2>&1' EXIT
+  curl -s -o /dev/null --retry 15 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$PF_PORT/health"
+  DIRECT="http://127.0.0.1:$PF_PORT"
+  curl -s -m 120 -o /dev/null -X POST "$DIRECT/chat" \
     -H 'Content-Type: application/json' -d "{\"message\":\"Say hi.\",\"contextId\":\"nohdr$RUN\"}"
   NOLOG=$(ks logs -n $NS -l app.kubernetes.io/name=$AGENT --since-time="$START" --tail=-1 --max-log-requests=10 2>/dev/null)
   row N1 "request without X-Forwarded-User gets no memory (fail closed)" yes "$(echo "$NOLOG" | grep -q "memory is off for session 'nohdr$RUN'" && echo yes || echo no)"
@@ -101,9 +108,9 @@ for i in json.load(sys.stdin)["items"]:
   # tests/unit/test_session_isolation.py and test_a2a_isolation.py). /chat three times
   # and A2A once; A2A errors also come back as HTTP 200, so check for a JSON-RPC result.
   NH=""; for i in 1 2 3; do
-    NH="$NH $(ks exec $PROBE -n default -- curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/chat" \
+    NH="$NH $(curl -s -m 120 -o /dev/null -w '%{http_code}' -X POST "$DIRECT/chat" \
       -H 'Content-Type: application/json' -d "{\"message\":\"Say hi.\",\"contextId\":\"nohdr$RUN\"}")"; done
-  NHA=$(ks exec $PROBE -n default -- curl -s -m 120 -X POST "http://$AGENT-stable.$NS.svc.cluster.local:8083/" \
+  NHA=$(curl -s -m 120 -X POST "$DIRECT/" \
       -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"messageId\":\"m$RUN\",\"contextId\":\"nohdr$RUN\",\"parts\":[{\"kind\":\"text\",\"text\":\"Say hi.\"}]}}}" |
     python3 -c 'import json,sys
 try: d=json.load(sys.stdin); print("result" if "result" in d and "error" not in d else "error")

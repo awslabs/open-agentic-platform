@@ -180,9 +180,10 @@ kubectl apply -f platform/oam/examples/example-agent-centralized-observability.y
 # Wait for pod
 kubectl get pods -l app.kubernetes.io/name=my-agent -w
 
-# Invoke
-kubectl run test --image=curlimages/curl --rm -it --restart=Never -- \
-  curl -s -X POST http://my-agent-stable.default.svc.cluster.local:8083/ \
+# Invoke. Agents admit ingress only from the gateway namespace (NetworkPolicy), and
+# this example is not registered with the gateway, so reach it through a port-forward.
+kubectl port-forward svc/my-agent-stable 8083:8083 &
+curl -s -X POST http://localhost:8083/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"message/send","id":"1","params":{"message":{"role":"user","messageId":"t1","parts":[{"type":"text","text":"What is S3?"}]}}}'
 
@@ -200,9 +201,10 @@ kubectl apply -f platform/oam/examples/example-agent-decentralized-observability
 # Wait for pod
 kubectl get pods -l app.kubernetes.io/name=my-cw-agent -w
 
-# Invoke
-kubectl run test --image=curlimages/curl --rm -it --restart=Never -- \
-  curl -s -X POST http://my-cw-agent-stable.default.svc.cluster.local:8083/ \
+# Invoke. Agents admit ingress only from the gateway namespace (NetworkPolicy), and
+# this example is not registered with the gateway, so reach it through a port-forward.
+kubectl port-forward svc/my-cw-agent-stable 8083:8083 &
+curl -s -X POST http://localhost:8083/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"message/send","id":"1","params":{"message":{"role":"user","messageId":"t1","parts":[{"type":"text","text":"What is Lambda?"}]}}}'
 
