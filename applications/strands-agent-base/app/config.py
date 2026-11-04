@@ -13,6 +13,15 @@ class Config:
     AGENT_DESCRIPTION: str = os.getenv(
         "AGENT_DESCRIPTION", "A Strands agent with A2A protocol support"
     )
+    # Where this agent runs. Supplied by the platform (the agent component sets
+    # both), and used only to scope this agent's Langfuse trace tag so continuous
+    # evaluation can tell one deployment of an Application from another: every
+    # cluster's traces land in the same hub Langfuse project, so the same
+    # Application on dev and prod would otherwise be one indistinguishable series.
+    # Both default to empty, which is what a local run looks like, and the scoped
+    # tag is then simply not added.
+    CLUSTER_NAME: str = os.getenv("CLUSTER_NAME", "")
+    AGENT_NAMESPACE: str = os.getenv("AGENT_NAMESPACE", "")
     
     # System prompt
     SYSTEM_PROMPT: str = os.getenv(
@@ -123,6 +132,25 @@ For example, always use the time tool when asked about the current time or date.
     # A2A configuration
     A2A_BASE_PATH: str = ""  # Mount at root
     
+    def scoped_agent_tag(self) -> Optional[str]:
+        """Cluster-scoped identity for this agent, or None off-platform.
+
+        `agent:<cluster>/<namespace>/<name>`. Continuous agent evaluation's
+        Langfuse rules select an agent's traces by exactly this tag, and the
+        reports group by it.
+
+        Returns None unless BOTH halves are present. A local run has no cluster,
+        and emitting something like `agent://support` would be worse than
+        emitting nothing: it would match a rule's tag filter for an agent on no
+        cluster.
+
+        Lives here, not in agent.py, so it is importable and testable without
+        the model and AWS SDK stack that module pulls in.
+        """
+        if self.CLUSTER_NAME and self.AGENT_NAMESPACE:
+            return f"agent:{self.CLUSTER_NAME}/{self.AGENT_NAMESPACE}/{self.AGENT_NAME}"
+        return None
+
     def __repr__(self) -> str:
         """String representation of config (hiding sensitive data)."""
         return (

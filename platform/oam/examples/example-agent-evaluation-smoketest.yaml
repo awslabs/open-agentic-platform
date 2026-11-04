@@ -1,0 +1,50 @@
+# Smoke test for continuous agent evaluation — NOT a production example.
+#
+# Use platform/oam/examples/example-agent-evaluation.yaml for the real shape.
+# This one is deliberately tuned so a human can see a score within a minute
+# instead of waiting for a sample to land:
+#
+#   sampling: 1   every trace is judged, not 10% of them
+#   one evaluator  one judge call per trace, so the result is unambiguous
+#
+# Both are wrong for production: judging every trace costs a judge call per
+# request, which is why `coverage` exists.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: eval-smoketest
+  namespace: agents
+spec:
+  components:
+    - name: eval-smoketest
+      type: agent
+      properties:
+        description: "Smoke-test agent for continuous evaluation"
+        systemMessage: >-
+          You are a concise assistant. Answer in one or two sentences.
+        modelConfig:
+          modelId: claude-sonnet
+        # Pinned to an image carrying the cluster-scoped `agent:` trace tag that
+        # the evaluation rules filter on. The platform default image predates it,
+        # so traces from that image are not matched by any rule and nothing is
+        # ever scored. Drop this override once the tag ships in the default
+        # image.
+        image: 940019131157.dkr.ecr.us-west-2.amazonaws.com/strands-agent:eval-tracetag
+        evaluation:
+          enabled: true
+          strictness: medium
+          # Judge every trace. `coverage` is the production dial; this is the
+          # escape hatch, used here only to make the test immediate.
+          sampling: 1
+          evaluators:
+            - helpfulness
+          # Swap to judge-haiku to compare judges on the dashboard.
+          # judge:
+          #   modelId: judge-haiku
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi

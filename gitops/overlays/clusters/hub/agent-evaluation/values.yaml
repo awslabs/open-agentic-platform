@@ -1,0 +1,31 @@
+# Hub-only overrides for the agent-evaluation addon.
+#
+# WHY THIS FILE EXISTS AT ALL. The addon's image override used to live only in
+# the LIVE ApplicationSet's `valuesObject` on the cluster -- not in git. That had
+# two bad consequences:
+#
+#   1. the image the hub actually ran was invisible to code review, which is how
+#      the chart came to say 0.1.0 while the cluster ran 0.2.3
+#   2. patching the generated ArgoCD Application had no effect, because the
+#      ApplicationSet re-templates it within seconds -- so the only way to change
+#      it was to patch live cluster state, which nothing records
+#
+# The addon's ArgoCD source already reads this path as a valueFile with
+# `ignoreMissingValueFiles: true`, so putting it here needs no wiring: it is the
+# intended place for per-cluster overrides and it is reviewable.
+#
+# TEMPORARY. Delete this whole file once
+# public.ecr.aws/z0a4o2j5/agent-evaluation exists -- the repository currently
+# answers NAME_UNKNOWN, which is the outstanding handoff ("Ask 2" on #104). At
+# that point the chart default is correct for every cluster and the hub needs no
+# override.
+image:
+  # A private repository in the account that builds the pre-publication images.
+  # An AWS account id is not a secret, but this is still a registry only one
+  # account can pull from, which is exactly why it must not become the chart
+  # default -- see gitops/addons/charts/agent-evaluation/values.yaml.
+  repository: 940019131157.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
+  # Must match the chart's appVersion / pyproject.toml / build.sh VERSION. Only
+  # the REPOSITORY is hub-specific; the tag is pinned here too so that a reader
+  # of this file can see exactly what the hub runs without cross-referencing.
+  tag: "0.2.4"

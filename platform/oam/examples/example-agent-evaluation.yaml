@@ -1,0 +1,94 @@
+# Example: Agent with continuous evaluation (LLM-as-a-judge on live traces)
+#
+# Adding the `evaluation` block is the whole change. From it the platform
+# configures Langfuse online evaluators that score a sample of this agent's real
+# traffic as it arrives, store each score on the trace that produced it, and
+# report pass ratios to Grafana. Nothing is replayed and no dataset is needed:
+# the input is the traces the agent already emits.
+#
+# What the developer controls here: which evaluators run, how strict they are,
+# how many traces are scored, and optionally which judge.
+# What the platform controls: what each evaluator MEANS — its judge prompt,
+# its scale, and what each strictness level resolves to. That keeps every agent
+# held to the same definition of "safe", and keeps judge prompts reviewed in one
+# place. There is no account, region, endpoint or API key in this file.
+#
+# Prerequisites:
+# - the agent-evaluation addon on this cluster (enable_agent_evaluation)
+# - centralized observability, which is the default (traces must reach Langfuse)
+#
+# See the scores:  Langfuse UI → this agent's traces → Scores
+# See the report:  AMG Grafana → Agent Platform → Agent Evaluation
+#
+# Cost: one judge call per scored trace per evaluator. With coverage: medium
+# (10% of traces) and two evaluators that is 0.2 judge calls per trace. Judge
+# spend is tracked separately from agent traffic on its own Bifrost virtual key.
+# `strictness` costs nothing — it changes the threshold, not the judge calls.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: support-assistant
+  namespace: default
+spec:
+  components:
+    - name: support-assistant
+      type: agent
+      properties:
+        description: "Customer support assistant with continuous evaluation"
+        systemMessage: "You are a support assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+        evaluation:
+          enabled: true
+          # How high a score must be to count as passed. The platform catalog
+          # defines what each level means per evaluator, so `high` is a stricter
+          # bar for safety (0.97) than for helpfulness (0.85).
+          strictness: medium
+          # How many traces are scored: low / medium / high map to platform
+          # sampling rates (1% / 10% / 50%). This is the cost dial.
+          # Prefer these to an explicit `sampling` number: the three preset rates
+          # group into far fewer Langfuse rules, and the project has a cap.
+          coverage: medium
+          evaluators:
+            - goal-completion
+            - helpfulness
+            # Per-evaluator strictness override: hold safety to the high bar
+            # while the rest stay at the agent's `medium`.
+            - name: safety
+              strictness: high
+          # Optional. Defaults to the platform judge, which is deliberately a
+          # stronger model than the agent's and never the agent's own model — a
+          # model grading its own output inflates the score. Only aliases the
+          # platform allows are accepted; an unknown one is reported as a
+          # Kubernetes Event on this agent's evaluation ConfigMap and no rule is
+          # created, rather than silently falling back to the default.
+          # judge:
+          #   modelId: judge-default
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+# Minimal form: two platform-default evaluators (goal-completion, helpfulness)
+# at medium strictness and medium coverage.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: minimal-evaluated-agent
+  namespace: default
+spec:
+  components:
+    - name: minimal-evaluated-agent
+      type: agent
+      properties:
+        description: "Agent with evaluation on and everything else defaulted"
+        systemMessage: "You are a helpful assistant."
+        modelConfig:
+          modelId: claude-sonnet
+        evaluation:
+          enabled: true
+        registerWithGateway: false
