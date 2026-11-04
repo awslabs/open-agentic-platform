@@ -1,3 +1,9 @@
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
 "agentcore-browser": {
 	alias: ""
 	annotations: {}
@@ -33,6 +39,39 @@ template: {
 	// Automatic wiring, which would remove the need for a developer to name this at all, is
 	// tracked in issue #55.
 
+	// AWS name of the IAM policy. IAM policy names are unique per ACCOUNT, so two installs
+	// in one account that derive <appName>-<component>-iam-policy ask for the same policy.
+	// The install identity (global.clusterName and global.awsRegion, the cluster secret's
+	// aws_cluster_name and aws_region annotations, which the platform already passes) is
+	// required, and the AWS name follows the platform's component-iam-policy trait (appmod
+	// platform/oam/definitions/traits/component-policy.cue), byte for byte:
+	//   <first 100 chars of "<cluster>-<appName>-<component>">-<8 hex>-iam-policy   (<= 128)
+	// where the 8 hex chars are sha256("<region>/<cluster>/<namespace>/<appName>/<component>").
+	// The hash is always present. It is set through crossplane.io/external-name: an IAM
+	// Policy takes its AWS name from the external name, and the provider's schema has no
+	// forProvider.name (it is pruned). The Policy OBJECT is named after
+	// its AWS name, so aws-service-identity's accessFor (policyArnRef, same rule in
+	// appmod's trait) finds it by that name, and an upgrade gets a new object whose ARN the
+	// attachment waits for instead of latching the old policy's ARN. Keep in step with
+	// appmod platform/oam/definitions/traits/component-policy.cue; scripts/check-iam-names.sh
+	// checks that the two agree.
+	let _install = "{{ .Values.global.clusterName }}"
+	let _installRegion = "{{ .Values.global.awsRegion }}"
+
+	// FAIL CLOSED without the install identity. A policy named without the cluster is
+	// shared by every install of the account (#92), and aws-service-identity, which looks
+	// the object up by the same rule, would then attach a policy that another install can
+	// delete. Fail the render instead of emitting it. The two strings conflict on purpose:
+	// KubeVela prints both, so the error names the missing value.
+	if _install == "" {
+		_installIdentity: "set" & "global.clusterName is empty: set it on the oam-agent-components chart (the cluster secret's aws_cluster_name annotation)"
+	}
+	let _policyKey = _installRegion + "/" + _install + "/" + context.namespace + "/" + context.appName + "/" + context.name
+	let _policyHash = strings.SliceRunes(hex.Encode(sha256.Sum256(_policyKey)), 0, 8)
+	let _policyBase = strings.ToLower(strings.Replace(_install, "_", "-", -1)) + "-" + context.appName + "-" + context.name
+	let _policyHead = [if len(_policyBase) > 100 {strings.SliceRunes(_policyBase, 0, 100)}, _policyBase][0]
+	let _policyName = _policyHead + "-" + _policyHash + "-iam-policy"
+
 	output: {
 		apiVersion: "bedrockagentcore.aws.upbound.io/v1beta1"
 		kind:       "Browser"
@@ -53,10 +92,12 @@ template: {
 	outputs: "\(context.name)-iam-policy": {
 		apiVersion: "iam.aws.upbound.io/v1beta1"
 		kind:       "Policy"
-		metadata: name: "\(context.appName)-\(context.name)-iam-policy"
+		metadata: {
+			name: _policyName
+			annotations: "crossplane.io/external-name": _policyName
+		}
 		spec: {
 			forProvider: {
-				name: "\(context.appName)-\(context.name)-iam-policy"
 				// Least privilege, replacing an inherited "bedrock-agentcore:*" on "*".
 				// The action list is exactly what a browser consumer needs, from the AgentCore
 				// Browser permissions reference, narrowed to what this platform performs:
