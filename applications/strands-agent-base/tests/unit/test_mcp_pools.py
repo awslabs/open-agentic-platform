@@ -295,3 +295,37 @@ def test_recycling_the_workload_pool_does_not_make_its_agents_stale(monkeypatch,
     _tools_for(None)  # recycles in place
     assert isolated_agent_state["clients"].instances[0].stops == 1
     assert not agent_mod.agent_is_stale(agent)
+
+
+def test_builtin_tools_are_added_without_touching_the_shared_pool(monkeypatch):
+    from app.builtin_tools import list_argocd_applications
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.tools = kwargs.get("tools")
+
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", False)
+    monkeypatch.setattr(config, "BUILTIN_TOOLS", "argocd_applications")
+    monkeypatch.setattr(agent_mod, "Agent", FakeAgent)
+    monkeypatch.setattr(agent_mod, "_get_model", lambda: None)
+    monkeypatch.setattr(agent_mod, "_build_session_manager", lambda *a: None)
+    monkeypatch.setattr(agent_mod, "_install_truncation_guard", lambda a: None)
+    inbound_auth.set(None)
+    agent_mod._construct_agent("s1", None)
+    agent_mod._construct_agent("s2", None)
+    pool = agent_mod._pools[WORKLOAD_KEY]
+    assert list_argocd_applications not in pool.tools  # pool list never extended in place
+    assert captured["tools"][-1] is list_argocd_applications
+    assert captured["tools"].count(list_argocd_applications) == 1
+    assert "list_argocd_applications" in captured["system_prompt"]
+
+
+def test_no_builtin_tools_by_default(monkeypatch):
+    monkeypatch.setattr(config, "PROPAGATE_CALLER_TOKEN", False)
+    monkeypatch.setattr(config, "BUILTIN_TOOLS", "")
+    inbound_auth.set(None)
+    agent = _built_agent(monkeypatch)
+    assert all(getattr(t, "tool_name", None) != "list_argocd_applications" for t in agent.tools)

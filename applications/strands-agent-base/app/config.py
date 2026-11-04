@@ -104,6 +104,11 @@ For example, always use the time tool when asked about the current time or date.
             for name in self.MCP_SERVER_NAMES
         ]
     
+    # Built-in (in-process) tools to load next to the MCP tools, comma-separated.
+    # Empty by default. Known: "argocd_applications" (list_argocd_applications, see
+    # app/builtin_tools.py). Unknown names are logged and ignored.
+    BUILTIN_TOOLS: str = os.getenv("BUILTIN_TOOLS", "")
+
     # Memory configuration
     MEMORY_PROVIDER: Optional[str] = os.getenv("MEMORY_PROVIDER")
     _MEMORY_CONFIG_RAW: Optional[str] = os.getenv("MEMORY_CONFIG")

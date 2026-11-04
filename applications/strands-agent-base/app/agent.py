@@ -37,6 +37,7 @@ except ImportError:
     # the value as of strands-agents 1.48.0.
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
+from .builtin_tools import builtin_tools, system_prompt_hint
 from .config import config
 from .identity import (
     CALLER_IDENTITY_HEADER,
@@ -669,10 +670,11 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
     session_manager = _build_session_manager(session_id, actor_id)
     headers, key = outbound(config.PROPAGATE_CALLER_TOKEN)
     pool = _get_mcp_pool(key, headers)
-    tools = (pool.tools if pool is not None else None) or None
+    # New list: never extend pool.tools in place, the pool is shared across agents.
+    tools = (list(pool.tools if pool is not None else []) + builtin_tools(config.BUILTIN_TOOLS)) or None
     agent = Agent(
         model=_get_model(),
-        system_prompt=config.SYSTEM_PROMPT,
+        system_prompt=config.SYSTEM_PROMPT + system_prompt_hint(config.BUILTIN_TOOLS),
         tools=tools,
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
