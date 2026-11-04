@@ -86,18 +86,24 @@ TAGS_DIMENSION = "tags"
 # Hence a byte budget rather than a tag count: chunks are sized by the actual
 # encoded length, so the limit holds whatever the names look like.
 #
-# THE BINDING LIMIT IS NOT ALWAYS LANGFUSE'S. A spoke reaches the hub's Langfuse
-# over its public domain, which in no-domain mode is CloudFront, and CloudFront
-# caps a request URL at 8,192 bytes -- tighter than the 16 KiB Node header limit
-# measured above, and it answers 494 rather than 431. The default is therefore
-# 6000 rather than 8000: under CloudFront's cap with room for the rest of the
-# query string, so the same number is safe from a hub (direct, in-cluster) and
-# from a spoke (through CloudFront) without the operator having to know which
-# path a given cluster takes.
+# MEASURED ON BOTH PATHS, because a spoke does not reach Langfuse the way the hub
+# does -- it goes over the hub's public domain rather than the in-cluster
+# Service:
 #
-# Configurable because neither limit is ours: a different CDN, an ALB, or a
-# future Langfuse that accepts POST for metrics all move it. Raise it only with
-# a measurement from the cluster that will use it.
+#   in-cluster : 339 tags / 16208 URL bytes OK, 340 -> 431
+#   public     : 337 tags / 16130 URL bytes OK, 338 -> 431
+#
+# So the ceiling is the same ~16 KiB Node header limit on both, and the 8,192
+# byte CloudFront URL cap does NOT bind on the public path as tested. That was
+# worth checking rather than assuming: if a cluster IS fronted by something that
+# caps at 8,192, a budget of 8000 would be over it once the ~630 bytes of
+# surrounding query string are added, while 6000 stays under.
+#
+# Hence 6000 as the default: safe under the measured 16 KiB on both paths AND
+# under an 8,192 cap, at the cost of roughly a third more queries than 8000
+# would need. Configurable because none of these limits are ours -- a different
+# CDN, an ALB, or a future Langfuse that accepts POST for metrics all move it.
+# Raise it with a measurement from the cluster that will use it.
 DEFAULT_TAG_QUERY_BUDGET_BYTES = 6000
 
 

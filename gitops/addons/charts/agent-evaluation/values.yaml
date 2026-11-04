@@ -141,17 +141,20 @@ metrics:
   concurrency: 4
   # Bytes of URL-encoded tag list one metrics query may carry before it is split.
   #
-  # The binding limit is the TRANSPORT, not Langfuse. Measured against Langfuse
-  # v4.72.0 direct: 339 thirty-character tags (16208 URL bytes) succeed and 340
-  # answers HTTP 431, because the metrics API takes its query as a URL parameter
-  # against Node's 16 KiB header limit. But a SPOKE reaches the hub's Langfuse
-  # over its public domain, which in no-domain mode is CloudFront, and
-  # CloudFront caps a request URL at 8,192 bytes and answers 494.
+  # The binding limit is the TRANSPORT, not Langfuse: the metrics API takes its
+  # query as a URL parameter, so the tag list rides in the request line.
+  # Measured against Langfuse v4.72.0 on BOTH paths a cluster can take --
+  # in-cluster Service (hub) and the hub's public domain (what a spoke uses):
   #
-  # 6000 is under the tighter of the two with room for the rest of the query, so
-  # one default is correct whether the cluster talks to Langfuse in-cluster or
-  # through CloudFront. Raise it only with a measurement from the cluster that
-  # will use it.
+  #   in-cluster : 339 tags / 16208 URL bytes OK, 340 -> HTTP 431
+  #   public     : 337 tags / 16130 URL bytes OK, 338 -> HTTP 431
+  #
+  # Same ~16 KiB Node header limit on both, so a CloudFront 8,192-byte URL cap
+  # did NOT bind on the public path as tested. 6000 is kept anyway: it is under
+  # that measured ceiling and also under 8,192 once the ~630 bytes of
+  # surrounding query string are counted, so it is safe on a cluster fronted by
+  # something stricter. The cost is roughly a third more queries than 8000.
+  # Raise it with a measurement from the cluster that will use it.
   tagQueryBudgetBytes: 6000
   windows:
     - 24h
