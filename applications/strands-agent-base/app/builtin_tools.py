@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import ssl
 from collections.abc import Callable
 from typing import Any
@@ -46,13 +47,31 @@ _MAX_PAGES = 50
 _DEFAULT_LIMIT = 500
 _MAX_LIMIT = 2000
 _MESSAGE_CAP = 200
+# Max problem Applications returned in full. Counts stay exact; a fleet-wide break
+# (e.g. a Git outage turning every app Unknown) must not produce a multi-MB result.
+_MAX_PROBLEMS = 50
 _HTTP_TIMEOUT = 30.0
 
 _APPLICATIONS_PATH = "/apis/argoproj.io/v1alpha1/namespaces/{namespace}/applications"
+# Kubernetes namespace names are DNS-1123 labels. Checked before the value (which
+# comes from the model) is put in the URL path, so the tool stays on Applications.
+_NAMESPACE_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 
 
 def _region() -> str:
-    return os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
+    # The agent pod usually has no AWS_REGION (Pod Identity does not inject it), so
+    # ARGOCD_CLUSTER_REGION names the hub's region explicitly.
+    return (
+        os.getenv("ARGOCD_CLUSTER_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or "us-west-2"
+    )
+
+
+def _error(message: str) -> dict:
+    """A strands ToolResult with status=error, so failures show as tool errors in traces."""
+    return {"status": "error", "content": [{"text": message}]}
 
 
 def _eks_token(cluster_name: str, region: str, session=None) -> str:
@@ -177,8 +196,10 @@ def build_result(
         "total": len(rows),
         "synced_and_healthy": len(rows) - len(problems),
         "not_synced_or_not_healthy": len(problems),
-        # Always complete: these are the answer to a fleet-health question.
-        "problems": problems,
+        # Complete up to _MAX_PROBLEMS; problems_truncated says when more exist
+        # (the not_synced_or_not_healthy count above is always exact).
+        "problems": problems[:_MAX_PROBLEMS],
+        "problems_truncated": len(problems) > _MAX_PROBLEMS,
         # One "name sync health" row per Application, paged by offset/limit.
         "rows": [f"{r['name']} {r['sync']} {r['health']}" for r in page],
         "offset": offset,
@@ -207,10 +228,11 @@ def list_argocd_applications(
     "which apps are OutOfSync?"), instead of reading Applications one by one. It reads
     all Applications server-side and returns:
       - total, synced_and_healthy, not_synced_or_not_healthy counts;
-      - problems: every Application that is NOT both Synced and Healthy, with its
-        first status condition (e.g. ComparisonError) and a non-Succeeded operation
-        phase. This list is always complete, so it is safe to say "none" when it is
-        empty and `warning` is absent;
+      - problems: the Applications that are NOT both Synced and Healthy (up to 50),
+        with their first status condition (e.g. ComparisonError) and a non-Succeeded
+        operation phase. When problems_truncated is true there are more; use
+        only_problems=true with offset/limit to page through their names. It is safe
+        to say "none" when it is empty and `warning` is absent;
       - rows: "name sync health" for each Application, paged with offset/limit
         (follow next_offset when present).
     Read a single Application in full only to investigate one that is listed in problems.
@@ -225,9 +247,11 @@ def list_argocd_applications(
     """
     cluster_name = cluster_name or os.getenv("ARGOCD_CLUSTER_NAME", "")
     if not cluster_name:
-        return {
-            "error": "cluster_name is required (no ARGOCD_CLUSTER_NAME default is set)"
-        }
+        return _error(
+            "cluster_name is required (no ARGOCD_CLUSTER_NAME default is set)"
+        )
+    if not _NAMESPACE_RE.match(namespace or ""):
+        return _error(f"invalid namespace {namespace[:_MESSAGE_CAP]!r}: must be a DNS-1123 label")
     region = _region()
     try:
         endpoint, ca_pem = _cluster_connection(cluster_name, region)
@@ -241,12 +265,12 @@ def list_argocd_applications(
             if code in (401, 403)
             else ""
         )
-        return {
-            "error": f"Kubernetes API returned HTTP {code} listing Applications in {namespace}{hint}"
-        }
+        return _error(
+            f"Kubernetes API returned HTTP {code} listing Applications in {namespace}{hint}"
+        )
     except Exception as exc:  # noqa: BLE001 - surface any failure to the model, never crash the turn
         logger.warning("list_argocd_applications failed for %s: %s", cluster_name, exc)
-        return {"error": f"{type(exc).__name__}: {str(exc)[:_MESSAGE_CAP]}"}
+        return _error(f"{type(exc).__name__}: {str(exc)[:_MESSAGE_CAP]}")
     return build_result(
         rows, cluster_name, namespace, only_problems, offset, limit, truncated
     )

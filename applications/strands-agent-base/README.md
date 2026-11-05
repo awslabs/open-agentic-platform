@@ -62,22 +62,24 @@ All configuration via environment variables:
 | `MAX_UNOWNED_TASKS` | `100` | A2A tasks kept for requests without a caller identity (no later request can read them; oldest evicted) |
 | `BUILTIN_TOOLS` | empty | Comma-separated in-process tools to add next to the MCP tools. `argocd_applications` adds `list_argocd_applications` (see below) and a one-line system-prompt hint to call it first |
 | `ARGOCD_CLUSTER_NAME` | empty | Default `cluster_name` for `list_argocd_applications` |
+| `ARGOCD_CLUSTER_REGION` | `AWS_REGION`, then `us-west-2` | Region of the `list_argocd_applications` cluster. Set it when the hub is not in `us-west-2`: the agent pod usually has no `AWS_REGION` |
 | `MCP_MAX_POOLS` | `16` | MCP connection pools kept open, one per outbound credential (least recently used closed); an agent whose pool was closed is rebuilt on its next request |
 
 ### Built-in tool: `list_argocd_applications`
 
 Off unless `BUILTIN_TOOLS` contains `argocd_applications`. One call lists every Argo CD
 Application on a cluster (Kubernetes `limit`/`continue` paging, server-side) and returns
-counts, the complete list of Applications that are not both Synced and Healthy (with their
-first status condition), and one `name sync health` row per Application, paged with
+exact counts, the Applications that are not both Synced and Healthy (with their first status
+condition; at most 50, with `problems_truncated` set when there are more), and one `name sync health` row per Application, paged with
 `offset`/`limit`. It replaces reading each Application in full to get its status, which on a
 hub with ~180 Applications meant ~45 tool calls of 10-40 KB each.
 
 It reads the cluster with an EKS token derived from the pod's AWS credentials (Pod Identity),
-like `aws eks get-token`. The agent's IAM role needs `eks:DescribeCluster` and an EKS access
+like `aws eks get-token`, in `ARGOCD_CLUSTER_REGION` (falls back to `AWS_REGION`, then
+`us-west-2`). The agent's IAM role needs `eks:DescribeCluster` and an EKS access
 entry whose Kubernetes RBAC allows `get`/`list` on `applications.argoproj.io` in the Argo CD
-namespace. It never writes. Errors (403, unknown cluster, ...) come back as an `error` field
-for the model instead of failing the turn.
+namespace, which must be a DNS-1123 label. It never writes. Errors (403, unknown cluster,
+...) come back as a tool result with `status: error` instead of failing the turn.
 
 ## API Endpoints
 

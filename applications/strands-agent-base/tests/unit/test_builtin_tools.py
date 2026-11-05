@@ -122,6 +122,10 @@ def test_max_pages_sets_truncated_warning():
     assert "warning" in bt.build_result(rows, "hub", "argocd", False, 0, 500, truncated)
 
 
+def _text(result):
+    return result["content"][0]["text"]
+
+
 def _call(**kwargs):
     # DecoratedFunctionTool keeps the plain function callable.
     return bt.list_argocd_applications(**kwargs)
@@ -129,7 +133,9 @@ def _call(**kwargs):
 
 def test_tool_requires_cluster(monkeypatch):
     monkeypatch.delenv("ARGOCD_CLUSTER_NAME", raising=False)
-    assert "error" in _call()
+    result = _call()
+    assert result["status"] == "error"
+    assert "cluster_name is required" in _text(result)
 
 
 def test_tool_end_to_end_with_fakes(monkeypatch):
@@ -166,7 +172,8 @@ def test_tool_http_errors_are_returned_not_raised(monkeypatch, code, needle):
         lambda e, t, c: httpx.Client(base_url=e, transport=transport),
     )
     result = _call(cluster_name="hub")
-    assert needle in result["error"]
+    assert result["status"] == "error"
+    assert needle in _text(result)
 
 
 def test_tool_unexpected_error_is_returned(monkeypatch):
@@ -174,7 +181,8 @@ def test_tool_unexpected_error_is_returned(monkeypatch):
         raise RuntimeError("no creds")
 
     monkeypatch.setattr(bt, "_cluster_connection", boom)
-    assert _call(cluster_name="hub")["error"] == "RuntimeError: no creds"
+    result = _call(cluster_name="hub")
+    assert result == {"status": "error", "content": [{"text": "RuntimeError: no creds"}]}
 
 
 def test_eks_token_format():
@@ -205,3 +213,78 @@ def test_registry_and_prompt_hint(caplog):
     assert "unknown tool" in caplog.text
     assert "list_argocd_applications" in bt.system_prompt_hint("argocd_applications")
     assert bt.list_argocd_applications.tool_name == "list_argocd_applications"
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        "../../../../api/v1/namespaces/kube-system/pods?x=",
+        "argocd/../kube-system",
+        "ArgoCD",
+        "",
+        "a" * 64,
+        "-argocd",
+    ],
+)
+def test_invalid_namespace_is_rejected_before_any_call(monkeypatch, namespace):
+    def no_call(*a, **k):
+        raise AssertionError("must not reach the cluster")
+
+    monkeypatch.setattr(bt, "_cluster_connection", no_call)
+    result = _call(cluster_name="hub", namespace=namespace)
+    assert result["status"] == "error"
+    assert "DNS-1123" in _text(result)
+
+
+def test_valid_namespace_passes():
+    assert bt._NAMESPACE_RE.match("argocd")
+    assert bt._NAMESPACE_RE.match("argo-cd-1")
+
+
+def test_problems_are_capped_with_exact_counts():
+    n = bt._MAX_PROBLEMS * 4
+    rows = [bt._summarize(_app(f"app{i:04d}", sync="Unknown", health="Unknown")) for i in range(n)]
+    result = bt.build_result(rows, "hub", "argocd", False, 0, 500, False)
+    assert result["not_synced_or_not_healthy"] == n
+    assert result["total"] == n
+    assert len(result["problems"]) == bt._MAX_PROBLEMS
+    assert result["problems_truncated"] is True
+    # The names of every problem stay reachable via only_problems paging.
+    paged = bt.build_result(rows, "hub", "argocd", True, 0, 2000, False)
+    assert paged["returned"] == n
+    assert len(json.dumps(result)) < 20_000
+
+
+def test_problems_not_truncated_when_few():
+    rows = [bt._summarize(_app("a")), bt._summarize(_app("b", health="Degraded"))]
+    result = bt.build_result(rows, "hub", "argocd", False, 0, 500, False)
+    assert result["problems_truncated"] is False
+    assert [p["name"] for p in result["problems"]] == ["b"]
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({"ARGOCD_CLUSTER_REGION": "eu-west-1", "AWS_REGION": "us-east-1"}, "eu-west-1"),
+        ({"AWS_REGION": "us-east-1"}, "us-east-1"),
+        ({"AWS_DEFAULT_REGION": "ap-southeast-2"}, "ap-southeast-2"),
+        ({}, "us-west-2"),
+    ],
+)
+def test_region_resolution(monkeypatch, env, expected):
+    for k in ("ARGOCD_CLUSTER_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert bt._region() == expected
+
+
+def test_error_result_is_a_strands_error_tool_result():
+    # strands passes a dict with status+content through as the ToolResult as-is,
+    # so the trace shows status=error instead of a success wrapping {"error": ...}.
+    event = bt.list_argocd_applications._wrap_tool_result("t1", bt._error("boom"))
+    assert event.tool_result == {
+        "status": "error",
+        "content": [{"text": "boom"}],
+        "toolUseId": "t1",
+    }
