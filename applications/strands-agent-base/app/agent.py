@@ -39,6 +39,7 @@ except ImportError:
 
 from .builtin_tools import builtin_tools, system_prompt_hint
 from .config import config
+from .tool_executor import BoundedToolExecutor
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
@@ -684,6 +685,7 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT + system_prompt_hint(config.BUILTIN_TOOLS),
         tools=tools,
+        tool_executor=BoundedToolExecutor(config.TOOL_MAX_CONCURRENCY),
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
         description=config.AGENT_DESCRIPTION,
