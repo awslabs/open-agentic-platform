@@ -754,7 +754,7 @@ kubectl get all,configmap,secret,externalsecret,prometheusrule -n $EVAL_NS
 Expected: one Deployment, one ReplicaSet, one Pod, one Service, the
 `agent-evaluation-catalog` ConfigMap, the `langfuse-evaluation-keys` Secret, the
 `agent-evaluation-langfuse` ExternalSecret, and the `agent-evaluation`
-PrometheusRule.
+PrometheusRule (only on clusters with the prometheus-operator CRDs).
 
 ## A.2 The reconciler
 

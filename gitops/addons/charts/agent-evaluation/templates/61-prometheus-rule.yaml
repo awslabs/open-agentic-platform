@@ -1,8 +1,12 @@
 {{- /*
 Alerts. The design leaves "where quality alerts live" open (Q7) between a
-PrometheusRule and a Grafana alert CR; this takes the PrometheusRule, because the
-observability domain already installs the prometheus-operator CRDs and AMP
-ingests the rules without a second mechanism.
+PrometheusRule and a Grafana alert CR; this takes the PrometheusRule. It only
+applies where the prometheus-operator CRDs (monitoring.coreos.com/v1) are
+present, i.e. the observability domain's prometheus-operator-crds addon
+(enable_monitoring) is installed, and something reconciles PrometheusRules.
+Elsewhere the rule is not rendered: Argo CD passes the destination cluster's API
+versions to Helm, and a kind with no CRD would otherwise make Argo CD reject the
+whole sync.
 
 These alert on the PIPELINE, not on agent quality. A pass ratio falling is a
 product signal for the owning team to read on the dashboard, and it would be
@@ -11,7 +15,7 @@ hard task is supposed to score low. What the platform owns is whether the
 numbers are current and real — which is exactly what the staleness alert and the
 error-rate alert say.
 */ -}}
-{{- if and .Values.metrics.enabled .Values.alerts.enabled }}
+{{- if and .Values.metrics.enabled .Values.alerts.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:

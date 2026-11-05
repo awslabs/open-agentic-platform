@@ -21,8 +21,16 @@ because the recovery path needs space to merge.
 
 Uses kubelet volume stats rather than a ClickHouse exporter, so it works without
 adding scrape configuration to ClickHouse itself.
+
+ONLY WHEN THE CRD EXISTS. PrometheusRule is a prometheus-operator kind. On a
+cluster without the monitoring.coreos.com/v1 CRDs (they come from the
+prometheus-operator-crds addon, i.e. enable_monitoring), Argo CD rejects the
+WHOLE sync ("one or more synchronization tasks are not valid"), so nothing in
+this chart lands, including the push-otel-keys hook the OTel Collector depends
+on. Argo CD passes the destination cluster's API versions to Helm, so the
+Capabilities check skips the rule there and renders it where the CRD exists.
 */ -}}
-{{- if .Values.alerts.enabled }}
+{{- if and .Values.alerts.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:

@@ -194,8 +194,10 @@ clickhouse:
       cpu: "2"
       memory: 4Gi
 
-# PrometheusRule for the datastores (templates/prometheus-rule.yaml). Needs the
-# prometheus-operator CRDs, which the observability domain already installs.
+# PrometheusRule for the datastores (templates/prometheus-rule.yaml). Rendered
+# only when the prometheus-operator CRDs (monitoring.coreos.com/v1) are present
+# on the cluster, e.g. via the prometheus-operator-crds addon (enable_monitoring);
+# skipped otherwise, so the rest of the chart still syncs.
 #
 # The ClickHouse disk alerts are load-bearing rather than nice-to-have: a full
 # ClickHouse makes Langfuse drop every trace and score while the OTel Collector
@@ -204,14 +206,6 @@ clickhouse:
 # the same number -- so the volume is the only place the signal exists.
 alerts:
   enabled: true
-  storage: 20Gi
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: "2"
-      memory: 4Gi
 
 # Redis (required for Langfuse v3 — async queue + cache)
 redis:
