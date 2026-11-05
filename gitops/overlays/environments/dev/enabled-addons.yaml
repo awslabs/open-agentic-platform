@@ -41,6 +41,17 @@ enabledAddons:
   bifrost: true
   otel_collector: true
   monitoring: true
+  # Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+  # role=spoke, derived by the registry entry from this cluster having no
+  # ingress_domain_name: it owns only its own oap-<cluster>- Langfuse rules and
+  # never writes a judge prompt, so it cannot change how prod is scored.
+  #
+  # OFF UNTIL THE IMAGE IS PUBLISHED -- public.ecr.aws/z0a4o2j5/agent-evaluation
+  # does not exist in the public registry yet (the repository answers
+  # NAME_UNKNOWN), so enabling it here is an ImagePullBackOff on sync rather
+  # than a working addon. See the control-plane overlay for the full note.
+  # Flip to true in the same change that points image.tag at the published tag.
+  agent_evaluation: false
   agent_core: true
   agent_gateway: true
   oam_components: true

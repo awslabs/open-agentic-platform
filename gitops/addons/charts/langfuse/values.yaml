@@ -19,15 +19,23 @@ replicas: 1
 
 image:
   repository: langfuse/langfuse
-  # Pinned to a concrete 3.x (was a floating "3", so each fresh install could pull a
-  # different 3.x image, making the init-time/CPU behaviour non-reproducible). #1057
-  tag: "3.225.11"
+  # Pinned to a concrete version (was a floating "3", so each fresh install could
+  # pull a different build, making the init-time/CPU behaviour non-reproducible).
+  # #1057
+  #
+  # v4 requires ClickHouse >= 25.12, which the clickhouse block below now pins.
+  # Do not raise this above the ClickHouse floor in the same change: the server
+  # runs its ClickHouse schema migrations on startup.
+  tag: "4.72.0"
   pullPolicy: IfNotPresent
 
 worker:
   image:
     repository: langfuse/langfuse-worker
-    tag: "3"
+    # Pinned for the same reason as the web image above, which had been fixed
+    # while this one was left floating on "3" — so the worker could silently run
+    # a different build from the web container it is supposed to match.
+    tag: "4.72.0"
   replicas: 1
   resources:
     requests:
@@ -49,22 +57,7 @@ ingress:
 keycloak:
   clientSecret: ""
   issuerUrl: ""
-  # AUTH_DISABLE_SIGNUP. Keep "false" when Keycloak is the login path: Langfuse
-  # refuses to create ANY new user when it is "true", SSO included (its Prisma
-  # adapter createUser throws "Sign up is disabled."). A Keycloak user who has
-  # never opened Langfuse could then not sign in, and the seed CronJob only
-  # attaches users that already exist. Set "true" only to freeze the user list.
   disableSignup: "false"
-  # AUTH_DISABLE_USERNAME_PASSWORD. "true" turns off Langfuse's local
-  # email/password sign-up AND sign-in, so nobody who can reach the UI can create
-  # a local account. Keycloak SSO is unaffected: first-time SSO users are still
-  # created. Nothing in this chart signs in with a password (the seed job writes
-  # to Postgres directly).
-  # Default "false": this chart cannot tell whether a working Keycloak exists
-  # (OAP does not ship one), and with no SSO provider nobody could sign in. The
-  # registry sets "true" only on clusters labelled enable_keycloak=true, the same
-  # label that deploys the Keycloak addon.
-  disableUsernamePassword: "false"
   secretManagerKey: ""  # Set dynamically: <cluster>/keycloak-clients
 
 # Application secrets (override for production)
@@ -110,12 +103,107 @@ postgres:
       cpu: "1"
       memory: 512Mi
 
-# ClickHouse (required for Langfuse v3 — OLAP trace storage)
+# ClickHouse (required for Langfuse v3+ — OLAP trace storage)
 clickhouse:
   image:
     repository: clickhouse/clickhouse-server
-    tag: "24.12"
+    # Langfuse v4 requires ClickHouse >= 25.12 and its schema migrations run
+    # automatically on server startup, so ClickHouse MUST be upgraded BEFORE the
+    # Langfuse image. Current v3 releases work fine against 25.12, which is what
+    # makes that ordering safe to do as a separate step.
+    #
+    # Pinned to a full patch version, not "25.12": a floating tag means a fresh
+    # install and an existing one can run different builds, which is the same
+    # reproducibility problem #1057 fixed for the Langfuse image itself.
+    tag: "25.12.11.4"
   password: clickhouse
+  # ClickHouse's own diagnostic tables, which ship enabled and UNBOUNDED.
+  #
+  # Measured on the hub: system.trace_log reached 15.08 GiB / 675M rows and
+  # system.text_log another 3.3 GiB, filling the 20 GiB volume in ten days
+  # against 712 KiB of actual Langfuse data. The failure is silent in every
+  # place an operator looks -- the collector reports spans sent and 0 failed,
+  # because the web tier accepts and enqueues them, and only the worker log
+  # shows `NOT_ENOUGH_SPACE` as it drops every record. Traces stop existing, no
+  # agent is scored, and the evaluation gauges all read a believable 0.
+  #
+  # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
+  # instance cannot be cleaned up without DROP TABLE.
+  # ClickHouse's own diagnostic tables, which ship enabled and UNBOUNDED.
+  #
+  # Measured on the hub: system.trace_log reached 15.08 GiB / 675M rows and
+  # system.text_log another 3.3 GiB, filling the 20 GiB volume in ten days
+  # against 712 KiB of actual Langfuse data. The failure is silent everywhere an
+  # operator looks -- the collector reports spans sent and 0 failed, because the
+  # web tier accepts and enqueues them, and only the worker log shows
+  # NOT_ENOUGH_SPACE as it drops every record. Traces stop existing, no agent is
+  # scored, and the evaluation gauges all read a believable 0.
+  #
+  # It is also self-trapping: TRUNCATE needs ~1 MiB of metadata space, so a full
+  # instance cannot be cleaned up without DROP TABLE.
+  systemLogs:
+    bound: true
+    # Long enough to investigate a live incident, short enough that the volume
+    # cannot be consumed. A TTL bounds a table whatever its write rate, which
+    # matters because the rate swings with load: trace_log grew ~1.5 GiB/day
+    # under the load that filled the disk and ~5 MiB/day idle.
+    ttlDays: 3
+    # Disables the sampling query profiler, the only producer of trace_log.
+    # Rendered into users.d, NOT config.d: <profiles> is a users concept and
+    # config.d rejects it by refusing to start the server. See
+    # templates/clickhouse-users.yaml.
+    disableQueryProfiler: true
+    # THE DATE COLUMN IS NOT UNIFORM, and a TTL naming a column a table does not
+    # have is rejected at startup -- ClickHouse exits 36 roughly two seconds
+    # after merging the file, with the reason only in a logfile that is
+    # unreachable on a crash-looping pod. Verified against v25.12 with
+    #   SELECT table, name FROM system.columns
+    #    WHERE database='system' AND name LIKE '%date%'
+    # opentelemetry_span_log is the one that breaks a blanket event_date TTL.
+    logs:
+      - name: trace_log
+      - name: part_log
+      - name: metric_log
+      - name: asynchronous_metric_log
+      - name: processors_profile_log
+      - name: error_log
+      # Langfuse v4's legacy-API-usage job reads query_log, so it stays enabled
+      # and the TTL is what keeps it small (it was only 6 MiB).
+      - name: query_log
+      - name: text_log
+        extra:
+          # Only warnings and above; this table was 3.3 GiB across two copies.
+          level: warning
+      # ClickHouse's packaged config gives this table an explicit <engine>,
+      # because it has no event_time -- only start and finish. A sibling <ttl>
+      # is then rejected and the server EXITS 36 at startup, so the engine is
+      # restated here with the TTL rendered inside it. The engine body is copied
+      # from the image's own config.xml; keep it in step on a ClickHouse upgrade.
+      - name: opentelemetry_span_log
+        dateColumn: finish_date
+        engine: |
+          engine MergeTree
+          partition by toYYYYMM(finish_date)
+          order by (finish_date, finish_time_us)
+  storage: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# PrometheusRule for the datastores (templates/prometheus-rule.yaml). Needs the
+# prometheus-operator CRDs, which the observability domain already installs.
+#
+# The ClickHouse disk alerts are load-bearing rather than nice-to-have: a full
+# ClickHouse makes Langfuse drop every trace and score while the OTel Collector
+# still reports zero send failures and every oap_agent_eval_* gauge reads 0. The
+# evaluation metrics cannot detect it -- a full database and an idle agent are
+# the same number -- so the volume is the only place the signal exists.
+alerts:
+  enabled: true
   storage: 20Gi
   resources:
     requests:
@@ -190,6 +278,79 @@ seed:
     id: "ak-otel-collector"
     publicKey: "pk-lf-otel-platform"
     secretKey: "sk-lf-otel-platform-2026"
+
+# Continuous agent evaluation (docs/architecture/agent-evaluation.md).
+# Langfuse itself runs no evaluation here; it only needs to be allowed to reach
+# the judge's model gateway, which is a cluster-internal address its SSRF check
+# blocks by default.
+# Langfuse v4 migration controls.
+# https://langfuse.com/self-hosting/upgrade/upgrade-guides/upgrade-v3-to-v4
+#
+# v4 introduces a new event-based storage model and three write modes. The
+# platform upgraded the SERVER to v4 while deliberately staying in `legacy`
+# write mode, because those are two independent decisions:
+#
+#   - the server version is what exposes the STABLE /api/public/v2 evaluator
+#     API that continuous agent evaluation needs (on v3 it was /unstable/, and
+#     its preflight could not resolve a provider config at all)
+#   - the write mode is what changes ingestion and read behaviour, and
+#     `events_only` is a ONE-WAY cutover that breaks the legacy ingestion and
+#     read endpoints
+#
+# So the version moves now and the cutover is a later, deliberate change rather
+# than a side effect of a bump.
+migrationV4:
+  # legacy | dual | events_only  (v4's own default is events_only)
+  #
+  # `legacy` keeps full v3 ingestion and read behaviour: the OTel collector's
+  # ingestion path and every v1 read endpoint keep working untouched.
+  #
+  # Before moving to events_only, these have to be dealt with first:
+  #   - the agent-evaluation reconciler's metrics loop uses /api/public/metrics,
+  #     which refuses requests in events_only mode (it has to move to v2/v3)
+  #   - producers need Python SDK >= 4.7.0 / JS-TS >= 5.4.0
+  #   - trace-level and legacy-dataset LLM-as-a-judge evaluators stop running
+  # `dual`, not `legacy`, and this is load-bearing for continuous agent
+  # evaluation rather than a preference.
+  #
+  # v4's online evaluation pipeline consumes the NEW events stream. In `legacy`
+  # mode nothing writes it, so an evaluation rule can be active, enabled, with
+  # sampling 1 and a filter that matches the trace — and no evaluation job is
+  # ever created. Observed exactly that on the hub: the trace arrived with the
+  # right tag, the rule was correct, and the worker logged no evaluation
+  # activity at all.
+  #
+  # `dual` writes BOTH the old and the new tables, so every v3 read surface
+  # keeps working (the UI, the v1 read APIs, this addon's metrics loop) AND the
+  # evaluation pipeline has the events it needs. It is the documented
+  # transitional mode and is reversible, unlike `events_only`.
+  writeMode: dual
+  # direct | dual_write
+  #
+  # MUST be dual_write whenever writeMode is legacy, and this is not advisory:
+  # v4 validates the combination at startup and the WORKER exits with
+  #   Invalid V4 config: LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR=direct
+  #   requires LANGFUSE_MIGRATION_V4_WRITE_MODE in {dual, events_only}.
+  #   Direct OTel writes target events_full, which is not read in legacy mode.
+  # so leaving v4's `direct` default in place crash-loops the worker — which is
+  # the container that runs the evaluation judge. `dual_write` keeps the
+  # server-side propagation that makes OTel-ingested traces readable through the
+  # v3 read path, which is exactly what legacy mode means.
+  nativeOtelBehaviour: dual_write
+  # The historic backfill must stay off while in `legacy` mode. It also wants
+  # roughly 3x the current ClickHouse volume as working space.
+  enableHistoricBackfill: false
+  # Gates the v4 UI toggle and the /api/public/v2 APIs. Required for the stable
+  # evaluator API, which is the whole reason for this upgrade, and harmless in
+  # legacy mode.
+  allowPreviewOptIn: true
+
+evaluation:
+  # The one host exempted from Langfuse's LLM-connection SSRF check: Bifrost's
+  # in-cluster Service. Keep this a single host — it is an exemption from a
+  # security control, not a convenience setting. Must match the host in the
+  # agent-evaluation addon's judge.bifrostUrl.
+  judgeGatewayHost: "bifrost.bifrost.svc.cluster.local"
 
 # ENCRYPTION_KEY: Langfuse encrypts stored secrets at rest with it, and without
 # it the whole LLM-connection API returns 500 "Missing environment variable:

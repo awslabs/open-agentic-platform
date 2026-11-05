@@ -1,0 +1,43 @@
+{{- /*
+Stop trace_log at source, in users.d where profile settings belong.
+
+trace_log was 15.08 GiB of the 20 GiB volume. A TTL (config.d, see
+clickhouse-system-logs.yaml) bounds how long its rows live, but the rows are
+still produced continuously: the table is fed by ClickHouse's sampling QUERY
+PROFILER, and the two settings that drive it are per-profile.
+
+WHY A SECOND MOUNT RATHER THAN ONE FILE. `<profiles>` is a users.xml / users.d
+concept and is NOT accepted in config.d. Putting it there does not get ignored --
+it stops the server coming up. Measured on the hub: CrashLoopBackOff, five
+restarts, Langfuse down, until the block was removed. So retention lives in
+config.d and profile settings live here, because that is where ClickHouse reads
+each of them.
+
+Zeroing both periods disables the profiler. Nothing in this platform reads
+trace_log; it is a ClickHouse performance-debugging aid. Set
+systemLogs.disableQueryProfiler to false to get it back, at which point the TTL
+is what keeps the table bounded.
+
+subPath is used on the mount, so a change here needs the pod to roll -- the
+StatefulSet carries a checksum annotation over both ConfigMaps for that reason.
+*/ -}}
+{{- if and .Values.clickhouse.systemLogs.bound .Values.clickhouse.systemLogs.disableQueryProfiler }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-clickhouse-users
+  namespace: {{ .Release.Namespace }}
+data:
+  # /etc/clickhouse-server/users.d/no-query-profiler.xml
+  no-query-profiler.xml: |
+    <clickhouse>
+      <profiles>
+        <default>
+          <!-- 0 disables each sampler. These are the only two inputs to
+               system.trace_log. -->
+          <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
+          <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
+        </default>
+      </profiles>
+    </clickhouse>
+{{- end }}

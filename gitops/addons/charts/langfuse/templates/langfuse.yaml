@@ -41,6 +41,43 @@ data:
   LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ .Values.global.awsRegion }}"
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://langfuse-minio:9000"
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  # Allow the continuous-evaluation judge's LLM connection to reach Bifrost
+  # in-cluster. Langfuse validates every LLM connection's base URL and blocks
+  # private and cluster-internal addresses as SSRF protection, so without this
+  # the judge connection cannot be saved at all.
+  #
+  # Deliberately a single host, not a CIDR or a wildcard: this is an exemption
+  # from an SSRF control, so it names exactly the one in-cluster service the
+  # judge uses and nothing else. Any other internal base URL is still refused.
+  # Both the web and worker containers load this ConfigMap, so one key covers
+  # both, and it belongs here rather than in a manual `kubectl set env`.
+  LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ .Values.evaluation.judgeGatewayHost }}"
+  # ─── v4 migration (see values.yaml migrationV4) ─────────────────────────
+  # Set explicitly rather than left to v4's defaults: the default write mode is
+  # events_only, which is a one-way cutover that would break the OTel
+  # collector's ingestion path and every v1 read endpoint the moment the image
+  # was bumped.
+  {{- if and (eq .Values.migrationV4.writeMode "legacy") .Values.migrationV4.enableHistoricBackfill }}
+  {{- fail "langfuse: migrationV4.enableHistoricBackfill must be false while migrationV4.writeMode is 'legacy' — the upgrade guide requires the backfill to stay disabled in legacy mode." }}
+  {{- end }}
+  {{- if not (has .Values.migrationV4.writeMode (list "legacy" "dual" "events_only")) }}
+  {{- fail (printf "langfuse: migrationV4.writeMode must be legacy, dual or events_only, got %q" .Values.migrationV4.writeMode) }}
+  {{- end }}
+  {{- if not (has .Values.migrationV4.nativeOtelBehaviour (list "direct" "dual_write")) }}
+  {{- fail (printf "langfuse: migrationV4.nativeOtelBehaviour must be direct or dual_write, got %q" .Values.migrationV4.nativeOtelBehaviour) }}
+  {{- end }}
+  {{- /*
+  Caught here rather than at runtime: v4 validates this pair on startup and the
+  WORKER exits on a bad combination, so the judge silently stops running behind
+  a CrashLoopBackOff. Failing the render names the fix instead.
+  */}}
+  {{- if and (eq .Values.migrationV4.nativeOtelBehaviour "direct") (eq .Values.migrationV4.writeMode "legacy") }}
+  {{- fail "langfuse: migrationV4.nativeOtelBehaviour 'direct' requires writeMode 'dual' or 'events_only' — direct OTel writes target events_full, which legacy mode does not read. Set nativeOtelBehaviour: dual_write while in legacy mode." }}
+  {{- end }}
+  LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ .Values.migrationV4.writeMode }}"
+  LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: "{{ .Values.migrationV4.nativeOtelBehaviour }}"
+  LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL: "{{ .Values.migrationV4.enableHistoricBackfill }}"
+  LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "{{ .Values.migrationV4.allowPreviewOptIn }}"
 ---
 # ─── Secret (credentials — overridable via values) ────────────────────────
 apiVersion: v1
@@ -75,6 +112,26 @@ spec:
     metadata:
       labels:
         app: langfuse
+      annotations:
+        # Roll the pods when langfuse-config or langfuse-secrets changes.
+        #
+        # Both are consumed with envFrom, and Kubernetes does NOT restart a pod
+        # when a ConfigMap it reads as env changes — the running container keeps
+        # the values it started with. Without this, adding a key (for example
+        # LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST, which continuous agent
+        # evaluation needs) updates the ConfigMap and changes nothing about the
+        # running Langfuse, and the next unrelated restart silently applies it
+        # minutes or days later. Observed exactly that: the key was present in
+        # the ConfigMap while the 93-minute-old pod still refused the judge
+        # connection.
+        #
+        # Hashes the VALUES that langfuse-config and langfuse-secrets are built
+        # from, not the rendered template: this file defines both of them plus
+        # these Deployments, so `include`-ing it here would recurse forever.
+        # Scoped to those inputs rather than all of .Values so that a change
+        # which only affects the Deployment (image tag, resources) does not roll
+        # the pods twice.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -262,6 +319,12 @@ spec:
     metadata:
       labels:
         app: langfuse-worker
+      annotations:
+        # Same reason as the web Deployment above: the worker also loads
+        # langfuse-config with envFrom, and it is the container that actually
+        # runs the evaluation judge, so a stale allowlist here is what silently
+        # blocks scoring.
+        checksum/config: {{ include "langfuse.configChecksum" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -382,6 +445,28 @@ spec:
     metadata:
       labels:
         app: langfuse-clickhouse
+      {{- if .Values.clickhouse.systemLogs.bound }}
+      annotations:
+        # ROLL CLICKHOUSE WHEN THE SYSTEM-LOG CONFIG CHANGES, for two reasons
+        # that compound:
+        #
+        #   1. the config is mounted with `subPath`, and a subPath mount NEVER
+        #      receives ConfigMap updates -- it is frozen at pod creation. So
+        #      editing the ConfigMap alone leaves the pod reading the old file
+        #      indefinitely. Measured: the ConfigMap carried the new TTLs while
+        #      `grep` inside the pod still found the previous content.
+        #   2. system log TTLs are applied when ClickHouse opens the tables at
+        #      startup, so even a hot-reloaded config would not retro-fit them.
+        #
+        # Without this, a retention change silently never takes effect -- the
+        # same shape of failure as the unbounded logs it is meant to prevent.
+        # subPath is kept deliberately: mounting the whole directory would
+        # shadow the image's own docker_related_config.xml.
+        checksum/system-logs: {{ printf "%s%s"
+          (include (print $.Template.BasePath "/clickhouse-system-logs.yaml") .)
+          (include (print $.Template.BasePath "/clickhouse-users.yaml") .)
+          | sha256sum }}
+      {{- end }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -411,8 +496,37 @@ spec:
           volumeMounts:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
+            {{- if .Values.clickhouse.systemLogs.bound }}
+            # Retention for ClickHouse's own system log tables (config.d).
+            # Without this they are unbounded and filled this volume in ten
+            # days, which silently took down every trace and every evaluation
+            # score -- see templates/clickhouse-system-logs.yaml.
+            - name: system-logs-config
+              mountPath: /etc/clickhouse-server/config.d/system-logs.xml
+              subPath: system-logs.xml
+              readOnly: true
+            {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
+            # Profile settings go in users.d, NOT config.d. config.d does not
+            # accept <profiles> and refuses to start the server if it finds it.
+            - name: clickhouse-users-config
+              mountPath: /etc/clickhouse-server/users.d/no-query-profiler.xml
+              subPath: no-query-profiler.xml
+              readOnly: true
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+      {{- if .Values.clickhouse.systemLogs.bound }}
+      volumes:
+        - name: system-logs-config
+          configMap:
+            name: langfuse-clickhouse-system-logs
+        {{- if .Values.clickhouse.systemLogs.disableQueryProfiler }}
+        - name: clickhouse-users-config
+          configMap:
+            name: langfuse-clickhouse-users
+        {{- end }}
+      {{- end }}
   volumeClaimTemplates:
     - apiVersion: v1
       kind: PersistentVolumeClaim
