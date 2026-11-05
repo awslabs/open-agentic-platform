@@ -33,6 +33,10 @@ class BoundedToolExecutor(ConcurrentToolExecutor):
             self._loop, self._sem = loop, asyncio.Semaphore(self.limit)
         return self._sem
 
+    # ``_task`` is a private strands method. It is stable with the pinned
+    # strands-agents version in pyproject.toml; on a version bump,
+    # tests/unit/test_tool_executor.py::test_parallelism_never_exceeds_cap fails
+    # if it is renamed or no longer wraps each tool call.
     async def _task(self, *args: Any, **kwargs: Any) -> None:
         async with self._semaphore():
             await super()._task(*args, **kwargs)

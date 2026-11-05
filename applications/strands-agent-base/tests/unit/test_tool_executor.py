@@ -123,3 +123,14 @@ def test_agent_is_built_with_bounded_executor(monkeypatch):
     agent_mod._construct_agent("s", "a")
     ex = seen["tool_executor"]
     assert isinstance(ex, BoundedToolExecutor) and ex.limit == 3
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("4", 4), ("1", 1), ("0", 1), ("-2", 1), ("--3", 4), ("abc", 4), ("", 4), (" 8 ", 8)],
+)
+def test_tool_max_concurrency_env_parsing(monkeypatch, raw, expected):
+    from app.config import _int_env
+
+    monkeypatch.setenv("TOOL_MAX_CONCURRENCY", raw)
+    assert _int_env("TOOL_MAX_CONCURRENCY", 4, minimum=1) == expected
