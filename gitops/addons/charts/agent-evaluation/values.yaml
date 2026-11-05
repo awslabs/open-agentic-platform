@@ -175,8 +175,10 @@ grafana:
   folder: "Agent Platform"
 
 alerts:
-  # PrometheusRule for staleness and reconcile errors. Needs the
-  # prometheus-operator CRDs, which the observability domain already installs.
+  # PrometheusRule for staleness and reconcile errors. Rendered only when the
+  # prometheus-operator CRDs (monitoring.coreos.com/v1) are present on the
+  # cluster, e.g. via the prometheus-operator-crds addon (enable_monitoring);
+  # skipped otherwise, so the rest of the chart still syncs.
   enabled: true
   # How long the data may age before the staleness alert fires. Must be
   # comfortably longer than metrics.intervalSeconds or a slow pass alerts.

@@ -87,8 +87,10 @@ did not ask for.
 
 ## Alerts
 
-`alerts.enabled` ships a PrometheusRule. These alert on the **pipeline**, not on
-agent quality: a falling pass ratio is a product signal for the owning team to
+`alerts.enabled` ships a PrometheusRule, rendered only when the cluster has the
+prometheus-operator CRDs (`monitoring.coreos.com/v1`); elsewhere it is skipped so
+the rest of the chart still syncs. These alert on the **pipeline**, not on agent
+quality: a falling pass ratio is a product signal for the owning team to
 read on the dashboard, and a deliberately strict evaluator on a hard task is
 supposed to score low. What the platform owns is whether the numbers are current
 and real.
