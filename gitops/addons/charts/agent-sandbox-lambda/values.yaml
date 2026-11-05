@@ -90,6 +90,8 @@ microvm:
   # image ref (the Dockerfile inside MAY pull private ECR base layers; the build role
   # keeps ecr:Get*/BatchGetImage). Publish the arm64 coder artifact before enabling.
   #   baseImageARN:    arn:aws:lambda:<region>:aws:microvm-image:al2023-1
+  # Empty (the default) derives exactly that ARN from microvm.region, so the base
+  # image always lives in the cluster's own region. Set it only to pin another image.
   baseImageARN: ""
 
   # codeArtifactKey is the OBJECT KEY ONLY — deliberately NOT a full s3:// URI. The bucket

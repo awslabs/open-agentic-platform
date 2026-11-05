@@ -412,10 +412,15 @@ dark-factory:
     # Templating both from annotations makes it correct on every cluster with no
     # per-cluster overlay. Managed ACK/KRO capabilities themselves are enabled at
     # the platform layer (appmod-blueprints) — verified ACTIVE here, not our concern.
+    # region: same reasoning, from aws_region, so a cluster outside us-west-2 does
+    # not call Lambda MicroVM / Security Agent in a region its account may deny.
     microvm:
+      region: '{{.metadata.annotations.aws_region}}'
       podIdentity:
         clusterName: '{{.metadata.annotations.aws_cluster_name}}'
         accountId: '{{.metadata.annotations.aws_account_id}}'
+    securityAgent:
+      region: '{{.metadata.annotations.aws_region}}'
     # GitHub credentials, cluster-scoped in Secrets Manager (same pattern as
     # langfuse/keycloak in observability.yaml). Three DISTINCT credentials so the
     # untrusted coder VM never holds the orchestrator's merge-capable token
@@ -501,8 +506,11 @@ agent-sandbox-lambda:
     #   s3://${bucket.spec.name}/${schema.spec.codeArtifactKey}
     # from the bucket it actually creates — one source of truth, still account-portable
     # because accountId below is what makes the bucket name unique.
+    # region: the cluster's own (aws_region), never a pinned one. It also derives
+    # the default baseImageARN (templates/image/10-rgd-and-image.yaml).
     microvm:
       accountId: '{{.metadata.annotations.aws_account_id}}'
+      region: '{{.metadata.annotations.aws_region}}'
       podIdentity:
         clusterName: '{{.metadata.annotations.aws_cluster_name}}'
 

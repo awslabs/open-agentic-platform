@@ -33,6 +33,12 @@ bifrost:
     podIdentity:
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
       region: '{{.metadata.annotations.aws_region}}'
+    # Read by the Bedrock provider config (configs/bifrost/values.yaml,
+    # bedrock_key_config.region: env.AWS_REGION) so Bedrock is called in the
+    # cluster's own region rather than a pinned one.
+    bifrost:
+      extraEnv:
+        AWS_REGION: '{{.metadata.annotations.aws_region}}'
   ignoreDifferences:
     - group: apps
       kind: StatefulSet
