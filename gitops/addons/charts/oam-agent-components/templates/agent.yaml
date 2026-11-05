@@ -367,7 +367,28 @@ spec:
         	// enabled: false deletes it, and the reconciler then removes the agent
         	// from its evaluation rules on the next pass. That is what handles
         	// cleanup with no finalizer.
-        	if parameter.evaluation != _|_ && parameter.evaluation.enabled {
+        	//
+        	// RESOLVE THE OPTIONAL FIELD BEHIND ITS OWN GUARD, then branch on a plain
+        	// bool. `if parameter.evaluation != _|_ && parameter.evaluation.enabled`
+        	// reads as a short-circuit and is not one: CUE still resolves
+        	// `parameter.evaluation.enabled` while `evaluation` is unset, and marshalling
+        	// `outputs` then fails for EVERY agent that does not set the block --
+        	//   cannot reference optional field: evaluation
+        	// The webhook denies such an Application outright; one admitted under an
+        	// older definition fails its workflow step instead, while ArgoCD still
+        	// reports Synced/Healthy because the Application resource itself is fine
+        	// and only the Deployment is missing.
+        	//
+        	// This is why `evaluation` needs the extra hop and the two older patterns
+        	// above do not: `mcpServers` is `*[] | [...]`, always concrete, and
+        	// `parameter.memory.config != _|_` only tests existence rather than reading
+        	// a value. `evaluation?` is optional with no default AND its `enabled` is
+        	// read as the condition, which is the combination that breaks.
+        	_evaluationEnabled: *false | bool
+        	if parameter.evaluation != _|_ {
+        		_evaluationEnabled: parameter.evaluation.enabled
+        	}
+        	if _evaluationEnabled {
         		evaluationSpec: {
         			apiVersion: "v1"
         			kind:       "ConfigMap"
