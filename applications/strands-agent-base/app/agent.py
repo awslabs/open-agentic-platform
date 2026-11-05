@@ -38,6 +38,7 @@ except ImportError:
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
 from .config import config
+from .tool_executor import BoundedToolExecutor
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
@@ -682,6 +683,7 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT,
         tools=tools,
+        tool_executor=BoundedToolExecutor(config.TOOL_MAX_CONCURRENCY),
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
         description=config.AGENT_DESCRIPTION,
