@@ -104,9 +104,11 @@ The `mcp-server` component deploys Model Context Protocol servers with agentgate
 ### Generated Resources
 
 1. **Argo Rollout** — blue-green deployment
-2. **Stable Service** — `appProtocol: agentgateway.dev/mcp`, port 80 → containerPort
-3. **Preview Service** — blue-green preview
-4. **AgentgatewayBackend** — static target to stable service FQDN
+2. **Stable Service** — `appProtocol: agentgateway.dev/mcp`, port 80 → containerPort, and the
+   `agentgateway.dev/mcp-path` annotation (from `mcpPath`, default `/mcp`; set `/mcp/` for
+   servers that redirect `/mcp` to `/mcp/`) that sets the path the gateway calls
+3. **Preview Service** — blue-green preview (same `agentgateway.dev/mcp-path` annotation)
+4. **AgentgatewayBackend** — selector target matching the stable Service's `agentgateway.dev/target` label
 5. **HTTPRoute** — registers at `/mcp/<name>` (optional)
 6. **AgentgatewayPolicy** — tool-level CEL authorization (optional)
 

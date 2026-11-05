@@ -176,6 +176,11 @@ template: {
 					"app.kubernetes.io/name": context.name
 					"agentgateway.dev/target": context.name
 				}
+				// The path agentgateway calls the MCP target at. A selector target cannot
+				// carry a path (the AgentgatewayBackend CRD allows one only on static
+				// targets), and a container MCP_PATH env never reaches the gateway, so
+				// upstream agentgateway reads it from this Service annotation instead.
+				annotations: "agentgateway.dev/mcp-path": parameter.mcpPath
 			}
 			spec: {
 				selector: "app.kubernetes.io/name": context.name
@@ -198,6 +203,9 @@ template: {
 				name:      context.name + "-preview"
 				namespace: context.namespace
 				labels: "app.kubernetes.io/name": context.name
+				// Keep the preview Service's MCP path identical to stable so a blue-green
+				// promotion never changes the path the gateway calls the backend at.
+				annotations: "agentgateway.dev/mcp-path": parameter.mcpPath
 			}
 			spec: {
 				selector: "app.kubernetes.io/name": context.name
@@ -212,7 +220,8 @@ template: {
 			}
 		}
 
-		// AgentgatewayBackend — static target pointing at the stable service.
+		// AgentgatewayBackend — a selector target matching the stable Service's
+		// agentgateway.dev/target label (not a static host; see the body comment).
 		mcpBackend: {
 			apiVersion: "agentgateway.dev/v1alpha1"
 			kind:       "AgentgatewayBackend"
@@ -362,6 +371,14 @@ template: {
 		sessionAffinity: *true | bool
 		// +usage=Container port the MCP server listens on (FastMCP default 8000)
 		port: *8000 | int
+		// +usage=Path agentgateway calls on the MCP server, emitted as the
+		// agentgateway.dev/mcp-path annotation on the stable and preview Services.
+		// Default "/mcp" fits servers that serve exactly /mcp (the Express servers here,
+		// and FastMCP on mcp SDKs that register a Route). Set "/mcp/" for servers that
+		// 307-redirect /mcp to /mcp/ (Mount-based FastMCP, or app.mount("/mcp", ...)):
+		// the gateway does not follow that redirect, so the session breaks (422) and the
+		// agent loads 0 tools. SSE servers typically need "/sse".
+		mcpPath: *"/mcp" | string
 		// +usage=Service port exposed by the stable/preview Services
 		servicePort: *80 | int
 		// +usage=Optional container command override
