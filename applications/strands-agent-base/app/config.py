@@ -5,6 +5,15 @@ import os
 from typing import Optional
 
 
+def _int_env(name: str, default: int, minimum: int) -> int:
+    """Read an integer env var; fall back to ``default`` if unset or not an int."""
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
 class Config:
     """Application configuration from environment variables."""
 
@@ -68,6 +77,11 @@ For example, always use the time tool when asked about the current time or date.
         "(MAX_TOKENS) was reached. Ask me to continue, or narrow the "
         "request for a shorter answer.",
     )
+
+    # Max tool calls the agent runs at the same time within one model turn.
+    # strands defaults to unlimited, which can OOM a per-request-process MCP
+    # server on fleet-wide questions. 1 = sequential. Non-numeric falls back to 4; values below 1 become 1.
+    TOOL_MAX_CONCURRENCY: int = _int_env("TOOL_MAX_CONCURRENCY", 4, minimum=1)
 
     # LLM Gateway configuration (Bifrost, OpenAI-compatible endpoint at /v1)
     LLM_GATEWAY_URL: str = os.getenv(
