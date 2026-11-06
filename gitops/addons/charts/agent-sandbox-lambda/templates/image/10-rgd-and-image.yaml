@@ -239,7 +239,7 @@ metadata:
 spec:
   name: {{ .Values.microvm.image.name | default "coder" }}
   region: {{ .Values.microvm.region | quote }}
-  baseImageARN: {{ .Values.microvm.baseImageARN | quote }}
+  baseImageARN: {{ .Values.microvm.baseImageARN | default (printf "arn:aws:lambda:%s:aws:microvm-image:al2023-1" .Values.microvm.region) | quote }}
   # Object key only — the RGD prefixes s3://${bucket.spec.name}/ (see resource 4), so the
   # bucket is never named twice and cannot drift from the one the graph creates.
   codeArtifactKey: {{ required "microvm.codeArtifactKey is required when microvm.enabled=true (object key of the arm64 coder zip inside the RGD-created <image.name>-microvm-artifacts-<accountId> bucket)" .Values.microvm.codeArtifactKey | quote }}
