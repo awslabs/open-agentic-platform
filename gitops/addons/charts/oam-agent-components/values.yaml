@@ -1,6 +1,10 @@
 global:
   awsRegion: us-west-2
   clusterName: ""
+  # Install prefix (cluster secret resource_prefix annotation). Only used to tag the AWS
+  # resources this chart creates with platform.gitops.io/prefix, the tag a prefix-scoped
+  # teardown uses to find them. Empty: no prefix tag.
+  resourcePrefix: ""
   # Default container image for the `agent` component, so an ordinary
   # Application does not name one ("imageless"). A cluster that mirrors the
   # image into its own registry overrides this once here, rather than every
@@ -53,6 +57,13 @@ global:
 # observability.mode=decentralized (CloudWatch GenAI direct export).
 decentralizedObservability:
   enabled: true
-  roleName: "agent-cw-observability-role"
+  # AWS name of the role. Empty (default): derived per cluster,
+  # "<global.clusterName>-agent-cw-observability-role" with the cluster name lowercased and
+  # "_" mapped to "-" (hashed when over 64 chars). global.clusterName is required: without
+  # it no role is rendered and the decentralized-observability-identity trait fails the
+  # render. IAM role names are account-wide, so a fixed name here is shared by every cluster
+  # and install in the account. This is a platform setting: the trait always uses this role
+  # and an Application cannot choose another one.
+  roleName: ""
   namespace: "default"
   serviceAccount: "default"
