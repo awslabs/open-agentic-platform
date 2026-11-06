@@ -14,13 +14,11 @@ global:
   # applications/strands-agent-base (app/agent.py), so this default must point
   # at a build that includes it.
   #
-  # NOTE: v1.4.10 does NOT emit that tag yet — it tags only
-  # ['<agent>', 'source:chat']. It is kept as the default because it is what
-  # main pinned in the CUE before this value existed, so nothing regresses for
-  # agents that do not use evaluation. An imageless agent WITH evaluation on is
-  # not scored against it; a cluster testing evaluation overrides this with a
-  # build carrying the tag until a public image ships one.
-  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10
+  # v1.6.0 is built from the OAP v0.1.0 release tag and emits that tag, next to
+  # the bare ['<agent>', 'source:chat'] tags. THE IMAGE VERSION LINE: keep this
+  # tag in step with version in applications/strands-agent-base/pyproject.toml,
+  # which the build scripts there use as their default IMAGE_TAG.
+  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.6.0
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.

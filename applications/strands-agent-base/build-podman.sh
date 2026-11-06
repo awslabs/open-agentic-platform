@@ -5,7 +5,21 @@ set -e
 # Builds for AMD64 platform (compatible with AWS EKS, ECS, etc.)
 
 IMAGE_NAME="${IMAGE_NAME:-strands-agent}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+# THE IMAGE VERSION LINE. The default tag is v<version> from this package's
+# pyproject.toml, and it must stay in step with exactly two other places:
+#   - version in applications/strands-agent-base/pyproject.toml (the source read here)
+#   - global.agentImage in gitops/addons/charts/oam-agent-components/values.yaml,
+#     the platform's default agent image
+# A published strands-agent image is built only from an OAP release tag, its tag
+# matches pyproject.toml, and it is never overwritten. IMAGE_TAG overrides the
+# default for local or test builds.
+PYPROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pyproject.toml"
+VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$PYPROJECT" | head -n 1)"
+if [ -z "$VERSION" ]; then
+    echo "ERROR: no version found in $PYPROJECT" >&2
+    exit 1
+fi
+IMAGE_TAG="${IMAGE_TAG:-v${VERSION}}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 COMMAND="${1:-build}"
 NO_CACHE=""
