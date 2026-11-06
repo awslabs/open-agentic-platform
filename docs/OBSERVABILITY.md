@@ -65,7 +65,7 @@ The agent exports directly to CloudWatch via the AWS OpenTelemetry Distro (ADOT 
 2. ADOT auto-instruments the FastAPI + Strands application at startup
 3. GenAI spans (agent invocations, tool calls, LLM requests) are exported to CloudWatch
 4. With ADOT 0.18.0+ (unsplit architecture), spans go directly to the `aws/spans` log group — no separate log group needed
-5. Pod Identity on the `default` ServiceAccount provides CW/X-Ray write permissions (provisioned by the `oam-agent-components` chart). The IAM role is per cluster, `<cluster>-agent-cw-observability-role`, tagged `platform.gitops.io/prefix=<resource_prefix>` so a prefix-scoped teardown removes it. `global.clusterName` is required: without it the chart renders no role, and the `decentralized-observability-identity` trait fails the render instead of falling back to a role name shared by every install of the account
+5. Pod Identity on the `default` ServiceAccount provides CW/X-Ray write permissions (provisioned by the `oam-agent-components` chart). The IAM role is per cluster, `<cluster>-agent-cw-observability-role`, tagged `platform.gitops.io/prefix=<resource_prefix>` so a prefix-scoped teardown removes it. `global.clusterName` is required: without it the chart renders no role, and the `decentralized-observability-identity` trait fails the render instead of falling back to a role name shared by every install of the account. The trait has no `roleName` property: it always uses the cluster's role, and an Application that still sets `roleName` fails the render
 
 ### Deploy
 

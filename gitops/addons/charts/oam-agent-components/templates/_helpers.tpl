@@ -18,8 +18,12 @@ install tag, so a prefix-based teardown left it behind.
   3. neither                                   -> "" (no name). global.clusterName is
      required: without it the Role and its default/default association are not rendered,
      and the decentralized-observability-identity trait fails the render (FAIL CLOSED in
-     decentralized-observability-identity.yaml), instead of falling back to a fixed name
-     shared by every install of the account (#92).
+     cw-observability-role.yaml and in the trait's CUE source), instead of falling back to a
+     fixed name shared by every install of the account (#92).
+
+Used by cw-observability-role.yaml (the Role and the default/default association) and by the
+decentralized-observability-identity trait (platform/oam/definitions/traits/*.cue), which has no
+roleName parameter: an Application cannot point its association at another role.
 */}}
 {{- define "oam-agent-components.cwObservabilityRoleName" -}}
 {{- $dobs := .Values.decentralizedObservability -}}

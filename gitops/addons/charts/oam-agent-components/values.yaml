@@ -62,7 +62,8 @@ decentralizedObservability:
   # "_" mapped to "-" (hashed when over 64 chars). global.clusterName is required: without
   # it no role is rendered and the decentralized-observability-identity trait fails the
   # render. IAM role names are account-wide, so a fixed name here is shared by every cluster
-  # and install in the account.
+  # and install in the account. This is a platform setting: the trait always uses this role
+  # and an Application cannot choose another one.
   roleName: ""
   namespace: "default"
   serviceAccount: "default"
