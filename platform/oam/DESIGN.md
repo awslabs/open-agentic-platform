@@ -105,9 +105,13 @@ The `mcp-server` component deploys Model Context Protocol servers with agentgate
 
 1. **Argo Rollout** — blue-green deployment
 2. **Stable Service** — `appProtocol: agentgateway.dev/mcp`, port 80 → containerPort, and the
-   `agentgateway.dev/mcp-path` annotation (from `mcpPath`, default `/mcp`; set `/mcp/` for
-   servers that redirect `/mcp` to `/mcp/`) that sets the path the gateway calls
-3. **Preview Service** — blue-green preview (same `agentgateway.dev/mcp-path` annotation)
+   `agentgateway.dev/mcp-path` annotation from `mcpPath`. This is the HTTP path on the server
+   pod that the gateway calls, not the public route (clients still use `/mcp/<name>`). It must
+   start with `/`; default `/mcp`, `/mcp/` for servers that redirect `/mcp` to `/mcp/`
+   (Starlette Mount-based FastMCP), usually `/sse` for SSE servers. The gateway reads the
+   annotation from this Service, which the backend selector targets
+3. **Preview Service** — blue-green preview. Carries the same annotation for consistency only;
+   the backend selector does not match it, so the gateway never reads it
 4. **AgentgatewayBackend** — selector target matching the stable Service's `agentgateway.dev/target` label
 5. **HTTPRoute** — registers at `/mcp/<name>` (optional)
 6. **AgentgatewayPolicy** — tool-level CEL authorization (optional)
