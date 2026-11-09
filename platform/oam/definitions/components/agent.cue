@@ -457,6 +457,42 @@ template: {
 			}
 		}
 
+		// HARNESS DECLARATION (optional). Only a declaration: the agent-evaluation
+		// reconciler finds it by the harness.oap.io/agent label and runs the
+		// dataset against <agent>-preview for each new revision. It is a KubeVela
+		// output, so disabling the harness or deleting the Application removes it
+		// and the reconciler prunes that agent's runs. Same optional-field guard
+		// as evaluation, see the comment above _evaluationEnabled.
+		_harnessEnabled: *false | bool
+		if parameter.harness != _|_ {
+			_harnessEnabled: parameter.harness.enabled
+		}
+		if _harnessEnabled {
+			harnessSpec: {
+				apiVersion: "v1"
+				kind:       "ConfigMap"
+				metadata: {
+					name:      context.name + "-harness"
+					namespace: context.namespace
+					labels: {
+						// The reconciler lists on this label alone.
+						"harness.oap.io/agent":   context.name
+						"app.kubernetes.io/name": context.name
+					}
+				}
+				data: {
+					agent:     context.name
+					dataset:   parameter.harness.dataset
+					checks:    json.Marshal(parameter.harness.checks)
+					threshold: "\(parameter.harness.threshold)"
+					mode:      parameter.harness.mode
+					// The blue-green preview Service and the agent's A2A port.
+					previewService: context.name + "-preview"
+					previewPort:    "8083"
+				}
+			}
+		}
+
 		// HTTPRoute for AgentGateway registration (optional)
 		if parameter.registerWithGateway {
 			gatewayRoute: {
@@ -642,6 +678,33 @@ template: {
 				strictness?: "low" | "medium" | "high"
 			})]
 		}
+
+		// +usage=Pre-promotion exam of this agent on a fixed dataset. Each new
+		// revision is scored on <agent>-preview and the result is published as
+		// oap_agent_harness_* metrics. Report mode only: the score is reported,
+		// and it never blocks or delays promotion. Gate mode (block promotion
+		// below the threshold) is a later phase, so it is rejected at admission
+		// for now rather than admitted and silently ignored.
+		// Requires the agent-evaluation addon on the cluster with harness.enabled.
+		//
+		// A dataset is a platform catalog name. The <namespace>/<name> form is
+		// reserved for team-owned datasets and is not accepted yet.
+		harness?: {
+			// +usage=Turn the harness on for this agent.
+			enabled: *false | bool
+			// +usage=Platform dataset name, e.g. example-smoke-v1.
+			dataset: #DatasetName
+			// +usage=How each case is judged. First cut: expected-answer only.
+			checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
+			// +usage=Fraction of cases that must pass, reported next to the score.
+			threshold: *0.8 | number & >0 & <=1
+			// +usage=report: score it, promote anyway. gate is not available yet.
+			mode: "report"
+		}
+
+		// Same shape as #EvaluatorName, and a valid ConfigMap value and label value.
+		#DatasetName:  =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$" & strings.MaxRunes(63)
+		#HarnessCheck: "expected-answer"
 
 		// Lowercase alphanumeric with internal hyphens. `--` is excluded because it
 		// separates an evaluator from its judge alias in the Langfuse object name
