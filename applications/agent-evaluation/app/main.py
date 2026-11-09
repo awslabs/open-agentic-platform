@@ -24,6 +24,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from prometheus_client import generate_latest
@@ -32,7 +33,11 @@ from prometheus_client.core import CollectorRegistry
 from . import events
 from .cluster_loop import ClusterLoop
 from .config import ConfigError, load_catalog, load_settings
+from .bifrost_admin import BifrostAdmin
 from .declarations import DeclarationReader
+from .harness_config import load_checks, load_harness_settings
+from .harness_declarations import HarnessDeclarationReader
+from .harness_loop import HarnessLoop
 from .langfuse_client import LangfuseClient
 from .metrics import Metrics
 from .metrics_loop import MetricsLoop
@@ -183,6 +188,12 @@ def main() -> int:
     try:
         settings = load_settings()
         catalog = load_catalog(settings.catalog_path)
+        # Harness config is read only when HARNESS_ENABLED=true; a bad checks
+        # file is a deploy error exactly like a bad catalog.
+        harness_settings = load_harness_settings()
+        if harness_settings.enabled:
+            load_checks(harness_settings.checks_path)
+            catalog.judge_model(harness_settings.judge_alias or catalog.judge_default)
     except ConfigError as exc:
         # Configuration that cannot be defaulted is a deploy error, not a
         # transient one: exit and let the Deployment's restart surface it.
@@ -209,6 +220,7 @@ def main() -> int:
         ",".join(catalog.judge_aliases),
         settings.langfuse_url,
     )
+    logger.info("harness %s", "enabled" if harness_settings.enabled else "disabled")
 
     server = ThreadingHTTPServer(
         ("0.0.0.0", settings.metrics_port),  # noqa: S104 - see module docstring
@@ -342,12 +354,55 @@ def main() -> int:
         )
     )
 
+    bifrost_http = None
+    if harness_settings.enabled:
+        # Deliberately NOT a required readiness loop (_State): an unready pod
+        # drops out of the metrics Service and would hide every oap_agent_eval_*
+        # series. Harness health is last_success/errors_total{loop="harness"}.
+        bifrost_http = httpx.Client(timeout=30.0)
+        harness_loop = HarnessLoop(
+            settings,
+            harness_settings,
+            catalog,
+            metrics,
+            HarnessDeclarationReader(core),
+            recorder,
+            k8s_client.BatchV1Api(),
+            k8s_client.CustomObjectsApi(),
+            core,
+            BifrostAdmin(bifrost_http, harness_settings.bifrost_admin_url),
+        )
+
+        def harness_pass() -> bool:
+            if not kube["ready"]:
+                kube["ready"] = _load_kube()
+                if not kube["ready"]:
+                    return False
+            return harness_loop.run_once()
+
+        threads.append(
+            threading.Thread(
+                target=_run_loop,
+                args=(
+                    "harness",
+                    harness_settings.interval,
+                    harness_pass,
+                    stop,
+                    metrics,
+                    settings.cluster,
+                ),
+                daemon=True,
+            )
+        )
+
     for thread in threads:
         thread.start()
 
     stop.wait()
     server.shutdown()
     langfuse.close()
+    if bifrost_http is not None:
+        bifrost_http.close()
     logger.info("stopped")
     return 0
 

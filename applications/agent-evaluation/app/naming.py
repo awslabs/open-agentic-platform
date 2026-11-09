@@ -48,6 +48,28 @@ JUDGE_SEPARATOR = "--"
 _TOKEN_LEN = 8
 _TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % _TOKEN_LEN)
 
+# Harness objects (issue #137). The judge virtual key lives in this cluster's
+# Bifrost; the Jobs and their result ConfigMaps live in the reconciler's own
+# namespace. Both are recognised by prefix, and only this reconciler writes them.
+HARNESS_VK_PREFIX = "oap-harness-judge-"
+HARNESS_JOB_PREFIX = "oap-harness-"
+_HARNESS_JOB_HASH_LEN = 12
+
+
+def harness_job_name(namespace: str, agent: str, revision: str, dataset: str) -> str:
+    """Deterministic Job name for one (agent, revision, dataset) run.
+
+    The Job object IS the "already ran" record: a restarted reconciler that
+    finds a Job with this name creates nothing, so a revision runs once.
+    """
+    payload = f"{namespace}/{agent}/{revision}/{dataset}"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return HARNESS_JOB_PREFIX + digest[:_HARNESS_JOB_HASH_LEN]
+
+
+def result_configmap_name(job: str) -> str:
+    return f"{job}-result"
+
 
 def owner_token(cluster: str) -> str:
     """Return the fixed-length, fixed-alphabet token identifying one cluster."""

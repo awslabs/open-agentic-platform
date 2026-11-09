@@ -32,6 +32,16 @@ REASON_INVALID_DECLARATION = "InvalidEvaluationDeclaration"
 REASON_RULE_LIMIT = "EvaluationRuleLimitReached"
 REASON_RECONCILED = "EvaluationReconciled"
 
+# Harness (issue #137, report mode). Emitted on the agent's `<agent>-harness`
+# ConfigMap, so the owning team reads them in its own namespace.
+REASON_HARNESS_RUN_STARTED = "HarnessRunStarted"
+REASON_HARNESS_RUN_COMPLETED = "HarnessRunCompleted"
+REASON_HARNESS_RUN_FAILED = "HarnessRunFailed"
+REASON_HARNESS_RUN_SUPERSEDED = "HarnessRunSuperseded"
+REASON_UNKNOWN_DATASET = "UnknownDataset"
+REASON_INVALID_HARNESS_DECLARATION = "InvalidHarnessDeclaration"
+REASON_HARNESS_JUDGE_KEY_UNAVAILABLE = "HarnessJudgeKeyUnavailable"
+
 
 class EventRecorder:
     """Emits Events against the agents' ConfigMaps, deduplicating repeats."""
