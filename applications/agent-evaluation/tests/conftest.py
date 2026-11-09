@@ -243,3 +243,218 @@ def settings() -> Settings:
 @pytest.fixture
 def metrics() -> Metrics:
     return Metrics()
+
+
+# ── harness fakes (issue #137) ─────────────────────────────────────────────
+
+from datetime import datetime, timezone  # noqa: E402
+
+from kubernetes.client.rest import ApiException  # noqa: E402
+
+from app.harness_config import HarnessSettings  # noqa: E402
+
+
+def _matches(labels: dict, selector: str) -> bool:
+    for clause in filter(None, selector.split(",")):
+        key, _, value = clause.partition("=")
+        if labels.get(key) != value:
+            return False
+    return True
+
+
+class FakeBatch:
+    """Jobs in memory. Stores the created body; exposes the fields the loop reads."""
+
+    def __init__(self):
+        self.jobs: dict[str, SimpleNamespace] = {}
+        self.bodies: dict[str, dict] = {}
+        self.created: list[dict] = []
+        self.deleted: list[str] = []
+        self._tick = 0
+
+    def _ns(self, body: dict) -> SimpleNamespace:
+        self._tick += 1
+        meta = body["metadata"]
+        return SimpleNamespace(
+            metadata=SimpleNamespace(
+                name=meta["name"],
+                namespace=meta["namespace"],
+                labels=dict(meta.get("labels") or {}),
+                annotations=dict(meta.get("annotations") or {}),
+                creation_timestamp=datetime.fromtimestamp(1_000 + self._tick, timezone.utc),
+            ),
+            status=SimpleNamespace(conditions=[], completion_time=None),
+        )
+
+    def create_namespaced_job(self, namespace, body):
+        assert body["metadata"]["namespace"] == namespace
+        if body["metadata"]["name"] in self.jobs:
+            raise ApiException(status=409, reason="AlreadyExists")
+        job = self._ns(body)
+        self.jobs[job.metadata.name] = job
+        self.bodies[job.metadata.name] = body
+        self.created.append(body)
+        return job
+
+    def list_namespaced_job(self, namespace, label_selector=""):
+        return SimpleNamespace(
+            items=[
+                j
+                for j in self.jobs.values()
+                if j.metadata.namespace == namespace
+                and _matches(j.metadata.labels, label_selector)
+            ]
+        )
+
+    def delete_namespaced_job(self, name, namespace, propagation_policy=None):
+        assert propagation_policy == "Background"
+        if name not in self.jobs:
+            raise ApiException(status=404, reason="NotFound")
+        del self.jobs[name]
+        self.deleted.append(name)
+
+    def finish(self, name, state="Complete", at: float = 2_000.0):
+        """Mark a Job finished, the way the Job controller does."""
+        when = datetime.fromtimestamp(at, timezone.utc)
+        job = self.jobs[name]
+        job.status.conditions = [
+            SimpleNamespace(type=state, status="True", last_transition_time=when)
+        ]
+        job.status.completion_time = when if state == "Complete" else None
+
+
+class FakeCustomObjects:
+    """Argo Rollouts by (namespace, name); 404 when absent."""
+
+    def __init__(self):
+        self.rollouts: dict[tuple[str, str], dict] = {}
+
+    def set_rollout(self, namespace, name, current, preview=None):
+        self.rollouts[(namespace, name)] = {
+            "status": {
+                "currentPodHash": current,
+                "blueGreen": {"previewSelector": current if preview is None else preview},
+            }
+        }
+
+    def get_namespaced_custom_object(self, group, version, namespace, plural, name):
+        assert (group, version, plural) == ("argoproj.io", "v1alpha1", "rollouts")
+        try:
+            return self.rollouts[(namespace, name)]
+        except KeyError:
+            raise ApiException(status=404, reason="NotFound") from None
+
+
+class FakeCore:
+    """ConfigMaps and Secrets in memory, keyed by (namespace, name)."""
+
+    def __init__(self):
+        self.configmaps: dict[tuple[str, str], SimpleNamespace] = {}
+        self.secrets: dict[tuple[str, str], SimpleNamespace] = {}
+        self.secret_writes: list[str] = []
+
+    @staticmethod
+    def _obj(body: dict) -> SimpleNamespace:
+        meta = body["metadata"]
+        return SimpleNamespace(
+            metadata=SimpleNamespace(
+                name=meta["name"],
+                namespace=meta["namespace"],
+                labels=dict(meta.get("labels") or {}),
+            ),
+            data=dict(body.get("data") or {}),
+        )
+
+    # configmaps
+    def create_namespaced_config_map(self, namespace, body):
+        key = (namespace, body["metadata"]["name"])
+        if key in self.configmaps:
+            raise ApiException(status=409, reason="AlreadyExists")
+        self.configmaps[key] = self._obj(body)
+        return self.configmaps[key]
+
+    def read_namespaced_config_map(self, name, namespace):
+        try:
+            return self.configmaps[(namespace, name)]
+        except KeyError:
+            raise ApiException(status=404, reason="NotFound") from None
+
+    def list_namespaced_config_map(self, namespace, label_selector=""):
+        return SimpleNamespace(
+            items=[
+                cm
+                for (ns, _), cm in self.configmaps.items()
+                if ns == namespace and _matches(cm.metadata.labels, label_selector)
+            ]
+        )
+
+    def delete_namespaced_config_map(self, name, namespace):
+        if self.configmaps.pop((namespace, name), None) is None:
+            raise ApiException(status=404, reason="NotFound")
+
+    # secrets
+    def read_namespaced_secret(self, name, namespace):
+        try:
+            return self.secrets[(namespace, name)]
+        except KeyError:
+            raise ApiException(status=404, reason="NotFound") from None
+
+    def create_namespaced_secret(self, namespace, body):
+        key = (namespace, body["metadata"]["name"])
+        if key in self.secrets:
+            raise ApiException(status=409, reason="AlreadyExists")
+        self.secrets[key] = self._obj(body)
+        self.secret_writes.append("create")
+        return self.secrets[key]
+
+    def replace_namespaced_secret(self, name, namespace, body):
+        if (namespace, name) not in self.secrets:
+            raise ApiException(status=404, reason="NotFound")
+        self.secrets[(namespace, name)] = self._obj(body)
+        self.secret_writes.append("replace")
+        return self.secrets[(namespace, name)]
+
+
+EXAMPLE_DATASET = """\
+name: example-smoke-v1
+description: test dataset
+cases:
+  - id: utc-time
+    input: What time is it in UTC?
+    expected: A current UTC time.
+  - id: define-latency
+    input: Define latency in one sentence.
+    expected: The delay between a request and its response.
+"""
+
+EXAMPLE_CHECKS = """\
+checks:
+  expected-answer:
+    casePassScore: 0.7
+    prompt: |
+      Input: {{input}}
+      Expected: {{expected}}
+      Output: {{output}}
+      Return {"score": <0..1>, "reasoning": "<short>"}
+"""
+
+
+@pytest.fixture
+def harness_dirs(tmp_path):
+    datasets = tmp_path / "harness-datasets"
+    datasets.mkdir()
+    (datasets / "example-smoke-v1.yaml").write_text(EXAMPLE_DATASET)
+    checks = tmp_path / "harness-checks"
+    checks.mkdir()
+    (checks / "checks.yaml").write_text(EXAMPLE_CHECKS)
+    return SimpleNamespace(datasets=datasets, checks=checks / "checks.yaml")
+
+
+@pytest.fixture
+def harness_settings(harness_dirs) -> HarnessSettings:
+    return HarnessSettings(
+        enabled=True,
+        checks_path=str(harness_dirs.checks),
+        datasets_dir=str(harness_dirs.datasets),
+        job_image="registry.example/agent-evaluation:test",
+    )

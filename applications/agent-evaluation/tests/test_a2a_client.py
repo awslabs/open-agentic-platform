@@ -1,0 +1,162 @@
+"""A2A client: every malformed reply is an error, never text."""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+import pytest
+import respx
+
+from app.a2a_client import (
+    AgentCallError,
+    context_id_for,
+    send_message,
+    wait_until_reachable,
+)
+
+URL = "http://assistant-preview.team-a.svc.cluster.local:8083/"
+
+
+def call():
+    with httpx.Client() as client:
+        return send_message(client, URL, "hello", context_id_for("abc123", "one"), 5)
+
+
+def reply(payload, status=200):
+    respx.post(URL).mock(return_value=httpx.Response(status, json=payload))
+
+
+@respx.mock
+def test_completed_task_with_artifacts_returns_text():
+    reply(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "kind": "task",
+                "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"kind": "text", "text": "Hi "}, {"kind": "text", "text": "there"}]}],
+            },
+        }
+    )
+    assert call().text == "Hi there"
+
+
+@respx.mock
+def test_task_without_artifacts_falls_back_to_history():
+    reply(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "kind": "task",
+                "status": {"state": "completed"},
+                "history": [
+                    {"role": "user", "parts": [{"kind": "text", "text": "q"}]},
+                    {"role": "agent", "parts": [{"kind": "text", "text": "answer"}]},
+                ],
+            },
+        }
+    )
+    assert call().text == "answer"
+
+
+@respx.mock
+def test_message_result_returns_text():
+    reply(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "ok"}]},
+        }
+    )
+    assert call().text == "ok"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [
+        ({"jsonrpc": "2.0", "id": "x", "error": {"code": -32603, "message": "boom"}}, "jsonrpc-error"),
+        ({"error": "model unavailable"}, "error-payload"),
+        (
+            {"jsonrpc": "2.0", "id": "x", "result": {"kind": "task", "status": {"state": "failed"}}},
+            "task-not-completed",
+        ),
+        (
+            {"jsonrpc": "2.0", "id": "x", "result": {"kind": "message", "parts": [{"kind": "text", "text": "  "}]}},
+            "no-text",
+        ),
+    ],
+)
+@respx.mock
+def test_bad_replies_are_errors(payload, kind):
+    reply(payload)
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == kind
+
+
+@respx.mock
+def test_http_500_is_an_error():
+    reply({"x": 1}, status=500)
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "http"
+
+
+@respx.mock
+def test_non_json_is_an_error():
+    respx.post(URL).mock(return_value=httpx.Response(200, text="<html>"))
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "not-json"
+
+
+@respx.mock
+def test_transport_error():
+    respx.post(URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "transport"
+
+
+@respx.mock
+def test_request_is_message_send_with_the_harness_context():
+    route = respx.post(URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": "x", "result": {"kind": "message", "parts": [{"kind": "text", "text": "ok"}]}},
+        )
+    )
+    call()
+    body = json.loads(route.calls.last.request.content)
+    assert body["method"] == "message/send"
+    message = body["params"]["message"]
+    assert message["contextId"].startswith("oap-harness-")
+    assert message["contextId"] == "oap-harness-abc123-one"
+    assert message["parts"] == [{"kind": "text", "text": "hello"}]
+    assert "X-Forwarded-User" not in route.calls.last.request.headers
+
+
+@respx.mock
+def test_wait_until_reachable_falls_back_to_the_legacy_card():
+    respx.get(URL + ".well-known/agent-card.json").mock(return_value=httpx.Response(404))
+    respx.get(URL + ".well-known/agent.json").mock(return_value=httpx.Response(200, json={}))
+    with httpx.Client() as client:
+        assert wait_until_reachable(client, URL, timeout=10, sleep=lambda _s: None)
+
+
+@respx.mock
+def test_wait_until_reachable_gives_up_at_the_deadline():
+    respx.get(url__startswith=URL).mock(side_effect=httpx.ConnectError("refused"))
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    with httpx.Client() as client:
+        assert not wait_until_reachable(
+            client, URL, timeout=12, interval=5, clock=lambda: now[0], sleep=sleep
+        )
+    assert now[0] >= 12
