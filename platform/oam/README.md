@@ -461,6 +461,41 @@ rolloutStrategy:
     scaleDownDelaySeconds: 30
 ```
 
+## Agent harness (pre-promotion dataset, report mode)
+
+The optional `harness` block runs a fixed dataset against each new revision of
+the agent on its blue-green preview Service (`<agent>-preview`) and publishes
+the result as `oap_agent_harness_*` metrics. It needs the agent-evaluation
+addon on the cluster with `harness.enabled`.
+
+```yaml
+harness:
+  enabled: true
+  dataset: example-smoke-v1
+  checks: [expected-answer]
+  threshold: 0.8
+  mode: report
+```
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `enabled` | `false` | Turn the harness on for this agent. |
+| `dataset` | required | Platform catalog dataset name (lowercase, hyphens, max 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and not accepted yet. |
+| `checks` | `[expected-answer]` | How each case is judged. `expected-answer` is the only check for now; an empty list is rejected. |
+| `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1), reported next to the score. |
+| `mode` | required | `report` only: score the revision and promote anyway. `gate` is rejected at admission until the gating phase ships. |
+
+Report mode never blocks or delays promotion; the `rolloutStrategy` settings
+above behave exactly as without the harness. On a first deploy the preview and
+stable Services select the same ReplicaSet, so the first run scores the initial
+revision and serves as the baseline for later revisions.
+
+The component renders a `<agent>-harness` ConfigMap labelled
+`harness.oap.io/agent`; it is only a declaration for the reconciler, and
+disabling the harness removes it. See
+[example-agent-harness.yaml](examples/example-agent-harness.yaml) and
+[docs/architecture/agent-evaluation.md](../../docs/architecture/agent-evaluation.md).
+
 ## Troubleshooting
 
 ```bash

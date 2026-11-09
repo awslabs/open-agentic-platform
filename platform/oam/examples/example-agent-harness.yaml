@@ -1,0 +1,58 @@
+# Example: Agent with a pre-promotion harness (fixed dataset, report mode)
+#
+# Adding the `harness` block is the whole change. The platform runs a fixed
+# dataset of cases against every new revision of this agent, including the
+# first one as a baseline, on the blue-green preview Service
+# (<agent>-preview). Each case is judged and the pass ratio is published as
+# oap_agent_harness_* metrics next to the threshold.
+#
+# Report mode only: the harness scores the revision and promotion goes ahead
+# anyway. It never blocks or delays a rollout. Gate mode (hold promotion below
+# the threshold) is a later phase and is rejected at admission for now.
+#
+# What the developer controls here: which dataset, which checks, and the
+# threshold the score is reported against.
+# What the platform controls: the dataset catalog, the judge and its prompt.
+# The judge runs through Bifrost on a platform-minted, budgeted virtual key.
+# Harness requests are marked, so they are excluded from online evaluation
+# (the `evaluation` block) and never counted as live traffic.
+# There is no account, region, endpoint or API key in this file.
+#
+# example-smoke-v1 is an EXAMPLE dataset that shows the format. It is not a
+# golden set for this or any other agent.
+#
+# Prerequisites:
+# - the agent-evaluation addon on this cluster, with harness.enabled
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: harness-assistant
+  namespace: default
+spec:
+  components:
+    - name: harness-assistant
+      type: agent
+      properties:
+        description: "Assistant scored on a fixed dataset before each promotion"
+        systemMessage: "You are a helpful assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+        harness:
+          enabled: true
+          # A platform catalog dataset name.
+          dataset: example-smoke-v1
+          # How each case is judged. expected-answer is the only check for now.
+          checks:
+            - expected-answer
+          # Fraction of cases that must pass, reported next to the score.
+          threshold: 0.8
+          # report: score it, promote anyway.
+          mode: report
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
