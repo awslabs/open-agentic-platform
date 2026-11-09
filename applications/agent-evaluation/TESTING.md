@@ -684,8 +684,76 @@ curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=10" | jq -r '.dat
 ```bash
 cd applications/agent-evaluation
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest tests/ -q      # 73 tests, no cluster needed
+.venv/bin/python -m pytest tests/ -q      # 171 tests, no cluster needed
 ```
+
+## Harness (report mode)
+
+**None of this has been run.** The harness (issue #137,
+[§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode))
+is covered by unit tests and by `helm template` only; no cluster with image
+`0.3.0` and `harness.enabled: true` exists yet. Every command below is
+read-only. Prerequisites: the addon with `harness.enabled: true` in
+`gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`, an image that
+contains the harness, and an agent with a `harness` block such as
+`platform/oam/examples/example-agent-harness.yaml`.
+
+```bash
+# 1. the declarations the agent component rendered, every namespace
+kubectl get cm -A -l harness.oap.io/agent
+kubectl describe cm <agent>-harness -n <ns>      # Events: UnknownDataset, InvalidHarnessDeclaration,
+                                                 # HarnessRunStarted/Completed/Failed/Superseded,
+                                                 # HarnessJudgeKeyUnavailable
+
+# 2. the revision the reconciler keys on, and whether -preview already selects it
+#    (a run starts only when the first two values are equal)
+kubectl get rollout <agent> -n <ns> \
+  -o jsonpath='{.status.currentPodHash} {.status.blueGreen.previewSelector} {.status.blueGreen.activeSelector}{"\n"}'
+
+# 3. the runs: Jobs and result ConfigMaps live in the PLATFORM namespace, never the agent's
+kubectl get jobs,cm -n agent-evaluation -l harness.oap.io/run=true
+kubectl get cm -n agent-evaluation -l harness.oap.io/result=true
+kubectl logs job/<job> -n agent-evaluation
+kubectl get cm <job>-result -n agent-evaluation -o jsonpath='{.data.result\.json}' | jq
+
+# 4. the metrics the reconciler publishes from those results
+kubectl port-forward -n agent-evaluation svc/agent-evaluation-metrics 9098:9090 &
+curl -s http://127.0.0.1:9098/metrics | grep -E '^oap_agent_harness_'
+curl -s http://127.0.0.1:9098/metrics | grep -E 'oap_agent_eval_(last_success_timestamp_seconds|errors_total)\{.*loop="harness"'
+
+# 5. the harness judge key: present in the Secret (names only, never the value) and in Bifrost
+kubectl get secret agent-evaluation-harness-judge-key -n agent-evaluation -o jsonpath='{.data}' | jq 'keys'
+kubectl port-forward -n bifrost svc/bifrost 8080:8080 &
+curl -s 'http://127.0.0.1:8080/api/governance/virtual-keys?search=oap-harness-judge-' \
+  | jq '.virtual_keys[] | {name, budgets, rate_limit, provider_configs}'
+kubectl get pods -n bifrost                                               # find the Bifrost pod
+kubectl logs -n bifrost <bifrost-pod> | grep -i 'oap-harness-judge-'      # judge calls attributed to the key
+```
+
+6. In Langfuse, confirm that every `oap-*` evaluation rule's filter carries the
+   two exclusion clauses, `tags` `none of` `["source:harness"]` and `sessionId`
+   `does not contain` `oap-harness-`:
+
+   ```bash
+   curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=50" \
+     | jq '.data[] | {name, filter: [.filter[] | select(.column == "tags" or .column == "sessionId")]}'
+   ```
+
+   Then pick a trace with tag `source:harness` (or session `oap-harness-*`) and
+   check it has **no** score. The tag needs a `strands-agent` image built from
+   this change; with older images the `sessionId` clause is what excludes it.
+
+What to expect, and what each mismatch means:
+
+- No Job although the agent has a declaration: compare step 2 (the preview
+  selector has not moved to the new pod hash yet), check step 1 Events, and
+  check `oap_agent_harness_judge_key_present`. With `required: true` a missing
+  key stops every run.
+- `oap_agent_harness_info{status="error"}` with no counts: the run failed (agent
+  unreachable within `readyTimeoutSeconds`, dataset invalid, or the Job hit
+  `runTimeoutSeconds`); read step 3's log and `result.json`.
+- A first deploy runs as `trigger="first-revision"` against pods that also serve
+  users, because `-preview` and `-stable` select the same ReplicaSet then.
 
 ## Re-verifying the Langfuse API after an upgrade
 

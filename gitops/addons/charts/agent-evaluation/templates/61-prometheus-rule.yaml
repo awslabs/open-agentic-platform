@@ -106,4 +106,51 @@ spec:
               Manager entry and set judge.virtualKey.enabled with its
               secretManagerKey on the agent-evaluation addon.
 {{- end }}
+{{- if .Values.harness.enabled }}
+{{- $harnessStale := max (mul 3 (int .Values.harness.intervalSeconds)) 900 }}
+        # Harness (report mode). Pipeline alerts only, like the rest of this
+        # file: a low harness pass ratio is the owning team's signal on the
+        # dashboard, not a page.
+        - alert: AgentHarnessStale
+          # The harness loop is not in /readyz (an unready pod would hide every
+          # evaluation series), so this is how a stuck loop is seen.
+          expr: >-
+            time() - max by (cluster)
+            (oap_agent_eval_last_success_timestamp_seconds{loop="harness"})
+            > {{ $harnessStale }}
+          for: 15m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The agent harness loop on cluster {{ `{{ $labels.cluster }}` }}
+              has not completed a pass for over
+              {{ div $harnessStale 60 }} minutes.
+            description: >-
+              New agent revisions are not being run against their harness
+              datasets, so harness results on the dashboard are stale. Usual
+              causes: the Kubernetes API refusing the reconciler's Job or Rollout
+              calls (check oap_agent_eval_errors_total{loop="harness"}), the
+              required harness judge key being unavailable (see
+              AgentHarnessJudgeKeyMissing), or the reconciler not running.
+        - alert: AgentHarnessJudgeKeyMissing
+          expr: max by (cluster) (oap_agent_harness_judge_key_present) == 0
+          for: 30m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The harness judge Bifrost virtual key is missing on cluster
+              {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              With harness.judge.virtualKey.required true (the default) no
+              harness run starts while this fires. The reconciler mints the key
+              in this cluster's Bifrost through the management API and writes it
+              to Secret {{ .Values.harness.judge.virtualKey.secretRef }} in the
+              {{ .Release.Namespace }} namespace. Check the reconciler's logs and
+              the HarnessJudgeKeyUnavailable Events, and that Bifrost answers at
+              {{ .Values.harness.judge.virtualKey.bifrostAdminUrl }}.
+{{- end }}
 {{- end }}

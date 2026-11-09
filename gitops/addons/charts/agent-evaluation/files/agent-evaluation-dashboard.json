@@ -39,7 +39,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info, cluster)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\"}, cluster)",
           "refId": "cluster"
         },
         "refresh": 2,
@@ -60,7 +60,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\"}, namespace)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\",cluster=~\"$cluster\"}, namespace)",
           "refId": "namespace"
         },
         "refresh": 2,
@@ -81,7 +81,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\"}, agent)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\",cluster=~\"$cluster\",namespace=~\"$namespace\"}, agent)",
           "refId": "agent"
         },
         "refresh": 2,
@@ -817,6 +817,271 @@
           }
         },
         "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Harness (pre-promotion dataset, report mode)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Harness pass ratio",
+      "description": "Share of the latest harness run's cases that passed for this agent's newest revision. Case errors count against it. Report mode: this never blocks a promotion. Empty when the agent has no harness block or no run has completed yet, never 0.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Cases / passed / errors",
+      "description": "Counts from the latest completed harness run. An errored run publishes no counts.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_cases{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "cases",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_passed{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "passed",
+          "refId": "B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_case_errors{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "errors",
+          "refId": "C",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Latest run",
+      "description": "Dataset, revision (Rollout pod hash), why it ran, its status and the judge model of the latest harness run.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 12,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "cluster": true,
+              "namespace": true,
+              "agent": true
+            },
+            "renameByName": {
+              "dataset": "Dataset",
+              "revision": "Revision",
+              "trigger": "Trigger",
+              "status": "Status",
+              "mode": "Mode",
+              "judge_model": "Judge"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Last run age",
+      "description": "Time since the latest harness run for this agent finished. A new revision without a newer run means the run is still in progress or waiting for a slot.",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - oap_agent_harness_last_run_timestamp_seconds{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       }
     }
   ]

@@ -89,8 +89,9 @@ on the `agent` component selects where they go:
 
 Every trace carries the agent's name as a Langfuse tag
 (`applications/strands-agent-base/app/agent.py`, `_trace_attributes`:
-`langfuse.trace.tags = [source:<chat|rca>, <AGENT_NAME>]`), plus `session.id` and
-`user.id`. That tag is the bare component name, with no cluster or namespace in it,
+`langfuse.trace.tags = [source:<chat|rca|harness>, <AGENT_NAME>]`; `source:rca`
+for an `incident-` session, `source:harness` for an `oap-harness-` session, see
+§4b), plus `session.id` and `user.id`. That tag is the bare component name, with no cluster or namespace in it,
 and every spoke sends to the same hub Langfuse project. So the same agent deployed
 on `dev` and `prod` produces identical tags. D4 adds a cluster-scoped tag for that
 reason.
@@ -411,7 +412,7 @@ declaration into Langfuse evaluators and rules.
 | Option | Verdict |
 |---|---|
 | **One reconciler Deployment in the `agent-evaluation` namespace of each cluster that runs agents, the hub included** (**chosen**) | Every instance watches ConfigMaps labelled `evaluation.oap.io/agent` on its own cluster and holds the Langfuse key. The hub instance also holds the judge virtual key and owns the project-wide objects ("Ownership" below). Because every loop is level-triggered, deletion is a diff. |
-| A Job per agent, emitted by the component | Rejected. It puts Langfuse admin credentials in every agent namespace, does not re-run on drift, and leaves rules behind when the agent is deleted. The per-agent virtual-key mint Job in #18 hit the same three problems. |
+| A Job per agent, emitted by the component | Rejected. It puts Langfuse admin credentials in every agent namespace, does not re-run on drift, and leaves rules behind when the agent is deleted. The per-agent virtual-key mint Job in #18 hit the same three problems. (The Phase 3 harness, §4b, does run a Job per agent revision, but in the platform namespace and created by the reconciler, so no credential reaches an agent namespace; a fixed dataset per revision is not meant to re-run on drift, and finished Jobs are pruned.) |
 | A CRD and an operator | A heavier version of the chosen option. Worth it later if the declaration grows. |
 
 **Why per cluster.** Agents and their evaluation ConfigMaps live on every cluster
@@ -633,7 +634,8 @@ langfuse:
   # LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, used as Basic auth to the public API.
   apiKeySecretRef: langfuse-evaluation-keys
 # Only the hub instance uses the connection and key in this block: it owns the
-# judge LLM connection, so the judge virtual key never has to exist on a spoke.
+# judge LLM connection, so the ONLINE judge virtual key never has to exist on a
+# spoke. The harness judge key is separate and per cluster (§4b).
 judge:
   defaultModelId: judge-default
   # Every Bifrost alias an agent may name in evaluation.judge. The hub writes one
@@ -961,7 +963,8 @@ reasoning for a failed trace.
 - **Staleness alert:** `time() - oap_agent_eval_last_success_timestamp_seconds{loop="metrics"} > 900`,
   so silence is never mistaken for health.
 - **Rollout gate (Phase 3):** an Argo Rollouts analysis step reads the same metric
-  from AMP.
+  from AMP. The first cut of Phase 3 is the report-mode harness (§4b), which
+  publishes `oap_agent_harness_*` and gates nothing; the gate is deferred.
 
 #### Langfuse is still the place to drill down
 
@@ -1175,15 +1178,253 @@ Two rules bind any implementation:
 
 ---
 
+## 4b. The agent harness (Phase 3, report mode)
+
+Issue #137. Online evaluation (§4a) scores live traffic after the fact. The
+harness answers a different question: how does a **new revision** do on a fixed
+set of cases before anyone relies on it. When an agent's Rollout gets a new
+revision, the platform sends every case in the agent's dataset to that
+revision's `<agent>-preview` Service, judges each answer against the case's
+reference, and publishes the result as `oap_agent_harness_*` metrics.
+
+**Report mode only.** The result is published next to the agent's threshold and
+nothing reads it back into the Rollout: the harness never blocks or delays a
+promotion. `mode: gate` is rejected at admission; gate mode and an Argo Rollouts
+`AnalysisTemplate` are deferred, and no decision is taken here on the channel a
+future gate reads.
+
+A developer turns it on in the `agent` component
+([example](../../platform/oam/examples/example-agent-harness.yaml)):
+
+```yaml
+harness:
+  enabled: true
+  dataset: example-smoke-v1   # a platform catalog dataset name
+  checks: [expected-answer]   # the only check in the first cut
+  threshold: 0.8              # reported next to the score
+  mode: report
+```
+
+The addon side is `harness.enabled` on the `agent-evaluation` chart (off by
+default; nothing harness-specific renders without it), set per cluster in
+`gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`.
+
+### Contract 3: the `<agent>-harness` ConfigMap
+
+Written by the `agent` component as a KubeVela output in the agent's own
+namespace; discovered **only** by the label.
+
+| | |
+|---|---|
+| label | `harness.oap.io/agent: <agent>` (required) |
+
+| Data key | Meaning |
+|---|---|
+| `agent` | agent name |
+| `dataset` | catalog dataset name (`^[a-z0-9]([a-z0-9]\|-[a-z0-9])*$`, at most 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and rejected today |
+| `checks` | JSON list of check names; `["expected-answer"]` is the only accepted value |
+| `threshold` | fraction in (0, 1], default `0.8`, as a string |
+| `mode` | `report` |
+| `previewService` | `<agent>-preview`, the blue-green preview Service |
+| `previewPort` | `8083` |
+
+A malformed declaration, or one naming a dataset the chart does not ship, is
+reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
+`UnknownDataset`) and skipped; it never stops the pass.
+
+### Contract 4: the dataset schema
+
+A dataset is a chart file `gitops/addons/charts/agent-evaluation/files/harness/datasets/<name>.yaml`,
+rendered into ConfigMap `agent-evaluation-harness-datasets` and referenced by
+name. Changing a case is a reviewed chart change.
+
+| Key | Rule |
+|---|---|
+| `name` | must equal the file name without `.yaml`, and match the dataset-name pattern above |
+| `description` | free text |
+| `cases[].id` | same pattern, at most 40 characters, unique in the file |
+| `cases[].input` | non-empty string, sent to the agent as one A2A message |
+| `cases[].expected` | non-empty string: what a correct answer must contain or do, judged by meaning, not wording |
+| `cases[].expectTools` | optional list of strings. **Accepted and ignored** in the first cut (no tool-call capture yet); a run that sees it reports `expectToolsIgnored: true` |
+| `cases[].tags` | optional list of strings, copied to the result |
+
+Zero cases, or more than `harness.maxCases` (default 50), is a run error. Cases
+are never truncated. The shipped `example-smoke-v1` is an **example**, labelled
+as such: it is not harvested from hub failures and is not a golden set. The real
+~20-case dataset is a TODO on #137.
+
+The `expected-answer` check prompt lives in `files/harness/checks/`, not
+`files/evaluators/`, and is not in the evaluator `catalog`, so the hub never
+publishes it to Langfuse. It frames the input, the reference and the agent's
+answer as untrusted data and asks for only `{"score": <0..1>, "reasoning": ...}`.
+A case passes when `score >= casePassScore` (default 0.7). Any other judge
+reply is a case **error**, never a pass.
+
+### Contract 5: the harness metrics
+
+Common labels `cluster`, `namespace`, `agent`, `dataset`. One set of series per
+agent: the latest run.
+
+| Metric | Extra labels | Meaning |
+|---|---|---|
+| `oap_agent_harness_cases` | | cases in the latest completed run |
+| `oap_agent_harness_passed` | | cases at or above `casePassScore` |
+| `oap_agent_harness_failed` | | cases judged below it |
+| `oap_agent_harness_case_errors` | | cases with no usable answer or verdict |
+| `oap_agent_harness_pass_ratio` | | `passed / cases`; errors count against it |
+| `oap_agent_harness_threshold` | | the agent's declared threshold |
+| `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold`. Informational only |
+| `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
+| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status` | always 1; `trigger` is `first-revision` or `new-revision`, `status` `completed` or `error` |
+| `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
+| `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `error`, `superseded` |
+
+The two rules of Contract 2 bind these too:
+
+- **Absent, not zero.** An agent with no harness, or no finished run yet, has no
+  series. An errored run publishes `info{status="error"}`, the threshold and the
+  timestamp, and **no** counts or pass ratio, so an outage never reads as a 0%
+  revision.
+- **Not understood is an error.** A result the reconciler cannot parse fails the
+  pass and publishes nothing for it.
+
+Loop health is the existing pair with `loop="harness"`:
+`oap_agent_eval_last_success_timestamp_seconds` and `oap_agent_eval_errors_total`.
+The harness loop is deliberately **not** in `/readyz`: an unready pod drops out
+of the metrics Service and would hide every `oap_agent_eval_*` series. The
+`AgentHarnessStale` alert covers it instead, and `AgentHarnessJudgeKeyMissing`
+reports a missing judge key. Like the rest of the chart's alerts these are
+pipeline alerts; there is no alert on the pass ratio.
+
+### Harness traffic is marked and excluded from online evaluation
+
+A harness case must not be scored again by the online evaluators, or read as
+live traffic. The marker is the A2A `contextId`, which the platform base image
+already maps to the trace's `session.id`:
+
+- the runner sends `contextId = oap-harness-<revision>-<caseId>` on every case;
+- `strands-agent-base` tags such traces `source:harness` instead of
+  `source:chat`, the same transport-agnostic rule as `incident-` to `source:rca`;
+- every online rule the reconciler writes carries two extra filter clauses,
+  unconditionally (not behind `harness.enabled`, so toggling the harness never
+  churns rules): `tags` `none of` `["source:harness"]`, and `sessionId`
+  `does not contain` `oap-harness-`. The second clause works with images that
+  predate the tag.
+
+Evidence, Langfuse source at `v4.72.0`: observation evals are filtered in memory
+by `InMemoryFilterService.evaluateFilter`, which ANDs every clause; `none of` on
+an `arrayOptions` column is "no element in the list"; `does not contain` on a
+string is `!String(field ?? "").includes(value)`, so a trace with no session id
+is **not** excluded; `tags` and `sessionId` are observation-eval filter columns
+mapped to the trace's tags and session id. **Unverified on a live project:** that
+the public rule API accepts and persists the two clauses unchanged, and that a
+live harness trace gets no score. Both are read-only checks in TESTING.md.
+
+Why not the Langfuse `environment`: it is set per resource (one value per pod)
+or per span. The resource form cannot separate harness requests, because the
+preview pods **are** the live pods on a first deploy and after promotion; the
+span form only lands on spans Strands decorates, splitting one trace across
+environments. Langfuse hides its own `sdk-experiment` traffic by environment,
+which is the follow-up if the platform moves to Langfuse experiments.
+
+Limitation: an agent image that is not the platform base image and does not map
+`contextId` to `session.id` is not excluded.
+
+### Execution: a Job in the platform namespace
+
+- The reconciler reads the agent's `rollouts.argoproj.io` object. The revision is
+  `status.currentPodHash`; a run starts only when
+  `status.blueGreen.previewSelector` equals it, i.e. `-preview` already selects
+  the newest ReplicaSet.
+- It creates one `batch/v1` Job **in its own namespace** (the `agent-evaluation`
+  release namespace), never in the agent's, running the reconciler image with
+  `python -m app.harness_runner` under ServiceAccount
+  `agent-evaluation-harness-runner`. The Job waits up to
+  `harness.readyTimeoutSeconds` for the preview's A2A agent card, sends the cases
+  (`message/send`, no caller identity, so each case gets a fresh session), judges
+  them, and writes one `<job>-result` ConfigMap (`result.json`) in the same
+  namespace. The reconciler reads it and publishes the metrics.
+- The Job name is deterministic,
+  `oap-harness-<sha256(namespace/agent/revision/dataset)[:12]>`, so the Jobs
+  themselves are the "already ran" state: a reconciler restart re-publishes from
+  existing results and never re-runs a revision. `backoffLimit: 0`: a failed run
+  is reported, never retried, because a retry would drive the agent again.
+- **Superseded:** if the revision moves while an older run is still active, that
+  Job is deleted, an Event is recorded, `runs_total{result="superseded"}` counts
+  it, and nothing is published for it.
+- **Pruning:** finished Jobs and their result ConfigMaps are kept to
+  `harness.historyLimit` (default 3) per agent, and removed when the agent's
+  `<agent>-harness` ConfigMap goes away.
+- **First revision:** when no Job exists for the agent, the current revision runs
+  as a baseline (`trigger="first-revision"`). On a first deploy `-preview` and
+  `-stable` select the same, only, ReplicaSet: verified in argo-rollouts
+  `v1.9.0` source (the appVersion of the chart appmod pins), where
+  `reconcilePreviewService` runs right after the new ReplicaSet is created and
+  always points the preview selector at the newest pod hash. So a baseline run
+  exercises live pods. That is acceptable in report mode, because it blocks
+  nothing and each case is an isolated session. That a late run still reaches
+  the right revision after promotion is unverified on a cluster.
+
+This is a Job per agent revision, which D4 rejected for online evaluation. D4's
+objections do not carry over: the Job runs in the platform namespace, so no
+credential reaches an agent namespace; a fixed dataset per revision is not meant
+to re-run on drift; and finished Jobs are pruned.
+
+### Judge credentials on spokes
+
+The harness runs on every cluster that runs agents, so its judge calls happen on
+spokes too, and they must be budgeted.
+
+What already exists: the platform's cross-cluster credential pattern is "write a
+Secrets Manager entry once, pull it on every cluster with an `ExternalSecret`
+through `ClusterSecretStore` `aws-secrets-manager`" (the Langfuse key pair in
+§5, and appmod's repository credentials). There is **no** established Bifrost
+virtual-key pattern: `gitops/addons/configs/bifrost/values.yaml` declares no
+`virtual_keys` and runs `is_vk_mandatory: false`, per-workload key minting is a
+TODO in `gitops/addons/charts/bifrost/DESIGN.md` (#18), and the online judge key
+(`judge.virtualKey`) is optional and hub-only.
+
+The Secrets Manager pattern cannot carry a Bifrost key: a virtual key is only
+valid in the Bifrost that minted it, and each cluster runs its own Bifrost.
+Config-as-code keys are not viable at the pin either (Bifrost `transports/v1.5.0`
+resolves `env.` in `virtual_keys` only on the config merge path, not on a fresh
+store), and a literal value would be a credential in git.
+
+**Chosen:** the reconciler mints a harness-only judge key in **its own cluster's**
+Bifrost through the management API, following the "Job/API approach" in
+`bifrost/DESIGN.md`, and owns it like a Langfuse rule: named
+`oap-harness-judge-<config hash>`, scoped to the judge model(s), with a budget
+(`harness.judge.virtualKey.budget`) and a rate limit, written on change, stale
+ones deleted. The value goes into Secret `agent-evaluation-harness-judge-key` in
+the reconciler's namespace, which every Job mounts as a file and sends as
+`x-bf-vk`. No Secrets Manager entry and no hub change are needed. The ONLINE
+judge key stays hub-only, as D4 decided.
+
+- **Fail closed:** with `harness.judge.virtualKey.required: true` (the default)
+  no Job starts while the key is unavailable; the reconciler records a
+  `HarnessJudgeKeyUnavailable` Event, publishes
+  `oap_agent_harness_judge_key_present 0`, and `AgentHarnessJudgeKeyMissing`
+  fires.
+- **The gap, stated:** minting relies on Bifrost's management API being open
+  in-cluster, which is true only while governance auth is off (the current
+  config). When #18 turns auth on, set `mint: false` and let a platform minter
+  own the Secret. Unverified on a live Bifrost: `allowed_models` matching
+  `us.amazon.nova-pro-v1:0`, and that listing keys returns the value.
+
+---
+
 ## 5. Security and cost
 
 | Concern | Control |
 |---|---|
 | Langfuse credentials | The seeded project's existing public/secret key pair, already used by the OTel Collector, read from Secrets Manager into the `agent-evaluation` namespace only. Never in an agent namespace, and no new admin key is created |
-| Judge model access | One judge virtual key in Bifrost, with a budget and a rate limit, sent as `x-bf-vk` from the LLM connection's `extraHeaders`. Because the hub reconciler owns that connection (D4), the key exists only on the hub and never on a spoke. The judge never uses an agent's key. Because `is_vk_mandatory` is `false`, the validation plan checks that judge calls are attributed to that key |
+| Judge model access (online) | One ONLINE judge virtual key in Bifrost, with a budget and a rate limit, sent as `x-bf-vk` from the LLM connection's `extraHeaders`. Because the hub reconciler owns that connection (D4), the online key exists only on the hub and never on a spoke. The judge never uses an agent's key. Because `is_vk_mandatory` is `false`, the validation plan checks that judge calls are attributed to that key |
 | Reconciler's read access | Kubernetes RBAC cannot scope a `list`/`watch` by label, so watching `evaluation.oap.io/agent` ConfigMaps needs cluster-wide ConfigMap read. The ClusterRole grants only `get`/`list`/`watch` on `configmaps`, and the reconciler always lists with the label selector. Every instance gets that ClusterRole, the hub included, because the hub runs agents too. If that read is too broad, the CRD option in D4 removes it |
 | A spoke changing how the fleet is scored | Judge prompts, scales and the judge connection are project-wide, so a single owner writes them (D4). A spoke resolves evaluators by name and never `POST`s one (there is no `PATCH` at the pin), which is what stops an out-of-date cluster from rolling a prompt back for every other cluster. The shared project key pair would allow the write, so the guarantee is the spoke code path, not the credential, and the validation plan checks it |
 | **Credential blast radius: every spoke holds a project-wide key** | Stated plainly because the control above is weaker than it reads. There is ONE Langfuse API key pair for the shared project, and every cluster running this addon has a copy of it in its own `agent-evaluation` namespace. That key pair is authorised to write every object in the project — the catalog evaluators, the judge LLM connection and **every other cluster's** evaluation rules. The only thing stopping a spoke from doing so is `allow_project_writes=False` in its own process (`langfuse_client._require_project_write`), i.e. a flag in code it is itself running. So the separation is a correctness guarantee against *bugs and drift*, not a security boundary against a *compromised spoke*: anyone who can read that Secret, or run code in that namespace, has full write access to how the entire fleet is scored. Per-cluster scoped keys are the real fix and Langfuse has no per-project-scope key model at `v4.72.0`; until then, treat the reconciler namespace on every cluster as carrying a fleet-wide credential, and note that the `oap-<owner token>-` naming limits *accidental* cross-cluster deletion but not deliberate use of the key |
+| Harness judge key (§4b) | A separate, harness-only virtual key **per cluster**, minted by that cluster's reconciler in that cluster's Bifrost through the in-cluster management API, which is open only while Bifrost governance auth is off. Scoped to the judge model, with its own budget and rate limit, stored in Secret `agent-evaluation-harness-judge-key` in the `agent-evaluation` namespace only and mounted as a file by the harness Jobs. Never in Secrets Manager, never in git, never in an agent namespace. Fail closed: with `required: true` no run starts without it |
+| Harness RBAC (§4b, only with `harness.enabled`) | Writes are namespaced to the release namespace: the reconciler's Role creates/deletes `batch` Jobs, deletes ConfigMaps, creates Secrets and gets/updates only `agent-evaluation-harness-judge-key`; the runner ServiceAccount can only **create** ConfigMaps there (no read, no update). The ClusterRole gains `get`/`list`/`watch` on `argoproj.io` `rollouts`, read only. Nothing new in any agent namespace |
+| Harness traffic reaching live pods | On a first deploy, and after promotion, `-preview` selects the same pods as `-stable`, so harness cases reach pods serving users. Report mode blocks nothing, cases carry no caller identity (so the base image gives each a fresh session with no memory), and the traffic is marked and excluded from online evaluation (§4b). An agent with `PROPAGATE_CALLER_TOKEN=true` has no caller token to forward to its MCP tools during a harness run |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
 | Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |
 | A developer weakening evaluation | The developer controls only `enabled`, `strictness`, `coverage` or `sampling`, the `judge` alias and evaluator names. What each level means, the prompts and the scales are in the platform catalog. A `low` strictness is visible on every report (D5) |
@@ -1200,7 +1441,7 @@ on the hub against the `v2.7.0` the AgentCore `OnlineEvaluationConfig` needs.
 |---|---|---|
 | **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<owner token>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check | **Done** |
 | **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged | Blocked on provider `v2.7.0` |
-| **3** | Offline evaluation gate: a dataset Job (Langfuse experiment target, or RAGAS reference-based metrics) run against the blue-green preview before promotion, read by an Argo Rollouts analysis step | Roadmap |
+| **3** | Report mode (#137): a `harness` block on `agent`; a platform-catalog dataset run against the blue-green preview on every new revision (the first one as a baseline) by a Job in the platform namespace; an `expected-answer` judge on a per-cluster minted Bifrost key; `oap_agent_harness_*` metrics, a dashboard row and two pipeline alerts; harness traffic excluded from online evaluation (§4b). Gate mode and the Argo Rollouts `AnalysisTemplate` deferred | Report mode: in review |
 | **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<owner token>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges | Roadmap |
 
 ---
@@ -1225,7 +1466,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A per-evaluator `strictness` override changes the reported `pass_threshold` and creates **no** additional rule
 - [x] The `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import, via grafana-operator
 
-### Covered by unit tests (`pytest tests/`, 75 tests, no cluster needed)
+### Covered by unit tests (`pytest tests/`, 171 tests, no cluster needed)
 
 - [x] Two agents with the same `coverage` but different `strictness` share one rule, and their pass ratios use different thresholds
 - [x] Deleting one agent's Application removes its tag from the rule; deleting the last agent removes the rule
@@ -1234,6 +1475,11 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A spoke reconciler creates and updates no evaluator and no LLM connection — enforced in `langfuse_client`, so it is a property of the program rather than of a credential
 - [x] A spoke whose catalog has an evaluator the hub lacks records an Event on that agent's ConfigMap and skips only that evaluator
 - [x] A successful-but-empty evaluator catalog leaves this cluster's rules untouched and fails the pass, instead of deleting and recreating every rule
+- [x] Harness (§4b): every online rule carries the `source:harness` and `oap-harness-` exclusion clauses, and existing rules converge with one PATCH
+- [x] Harness: one Job per (agent, revision, dataset) with a deterministic name, a first revision runs as a baseline, nothing re-runs after a restart, a superseded run is deleted and publishes nothing, history is pruned
+- [x] Harness: no Job starts while a required judge key is unavailable; the key is minted with a config-hash name and stale keys are deleted
+- [x] Harness: a dataset with zero cases or too many cases, an unparseable judge reply and a failed A2A call are run or case errors, never passes; an errored run publishes no counts
+- [x] Harness: the dataset and check prompt the chart ships load through the reconciler's own loaders, including the `checks.yaml` rendered by `helm template` (`tests/test_harness_chart_files.py`)
 
 ### Not yet exercised
 
@@ -1247,6 +1493,10 @@ only by a unit test, and from one not yet exercised at all.
 - [ ] A second agent turning on evaluation appears in the dashboard's `agent` list with no dashboard change
 - [ ] An idle agent shows no pass ratio (not 0%), and stopping the reconciler turns the data-age panel amber and fires the staleness alert
 - [ ] The metrics loop stays within the `public-api-metrics` rate limit at the expected agent count and `metrics.intervalSeconds`
+- [ ] Harness, on a cluster: a new Rollout revision creates exactly one Job in `agent-evaluation`, the Job reaches `<agent>-preview` and writes its result ConfigMap, and `oap_agent_harness_*` appear on `/metrics` and in the dashboard row
+- [ ] Harness: the Langfuse rule API persists the two exclusion clauses unchanged, and a harness trace (`source:harness`, session `oap-harness-*`) gets no online score
+- [ ] Harness: the reconciler mints the judge key through Bifrost's management API, `allowed_models` matches the judge model id, and the judge calls appear in Bifrost under that key
+- [ ] Harness: after promotion `-preview` still selects the newest ReplicaSet, so a late run reaches the right revision
 
 ---
 

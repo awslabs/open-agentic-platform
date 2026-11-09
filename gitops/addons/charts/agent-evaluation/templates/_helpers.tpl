@@ -65,3 +65,18 @@ the old prompt — which is the opposite of "a prompt change reaches every clust
 {{- end -}}
 {{- join "\n" $parts | sha256sum -}}
 {{- end -}}
+
+{{/*
+Same idea for the harness: a dataset, a check prompt or a harness value change
+restarts the reconciler, which re-validates the checks at startup and re-reads
+the shipped dataset names. Used only when harness.enabled is true.
+*/}}
+{{- define "agent-evaluation.harnessChecksum" -}}
+{{- $root := . -}}
+{{- $parts := list (toJson .Values.harness) -}}
+{{- range $path, $_ := .Files.Glob "files/harness/**" -}}
+{{- $parts = append $parts $path -}}
+{{- $parts = append $parts (($root.Files.Get $path) | default "") -}}
+{{- end -}}
+{{- join "\n" $parts | sha256sum -}}
+{{- end -}}

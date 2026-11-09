@@ -101,6 +101,76 @@ and real.
 | `AgentEvaluationReconcileErrors` | Langfuse calls failing for 30m |
 | `AgentEvaluationRuleBudgetHigh` | The shared project is at 80% of `maxActiveRules` |
 | `AgentEvaluationJudgeKeyMissing` | Hub only: judge spend is un-budgeted |
+| `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m |
+| `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; with `required: true` no run starts while it fires |
+
+## Harness (report mode)
+
+The pre-promotion harness from issue #137, off by default. With
+`harness.enabled: true` the reconciler runs an agent's `harness` dataset against
+every new revision's `<agent>-preview` Service and publishes
+`oap_agent_harness_*`. It **never blocks or delays a promotion**. Design and
+contracts: [§4b](../../../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
+
+Nothing below renders while `harness.enabled` is false; the only change to the
+disabled render is the `HARNESS_ENABLED: "false"` env var.
+
+| Renders | What |
+|---|---|
+| ConfigMap `agent-evaluation-harness-catalog` | `checks.yaml`: `harness.checks` with each prompt from `files/harness/checks/`. Fails the render on a missing prompt or a `casePassScore` outside [0, 1] |
+| ConfigMap `agent-evaluation-harness-datasets` | every `files/harness/datasets/*.yaml`. Fails the render when there is none |
+| Deployment | the `HARNESS_*` env, both ConfigMaps mounted read-only, and a `checksum/harness` annotation so a dataset or prompt change restarts the reconciler |
+| RBAC | see below |
+| PrometheusRule | `AgentHarnessStale`, `AgentHarnessJudgeKeyMissing` (where the CRD exists) |
+
+The Grafana dashboard always contains the "Harness" row; it is empty for agents
+with no harness.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `harness.intervalSeconds` | `60` | Harness loop interval |
+| `harness.maxConcurrentJobs` | `2` | Harness Jobs at once on this cluster |
+| `harness.historyLimit` | `3` | Finished runs kept per agent |
+| `harness.caseConcurrency` | `2` | Cases in flight within one run |
+| `harness.caseTimeoutSeconds` | `120` | Per case |
+| `harness.readyTimeoutSeconds` | `600` | Wait for the preview's agent card |
+| `harness.runTimeoutSeconds` | `1800` | Whole run |
+| `harness.maxCases` | `50` | Larger datasets are a run error |
+| `harness.judge.alias` | `""` | Judge alias; empty is `judge.defaultAlias` |
+| `harness.judge.virtualKey.*` | see `values.yaml` | The harness judge key: `mint`, `required`, `secretRef`, `bifrostAdminUrl`, `allowedModels`, `budget`, `rateLimit` |
+| `harness.checks` | `expected-answer` (0.7) | Check prompt file and per-case pass score |
+| `harness.runner.resources` | 50m / 128Mi, 256Mi limit | The Job container |
+
+**RBAC.** The ClusterRole gains read-only `get`/`list`/`watch` on `argoproj.io`
+`rollouts`. Everything else is a Role in the release namespace: the reconciler
+creates and deletes the harness Jobs, deletes their result ConfigMaps, creates
+Secrets and gets/updates only `harness.judge.virtualKey.secretRef`. The Jobs run
+as a separate ServiceAccount, `agent-evaluation-harness-runner`, which can only
+create ConfigMaps in this namespace. Nothing new is granted in any agent
+namespace.
+
+**Judge key.** A harness-only Bifrost virtual key, separate from the ONLINE judge
+key in `judge.virtualKey` (which stays hub-only). The reconciler mints it in
+**this** cluster's Bifrost through the management API, because a virtual key is
+only valid in the Bifrost that minted it, and writes it to the
+`secretRef` Secret, which the Jobs mount. There is no Secrets Manager entry and
+nothing to do on the hub. With `required: true` (the default) no run starts
+without it. Minting needs Bifrost governance auth to be off in-cluster, as it is
+today; when that changes, set `mint: false` and provide the Secret another way.
+
+**Datasets.** `files/harness/datasets/<name>.yaml`, referenced by name from an
+agent's `harness.dataset`. The shipped `example-smoke-v1` is an example, not a
+golden set.
+
+**Enable it** per cluster through the overlay values file the registry entry
+already reads, `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`:
+
+```yaml
+harness:
+  enabled: true
+```
+
+The image must be one that contains the harness (`0.3.0` or later).
 
 ## Rule budget
 

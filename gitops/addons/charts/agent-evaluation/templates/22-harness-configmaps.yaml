@@ -1,0 +1,63 @@
+{{- /*
+The harness catalog and datasets (issue #137, report mode). Rendered only when
+harness.enabled is true.
+Both are platform policy, like the evaluator catalog: the check prompts and the
+datasets live in this chart, so changing a case or a prompt is a reviewed chart
+change. They are mounted into the reconciler (which validates the checks at
+startup and rejects a declaration naming a dataset that is not shipped) and
+into every harness Job in this namespace.
+The check prompts live under files/harness/checks/, NOT files/evaluators/, and
+are not in .Values.catalog, so the hub never publishes them to Langfuse.
+Prompt files use literal double-brace placeholders (input, expected, output):
+.Files.Get returns them unrendered and the runner substitutes them.
+*/ -}}
+{{- if .Values.harness.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-evaluation-harness-catalog
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+data:
+  checks.yaml: |
+    # Rendered by the agent-evaluation chart. Do not edit in the cluster: the
+    # next Argo sync overwrites it. Edit the chart values instead.
+    checks:
+      {{- $root := . }}
+      {{- if not .Values.harness.checks }}
+      {{- fail "agent-evaluation: harness.enabled is true but harness.checks is empty; a harness run needs at least the expected-answer check." }}
+      {{- end }}
+      {{- range $name, $spec := .Values.harness.checks }}
+      {{- $score := $spec.casePassScore }}
+      {{- if not (or (kindIs "float64" $score) (kindIs "int" $score) (kindIs "int64" $score)) }}
+      {{- fail (printf "agent-evaluation: harness check %q casePassScore must be a number in [0, 1], got %v" $name $score) }}
+      {{- end }}
+      {{- if or (lt (float64 $score) 0.0) (gt (float64 $score) 1.0) }}
+      {{- fail (printf "agent-evaluation: harness check %q casePassScore must be a number in [0, 1], got %v" $name $score) }}
+      {{- end }}
+      {{- $file := printf "files/harness/checks/%s" ($spec.prompt | default "") }}
+      {{- $prompt := $root.Files.Get $file }}
+      {{- if not (trim $prompt) }}
+      {{- fail (printf "agent-evaluation: harness check %q names prompt file %q, which is empty or missing from the chart (files/harness/checks/)." $name ($spec.prompt | default "")) }}
+      {{- end }}
+      {{ $name }}:
+        casePassScore: {{ $score }}
+        prompt: |
+          {{- $prompt | nindent 10 }}
+      {{- end }}
+---
+{{- $datasets := .Files.Glob "files/harness/datasets/*.yaml" }}
+{{- if not $datasets }}
+{{- fail "agent-evaluation: harness.enabled is true but the chart ships no dataset under files/harness/datasets/*.yaml; every harness declaration would be rejected as UnknownDataset." }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-evaluation-harness-datasets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+data:
+  {{- ($datasets).AsConfig | nindent 2 }}
+{{- end }}
