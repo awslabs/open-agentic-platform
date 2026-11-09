@@ -361,6 +361,7 @@ class FakeCore:
                 name=meta["name"],
                 namespace=meta["namespace"],
                 labels=dict(meta.get("labels") or {}),
+                annotations=dict(meta.get("annotations") or {}),
             ),
             data=dict(body.get("data") or {}),
         )

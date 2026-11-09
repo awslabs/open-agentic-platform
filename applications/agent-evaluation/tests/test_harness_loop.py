@@ -51,9 +51,11 @@ class FakeBifrost:
         self.value = value
         self.fail = fail
         self.calls = []
+        self.known = []
 
-    def ensure_judge_key(self, models, *args):
+    def ensure_judge_key(self, models, *args, known=None):
         self.calls.append(tuple(models))
+        self.known.append(known)
         if self.fail:
             raise BifrostAdminError("bifrost down")
         return self.value
@@ -347,6 +349,22 @@ def test_secret_written_only_on_change(settings, harness_settings, catalog, metr
     loop, f = build(settings, harness_settings, catalog, metrics, [])
     loop.run_once()
     loop.run_once()
+    assert f.core.secret_writes == ["create"]
+
+
+def test_secret_value_is_offered_back_to_bifrost_after_restart(
+    settings, harness_settings, catalog, metrics
+):
+    loop, f = build(settings, harness_settings, catalog, metrics, [])
+    loop.run_once()
+    secret = f.core.secrets[(PLATFORM_NS, "agent-evaluation-harness-judge-key")]
+    key_name = secret.metadata.annotations["harness.oap.io/judge-key-name"]
+    assert key_name.startswith("oap-harness-judge-")
+    # A new process (fresh BifrostAdmin, same Secret) passes the stored pair in.
+    bifrost = FakeBifrost()
+    restarted, _ = build(settings, harness_settings, catalog, metrics, [], fakes=f, bifrost=bifrost)
+    restarted.run_once()
+    assert bifrost.known == [(key_name, "sk-bf-judge")]
     assert f.core.secret_writes == ["create"]
 
 

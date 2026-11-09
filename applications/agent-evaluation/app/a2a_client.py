@@ -103,15 +103,16 @@ def send_message(
     if not isinstance(payload, dict):
         raise AgentCallError("not-json", "the reply is not a JSON object")
 
-    if "error" in payload:
-        error = payload["error"]
-        if payload.get("jsonrpc") == "2.0" and isinstance(error, dict):
-            raise AgentCallError(
-                "jsonrpc-error",
-                f"code {error.get('code')}: {str(error.get('message', ''))[:200]}",
-            )
-        if "result" not in payload:
-            raise AgentCallError("error-payload", str(error)[:200])
+    # Any error is a case error, even next to a result: a reply that says it
+    # failed is never scored.
+    error = payload.get("error")
+    if payload.get("jsonrpc") == "2.0" and isinstance(error, dict):
+        raise AgentCallError(
+            "jsonrpc-error",
+            f"code {error.get('code')}: {str(error.get('message', ''))[:200]}",
+        )
+    if error or ("error" in payload and "result" not in payload):
+        raise AgentCallError("error-payload", str(error)[:200])
 
     result = payload.get("result")
     if not isinstance(result, dict):

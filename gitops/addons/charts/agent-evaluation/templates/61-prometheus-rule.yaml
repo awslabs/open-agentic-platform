@@ -132,8 +132,10 @@ spec:
               datasets, so harness results on the dashboard are stale. Usual
               causes: the Kubernetes API refusing the reconciler's Job or Rollout
               calls (check oap_agent_eval_errors_total{loop="harness"}), the
-              required harness judge key being unavailable (see
-              AgentHarnessJudgeKeyMissing), or the reconciler not running.
+              required harness judge key being unavailable, or the reconciler
+              not running. A pass without a required judge key does not count
+              as complete, so this alert also follows AgentHarnessJudgeKeyMissing;
+              when both fire, fix the key first.
         - alert: AgentHarnessJudgeKeyMissing
           expr: max by (cluster) (oap_agent_harness_judge_key_present) == 0
           for: 30m

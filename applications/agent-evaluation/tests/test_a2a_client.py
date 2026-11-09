@@ -79,6 +79,15 @@ def test_message_result_returns_text():
     [
         ({"jsonrpc": "2.0", "id": "x", "error": {"code": -32603, "message": "boom"}}, "jsonrpc-error"),
         ({"error": "model unavailable"}, "error-payload"),
+        # An error next to a result is still an error, with or without jsonrpc 2.0.
+        (
+            {"jsonrpc": "2.0", "id": "x", "error": "boom", "result": {"kind": "message", "parts": [{"kind": "text", "text": "ok"}]}},
+            "error-payload",
+        ),
+        (
+            {"error": {"code": 1}, "result": {"kind": "message", "parts": [{"kind": "text", "text": "ok"}]}},
+            "error-payload",
+        ),
         (
             {"jsonrpc": "2.0", "id": "x", "result": {"kind": "task", "status": {"state": "failed"}}},
             "task-not-completed",
