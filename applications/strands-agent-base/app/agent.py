@@ -37,7 +37,7 @@ except ImportError:
     # the value as of strands-agents 1.48.0.
     _AGENT_CARD_CONTEXT_ID = "__agent_card__"
 
-from .config import config
+from .config import config, trace_source
 from .tool_executor import BoundedToolExecutor
 from .identity import (
     CALLER_IDENTITY_HEADER,
@@ -570,6 +570,13 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 # tags=source:rca vs source:chat in one click, which neither session_id nor
 # name filtering could do before (session_id was empty and untagged).
 #
+# The agent harness sets the contextId to "oap-harness-<revision>-<caseId>",
+# which tags the trace source:harness. Offline harness traffic must not be
+# scored by online (continuous) evaluation: it would mix test cases into the
+# production pass ratios. The evaluation rules exclude source:harness, and also
+# exclude the session id prefix so images older than this tag are covered too.
+# The prefixes and the mapping live in config.trace_source.
+#
 # Memory for that autonomous path: the bridge posts to the agent's Service
 # directly (see the readiness note near _mcp_server_name), not through the gateway,
 # so it carries no X-Forwarded-User. Such a request fails closed: no long-term
@@ -577,7 +584,7 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 # contextId. A bridge that needs either must call through the gateway with its own
 # ServiceAccount token, which the gateway turns into a stable subject.
 def _trace_attributes(session_id: str, actor_id: str) -> dict:
-    source = "rca" if (session_id or "").startswith("incident-") else "chat"
+    source = trace_source(session_id)
     tags = [f"source:{source}", config.AGENT_NAME]
     # Cluster-scoped identity for continuous agent evaluation: the evaluation
     # rules filter on this tag, and the reports group by it. Added ALONGSIDE the
