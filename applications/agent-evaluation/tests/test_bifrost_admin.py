@@ -92,3 +92,36 @@ def test_http_error_is_an_error():
     respx.get(KEYS).mock(return_value=httpx.Response(503))
     with httpx.Client() as client, pytest.raises(BifrostAdminError):
         admin(client).ensure_judge_key(*ARGS)
+
+
+@respx.mock
+def test_unreadable_value_reuses_the_secret_instead_of_reminting():
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(200, json={"virtual_keys": [{"id": "vk1", "name": NAME}]})
+    )
+    delete = respx.delete(f"{KEYS}/vk1")
+    create = respx.post(KEYS)
+    with httpx.Client() as client:
+        value = admin(client).ensure_judge_key(*ARGS, known=(NAME, "sk-bf-stored"))
+    assert value == "sk-bf-stored"
+    assert not delete.called
+    assert not create.called
+
+
+@respx.mock
+def test_unreadable_value_with_a_secret_for_another_key_is_reminted():
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(200, json={"virtual_keys": [{"id": "vk1", "name": NAME}]})
+    )
+    delete = respx.delete(f"{KEYS}/vk1").mock(return_value=httpx.Response(200, json={}))
+    respx.post(KEYS).mock(
+        return_value=httpx.Response(
+            200, json={"virtual_key": {"id": "vk2", "name": NAME, "value": "sk-bf-new"}}
+        )
+    )
+    with httpx.Client() as client:
+        value = admin(client).ensure_judge_key(
+            *ARGS, known=("oap-harness-judge-deadbeef", "sk-bf-stored")
+        )
+    assert value == "sk-bf-new"
+    assert delete.called

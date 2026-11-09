@@ -139,9 +139,18 @@ class BifrostAdmin:
         budget_reset: str,
         rl_requests: int,
         rl_reset: str,
+        known: tuple[str, str] | None = None,
     ) -> str:
-        """Return the value of the judge key for this configuration, minting it if needed."""
+        """Return the value of the judge key for this configuration, minting it if needed.
+
+        `known` is (name, value) as last written to the judge-key Secret. When
+        the list call returns no readable value, a matching `known` is reused,
+        so a restart neither resets the key's budget nor breaks running Jobs
+        that mount the current value.
+        """
         name = vk_name(models, budget_usd, budget_reset, rl_requests, rl_reset)
+        if known and known[0] == name and str(known[1]).startswith(KEY_VALUE_PREFIX):
+            self._minted.setdefault(name, known[1])
         keys = self.list_harness_keys()
 
         value = ""
@@ -154,8 +163,8 @@ class BifrostAdmin:
             elif name in self._minted:
                 value = self._minted[name]
             else:
-                # Ours by name but its value is not readable: replace it rather
-                # than run without a key. Happens at most once per process.
+                # Ours by name but its value is not readable here or in the
+                # Secret: replace it rather than run without a key.
                 logger.warning(
                     "harness judge key %s has no readable value; replacing it", name
                 )

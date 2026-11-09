@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from kubernetes import client
@@ -28,6 +29,14 @@ LABEL_SELECTOR = "harness.oap.io/agent"
 VALID_MODES = ("report",)
 
 DEFAULT_PREVIEW_PORT = 8083
+
+# Both values come from a team-writable ConfigMap and end up in a platform Job:
+# `agent` in its labels and env, `previewService` in its target URL. Only plain
+# in-namespace names are accepted, so a declaration cannot point the Job at
+# another host or make Job creation fail for everyone.
+MAX_LABEL_LEN = 63
+DNS1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+DNS1035_LABEL_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
 
 
 class HarnessDeclarationError(Exception):
@@ -59,6 +68,15 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
     agent = data.get("agent") or (meta.labels or {}).get(LABEL_SELECTOR)
     if not agent:
         raise HarnessDeclarationError(f"{where}: no agent name in data or label")
+    if (
+        not isinstance(agent, str)
+        or len(agent) > MAX_LABEL_LEN
+        or not DNS1123_LABEL_RE.match(agent)
+    ):
+        raise HarnessDeclarationError(
+            f"{where}: agent {agent!r} is not a DNS-1123 label of at most "
+            f"{MAX_LABEL_LEN} characters"
+        )
 
     dataset = data.get("dataset")
     if (
@@ -111,6 +129,13 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
     if not 0 < preview_port < 65536:
         raise HarnessDeclarationError(f"{where}: previewPort {preview_port} is out of range")
 
+    preview_service = data.get("previewService") or f"{agent}-preview"
+    if len(preview_service) > MAX_LABEL_LEN or not DNS1035_LABEL_RE.match(preview_service):
+        raise HarnessDeclarationError(
+            f"{where}: previewService {preview_service!r} is not a Service name "
+            f"(a DNS-1035 label of at most {MAX_LABEL_LEN} characters) in this namespace"
+        )
+
     return HarnessDeclaration(
         agent=agent,
         namespace=meta.namespace,
@@ -119,7 +144,7 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
         checks=tuple(dict.fromkeys(checks)),
         threshold=threshold,
         mode=mode,
-        preview_service=data.get("previewService") or f"{agent}-preview",
+        preview_service=preview_service,
         preview_port=preview_port,
     )
 

@@ -1228,6 +1228,11 @@ namespace; discovered **only** by the label.
 | `previewService` | `<agent>-preview`, the blue-green preview Service |
 | `previewPort` | `8083` |
 
+The ConfigMap is team-writable and its values reach a platform Job, so the
+reconciler accepts `agent` only as a DNS-1123 label and `previewService` only as
+a Service name (a DNS-1035 label, no dots or slashes) of at most 63 characters:
+a declaration cannot point the Job at another host or namespace.
+
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
 `UnknownDataset`) and skipped; it never stops the pass.
@@ -1285,15 +1290,18 @@ The two rules of Contract 2 bind these too:
   series. An errored run publishes `info{status="error"}`, the threshold and the
   timestamp, and **no** counts or pass ratio, so an outage never reads as a 0%
   revision.
-- **Not understood is an error.** A result the reconciler cannot parse fails the
-  pass and publishes nothing for it.
+- **Not understood is an error.** A result the reconciler cannot parse is
+  published as an errored run (`info{status="error"}`, threshold, timestamp) with
+  no counts or pass ratio. It does not fail the pass.
 
 Loop health is the existing pair with `loop="harness"`:
 `oap_agent_eval_last_success_timestamp_seconds` and `oap_agent_eval_errors_total`.
 The harness loop is deliberately **not** in `/readyz`: an unready pod drops out
 of the metrics Service and would hide every `oap_agent_eval_*` series. The
 `AgentHarnessStale` alert covers it instead, and `AgentHarnessJudgeKeyMissing`
-reports a missing judge key. Like the rest of the chart's alerts these are
+reports a missing judge key. A pass without a required judge key does not count
+as complete, so `AgentHarnessStale` also follows a missing key; fix the key first.
+Like the rest of the chart's alerts these are
 pipeline alerts; there is no alert on the pass ratio.
 
 ### Harness traffic is marked and excluded from online evaluation
@@ -1397,7 +1405,11 @@ Bifrost through the management API, following the "Job/API approach" in
 (`harness.judge.virtualKey.budget`) and a rate limit, written on change, stale
 ones deleted. The value goes into Secret `agent-evaluation-harness-judge-key` in
 the reconciler's namespace, which every Job mounts as a file and sends as
-`x-bf-vk`. No Secrets Manager entry and no hub change are needed. The ONLINE
+`x-bf-vk`. The Secret's `harness.oap.io/judge-key-name` annotation records which
+key the value belongs to; if Bifrost's list call does not return key values, a
+restarted reconciler reuses that value instead of re-minting the key, so the
+budget is not reset and running Jobs keep a valid key. No Secrets Manager entry
+and no hub change are needed. The ONLINE
 judge key stays hub-only, as D4 decided.
 
 - **Fail closed:** with `harness.judge.virtualKey.required: true` (the default)

@@ -483,7 +483,7 @@ harness:
 | `dataset` | required | Platform catalog dataset name (lowercase, hyphens, max 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and not accepted yet. |
 | `checks` | `[expected-answer]` | How each case is judged. `expected-answer` is the only check for now; an empty list is rejected. |
 | `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1), reported next to the score. |
-| `mode` | required | `report` only: score the revision and promote anyway. `gate` is rejected at admission until the gating phase ships. |
+| `mode` | `report` (the only value) | `report` only: score the revision and promote anyway. `gate` is rejected at admission until the gating phase ships. |
 
 Report mode never blocks or delays promotion; the `rolloutStrategy` settings
 above behave exactly as without the harness. On a first deploy the preview and

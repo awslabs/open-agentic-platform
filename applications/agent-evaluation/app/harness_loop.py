@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from kubernetes.client.rest import ApiException
 
 from . import events
-from .bifrost_admin import BifrostAdminError
+from .bifrost_admin import BifrostAdminError, vk_name
 from .config import Catalog, Settings
 from .datasets import available_datasets
 from .harness_config import (
@@ -65,6 +65,8 @@ ANN_THRESHOLD = "harness.oap.io/threshold"
 ANN_CHECKS = "harness.oap.io/checks"
 ANN_MODE = "harness.oap.io/mode"
 ANN_JUDGE_MODEL = "harness.oap.io/judge-model"
+# On the judge-key Secret: the Bifrost key name its value belongs to.
+ANN_JUDGE_KEY_NAME = "harness.oap.io/judge-key-name"
 
 TRIGGER_FIRST = "first-revision"
 TRIGGER_NEW = "new-revision"
@@ -147,25 +149,32 @@ class HarnessLoop:
     def judge_model(self) -> str:
         return self._catalog.judge_model(self._h.judge_alias or self._catalog.judge_default)
 
-    def _secret_value(self) -> str | None:
-        """Current key value in the Secret; None when the Secret does not exist."""
+    def _secret_state(self) -> tuple[str | None, str]:
+        """(value, key name) in the Secret; value is None when the Secret does not exist."""
         try:
             secret = self._core.read_namespaced_secret(
                 name=self._h.judge_key_secret, namespace=self._s.namespace
             )
         except ApiException as exc:
             if exc.status == 404:
-                return None
+                return None, ""
             raise
+        meta = getattr(secret, "metadata", None)
+        key_name = str((getattr(meta, "annotations", None) or {}).get(ANN_JUDGE_KEY_NAME, ""))
         raw = (getattr(secret, "data", None) or {}).get(JUDGE_KEY_FILE, "")
         try:
-            return base64.b64decode(raw).decode("utf-8") if raw else ""
+            value = base64.b64decode(raw).decode("utf-8") if raw else ""
         except (ValueError, UnicodeDecodeError):
-            return ""
+            value = ""
+        return value, key_name
 
-    def _write_secret(self, value: str) -> None:
-        current = self._secret_value()
-        if current == value:
+    def _secret_value(self) -> str | None:
+        """Current key value in the Secret; None when the Secret does not exist."""
+        return self._secret_state()[0]
+
+    def _write_secret(self, value: str, key_name: str) -> None:
+        current, current_name = self._secret_state()
+        if current == value and current_name == key_name:
             return
         body = {
             "apiVersion": "v1",
@@ -175,6 +184,7 @@ class HarnessLoop:
                 "name": self._h.judge_key_secret,
                 "namespace": self._s.namespace,
                 "labels": {"app.kubernetes.io/managed-by": MANAGED_BY},
+                "annotations": {ANN_JUDGE_KEY_NAME: key_name},
             },
             "data": {JUDGE_KEY_FILE: base64.b64encode(value.encode()).decode()},
         }
@@ -196,15 +206,18 @@ class HarnessLoop:
         if self._bifrost is None:
             return False
         models = self._h.judge_allowed_models or (self.judge_model,)
+        config = (
+            models,
+            self._h.judge_budget_usd,
+            self._h.judge_budget_reset,
+            self._h.judge_rate_limit_requests,
+            self._h.judge_rate_limit_reset,
+        )
         try:
-            value = self._bifrost.ensure_judge_key(
-                models,
-                self._h.judge_budget_usd,
-                self._h.judge_budget_reset,
-                self._h.judge_rate_limit_requests,
-                self._h.judge_rate_limit_reset,
-            )
-            self._write_secret(value)
+            current, current_name = self._secret_state()
+            known = (current_name, current) if current and current_name else None
+            value = self._bifrost.ensure_judge_key(*config, known=known)
+            self._write_secret(value, vk_name(*config))
             return True
         except (BifrostAdminError, ApiException) as exc:
             # Never log the key; the exception messages carry none.
