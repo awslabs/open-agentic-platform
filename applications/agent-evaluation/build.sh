@@ -29,7 +29,7 @@ set -euo pipefail
 # how this drifted in the first place -- a build defaulting to a tag the chart
 # does not pull publishes to a tag nothing references, and the addon sits in
 # ImagePullBackOff looking like a registry or credentials problem.
-VERSION="${VERSION:-0.2.4}"
+VERSION="${VERSION:-0.3.0}"
 REGISTRY="${REGISTRY:-public.ecr.aws/z0a4o2j5}"
 IMAGE="agent-evaluation"
 PLATFORMS=("linux/arm64" "linux/amd64")

@@ -170,7 +170,7 @@ prometheus-operator-crds:
 # every spoke carries in oidc_issuer_url).
 agent-evaluation:
   namespace: agent-evaluation
-  defaultVersion: '0.1.0'
+  defaultVersion: '0.2.0'
   path: 'gitops/addons/charts/agent-evaluation'
   annotationsAppSet:
     # After langfuse (5) and otel-collector (6): the reconciler needs the seeded

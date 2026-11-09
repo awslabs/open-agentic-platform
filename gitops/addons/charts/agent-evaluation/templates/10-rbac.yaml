@@ -16,6 +16,18 @@ agent_platform: true), so it reconciles its own cluster's rules like any spoke.
 Events are namespaced and written into the agents' own namespaces, which is how
 a team sees "evaluator not published" with kubectl describe on their own
 ConfigMap and no access to platform logs.
+
+The harness (harness.enabled, off by default) adds, and nothing else renders
+without it:
+- cluster-wide READ of argoproj.io rollouts, to see an agent's current
+  revision (status.currentPodHash) and whether -preview already selects it.
+- a Role in THIS namespace only for the reconciler: create/delete the harness
+  Jobs, delete their result ConfigMaps, and write the one harness judge-key
+  Secret (create cannot be scoped by name in RBAC, get/update/patch are).
+- a separate ServiceAccount for the Job pods whose only grant is creating its
+  result ConfigMap in this namespace.
+Nothing new is granted in any agent namespace: the Jobs reach the agent over
+its -preview Service, not the Kubernetes API.
 */ -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -45,6 +57,12 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch", "get"]
+  {{- if .Values.harness.enabled }}
+  # Harness: read an agent's Rollout to detect a new revision. Read only.
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -60,3 +78,90 @@ subjects:
   - kind: ServiceAccount
     name: agent-evaluation-reconciler
     namespace: {{ .Release.Namespace }}
+{{- if .Values.harness.enabled }}
+---
+# Harness: the reconciler's writes, in this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-evaluation-harness
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  # One Job per agent revision; finished ones are pruned to harness.historyLimit
+  # and a superseded run is deleted.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Prune the Jobs' result ConfigMaps. get/list come from the ClusterRole.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["delete"]
+  # The harness judge key the reconciler mints in this cluster's Bifrost.
+  # create cannot be limited by resourceNames in RBAC, so it is a separate rule.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.harness.judge.virtualKey.secretRef | quote }}]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-evaluation-harness
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-evaluation-harness
+subjects:
+  - kind: ServiceAccount
+    name: agent-evaluation-reconciler
+    namespace: {{ .Release.Namespace }}
+---
+# The harness Job pods. Separate from the reconciler's account so a Job, which
+# handles agent output, holds none of the reconciler's grants.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  # Write its own <job>-result ConfigMap. create only: no read, no update, so
+  # a Job cannot read or overwrite the catalog or another run's result. Jobs run
+  # with backoffLimit 0, so a second write for the same run does not happen.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-evaluation-harness-runner
+subjects:
+  - kind: ServiceAccount
+    name: agent-evaluation-harness-runner
+    namespace: {{ .Release.Namespace }}
+{{- end }}

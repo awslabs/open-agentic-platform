@@ -34,8 +34,9 @@ image:
   # NOTE: this repository does not exist in the public registry yet -- it answers
   # NAME_UNKNOWN -- which is why agent_evaluation defaults to false in all three
   # environment overlays. 0.2.1-0.2.3 exist only in a private ECR used for
-  # testing. Publishing 0.2.4 publicly is the outstanding handoff ("Ask 2").
-  tag: "0.2.4"
+  # testing. 0.3.0 adds the report-mode harness (#137) and is not published
+  # anywhere yet; publishing it publicly is the outstanding handoff ("Ask 2").
+  tag: "0.3.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -60,7 +61,8 @@ langfuse:
   timeoutSeconds: 30
 
 # Only the hub instance uses the connection and key in this block: it owns the
-# judge LLM connection, so the judge virtual key never has to exist on a spoke.
+# judge LLM connection, so the ONLINE judge virtual key never has to exist on a
+# spoke. The harness judge key is separate and per cluster: see `harness` below.
 judge:
   # The judge an agent gets when it does not name one. Must be a key in `models`.
   defaultAlias: judge-default
@@ -236,6 +238,92 @@ catalog:
       input: input
       output: output
       tool_calls: tool_calls
+
+# The agent harness (Phase 3, issue #137), REPORT MODE ONLY. When an agent's
+# Rollout gets a new revision, the reconciler runs that agent's `harness`
+# dataset against its `<agent>-preview` Service and publishes the result as
+# oap_agent_harness_* metrics. See docs/architecture/agent-evaluation.md §4b.
+#
+# Report mode never blocks or delays a promotion: nothing reads the result back
+# into the Rollout. Gate mode and an Argo Rollouts AnalysisTemplate are deferred.
+#
+# Each run is one batch/v1 Job in THIS namespace (the agent-evaluation release
+# namespace), never in the agent's namespace, so no credential or RBAC reaches
+# an agent namespace.
+harness:
+  # Off by default. Nothing harness-specific renders while this is false.
+  enabled: false
+  # How often the harness loop looks for new revisions.
+  intervalSeconds: 60
+  # Harness Jobs allowed to run at once on this cluster. A new revision waits
+  # for a free slot; it is never dropped.
+  maxConcurrentJobs: 2
+  # Finished Jobs (and their result ConfigMaps) kept per agent. The newest run
+  # is what the metrics show; older ones are kept for `kubectl logs`.
+  historyLimit: 3
+  # Cases sent to the agent at once within one run.
+  caseConcurrency: 2
+  # Per-case limit for the agent's answer plus the judge's verdict.
+  caseTimeoutSeconds: 120
+  # How long a Job waits for the preview Service to answer the A2A agent card.
+  readyTimeoutSeconds: 600
+  # Hard limit for a whole run (the Job's activeDeadlineSeconds).
+  runTimeoutSeconds: 1800
+  # A dataset with more cases than this is a run error. Cases are never
+  # truncated, so a partial run cannot read as a result.
+  maxCases: 50
+  judge:
+    # A key in judge.models. Empty means judge.defaultAlias.
+    alias: ""
+    virtualKey:
+      # The HARNESS judge key, a separate key from the ONLINE judge key in
+      # `judge.virtualKey`, which stays hub-only.
+      #
+      # It is minted in THIS cluster's Bifrost by the reconciler through the
+      # in-cluster management API, because a Bifrost virtual key is only valid
+      # in the Bifrost that minted it and every cluster runs its own Bifrost.
+      # That is why the Secrets Manager + ExternalSecret pattern the Langfuse
+      # keys use cannot carry it: there is no Secrets Manager entry and no hub
+      # change. Config-as-code virtual keys are not used either: Bifrost
+      # v1.5.0 resolves `env.` references in virtual_keys only on the config
+      # merge path, not on a fresh store, and a literal value would be a
+      # credential in git.
+      #
+      # The minting call relies on governance auth being off in-cluster (the
+      # current Bifrost config). Set mint: false when a platform minter (#18)
+      # owns the Secret instead.
+      mint: true
+      # Fail closed: while the key is unavailable no harness run starts, an
+      # Event and oap_agent_harness_judge_key_present 0 report it, and the
+      # AgentHarnessJudgeKeyMissing alert fires. false runs the judge
+      # un-budgeted through Bifrost instead.
+      required: true
+      # Secret in this namespace the reconciler writes and every Job mounts.
+      secretRef: agent-evaluation-harness-judge-key
+      bifrostAdminUrl: http://bifrost.bifrost.svc.cluster.local:8080
+      # Models the key may call. Empty means only the resolved judge model.
+      allowedModels: []
+      budget:
+        maxLimitUsd: 20
+        resetDuration: 1M
+      rateLimit:
+        requestMaxLimit: 2000
+        requestResetDuration: 1h
+  # Harness checks. `prompt` names a file under files/harness/checks/. These are
+  # NOT part of `catalog`, so the hub never publishes them to Langfuse.
+  # A case passes when the judge score is >= casePassScore.
+  checks:
+    expected-answer:
+      prompt: expected-answer.md
+      casePassScore: 0.7
+  # The Job pod. It sends A2A requests and judge calls, so it stays small.
+  runner:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
 
 resources:
   requests:

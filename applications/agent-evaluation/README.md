@@ -46,6 +46,14 @@ Langfuse key pair would permit the write, so the program has to refuse it.
 | `project` | hub only | `RECONCILE_INTERVAL_SECONDS` | Publish catalog evaluators and the judge LLM connection |
 | `rules` | every instance | `RECONCILE_INTERVAL_SECONDS` | Diff this cluster's agents into evaluation rules |
 | `metrics` | every instance | `METRICS_INTERVAL_SECONDS` | Read score aggregates back and publish gauges |
+| `harness` | every instance, only with `HARNESS_ENABLED=true` | `HARNESS_INTERVAL_SECONDS` | Report-mode harness (#137): for each `<agent>-harness` declaration, start one Job per new Rollout revision in this namespace, publish its result as `oap_agent_harness_*`, prune old runs, and keep this cluster's harness judge key minted in Bifrost |
+
+The harness Job runs this same image as `python -m app.harness_runner`: it sends
+the dataset's cases to `<agent>-preview` over A2A, judges each answer through
+Bifrost and writes one `<job>-result` ConfigMap. The `harness` loop is not one of
+the loops `/readyz` waits for; its health is
+`oap_agent_eval_last_success_timestamp_seconds{loop="harness"}`. See
+[§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
 
 Each pass is a full diff, so a restart loses nothing and an error is recovered by
 the next pass rather than by a retry.
@@ -114,6 +122,41 @@ Credentials read from `CREDENTIALS_DIR`:
   `is_vk_mandatory: false`; the judge then runs un-budgeted, which is logged as a
   warning and published as `oap_agent_eval_judge_key_present 0`.
 
+### Harness (report mode)
+
+Read only when `HARNESS_ENABLED=true`; the chart sets every one of these from
+`harness.*` values.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HARNESS_ENABLED` | `false` | Turns the harness loop on |
+| `HARNESS_INTERVAL_SECONDS` | `60` | Harness loop interval |
+| `HARNESS_MAX_CONCURRENT_JOBS` | `2` | Harness Jobs running at once on this cluster |
+| `HARNESS_HISTORY_LIMIT` | `3` | Finished runs kept per agent |
+| `HARNESS_CHECKS_PATH` | `/etc/agent-evaluation/harness-checks/checks.yaml` | Check prompts, validated at startup (exit 2 on error) |
+| `HARNESS_DATASETS_DIR` | `/etc/agent-evaluation/harness-datasets` | Shipped datasets; an unknown name is an `UnknownDataset` Event |
+| `HARNESS_CATALOG_CONFIGMAP` | `agent-evaluation-harness-catalog` | Mounted into each Job |
+| `HARNESS_DATASETS_CONFIGMAP` | `agent-evaluation-harness-datasets` | Mounted into each Job |
+| `HARNESS_JOB_IMAGE` | — | **Required when enabled.** The Job image (the chart passes this image) |
+| `HARNESS_JOB_IMAGE_PULL_POLICY` | `IfNotPresent` | |
+| `HARNESS_RUNNER_SERVICE_ACCOUNT` | `agent-evaluation-harness-runner` | The Job's ServiceAccount |
+| `HARNESS_RUNNER_RESOURCES` | `{}` | JSON resources for the Job container |
+| `HARNESS_CASE_CONCURRENCY` | `2` | Cases in flight within one run |
+| `HARNESS_CASE_TIMEOUT_SECONDS` | `120` | Per case |
+| `HARNESS_READY_TIMEOUT_SECONDS` | `600` | Wait for the preview's A2A agent card |
+| `HARNESS_RUN_TIMEOUT_SECONDS` | `1800` | Job `activeDeadlineSeconds` |
+| `HARNESS_MAX_CASES` | `50` | More cases is a run error, never truncated |
+| `HARNESS_JUDGE_ALIAS` | catalog default | Judge alias from the catalog |
+| `HARNESS_JUDGE_KEY_MINT` | `true` | Mint the harness judge key in this cluster's Bifrost |
+| `HARNESS_JUDGE_KEY_REQUIRED` | `true` | Fail closed: no run without the key |
+| `HARNESS_JUDGE_KEY_SECRET` | `agent-evaluation-harness-judge-key` | Secret the key is written to, key `BIFROST_VIRTUAL_KEY` |
+| `BIFROST_ADMIN_URL` | `http://bifrost.bifrost.svc.cluster.local:8080` | Bifrost management API |
+| `HARNESS_JUDGE_BUDGET_USD` | `20` | Key budget |
+| `HARNESS_JUDGE_BUDGET_RESET` | `1M` | Budget period |
+| `HARNESS_JUDGE_RATE_LIMIT_REQUESTS` | `2000` | Key request limit |
+| `HARNESS_JUDGE_RATE_LIMIT_RESET` | `1h` | Rate-limit period |
+| `HARNESS_JUDGE_ALLOWED_MODELS` | the judge model | Comma-separated models the key may call |
+
 ## Endpoints
 
 `/metrics`, `/healthz` and `/readyz` on `METRICS_PORT`, served from the pod
@@ -143,6 +186,14 @@ Two behaviours worth knowing when reading the dashboard:
   `_errors_total{loop="metrics"}` rises and `_last_success_...` stops moving.
   A half-written gauge set would look like a quality collapse.
 
+With the harness on: `oap_agent_harness_cases`, `_passed`, `_failed`,
+`_case_errors`, `_pass_ratio`, `_threshold`, `_threshold_met`,
+`_last_run_timestamp_seconds` (labels: `cluster`, `namespace`, `agent`,
+`dataset`), `_info` (plus `revision`, `mode`, `judge_model`, `trigger`,
+`status`), `_judge_key_present` and `_runs_total{result}`. The same two rules
+apply: an agent with no finished run has no series, and an errored run publishes
+`_info{status="error"}`, the threshold and the timestamp, but no counts.
+
 ## Tests
 
 ```bash
@@ -151,7 +202,10 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 ```
 
 No cluster or Langfuse instance needed: the Kubernetes and Langfuse clients are
-faked in `tests/conftest.py`, and the loops' planning logic is pure.
+faked in `tests/conftest.py`, and the loops' planning logic is pure. 171 tests;
+`tests/test_harness_chart_files.py` also loads the chart's shipped harness
+dataset and check prompt, and renders the chart with `helm template` when `helm`
+is on the PATH (skipped otherwise).
 
 ## Build
 
@@ -188,7 +242,7 @@ aws ecr-public create-repository --repository-name agent-evaluation \
 
 # 4. Build and push both architectures.
 cd applications/agent-evaluation
-VERSION=0.2.4 REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
+VERSION=0.3.0 REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
 ```
 
 Then set `image.tag` in `gitops/addons/charts/agent-evaluation/values.yaml` to
@@ -206,7 +260,7 @@ aws ecr get-login-password --region us-west-2 \
   | podman login --username AWS --password-stdin \
       <account>.dkr.ecr.us-west-2.amazonaws.com
 
-VERSION=0.2.4 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+VERSION=0.3.0 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
 ```
 
 Point the addon at it with a values override rather than editing the chart
@@ -216,7 +270,7 @@ default, so the test registry never lands in git:
 helm upgrade --install agent-evaluation \
   gitops/addons/charts/agent-evaluation -n agent-evaluation \
   --set image.repository=<account>.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation \
-  --set image.tag=0.2.4 \
+  --set image.tag=0.3.0 \
   --set global.clusterName=<cluster> --set role=hub \
   --set langfuse.url=http://langfuse.langfuse.svc.cluster.local:3000 \
   --set langfuse.secretManagerKey=<prefix>-hub/langfuse-otel
