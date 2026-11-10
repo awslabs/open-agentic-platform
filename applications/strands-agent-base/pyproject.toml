@@ -1,6 +1,6 @@
 [project]
 name = "strands-agent-a2a"
-version = "1.0.0"
+version = "1.6.0"
 description = "Strands Agent with A2A protocol support"
 requires-python = ">=3.11"
 dependencies = [
