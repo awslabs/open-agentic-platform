@@ -16,12 +16,13 @@
 #                       context are already per caller, so this is the right
 #                       answer for Q&A, retrieval and read-only tools. Costs
 #                       nothing extra. Most agents should stay here.
-#   isolation: tools    RECOMMENDED FIRST STEP. The agent loop stays shared;
-#                       code execution, the filesystem and the browser run in a
-#                       per-session sandbox, claimed from the warm pool and
-#                       released on idle. A sandbox exists only while a tool
-#                       runs — and that is where the prompt-injection blast
-#                       radius actually is.
+#   isolation: tools    The agent loop stays shared; code execution, the
+#                       filesystem and the browser run in a per-session sandbox,
+#                       claimed from a warm pool and released on idle. A sandbox
+#                       exists only while a tool runs — and that is where the
+#                       prompt-injection blast radius actually is. Needs a tool
+#                       backend that claims the sandbox, which does not exist
+#                       yet — see example-agent-tools-isolation.yaml.
 #   isolation: session  This file. A dedicated sandbox instance per
 #                       (agent, user, session). Two users, or two sessions of
 #                       one user, never share a process, a filesystem or a VM.

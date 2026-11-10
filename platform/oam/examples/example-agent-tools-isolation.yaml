@@ -1,5 +1,12 @@
-# Per-session TOOL isolation — the recommended first step, and the one most
-# agents should actually use.
+# Per-session TOOL isolation — the cheapest place to put the boundary, and the
+# tier that needs the most still built.
+#
+# READ THIS FIRST. This file is a DECLARATION, not a working deployment. The
+# tier isolates TOOL EXECUTION, so something has to expose a tool backed by the
+# claimed sandbox, and nothing does yet (see the closing note). For the sandbox
+# used in a way that works today with nothing else built, read
+# example-sandbox-isolated.yaml, whose claim-driven pattern the Dark Factory has
+# run in production since V2.
 #
 # `isolation: session` (example-agent-session-isolation.yaml) gives every session
 # its own agent instance. That is the strongest tier and the most expensive one:

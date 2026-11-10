@@ -90,9 +90,19 @@ Application could deploy to. So the developer states the model and the platform 
 | Cost | lowest | low — a sandbox exists only while a tool runs | highest |
 | Good for | Q&A, retrieval, read-only tools | anything running model-generated code | regulated or multi-tenant work, long-lived per-user state |
 
-`tools` is the recommended first step, and not as a compromise: a shared agent loop with
-per-session code execution puts the boundary exactly where the prompt-injection blast radius is,
-for a fraction of a VM per user.
+`tools` puts the boundary in the cheapest useful place: a shared agent loop with per-session code
+execution covers where the prompt-injection blast radius actually is, for a fraction of a VM per
+user. It is also **the tier with the most still to build**, and earlier drafts of this design called
+it the recommended first step, which was wrong — it isolates TOOL EXECUTION, so it needs a tool
+backed by the claimed sandbox, and `code-interpreter-mcp` has only an AgentCore backend today (which
+brings its own isolation and does not touch this pool). §5.7 has the detail.
+
+**What works today, with nothing else built, is the sandbox claimed directly** — a caller creates a
+`SandboxClaim`, the operator binds a warm instance, the caller drives it and deletes the claim. That
+needs no MCP server, no code interpreter and no agent image change, and the Dark Factory has run
+exactly that shape on this platform since V2. Order of adoption, therefore: `type: sandbox` claimed
+by an orchestrator or your own service first; the agent `isolation` tiers when their agent-side half
+lands.
 
 ## 3. Mechanism
 
@@ -269,13 +279,37 @@ because the agent still works.
 
 ### 5.7 What is NOT implemented
 
-**The claim-and-route loop inside the agent.** This design delivers the declaration, the RBAC, the
-env and the sandbox to claim from. Resolving the session key from the JWT `sub` and the A2A
-`contextId`, creating the `SandboxClaim`, pinning subsequent requests to the bound instance and
-releasing on session end is agent-image work (`applications/strands-agent-base`), tracked as the
-follow-up to this change. Until an image does it, `sessionIsolationEnabled` stays `"false"` and the
-tiers are rejected rather than half-delivered. That is why the gate is a separate switch from the
-addon.
+**The claim-and-route loop.** This design delivers the declaration, the RBAC, the env and the
+sandbox to claim from. What consumes them is not written, and the two tiers need *different*
+consumers — worth separating, because they land in different packages:
+
+| Tier | What is missing | Where it belongs |
+|---|---|---|
+| `session` | Resolve the session key from the JWT `sub` and the A2A `contextId`, create the `SandboxClaim`, pin subsequent requests to the bound instance, release on session end | `applications/strands-agent-base` |
+| `tools` | An MCP backend that claims an instance for the session and serves `executeCode` / `writeFiles` / `readFiles` against it | `applications/code-interpreter-mcp`, as a second backend beside `src/agentcore.js` |
+
+The `tools` gap is the more interesting one, and it is why that tier should not be described as the
+easy first step. `tools` isolates **tool execution**, so it is only as real as the tool behind it,
+and the platform's only code-execution tool today is `code-interpreter-mcp` — whose single backend
+calls Bedrock AgentCore, which brings its own session isolation off-cluster and never touches this
+pool. Choosing AgentCore is a perfectly good answer; it just makes `isolation: tools` redundant for
+code execution rather than satisfied by it.
+
+The shape of the fix is small and needs no new component: a `sandbox.js` backend beside
+`agentcore.js`, selected by a config value, creating a `SandboxClaim` keyed on the session instead of
+calling `StartCodeInterpreterSession`. `server.js`, `tools.js` and `session.js` are unchanged, and the
+agent sees the identical tool surface either way — which is the "managed or open source, per
+capability" split this platform already applies elsewhere, applied to code execution.
+
+Until those exist, `sessionIsolationEnabled` stays `"false"` and both tiers are rejected rather than
+half-delivered. That is why the gate is a separate switch from the `agent_sandbox` addon: having the
+CRDs says nothing about whether anything can consume them.
+
+**What does work today, with nothing else built, is the sandbox claimed directly** — see
+`platform/oam/examples/example-sandbox-isolated.yaml`, which carries the `SandboxClaim` shape, and
+the Dark Factory, which has run that pattern on this platform since V2 with Argo Workflows as the
+claimer. An orchestrator, a batch runner, or a service of your own that fronts users and holds the
+session map all work now. That is the adoption order this design recommends.
 
 Also not implemented: `SandboxClaim` lifecycle TTLs are **published** on the sandbox card, not
 enforced by this component, because a claim is created per session at runtime. A claimer that

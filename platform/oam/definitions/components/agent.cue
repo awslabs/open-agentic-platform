@@ -893,11 +893,18 @@ template: {
 		//           already isolated per caller, so this is right for Q&A, retrieval
 		//           and read-only tools. Lowest cost, and byte-identical to the
 		//           output before this parameter existed.
-		//   tools   RECOMMENDED FIRST STEP. The agent loop stays shared; code
-		//           execution, the filesystem and the browser run in a per-session
-		//           sandbox claimed from a warm pool and released on idle. Cheap,
-		//           because a sandbox exists only while a tool runs -- and it covers
-		//           where the prompt-injection blast radius actually is.
+		//   tools   The agent loop stays shared; code execution, the filesystem
+		//           and the browser run in a per-session sandbox claimed from a
+		//           warm pool and released on idle. Cheap, because a sandbox
+		//           exists only while a tool runs -- and it covers where the
+		//           prompt-injection blast radius actually is.
+		//
+		//           NEEDS MORE THAN THIS PLATFORM CURRENTLY SHIPS. It isolates
+		//           TOOL EXECUTION, so something has to expose a tool backed by
+		//           the claimed sandbox -- today code-interpreter-mcp has only an
+		//           AgentCore backend, which brings its own isolation and does
+		//           not use this pool. Until an on-EKS backend exists, this tier
+		//           is a declaration.
 		//   session A dedicated sandbox instance per (agent, user, session), so two
 		//           users -- or two sessions of one user -- never share a process, a
 		//           filesystem or a VM. Highest cost. For regulated or multi-tenant
