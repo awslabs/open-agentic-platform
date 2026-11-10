@@ -96,6 +96,27 @@ template: {
 		_confidentialAvailable: "set" & "sandboxMode: confidential needs global.confidentialSandboxRuntimeClass on the oam-agent-components chart (cluster-secret annotation confidential_sandbox_runtime_class). This cluster offers no confidential isolation runtime: Kata has no equivalent, and EKS Nitro Sandboxes need Kubernetes 1.36+. Use sandboxMode: isolated, or deploy to a cluster that has it."
 	}
 
+	// FAIL CLOSED on confidential WITHOUT a Cedar policy, which is the subtlest
+	// way to end up with a pod that is confidential in name only.
+	//
+	// A sandbox with no policy annotation falls back to a PERMISSIVE built-in
+	// default: every container admitted, and exec, stdin and process listing all
+	// allowed from the parent instance. The memory boundary would still hold, so
+	// the pod runs and looks right, while the node operator this mode exists to
+	// defend against can read the workload's data by exec'ing into it. Nothing
+	// anywhere would report a problem -- the same silent shape as an unconfigured
+	// runtime class, and the reason that case already fails closed.
+	//
+	// It also makes attestation meaningless: PCR17 measures the policy, so with
+	// no policy there is nothing for a KMS key policy to pin.
+	//
+	// Generate it from the FINAL rendered pod spec with
+	// scripts/nitro/gen-cedar-policy.sh, and regenerate whenever a pinned field
+	// changes -- including a new image digest.
+	if parameter.sandbox && parameter.sandboxMode == "confidential" && parameter.cedarPolicy == "" {
+		_cedarPolicyRequired: "set" & "sandboxMode: confidential requires cedarPolicy: a base64 Cedar policy generated from this agent's rendered pod spec. Without one the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload -- and PCR17 attests nothing. Generate it with scripts/nitro/gen-cedar-policy.sh, or use sandboxMode: isolated."
+	}
+
 	// Build memory env vars from config
 	let _memoryEnv = [
 		if parameter.memory != _|_ {
@@ -144,8 +165,31 @@ template: {
 				"app.kubernetes.io/name": context.name
 			}
 			template: {
-				metadata: labels: {
-					"app.kubernetes.io/name": context.name
+				metadata: {
+					labels: {
+						"app.kubernetes.io/name": context.name
+					}
+
+					// Nitro Sandbox pod annotations. They belong on the POD TEMPLATE,
+					// never on the Rollout's own metadata: Kubernetes does not copy a
+					// controller's annotations into the pods it creates, so a
+					// sandbox.amazonaws.com/ key placed there is accepted and then
+					// silently ignored. The EKS user guide calls this out for
+					// Deployments; a Rollout has the same shape.
+					//
+					// Emitted only when a policy is supplied, so an isolated agent's
+					// output is unchanged. The Cedar policy is OPTIONAL in isolated mode
+					// (the sandbox applies a permissive built-in default) and MANDATORY
+					// in confidential mode, which the guard above enforces.
+					//
+					// Attaching it does NOT invalidate the policy it carries: a
+					// confidential policy pins container admission fields -- image
+					// digest, args, env, mounts, capabilities, security settings -- not
+					// pod annotations, so a policy generated from the rendered pod
+					// template still matches the pod the annotation lands on.
+					if parameter.sandbox && parameter.cedarPolicy != "" {
+						annotations: "sandbox.amazonaws.com/policy": parameter.cedarPolicy
+					}
 				}
 				spec: {
 					serviceAccountName: context.name
@@ -624,6 +668,30 @@ template: {
 		// Kata-only cluster this fails the render rather than handing back an
 		// ordinary microVM that cannot attest anything.
 		sandboxMode: *"isolated" | "confidential"
+
+		// +usage=Base64-encoded Cedar policy for the sandbox, attached to the pod as
+		// the sandbox.amazonaws.com/policy annotation. Ignored unless sandbox is true.
+		//
+		// REQUIRED for sandboxMode: confidential, OPTIONAL for isolated. The policy is
+		// what the sandbox enforces from INSIDE the guest -- which images may load,
+		// which containers may run, whether exec, stdin and log reads are permitted,
+		// and which mounts are allowed -- so it holds even when the parent instance is
+		// compromised. In confidential mode it is also measured into attestation
+		// register PCR17, which is what a KMS key policy pins.
+		//
+		// Generate it with scripts/nitro/gen-cedar-policy.sh, which renders THIS
+		// Application, extracts the pod template and runs eks-nitro-sandbox-genpolicy
+		// over it. It must be generated from the FINAL spec, after every mutating
+		// webhook, and regenerated whenever a pinned field changes -- a new image
+		// digest alone is enough. A stale policy does not degrade: the pod is denied.
+		//
+		// Base64, so it is also safe to paste into YAML; it stays a single line and
+		// carries no characters that need quoting.
+		//
+		// A useful isolated-mode case: generate with --deny-exec to stop operators
+		// shelling into an agent that handles regulated data, without taking on
+		// confidential mode's attestation and image-pinning work.
+		cedarPolicy: *"" | string
 
 		// +usage=Numeric UID a sandboxed agent's container runs as. Ignored unless sandbox is true.
 		// REQUIRED, not cosmetic: runAsNonRoot does not ask "is this image non-root", it asks
