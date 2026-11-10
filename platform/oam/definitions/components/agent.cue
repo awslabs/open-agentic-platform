@@ -543,17 +543,46 @@ template: {
 		scaleDownDelaySeconds: *30 | int
 
 		// Isolation
-		// +usage=Run this agent inside a Kata microVM with a hardened securityContext.
-		// Default false renders exactly today's pod. Which Kata VMM delivers the
-		// isolation (kata-clh / kata-qemu / kata-fc) is a PLATFORM choice, set once
-		// per cluster via global.sandboxRuntimeClass, and is deliberately NOT
-		// expressible here: the VMM is ambient environment config, which a portable
-		// OAM Application must never carry (.kiro/steering/oam-authoring.md §1).
+		// +usage=Run this agent inside a hardware-isolated microVM (its own kernel,
+		// its own memory) with a hardened securityContext, instead of a
+		// shared-kernel container on a general node pool.
+		// Default false renders exactly today's pod.
+		//
+		// WHICH isolation runtime delivers it -- AWS Nitro Sandboxes
+		// (isolated-sandbox, the platform default) or Kata (kata-clh / kata-qemu /
+		// kata-fc) -- is a PLATFORM choice, set per cluster via
+		// global.sandboxRuntimeClass, and is deliberately NOT expressible here: the
+		// runtime is ambient environment config, which a portable OAM Application
+		// must never carry (.kiro/steering/oam-authoring.md §1). The developer-facing
+		// choice is the TRUST MODEL, below.
 		//
 		// PRECONDITION: the image must run as non-root AND declare a NUMERIC uid, or
 		// supply one via sandboxRunAsUser below. "not root" alone is not sufficient --
-		// see that parameter for why. See docs/sandbox-agents/DESIGN.md.
+		// see that parameter for why. See docs/sandbox-agents/NITRO-DESIGN.md.
 		sandbox: *false | bool
+
+		// +usage=Trust model for the sandbox. Ignored unless sandbox is true.
+		//
+		//   isolated     (default) The node is TRUSTED; the workload is not. Protects
+		//                the node and every other pod from a compromised agent. The
+		//                platform keeps full observability: kubectl exec, stdin, logs
+		//                and stats all work.
+		//   confidential The NODE is untrusted too. A cluster administrator cannot
+		//                read the agent's memory, the overlay filesystem is
+		//                encrypted, and exec and stdin are DENIED from the host. The
+		//                guest attests its measurements to AWS KMS, so a secret can
+		//                be released only to the exact code and policy you expect.
+		//
+		// This IS portable and so it IS a developer parameter: it states a property
+		// of the workload ("my data must survive an untrusted node operator"), not a
+		// property of the cluster. The platform still owns the class each model maps
+		// to.
+		//
+		// confidential REQUIRES cedarPolicy below, and a cluster that configures
+		// global.confidentialSandboxRuntimeClass. Kata cannot provide it: on a
+		// Kata-only cluster this fails the render rather than handing back an
+		// ordinary microVM that cannot attest anything.
+		sandboxMode: *"isolated" | "confidential"
 
 		// +usage=Numeric UID a sandboxed agent's container runs as. Ignored unless sandbox is true.
 		// REQUIRED, not cosmetic: runAsNonRoot does not ask "is this image non-root", it asks
