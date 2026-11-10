@@ -29,10 +29,51 @@ spec:
       labels:
         {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
         agent-sandbox.io/role: coder
+      {{- /* Nitro pod annotations. They have to be on the POD TEMPLATE, never on
+             the SandboxTemplate's own metadata: nothing copies a parent object's
+             annotations onto the pods cloned from it, so a sandbox.amazonaws.com/
+             key placed there is accepted and then silently ignored.
+
+             Rendered only on the Nitro path, and only when set, so the Kata
+             output is byte-identical to before. */}}
+      {{- if eq .Values.runtime "nitro" }}
+      {{- if or .Values.nitro.cedarPolicy .Values.nitro.networkIsolated }}
+      annotations:
+        {{- with .Values.nitro.cedarPolicy }}
+        sandbox.amazonaws.com/policy: {{ . | quote }}
+        {{- end }}
+        {{- if .Values.nitro.networkIsolated }}
+        sandbox.amazonaws.com/network-isolated: "true"
+        {{- end }}
+      {{- end }}
+      {{- end }}
     spec:
-      {{- /* Warm-pool VMM selected by kata.vmm (a key of kata.runtimeClasses).
-             runtimeClassName + matching node scheduling both come from that one
-             entry, so flipping kata.vmm moves the pool onto the right pool. */ -}}
+      {{- if eq .Values.runtime "nitro" }}
+      {{- /* NITRO PATH. The class name is all this pod spec carries: the
+             RuntimeClass admission controller force-merges the class's
+             scheduling.nodeSelector (eks.amazonaws.com/nitro-sandbox) and applies
+             its overhead.podFixed, so there is deliberately NO nodeSelector and
+             NO toleration stamped here. Nitro classes carry no taint, so unlike
+             the Kata path there is nothing to tolerate.
+
+             Stamping the Kata nodeSelector here anyway -- which is what the
+             unbranched template did -- would make every Nitro warm pod Pending:
+             it would demand katacontainers.io/kata-runtime AND
+             eks.amazonaws.com/nitro-sandbox on one node, and no node has both. */}}
+      {{- $nrc := index .Values.nitro.runtimeClasses .Values.nitro.mode | required (printf "nitro.mode=%q has no matching entry in nitro.runtimeClasses" .Values.nitro.mode) }}
+      {{- if and (eq .Values.nitro.mode "confidential") (not .Values.nitro.cedarPolicy) }}
+      {{- fail "nitro.mode=confidential requires nitro.cedarPolicy: without a Cedar policy the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload, and PCR17 attests nothing. Generate one with scripts/nitro/gen-cedar-policy.sh." }}
+      {{- end }}
+      {{- if and .Values.nitro.networkIsolated (eq .Values.nitro.mode "confidential") }}
+      {{- fail "nitro.networkIsolated cannot be combined with nitro.mode=confidential: confidential mode releases secrets only after the guest attests to AWS KMS, and a network-isolated sandbox has no route to KMS, no Pod Identity credentials and no IMDS." }}
+      {{- end }}
+      runtimeClassName: {{ $nrc.name }}
+      automountServiceAccountToken: false
+      {{- else }}
+      {{- /* KATA PATH, unchanged. Warm-pool VMM selected by kata.vmm (a key of
+             kata.runtimeClasses). runtimeClassName + matching node scheduling
+             both come from that one entry, so flipping kata.vmm moves the pool
+             onto the right pool. */ -}}
       {{- $rc := index .Values.kata.runtimeClasses .Values.kata.vmm | required (printf "kata.vmm=%q has no matching entry in kata.runtimeClasses" .Values.kata.vmm) }}
       runtimeClassName: {{ $rc.name }}
       automountServiceAccountToken: false
@@ -40,6 +81,7 @@ spec:
         {{- toYaml $rc.nodeSelector | nindent 8 }}
       tolerations:
         {{- toYaml $rc.tolerations | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
