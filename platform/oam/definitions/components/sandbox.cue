@@ -28,10 +28,25 @@ sandbox: {
 	alias: ""
 	annotations: {}
 	attributes: {
-		workload: definition: {
-			apiVersion: "extensions.agents.x-k8s.io/v1beta1"
-			kind:       "SandboxWarmPool"
-		}
+		// autodetect, NOT an explicit workload.definition naming SandboxWarmPool.
+		// Verified the hard way: with the explicit form, applying this
+		// ComponentDefinition to a cluster that has no agent-sandbox operator is
+		// REJECTED by KubeVela's own mutating webhook --
+		//   no matches for kind "SandboxWarmPool" in version
+		//   "extensions.agents.x-k8s.io/v1beta1"
+		// -- because the webhook resolves the workload kind at definition-apply
+		// time. This chart ships to every cluster, and agent_sandbox is off by
+		// default on all of them, so the explicit form would leave the whole
+		// oam-agent-components Application unable to sync: every component and
+		// trait in it lost, not just this one.
+		//
+		// autodetect defers the kind to render time, which is also where the error
+		// belongs. On a cluster without the CRDs the definition installs
+		// harmlessly and an Application that USES it fails with a message about
+		// the missing CRD -- one Application's problem, visible to the person who
+		// wrote it. Same pattern as agentcore-browser and eks-read-access, which
+		// emit Crossplane CRs for the same reason.
+		workload: type: "autodetects.core.oam.dev"
 		// THE WARM POOL IS THE WORKLOAD, not the SandboxTemplate, because only the
 		// pool has a status to be honest about. A SandboxTemplate always applies
 		// cleanly -- it is a template -- so an Application whose workload was the

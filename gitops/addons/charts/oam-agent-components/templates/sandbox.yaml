@@ -518,7 +518,5 @@ spec:
   status:
     healthPolicy: 'isHealth: *( context.output.status.readyReplicas >= context.output.spec.replicas ) | false'
   workload:
-    definition:
-      apiVersion: extensions.agents.x-k8s.io/v1beta1
-      kind: SandboxWarmPool
+    type: autodetects.core.oam.dev
 
