@@ -51,9 +51,17 @@ spec:
       type: agent
       properties:
         description: "Answers questions over uploaded documents; runs code per session"
+
+        # DELIBERATELY TOOL-AGNOSTIC. Read the "Where the code interpreter
+        # actually comes from" note at the bottom of this file before adding a
+        # prompt that names one: this Application declares no mcpServers, so an
+        # agent told to "use the code interpreter" would have no such tool and
+        # would apologise for a capability it was told it had.
         systemMessage: |
-          You are an analyst. Use the code interpreter for any calculation or
-          file manipulation. Never guess a number you could compute.
+          You are an analyst working over documents the caller provides.
+          When a question needs computation rather than reasoning, use whatever
+          execution tool you have been given; if you have none, say so rather
+          than estimating a number.
         modelConfig:
           modelId: claude-sonnet
 
@@ -167,3 +175,49 @@ spec:
         # released.
         workspacePath: /workspace
         workspaceSizeGi: 4
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHERE THE CODE INTERPRETER ACTUALLY COMES FROM
+#
+# `isolation: tools` provides the per-session EXECUTION ENVIRONMENT. It does not
+# provide the agent's code-execution TOOL, and the two are separate choices that
+# are easy to conflate. OAP has two paths, and this file wires NEITHER -- on
+# purpose, so the isolation mechanism is readable on its own.
+#
+# 1. MANAGED: AgentCore Code Interpreter. Working today, and already
+#    per-session on the managed side -- a Bedrock AgentCore interpreter session
+#    per conversation.
+#
+#        agent --(JWT)--> agentgateway --> code-interpreter-mcp
+#                                              --> AgentCore Code Interpreter
+#
+#    The agent needs no custom image and no AWS credentials: the SDK calls,
+#    session lifecycle and IAM all live in the MCP server. Add it with
+#
+#        mcpServers:
+#          - name: code-interpreter-mcp
+#
+#    and deploy example-code-interpreter-mcp.yaml first. See
+#    example-agent-with-code-interpreter.yaml for the complete version.
+#
+#    If you take this path you do NOT need isolation: tools for code execution --
+#    AgentCore already isolates each session, off-cluster. Combining them is for
+#    when you want the FILESYSTEM and browser on EKS too.
+#
+# 2. ON-EKS: the per-session sandbox this file declares. The intended on-cluster
+#    equivalent of path 1, where the execution environment is a Nitro microVM in
+#    your own cluster, your own VPC, under your own network policy -- which is
+#    what regulated workloads and data-residency requirements usually need.
+#
+#    NOT FINISHED, AND THIS IS THE HONEST STATE OF IT. The platform renders the
+#    pool, the claim RBAC and the SANDBOX_* env this agent needs. What does not
+#    exist yet is the agent-side half: an MCP server or tool layer that reads
+#    SANDBOX_WARM_POOL, claims an instance for the session, exposes executeCode
+#    against it and releases the claim. That is
+#    applications/strands-agent-base work, tracked as the follow-up to #99, and
+#    it is why global.sessionIsolationEnabled defaults to "false" -- so asking
+#    for this tier is REJECTED rather than silently giving you a shared agent
+#    with no sandbox at all.
+#
+# So: to get a working code interpreter today, use path 1. Use this file as the
+# declaration of the isolation you want, which becomes live when path 2 lands.

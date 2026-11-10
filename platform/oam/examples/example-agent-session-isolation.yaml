@@ -67,9 +67,20 @@ spec:
       type: agent
       properties:
         description: "Analyses customer data; each session gets its own microVM"
+
+        # NOTE WHAT THIS PROMPT DOES NOT CLAIM. This Application wires no code
+        # interpreter, so the prompt does not tell the agent to use one -- a
+        # systemMessage that names a tool the Application never granted produces
+        # an agent that apologises for a capability it was told it had.
+        #
+        # Code execution is a SEPARATE choice from isolation, and there are two
+        # paths. See the discussion at the bottom of
+        # example-agent-tools-isolation.yaml, which is the tier built for it.
         systemMessage: |
-          You are a data analyst. Use the code interpreter for any computation.
-          Never guess a number you could calculate.
+          You are a data analyst working with customer records.
+          Answer from the context you are given. If a question needs a
+          calculation you cannot do reliably in prose, say so rather than
+          estimating.
         modelConfig:
           modelId: claude-sonnet
 
