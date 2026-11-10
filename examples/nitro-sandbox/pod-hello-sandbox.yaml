@@ -1,0 +1,59 @@
+# Smoke test: can this cluster run a Nitro Sandbox at all?
+#
+# Run this BEFORE any KMS, Cedar policy or OAM work. It separates "my
+# attestation is wrong" from "my cluster cannot run sandboxes", and those two
+# failures look nothing alike once you know which one you have.
+#
+#   kubectl apply -f examples/nitro-sandbox/pod-hello-sandbox.yaml
+#   kubectl wait --for=condition=Ready pod/hello-sandbox --timeout=5m
+#   kubectl logs hello-sandbox
+#
+# Expected:
+#   /sys/class/dmi/id/product_name:  m6i.enclave      <- .enclave == a sandbox
+#   disks:   vda vdb vdc                              <- virtio-blk, not nvme
+#
+# A NORMAL pod reports the instance type with no suffix and
+# "nvme0n1 nvme1n1 zram0". For the decisive check -- a guest kernel that differs
+# from the node's, which a shared-kernel container cannot have -- run
+#   scripts/nitro/verify-isolation.sh hello-sandbox
+#
+# If it stays Pending, that is the DESIGNED failure rather than a silent
+# downgrade to an unisolated container. `kubectl describe pod hello-sandbox`
+# names the cause. On EKS Auto Mode the usual ones are a cluster below
+# Kubernetes 1.36, a NodeClass using FIPS AMIs, or an instance type Auto Mode
+# will not provision as a sandbox node (GPU, Neuron, multi-NUMA, or -- at launch
+# -- r5a / r5ad / m5ad).
+#
+# Clean up:
+#   kubectl delete -f examples/nitro-sandbox/pod-hello-sandbox.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-sandbox
+  labels:
+    app.kubernetes.io/name: hello-sandbox
+spec:
+  # The only line that makes this a sandbox. The RuntimeClass admission
+  # controller force-merges the class's nodeSelector
+  # (eks.amazonaws.com/nitro-sandbox: "true") and applies its overhead
+  # (256Mi + one nitro-sandbox slot), so nothing here names a node.
+  runtimeClassName: isolated-sandbox
+  restartPolicy: Never
+  containers:
+    - name: hello
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "/sys/class/dmi/id/product_name:  $(cat /sys/class/dmi/id/product_name)"
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')"
+          echo "kernel:  $(uname -r)"
+          sleep 3600
+      resources:
+        # Nitro notes: this is ON TOP of the RuntimeClass's own 256Mi overhead,
+        # and on SMT instance types requesting CPU in multiples of two vCPUs
+        # lets the sandbox own whole cores rather than stranding a sibling
+        # thread. Neither matters at this size; both do for real workloads.
+        limits:
+          cpu: "1"
+          memory: 512Mi
