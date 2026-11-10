@@ -44,6 +44,40 @@ spec:
         // not just this one. Describe the pattern in prose instead, as above.
         _sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
 
+        // PLATFORM-OWNED confidential runtime, a CUE local for the same reason as the
+        // one above. Separate from _sandboxRuntimeClass because the two are different
+        // security boundaries rather than two spellings of one: confidential-sandbox
+        // also encrypts the overlay, denies exec and stdin from the parent instance,
+        // and measures the pod's Cedar policy into attestation register PCR17.
+        //
+        // EMPTY IS THE CORRECT VALUE on a cluster that cannot offer it -- a Kata
+        // cluster has no confidential equivalent at all -- and the guard below then
+        // rejects sandboxMode: confidential instead of substituting the isolated class.
+        _confidentialSandboxRuntimeClass: "{{ .Values.global.confidentialSandboxRuntimeClass }}"
+
+        // PLATFORM-OWNED switch for per-session isolation, a string because it is
+        // substituted into CUE as text. "true" only on a cluster that actually has the
+        // pieces: the agent-sandbox operator (which is the ONLY source of the
+        // SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and an agent image
+        // that claims a sandbox per session.
+        //
+        // This is not belt-and-braces over the CRDs being absent. Without the operator
+        // the agent renders perfectly, deploys, serves traffic and silently shares one
+        // process between every user -- the exact failure #99 exists to remove, and
+        // invisible precisely because the agent still works. The guard turns it into an
+        // admission error naming the missing prerequisite.
+        _sessionIsolationEnabled: "{{ .Values.global.sessionIsolationEnabled }}"
+
+        // The class the pod actually selects: the trust model picks which platform
+        // value is read. Written as an indexed list rather than two `if` blocks on one
+        // field because the two branches would otherwise unify, and a cluster where
+        // the isolated and confidential classes differ (every cluster) would render
+        // bottom.
+        _isolationClass: [
+        			if parameter.sandboxMode == "confidential" {_confidentialSandboxRuntimeClass},
+        			_sandboxRuntimeClass,
+        ][0]
+
         // FAIL CLOSED. If the platform never configured an isolation runtime and a
         // developer asks for one, emitting a pod with no runtimeClassName would
         // schedule an ordinary runc container: isolation requested, isolation not
@@ -54,11 +88,110 @@ spec:
         // node labels at render time -- and surfaces at runtime as Pending pods, which
         // leave the Rollout un-progressed and therefore not-Ready rather than
         // fake-green.
-        if parameter.sandbox && _sandboxRuntimeClass == "" {
+        if parameter.sandbox && parameter.sandboxMode == "isolated" && _sandboxRuntimeClass == "" {
         	_|_// "sandbox: true requires global.sandboxRuntimeClass on the
         	//  oam-agent-components chart; this cluster has no isolation runtime
         	//  configured."
         }
+
+        // Same fail-closed rule for the confidential model, with its own message
+        // because the remedy is different: this cluster may well have a working
+        // isolated class and still be unable to offer confidential (any Kata cluster
+        // is). Substituting the isolated class here would be the worst outcome
+        // available -- the Application would deploy, the pod would run, and the
+        // confidentiality the developer asked for would simply not exist.
+        //
+        // The two strings conflict on purpose. KubeVela prints both sides of a failed
+        // unification, so the error carries the explanation; a bare _|_ reports only
+        // "explicit error in source" and leaves the developer guessing which of the
+        // two classes is missing.
+        if parameter.sandbox && parameter.sandboxMode == "confidential" && _confidentialSandboxRuntimeClass == "" {
+        	_confidentialAvailable: "set" & "sandboxMode: confidential needs global.confidentialSandboxRuntimeClass on the oam-agent-components chart (cluster-secret annotation confidential_sandbox_runtime_class). This cluster offers no confidential isolation runtime: Kata has no equivalent, and EKS Nitro Sandboxes need Kubernetes 1.36+. Use sandboxMode: isolated, or deploy to a cluster that has it."
+        }
+
+        // FAIL CLOSED on confidential WITHOUT a Cedar policy, which is the subtlest
+        // way to end up with a pod that is confidential in name only.
+        //
+        // A sandbox with no policy annotation falls back to a PERMISSIVE built-in
+        // default: every container admitted, and exec, stdin and process listing all
+        // allowed from the parent instance. The memory boundary would still hold, so
+        // the pod runs and looks right, while the node operator this mode exists to
+        // defend against can read the workload's data by exec'ing into it. Nothing
+        // anywhere would report a problem -- the same silent shape as an unconfigured
+        // runtime class, and the reason that case already fails closed.
+        //
+        // It also makes attestation meaningless: PCR17 measures the policy, so with
+        // no policy there is nothing for a KMS key policy to pin.
+        //
+        // Generate it from the FINAL rendered pod spec with
+        // scripts/nitro/gen-cedar-policy.sh, and regenerate whenever a pinned field
+        // changes -- including a new image digest.
+        if parameter.sandbox && parameter.sandboxMode == "confidential" && parameter.cedarPolicy == "" {
+        	_cedarPolicyRequired: "set" & "sandboxMode: confidential requires cedarPolicy: a base64 Cedar policy generated from this agent's rendered pod spec. Without one the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload -- and PCR17 attests nothing. Generate it with scripts/nitro/gen-cedar-policy.sh, or use sandboxMode: isolated."
+        }
+
+        // FAIL CLOSED when per-session isolation is asked for and the platform cannot
+        // deliver it. See _sessionIsolationEnabled above for why silence is the wrong
+        // answer here: the agent would work, and every user would share one process.
+        if parameter.isolation != "shared" && _sessionIsolationEnabled != "true" {
+        	_sessionIsolationUnavailable: "set" & "isolation: tools and isolation: session need per-session sandboxing on this cluster: enable the agent_sandbox addon (it installs the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and set global.sessionIsolationEnabled: \"true\" on the oam-agent-components chart. Without it this agent would deploy, serve traffic, and silently share one process between every user. Use isolation: shared, which is what it would have been."
+        }
+
+        // FAIL CLOSED on a tier that names no pool. isolation: tools and
+        // isolation: session both work by CLAIMING from a sandbox declared elsewhere --
+        // a `type: sandbox` component, usually in the same Application. There is no
+        // default pool to fall back on, and an agent that claims from nowhere would run
+        // its tools in its own process: the shared behaviour, under a name that
+        // promises otherwise.
+        //
+        // Deliberately a NAME rather than a rendered reference: KubeVela has no
+        // cross-component typed reference, and the convention is the same one the rest
+        // of this chart uses (steering §3). A typo therefore fails at claim time, not
+        // at render time, which is why the name is also published in the agent card for
+        // an operator to check.
+        if parameter.isolation != "shared" && parameter.sandboxTemplate == "" {
+        	_sandboxTemplateRequired: "set" & "isolation: tools and isolation: session require sandboxTemplate: the name of a `type: sandbox` component to claim per-session instances from. Without it the agent would run its tools in its own process -- the shared behaviour under a name that promises isolation."
+        }
+
+        // Per-session isolation wiring, handed to the agent process as env.
+        //
+        // The platform renders the DECLARATION -- which pool to claim from, in which
+        // namespace, and how to key a session -- and grants the RBAC to claim. Creating
+        // and releasing a claim is the agent's own work at request time, because only
+        // the agent knows when a session starts, and only it sees the caller's subject
+        // and the A2A contextId that together identify one.
+        //
+        // Empty for isolation: shared, so a shared agent's env is byte-identical to
+        // today's.
+        let _isolationEnv = [
+        	if parameter.isolation != "shared" {
+        		{
+        			name:  "AGENT_ISOLATION"
+        			value: parameter.isolation
+        		}
+        	},
+        	if parameter.isolation != "shared" {
+        		{
+        			name:  "SANDBOX_WARM_POOL"
+        			value: parameter.sandboxTemplate
+        		}
+        	},
+        	if parameter.isolation != "shared" {
+        		{
+        			// The claim must land in the agent's own namespace: the RBAC below is a
+        			// Role, not a ClusterRole, so a claim anywhere else is denied. Passed
+        			// explicitly because the agent is not otherwise told its namespace.
+        			name:  "SANDBOX_NAMESPACE"
+        			value: context.namespace
+        		}
+        	},
+        	if parameter.isolation != "shared" {
+        		{
+        			name:  "AGENT_SESSION_KEY"
+        			value: parameter.sessionKey
+        		}
+        	},
+        ]
 
         // Build memory env vars from config
         let _memoryEnv = [
@@ -106,7 +239,52 @@ spec:
         		}
         		selector: matchLabels: "app.kubernetes.io/name": context.name
         		template: {
-        			metadata: labels: "app.kubernetes.io/name": context.name
+        			metadata: {
+        				labels: "app.kubernetes.io/name": context.name
+
+        				// Nitro Sandbox pod annotations. They belong on the POD TEMPLATE,
+        				// never on the Rollout's own metadata: Kubernetes does not copy a
+        				// controller's annotations into the pods it creates, so a
+        				// sandbox.amazonaws.com/ key placed there is accepted and then
+        				// silently ignored. The EKS user guide calls this out for
+        				// Deployments; a Rollout has the same shape.
+        				//
+        				// Emitted only when a policy is supplied, so an isolated agent's
+        				// output is unchanged. The Cedar policy is OPTIONAL in isolated mode
+        				// (the sandbox applies a permissive built-in default) and MANDATORY
+        				// in confidential mode, which the guard above enforces.
+        				//
+        				// Attaching it does NOT invalidate the policy it carries: a
+        				// confidential policy pins container admission fields -- image
+        				// digest, args, env, mounts, capabilities, security settings -- not
+        				// pod annotations, so a policy generated from the rendered pod
+        				// template still matches the pod the annotation lands on.
+        				if parameter.sandbox && parameter.cedarPolicy != "" {
+        					annotations: "sandbox.amazonaws.com/policy": parameter.cedarPolicy
+        				}
+
+        				// Per-pod shared-resource throttles. A Nitro Sandbox gets a
+        				// default budget for the node resources every sandbox shares,
+        				// and an agent is an unusually heavy consumer of two of them:
+        				// it holds outbound connections to the model gateway and to
+        				// every MCP server it is wired to, and it resolves those names
+        				// repeatedly. The defaults (4096 simultaneous outbound
+        				// connections per IP family; 100 DNS queries per second) are
+        				// generous, but they are per POD and invisible -- exceeding
+        				// them shows up as dropped connections and resolution
+        				// failures inside the guest, not as a Kubernetes event. These
+        				// are the dials, declared so a fan-out agent does not have to
+        				// leave the abstraction to reach them.
+        				//
+        				// Nitro-specific, and harmless on Kata: an unknown annotation
+        				// is ignored, so the same Application stays portable.
+        				if parameter.sandbox && parameter.sandboxConntrackLimit != _|_ {
+        					annotations: "sandbox.amazonaws.com/conntrack-limit": "\(parameter.sandboxConntrackLimit)"
+        				}
+        				if parameter.sandbox && parameter.sandboxDnsQueriesPerSecond != _|_ {
+        					annotations: "sandbox.amazonaws.com/dns-packets-per-second": "\(parameter.sandboxDnsQueriesPerSecond)"
+        				}
+        			}
         			spec: {
         				serviceAccountName: context.name
 
@@ -115,10 +293,15 @@ spec:
         				// controller force-merges the class's scheduling.nodeSelector
         				// and scheduling.tolerations onto the pod, and applies its
         				// overhead.podFixed for scheduling and kubelet accounting --
-        				// so nothing here needs to know about the Kata node pool, its
-        				// taint, or the VMM's memory cost.
+        				// so nothing here needs to know about the sandbox node pool,
+        				// its taint, or the microVM's memory cost. That holds for both
+        				// runtimes: the Nitro classes carry
+        				// eks.amazonaws.com/nitro-sandbox as their nodeSelector and
+        				// charge memory plus one nitro-sandbox slot as overhead, the Kata
+        				// classes carry katacontainers.io/kata-runtime and a matching
+        				// toleration, and this pod spec names neither.
         				if parameter.sandbox {
-        					runtimeClassName: _sandboxRuntimeClass
+        					runtimeClassName: _isolationClass
         				}
 
         				containers: [{
@@ -187,7 +370,7 @@ spec:
         						{name: "LANGFUSE_PUBLIC_KEY", value: parameter.langfuse.publicKey},
         						{name: "LANGFUSE_SECRET_KEY", value: parameter.langfuse.secretKey},
         						{name: "LANGFUSE_BASE_URL", value: parameter.langfuse.baseUrl},
-        					], _memoryEnv, [
+        					], _memoryEnv, _isolationEnv, [
         						if len(parameter.mcpServers) > 0 {
         							{
         								name: "MCP_SERVER_NAMES"
@@ -354,6 +537,21 @@ spec:
         		if parameter.memory != _|_ {
         			data: memoryProvider: parameter.memory.provider
         		}
+
+        		// The isolation tier and the pool it claims from, published for the
+        		// same reason the model and memory provider are: an operator looking at
+        		// one ConfigMap can tell what a deployed agent actually does. It matters
+        		// more here than for the others, because sandboxTemplate is a NAME with
+        		// no render-time check -- a typo surfaces as claims that fail, and this
+        		// is where you look to see what was asked for.
+        		//
+        		// Omitted for shared, so a shared agent's card is unchanged.
+        		if parameter.isolation != "shared" {
+        			data: isolation:       parameter.isolation
+        			data: sandboxWarmPool: parameter.sandboxTemplate
+        			data: sessionKey:      parameter.sessionKey
+        		}
+
         		if parameter.mcpServers != _|_ && len(parameter.mcpServers) > 0 {
         			data: mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
         		}
@@ -388,6 +586,23 @@ spec:
         	if parameter.evaluation != _|_ {
         		_evaluationEnabled: parameter.evaluation.enabled
         	}
+
+        	// FAIL CLOSED ON AN UNSUPPORTED COMBINATION, rather than admitting an
+        	// Application that can never be scored.
+        	//
+        	// Phase 1 evaluates traces in Langfuse, which only receives them in
+        	// `centralized` observability mode. A `decentralized` agent sends its
+        	// traces to CloudWatch instead, so an evaluation rule has nothing to
+        	// match: the Application is healthy, the ConfigMap is correct, the rule
+        	// exists, and no score is ever produced. That is the same silent shape as
+        	// the trace-tag drift, and it belongs at admission where the developer
+        	// sees it immediately.
+        	//
+        	// Unifying with the one supported value is what rejects it: for any other
+        	// mode this is bottom, so the render fails and the webhook denies the
+        	// Application. The annotation key below is named for the error message it
+        	// produces. Remove this when Phase 2 (AgentCore Evaluations) can score
+        	// the decentralized path.
         	if _evaluationEnabled {
         		evaluationSpec: {
         			apiVersion: "v1"
@@ -401,12 +616,23 @@ spec:
         					"evaluation.oap.io/agent": context.name
         					"app.kubernetes.io/name":  context.name
         				}
+        				annotations: {
+        					// Carries the unification, so the constraint is part of the
+        					// rendered output and cannot be skipped by lazy evaluation
+        					// the way a hidden field could.
+        					"evaluation.oap.io/observability-mode": "centralized" & parameter.observability.mode
+        				}
         			}
         			data: {
         				agent: context.name
-        				// centralized -> Langfuse (Phase 1); decentralized -> AgentCore
-        				// Evaluations (Phase 2), which reports the same metrics.
-        				backend: parameter.observability.mode
+        				// NO `backend` KEY. It used to carry observability.mode so a
+        				// future AgentCore path could branch on it, but nothing ever
+        				// read it and the mode is now constrained to `centralized`
+        				// above -- so it could only ever have held one value. The
+        				// backend is the reconciler's own concern, selected by which
+        				// implementation the addon runs, not something an agent
+        				// declares.
+        				//
         				// The agent's model alias, so reports can compare quality by model.
         				model:      parameter.modelConfig.modelId
         				strictness: parameter.evaluation.strictness
@@ -424,6 +650,70 @@ spec:
         					judge: parameter.evaluation.judge.modelId
         				}
         			}
+        		}
+        	}
+
+        	// Permission to claim a per-session sandbox, granted only to the tiers that
+        	// claim one. A Role and not a ClusterRole: a claim outside the agent's own
+        	// namespace is denied, which is what keeps one tenant's agent from claiming
+        	// instances out of another namespace's pool.
+        	//
+        	// Scoped to the three verbs the lifecycle needs and nothing else (steering
+        	// §4). Notably absent: any write verb on `sandboxes` -- the agent claims, and
+        	// the OPERATOR creates and deletes the instance. An agent that could delete a
+        	// Sandbox directly could destroy another session's instance out from under
+        	// it, and `update` on a claim would let it extend its own TTL past the
+        	// lifecycle the sandbox component declared.
+        	//
+        	// delete IS granted, because releasing a session's sandbox as soon as the
+        	// session ends is how the per-session tiers stay affordable: waiting for the
+        	// idle TTL on every abandoned session is the difference between a warm pool
+        	// that recycles and one that is permanently exhausted.
+        	if parameter.isolation != "shared" {
+        		sandboxClaimerRole: {
+        			apiVersion: "rbac.authorization.k8s.io/v1"
+        			kind:       "Role"
+        			metadata: {
+        				name:      context.name + "-sandbox-claimer"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			rules: [{
+        				apiGroups: ["extensions.agents.x-k8s.io"]
+        				resources: ["sandboxclaims"]
+        				verbs: ["create", "get", "list", "watch", "delete"]
+        			}, {
+        				// Read-only on the instances themselves: the agent needs the bound
+        				// Sandbox's status to find out when it is ready and where to reach
+        				// it. Creating and deleting them is the operator's job.
+        				apiGroups: ["agents.x-k8s.io"]
+        				resources: ["sandboxes"]
+        				verbs: ["get", "list", "watch"]
+        			}]
+        		}
+
+        		sandboxClaimerRoleBinding: {
+        			apiVersion: "rbac.authorization.k8s.io/v1"
+        			kind:       "RoleBinding"
+        			metadata: {
+        				name:      context.name + "-sandbox-claimer"
+        				namespace: context.namespace
+        				labels: "app.kubernetes.io/name": context.name
+        			}
+        			// Bound to the agent's own ServiceAccount -- the single identity anchor
+        			// this component already owns, which gateway-identity and
+        			// aws-service-identity also attach to. No second identity to keep in
+        			// step.
+        			roleRef: {
+        				apiGroup: "rbac.authorization.k8s.io"
+        				kind:     "Role"
+        				name:     context.name + "-sandbox-claimer"
+        			}
+        			subjects: [{
+        				kind:      "ServiceAccount"
+        				name:      context.name
+        				namespace: context.namespace
+        			}]
         		}
         	}
 
@@ -513,17 +803,140 @@ spec:
         	scaleDownDelaySeconds: *30 | int
 
         	// Isolation
-        	// +usage=Run this agent inside a Kata microVM with a hardened securityContext.
-        	// Default false renders exactly today's pod. Which Kata VMM delivers the
-        	// isolation (kata-clh / kata-qemu / kata-fc) is a PLATFORM choice, set once
-        	// per cluster via global.sandboxRuntimeClass, and is deliberately NOT
-        	// expressible here: the VMM is ambient environment config, which a portable
-        	// OAM Application must never carry (.kiro/steering/oam-authoring.md §1).
+        	// +usage=Run this agent inside a hardware-isolated microVM (its own kernel,
+        	// its own memory) with a hardened securityContext, instead of a
+        	// shared-kernel container on a general node pool.
+        	// Default false renders exactly today's pod.
+        	//
+        	// WHICH isolation runtime delivers it -- AWS Nitro Sandboxes
+        	// (isolated-sandbox, the platform default) or Kata (kata-clh / kata-qemu /
+        	// kata-fc) -- is a PLATFORM choice, set per cluster via
+        	// global.sandboxRuntimeClass, and is deliberately NOT expressible here: the
+        	// runtime is ambient environment config, which a portable OAM Application
+        	// must never carry (.kiro/steering/oam-authoring.md §1). The developer-facing
+        	// choice is the TRUST MODEL, below.
         	//
         	// PRECONDITION: the image must run as non-root AND declare a NUMERIC uid, or
         	// supply one via sandboxRunAsUser below. "not root" alone is not sufficient --
-        	// see that parameter for why. See docs/sandbox-agents/DESIGN.md.
+        	// see that parameter for why. See docs/sandbox-agents/NITRO-DESIGN.md.
         	sandbox: *false | bool
+
+        	// +usage=Trust model for the sandbox. Ignored unless sandbox is true.
+        	//
+        	//   isolated     (default) The node is TRUSTED; the workload is not. Protects
+        	//                the node and every other pod from a compromised agent. The
+        	//                platform keeps full observability: kubectl exec, stdin, logs
+        	//                and stats all work.
+        	//   confidential The NODE is untrusted too. A cluster administrator cannot
+        	//                read the agent's memory, the overlay filesystem is
+        	//                encrypted, and exec and stdin are DENIED from the host. The
+        	//                guest attests its measurements to AWS KMS, so a secret can
+        	//                be released only to the exact code and policy you expect.
+        	//
+        	// This IS portable and so it IS a developer parameter: it states a property
+        	// of the workload ("my data must survive an untrusted node operator"), not a
+        	// property of the cluster. The platform still owns the class each model maps
+        	// to.
+        	//
+        	// confidential REQUIRES cedarPolicy below, and a cluster that configures
+        	// global.confidentialSandboxRuntimeClass. Kata cannot provide it: on a
+        	// Kata-only cluster this fails the render rather than handing back an
+        	// ordinary microVM that cannot attest anything.
+        	sandboxMode: *"isolated" | "confidential"
+
+        	// +usage=Base64-encoded Cedar policy for the sandbox, attached to the pod as
+        	// the sandbox.amazonaws.com/policy annotation. Ignored unless sandbox is true.
+        	//
+        	// REQUIRED for sandboxMode: confidential, OPTIONAL for isolated. The policy is
+        	// what the sandbox enforces from INSIDE the guest -- which images may load,
+        	// which containers may run, whether exec, stdin and log reads are permitted,
+        	// and which mounts are allowed -- so it holds even when the parent instance is
+        	// compromised. In confidential mode it is also measured into attestation
+        	// register PCR17, which is what a KMS key policy pins.
+        	//
+        	// Generate it with scripts/nitro/gen-cedar-policy.sh, which renders THIS
+        	// Application, extracts the pod template and runs eks-nitro-sandbox-genpolicy
+        	// over it. It must be generated from the FINAL spec, after every mutating
+        	// webhook, and regenerated whenever a pinned field changes -- a new image
+        	// digest alone is enough. A stale policy does not degrade: the pod is denied.
+        	//
+        	// Base64, so it is also safe to paste into YAML; it stays a single line and
+        	// carries no characters that need quoting.
+        	//
+        	// A useful isolated-mode case: generate with --deny-exec to stop operators
+        	// shelling into an agent that handles regulated data, without taking on
+        	// confidential mode's attestation and image-pinning work.
+        	cedarPolicy: *"" | string
+
+        	// +usage=Maximum simultaneous outbound connections per IP family for a
+        	// sandboxed agent (Nitro default 4096, range 64-65536). Ignored unless sandbox
+        	// is true. Raise it for an agent that fans out to many MCP servers or holds
+        	// long-lived streams; exceeding the limit appears as dropped connections
+        	// inside the guest, with nothing reported at the Kubernetes layer.
+        	sandboxConntrackLimit?: int & >=64 & <=65536
+
+        	// +usage=Maximum DNS queries per second for a sandboxed agent (Nitro default
+        	// 100, maximum 512). Ignored unless sandbox is true. An agent that resolves
+        	// its gateway and MCP endpoints per request can exceed the default under load
+        	// and see resolution failures rather than a throttling signal.
+        	sandboxDnsQueriesPerSecond?: int & >=1 & <=512
+
+        	// Per-user, per-session isolation
+        	// +usage=How much of this agent is instantiated PER USER SESSION rather than
+        	// shared by every caller. Declared once by the developer; users never submit
+        	// OAM of their own.
+        	//
+        	//   shared  (default) One agent process for everyone. Memory and context are
+        	//           already isolated per caller, so this is right for Q&A, retrieval
+        	//           and read-only tools. Lowest cost, and byte-identical to the
+        	//           output before this parameter existed.
+        	//   tools   RECOMMENDED FIRST STEP. The agent loop stays shared; code
+        	//           execution, the filesystem and the browser run in a per-session
+        	//           sandbox claimed from a warm pool and released on idle. Cheap,
+        	//           because a sandbox exists only while a tool runs -- and it covers
+        	//           where the prompt-injection blast radius actually is.
+        	//   session A dedicated sandbox instance per (agent, user, session), so two
+        	//           users -- or two sessions of one user -- never share a process, a
+        	//           filesystem or a VM. Highest cost. For regulated or multi-tenant
+        	//           work, long-lived per-user state, or an AgentCore-Runtime-equivalent
+        	//           guarantee on EKS.
+        	//
+        	// blue-green and replicas keep their meaning in every tier, because the agent
+        	// stays an Argo Rollout in every tier. In tools and session it is the front
+        	// door that resolves a session key and routes to that session's instance; the
+        	// instance is a `type: sandbox` component, not a replica of this one. (That
+        	// answers #99's open question 5: nothing has to be rejected.)
+        	//
+        	// Both non-shared tiers need the agent_sandbox addon and an agent image that
+        	// claims sandboxes. Asking for them without that is an admission error, not a
+        	// silent downgrade.
+        	isolation: *"shared" | "tools" | "session"
+
+        	// +usage=Name of the `type: sandbox` component this agent claims per-session
+        	// instances from. Required for isolation: tools and isolation: session,
+        	// ignored for shared.
+        	//
+        	// Must name a sandbox in the SAME NAMESPACE: the claim RBAC this component
+        	// renders is a Role, so a claim anywhere else is denied.
+        	sandboxTemplate: *"" | string
+
+        	// +usage=What identifies one session, for the per-session tiers.
+        	//
+        	//   subject+context (default) The caller's gateway subject AND the A2A
+        	//                   contextId. Two conversations of one user get two
+        	//                   sandboxes; a client that sends no context falls back to
+        	//                   the subject, so it still never shares with another user.
+        	//   subject         One sandbox per user, shared by all their conversations.
+        	//                   Cheaper, and enough when the isolation boundary you care
+        	//                   about is the tenant.
+        	//   context         One sandbox per conversation, ignoring who is calling.
+        	//                   For anonymous or service-to-service callers where the
+        	//                   subject is not a tenant.
+        	//
+        	// (This is #99's open question 1, answered as a declaration rather than a
+        	// platform convention: the right key depends on what the agent's tenants are,
+        	// which only its developer knows.)
+        	sessionKey: *"subject+context" | "subject" | "context"
 
         	// +usage=Numeric UID a sandboxed agent's container runs as. Ignored unless sandbox is true.
         	// REQUIRED, not cosmetic: runAsNonRoot does not ask "is this image non-root", it asks
@@ -566,7 +979,12 @@ spec:
         	}
 
         	// +usage=Online evaluation of this agent's live traces by an LLM judge.
-        	// Requires the agent-evaluation addon on the cluster.
+        	// Requires the agent-evaluation addon on the cluster, and
+        	// observability.mode: centralized -- an Application that turns evaluation
+        	// on with decentralized observability is REJECTED at admission rather
+        	// than admitted and never scored, because the judge reads traces from
+        	// Langfuse and the decentralized path sends them to CloudWatch instead.
+        	// Scoring the decentralized path is Phase 2 (AgentCore Evaluations).
         	//
         	// The developer chooses WHICH evaluators run, HOW STRICT they are, HOW MANY
         	// traces are scored and optionally WHICH judge. What each evaluator means --
