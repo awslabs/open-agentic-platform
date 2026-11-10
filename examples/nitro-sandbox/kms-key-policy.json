@@ -1,0 +1,51 @@
+{
+  "Version": "2012-10-17",
+  "Id": "nitro-sandbox-attested-image-key",
+  "Statement": [
+    {
+      "Sid": "AllowKeyAdministration",
+      "Comment": "Without this the key is unmanageable. A KMS key policy is the ROOT of authorization for the key -- an IAM policy alone cannot grant access unless the key policy delegates to the account -- so a policy containing only the attested-decrypt statement below locks you out of your own key permanently, including from deleting it. Scope this to your actual key administrators rather than the account root in anything but a demo.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowBuildIdentityToEncryptLayers",
+      "Comment": "skopeo + nitro-sandbox-keyprovider calls kms:Encrypt to wrap the per-layer symmetric key at image build time. Encrypt only: the build identity has no business decrypting, and in confidential mode it is on the untrusted side of the boundary anyway. kms:DescribeKey is here because the keyprovider resolves the key's region and spec from the ARN before using it.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "BUILD_PRINCIPAL_ARN"
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowDecryptOnlyFromAnAttestedSandbox",
+      "Comment": "THE STATEMENT THIS EXAMPLE EXISTS FOR. The Nitro Sandbox calls kms:Decrypt through EKS Pod Identity to unwrap the image layer key, attaching the attestation document the Nitro Secure Module signed. KMS validates that document and compares the measurements below before releasing anything. No match, no key, no image, no pod.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "POD_ROLE_ARN"
+      },
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIgnoreCase": {
+          "kms:RecipientAttestation:PCR17": "PCR17_VALUE",
+          "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+        }
+      }
+    }
+  ],
+  "_notes": [
+    "PCR17 is the measurement of your Cedar policy. eks-nitro-sandbox-genpolicy prints the predicted value, so this key policy can be written BEFORE anything is deployed. Any change to the policy -- including one caused by a new image digest -- changes PCR17, and this key then stops releasing the layer key. Regenerate both in the same commit.",
+    "PCR8:ServiceName is NOT optional alongside PCR17. PCR8 measures the certificate that signed the guest image (the EIF); the :ServiceName selector compares the service identity recorded in that certificate rather than its raw hash. Set to eks.amazonaws.com it attests that AWS signed the guest image, and it keeps matching when AWS rotates the signing certificate. PCR17 on its own would accept the same policy hash presented from a guest image AWS never signed; a raw PCR8 hash would break on the next rotation.",
+    "PCR0 measures the system image itself. Add kms:RecipientAttestation:PCR0 when you want to pin a specific guest image version, and accept that every AWS update to that image stops this key working until the condition is updated.",
+    "The two Comment fields and this _notes array are NOT part of the IAM policy language. create-attested-key.sh strips them before calling AWS. If you hand-edit this file and paste it into the console yourself, strip them too, or KMS rejects the policy with a MalformedPolicyDocumentException."
+  ]
+}
