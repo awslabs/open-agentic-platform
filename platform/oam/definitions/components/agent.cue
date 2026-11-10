@@ -190,6 +190,28 @@ template: {
 					if parameter.sandbox && parameter.cedarPolicy != "" {
 						annotations: "sandbox.amazonaws.com/policy": parameter.cedarPolicy
 					}
+
+					// Per-pod shared-resource throttles. A Nitro Sandbox gets a
+					// default budget for the node resources every sandbox shares,
+					// and an agent is an unusually heavy consumer of two of them:
+					// it holds outbound connections to the model gateway and to
+					// every MCP server it is wired to, and it resolves those names
+					// repeatedly. The defaults (4096 simultaneous outbound
+					// connections per IP family; 100 DNS queries per second) are
+					// generous, but they are per POD and invisible -- exceeding
+					// them shows up as dropped connections and resolution
+					// failures inside the guest, not as a Kubernetes event. These
+					// are the dials, declared so a fan-out agent does not have to
+					// leave the abstraction to reach them.
+					//
+					// Nitro-specific, and harmless on Kata: an unknown annotation
+					// is ignored, so the same Application stays portable.
+					if parameter.sandbox && parameter.sandboxConntrackLimit != _|_ {
+						annotations: "sandbox.amazonaws.com/conntrack-limit": "\(parameter.sandboxConntrackLimit)"
+					}
+					if parameter.sandbox && parameter.sandboxDnsQueriesPerSecond != _|_ {
+						annotations: "sandbox.amazonaws.com/dns-packets-per-second": "\(parameter.sandboxDnsQueriesPerSecond)"
+					}
 				}
 				spec: {
 					serviceAccountName: context.name
@@ -692,6 +714,19 @@ template: {
 		// shelling into an agent that handles regulated data, without taking on
 		// confidential mode's attestation and image-pinning work.
 		cedarPolicy: *"" | string
+
+		// +usage=Maximum simultaneous outbound connections per IP family for a
+		// sandboxed agent (Nitro default 4096, range 64-65536). Ignored unless sandbox
+		// is true. Raise it for an agent that fans out to many MCP servers or holds
+		// long-lived streams; exceeding the limit appears as dropped connections
+		// inside the guest, with nothing reported at the Kubernetes layer.
+		sandboxConntrackLimit?: int & >=64 & <=65536
+
+		// +usage=Maximum DNS queries per second for a sandboxed agent (Nitro default
+		// 100, maximum 512). Ignored unless sandbox is true. An agent that resolves
+		// its gateway and MCP endpoints per request can exceed the default under load
+		// and see resolution failures rather than a throttling signal.
+		sandboxDnsQueriesPerSecond?: int & >=1 & <=512
 
 		// +usage=Numeric UID a sandboxed agent's container runs as. Ignored unless sandbox is true.
 		// REQUIRED, not cosmetic: runAsNonRoot does not ask "is this image non-root", it asks
