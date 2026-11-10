@@ -44,6 +44,27 @@ template: {
 	// not just this one. Describe the pattern in prose instead, as above.
 	_sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
 
+	// PLATFORM-OWNED confidential runtime, a CUE local for the same reason as the
+	// one above. Separate from _sandboxRuntimeClass because the two are different
+	// security boundaries rather than two spellings of one: confidential-sandbox
+	// also encrypts the overlay, denies exec and stdin from the parent instance,
+	// and measures the pod's Cedar policy into attestation register PCR17.
+	//
+	// EMPTY IS THE CORRECT VALUE on a cluster that cannot offer it -- a Kata
+	// cluster has no confidential equivalent at all -- and the guard below then
+	// rejects sandboxMode: confidential instead of substituting the isolated class.
+	_confidentialSandboxRuntimeClass: "{{ .Values.global.confidentialSandboxRuntimeClass }}"
+
+	// The class the pod actually selects: the trust model picks which platform
+	// value is read. Written as an indexed list rather than two `if` blocks on one
+	// field because the two branches would otherwise unify, and a cluster where
+	// the isolated and confidential classes differ (every cluster) would render
+	// bottom.
+	_isolationClass: [
+		if parameter.sandboxMode == "confidential" {_confidentialSandboxRuntimeClass},
+		_sandboxRuntimeClass,
+	][0]
+
 	// FAIL CLOSED. If the platform never configured an isolation runtime and a
 	// developer asks for one, emitting a pod with no runtimeClassName would
 	// schedule an ordinary runc container: isolation requested, isolation not
@@ -54,10 +75,25 @@ template: {
 	// node labels at render time -- and surfaces at runtime as Pending pods, which
 	// leave the Rollout un-progressed and therefore not-Ready rather than
 	// fake-green.
-	if parameter.sandbox && _sandboxRuntimeClass == "" {
+	if parameter.sandbox && parameter.sandboxMode == "isolated" && _sandboxRuntimeClass == "" {
 		_|_ // "sandbox: true requires global.sandboxRuntimeClass on the
 		//  oam-agent-components chart; this cluster has no isolation runtime
 		//  configured."
+	}
+
+	// Same fail-closed rule for the confidential model, with its own message
+	// because the remedy is different: this cluster may well have a working
+	// isolated class and still be unable to offer confidential (any Kata cluster
+	// is). Substituting the isolated class here would be the worst outcome
+	// available -- the Application would deploy, the pod would run, and the
+	// confidentiality the developer asked for would simply not exist.
+	//
+	// The two strings conflict on purpose. KubeVela prints both sides of a failed
+	// unification, so the error carries the explanation; a bare _|_ reports only
+	// "explicit error in source" and leaves the developer guessing which of the
+	// two classes is missing.
+	if parameter.sandbox && parameter.sandboxMode == "confidential" && _confidentialSandboxRuntimeClass == "" {
+		_confidentialAvailable: "set" & "sandboxMode: confidential needs global.confidentialSandboxRuntimeClass on the oam-agent-components chart (cluster-secret annotation confidential_sandbox_runtime_class). This cluster offers no confidential isolation runtime: Kata has no equivalent, and EKS Nitro Sandboxes need Kubernetes 1.36+. Use sandboxMode: isolated, or deploy to a cluster that has it."
 	}
 
 	// Build memory env vars from config
@@ -119,10 +155,15 @@ template: {
 					// controller force-merges the class's scheduling.nodeSelector
 					// and scheduling.tolerations onto the pod, and applies its
 					// overhead.podFixed for scheduling and kubelet accounting --
-					// so nothing here needs to know about the Kata node pool, its
-					// taint, or the VMM's memory cost.
+					// so nothing here needs to know about the sandbox node pool,
+					// its taint, or the microVM's memory cost. That holds for both
+					// runtimes: the Nitro classes carry
+					// eks.amazonaws.com/nitro-sandbox as their nodeSelector and
+					// charge memory plus one nitro-sandbox slot as overhead, the Kata
+					// classes carry katacontainers.io/kata-runtime and a matching
+					// toleration, and this pod spec names neither.
 					if parameter.sandbox {
-						runtimeClassName: _sandboxRuntimeClass
+						runtimeClassName: _isolationClass
 					}
 
 					containers: [{
