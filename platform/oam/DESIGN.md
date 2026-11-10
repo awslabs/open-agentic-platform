@@ -115,14 +115,15 @@ Full design, runtime comparison and limitations: [`docs/sandbox-agents/NITRO-DES
 | `isolation` | What a user gets | Cost |
 |---|---|---|
 | `shared` (default) | One agent process for everyone. Memory and context are already isolated per caller | lowest; output byte-identical to before this field |
-| `tools` | The agent loop stays shared; code execution, filesystem and browser run in a per-session sandbox, claimed from a warm pool and released on idle | low — a sandbox exists only while a tool runs |
-| `session` | A dedicated sandbox instance per `(agent, user, session)` | highest |
+| `session` | A dedicated sandbox instance per `(agent, user, session)` — two users, or two sessions of one user, never share a process, a filesystem or a VM | highest |
 
-The agent remains an Argo `Rollout` in every tier. In the per-session tiers it is the **front door**: it resolves the session key and routes to that session's instance, which is a separate `type: sandbox` component named by `sandboxTemplate`. So `replicas` and blue-green keep their existing meaning, and `sessionKey` (`subject+context` by default, the gateway subject plus the A2A `contextId`) decides what counts as one session.
+The agent remains an Argo `Rollout` in both tiers. With `session` it is the **front door**: it resolves the session key and routes to that session's instance, which is a separate `type: sandbox` component named by `sandboxTemplate`. So `replicas` and blue-green keep their existing meaning, and `sessionKey` (`subject+context` by default, the gateway subject plus the A2A `contextId`) decides what counts as one session.
 
-For those tiers the component also renders a `Role` and `RoleBinding` on the agent's own ServiceAccount, granting `create`/`get`/`list`/`watch`/`delete` on `sandboxclaims` and read-only on `sandboxes` — a Role, not a ClusterRole, so a claim outside the agent's namespace is denied.
+For that tier the component also renders a `Role` and `RoleBinding` on the agent's own ServiceAccount, granting `create`/`get`/`list`/`watch`/`delete` on `sandboxclaims` and read-only on `sandboxes` — a Role, not a ClusterRole, so a claim outside the agent's namespace is denied.
 
-Both non-shared tiers **fail the render** unless the cluster sets `global.sessionIsolationEnabled: "true"` *and* the Application names a `sandboxTemplate`. Either omission would otherwise produce an agent that deploys, serves traffic and silently shares one process between every user. Worked example: `examples/example-agent-session-isolation.yaml`.
+`session` **fails the render** unless the cluster sets `global.sessionIsolationEnabled: "true"` *and* the Application names a `sandboxTemplate`. Either omission would otherwise produce an agent that deploys, serves traffic and silently shares one process between every user. Worked example: `examples/example-agent-session-isolation.yaml`.
+
+**There is deliberately no `tools` tier**, though issue #99 proposes one ("shared agent loop, per-session code execution"). `shared` and `session` answer how many *agent instances* a user gets, which is this component's business; "where does code execution run" is the **tool server's** business — an agent just has an MCP server wired, and whether that server executes in AgentCore or in a claimed sandbox is its own configuration. It is redundant either way: AgentCore already isolates each session off-cluster, and with an on-EKS backend the per-session sandbox *is* the tool backend. For per-session tool isolation, declare a `type: sandbox` pool, point an MCP server at it, and leave the agent on `shared`. See [`docs/sandbox-agents/NITRO-DESIGN.md`](../../docs/sandbox-agents/NITRO-DESIGN.md) §2.2.
 
 ### Per-Session Sandbox (`type: sandbox`)
 

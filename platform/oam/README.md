@@ -32,7 +32,6 @@ platform/oam/
     ├── example-agent-simple.yaml           Agent + LLM gateway
     ├── example-agent-sandbox.yaml          Agent in a hardware-isolated microVM (sandbox: true)
     ├── example-agent-sandbox-confidential.yaml  ... with the node operator outside the trust boundary
-    ├── example-agent-tools-isolation.yaml        Shared agent, per-session TOOL sandbox (isolation: tools)
     ├── example-agent-session-isolation.yaml     One isolated sandbox per user session (isolation: session)
     ├── example-sandbox-isolated.yaml        Per-session sandbox, isolated mode (type: sandbox)
     ├── example-sandbox-confidential.yaml    Per-session sandbox, confidential + attestation

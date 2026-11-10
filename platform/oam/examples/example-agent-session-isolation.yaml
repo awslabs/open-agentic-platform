@@ -16,13 +16,6 @@
 #                       context are already per caller, so this is the right
 #                       answer for Q&A, retrieval and read-only tools. Costs
 #                       nothing extra. Most agents should stay here.
-#   isolation: tools    The agent loop stays shared; code execution, the
-#                       filesystem and the browser run in a per-session sandbox,
-#                       claimed from a warm pool and released on idle. A sandbox
-#                       exists only while a tool runs — and that is where the
-#                       prompt-injection blast radius actually is. Needs a tool
-#                       backend that claims the sandbox, which does not exist
-#                       yet — see example-agent-tools-isolation.yaml.
 #   isolation: session  This file. A dedicated sandbox instance per
 #                       (agent, user, session). Two users, or two sessions of
 #                       one user, never share a process, a filesystem or a VM.
@@ -31,6 +24,15 @@
 #                       AgentCore-Runtime-equivalent guarantee on EKS.
 #
 # Switch tiers by editing one word. Nothing else in the Application moves.
+#
+# THERE IS NO `tools` TIER, though #99 proposes one ("shared agent loop,
+# per-session code execution"). The capability is wanted; this is the wrong layer
+# for it. `shared` and `session` answer how many AGENT INSTANCES a user gets,
+# which is the agent's business. "Where does code execution run" is the TOOL
+# SERVER's business — an agent just has an MCP server wired, and whether that
+# server runs code in AgentCore or in a claimed sandbox is its own
+# configuration. For per-session tool isolation, declare a `type: sandbox` pool,
+# point an MCP server at it, and leave the agent on `shared`.
 #
 # ── WHAT STAYS THE SAME, WHICH IS THE POINT ──────────────────────────────────
 # The agent is an Argo Rollout in every tier, so blue-green, replicas, the Agent

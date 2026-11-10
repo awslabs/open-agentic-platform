@@ -70,7 +70,7 @@ global:
   # quietly handing out a kata-clh pod that cannot attest anything.
   confidentialSandboxRuntimeClass: confidential-sandbox
   # Whether this cluster can run the per-session isolation tiers
-  # (agent component, properties.isolation: tools | session). A string, because it
+  # (agent component, properties.isolation: session). A string, because it
   # is substituted into CUE as text.
   #
   # "false" by default, and that default is load-bearing. Both tiers need two

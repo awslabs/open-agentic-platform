@@ -134,14 +134,14 @@ spec:
         // deliver it. See _sessionIsolationEnabled above for why silence is the wrong
         // answer here: the agent would work, and every user would share one process.
         if parameter.isolation != "shared" && _sessionIsolationEnabled != "true" {
-        	_sessionIsolationUnavailable: "set" & "isolation: tools and isolation: session need per-session sandboxing on this cluster: enable the agent_sandbox addon (it installs the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and set global.sessionIsolationEnabled: \"true\" on the oam-agent-components chart. Without it this agent would deploy, serve traffic, and silently share one process between every user. Use isolation: shared, which is what it would have been."
+        	_sessionIsolationUnavailable: "set" & "isolation: session needs per-session sandboxing on this cluster: enable the agent_sandbox addon (it installs the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and set global.sessionIsolationEnabled: \"true\" on the oam-agent-components chart. Without it this agent would deploy, serve traffic, and silently share one process between every user. Use isolation: shared, which is what it would have been."
         }
 
-        // FAIL CLOSED on a tier that names no pool. isolation: tools and
-        // isolation: session both work by CLAIMING from a sandbox declared elsewhere --
+        // FAIL CLOSED on a tier that names no pool. isolation: session works by
+        // CLAIMING from a sandbox declared elsewhere --
         // a `type: sandbox` component, usually in the same Application. There is no
         // default pool to fall back on, and an agent that claims from nowhere would run
-        // its tools in its own process: the shared behaviour, under a name that
+        // in its own shared process: the shared behaviour, under a name that
         // promises otherwise.
         //
         // Deliberately a NAME rather than a rendered reference: KubeVela has no
@@ -150,7 +150,33 @@ spec:
         // at render time, which is why the name is also published in the agent card for
         // an operator to check.
         if parameter.isolation != "shared" && parameter.sandboxTemplate == "" {
-        	_sandboxTemplateRequired: "set" & "isolation: tools and isolation: session require sandboxTemplate: the name of a `type: sandbox` component to claim per-session instances from. Without it the agent would run its tools in its own process -- the shared behaviour under a name that promises isolation."
+        	_sandboxTemplateRequired: "set" & "isolation: session requires sandboxTemplate: the name of a `type: sandbox` component to claim per-session instances from. Without it the agent would run its tools in its own process -- the shared behaviour under a name that promises isolation."
+        }
+
+        // REJECT `tools` WITH AN EXPLANATION, rather than by omission.
+        //
+        // #99 proposes three tiers and names `tools` as its recommended first step,
+        // so people will copy that word out of the issue. Leaving it out of the
+        // disjunction above does reject it -- as
+        //   outputs.agentCard.data.isolation: 2 errors in empty disjunction
+        // which tells the developer nothing about why or what to do instead. The
+        // value is accepted by the type and refused here so the error can carry the
+        // reasoning.
+        //
+        // WHY IT IS REFUSED AT ALL, since the capability it names is real and wanted:
+        // this is the wrong layer to express it from. `shared` and `session` answer
+        // HOW MANY AGENT INSTANCES exist per user, a property of the agent. "Where
+        // does code execution run" is a property of the TOOL SERVER -- an agent just
+        // has an MCP server wired, and whether that server executes in AgentCore or
+        // in a claimed sandbox is the server's own configuration. A tier here would
+        // duplicate a decision that belongs one layer down.
+        //
+        // It is also redundant either way it could be wired: AgentCore already
+        // isolates each session off-cluster, and with an on-EKS backend the
+        // per-session sandbox IS the tool backend, so the "tier" is just
+        // code-interpreter-mcp pointed at a `type: sandbox` pool.
+        if parameter.isolation == "tools" {
+        	_toolsTierNotSupported: "set" & "isolation: tools is not supported, deliberately rather than as missing work. shared and session answer how many AGENT instances a user gets; where TOOLS execute is the tool server's business -- an agent just has an MCP server wired, and whether that server runs code in AgentCore or in a claimed sandbox is its own configuration. It is also redundant either way: AgentCore already isolates each session off-cluster, and with an on-EKS backend the per-session sandbox IS the tool backend. For per-session tool isolation: declare a `type: sandbox` pool, point an MCP server at it, and leave this agent on isolation: shared. See docs/sandbox-agents/NITRO-DESIGN.md section 2.2."
         }
 
         // Per-session isolation wiring, handed to the agent process as env.
@@ -890,18 +916,31 @@ spec:
         	//           already isolated per caller, so this is right for Q&A, retrieval
         	//           and read-only tools. Lowest cost, and byte-identical to the
         	//           output before this parameter existed.
-        	//   tools   The agent loop stays shared; code execution, the filesystem
-        	//           and the browser run in a per-session sandbox claimed from a
-        	//           warm pool and released on idle. Cheap, because a sandbox
-        	//           exists only while a tool runs -- and it covers where the
-        	//           prompt-injection blast radius actually is.
         	//
-        	//           NEEDS MORE THAN THIS PLATFORM CURRENTLY SHIPS. It isolates
-        	//           TOOL EXECUTION, so something has to expose a tool backed by
-        	//           the claimed sandbox -- today code-interpreter-mcp has only an
-        	//           AgentCore backend, which brings its own isolation and does
-        	//           not use this pool. Until an on-EKS backend exists, this tier
-        	//           is a declaration.
+        	// THERE IS DELIBERATELY NO `tools` TIER, though #99 proposes one ("shared
+        	// agent loop, per-session code execution"). That capability is real and
+        	// wanted; this is the wrong layer to express it from.
+        	//
+        	// `shared` and `session` answer HOW MANY AGENT INSTANCES exist per user,
+        	// which is a property of the agent -- so this component owns it. "Where
+        	// does code execution run" is a property of the TOOL SERVER: an agent
+        	// just has an MCP server wired, and whether that server executes code in
+        	// AgentCore or in a claimed sandbox is the server's own configuration. A
+        	// field here would duplicate a decision that belongs one layer down.
+        	//
+        	// It is also redundant either way it is wired. With the AgentCore backend
+        	// each session is already isolated off-cluster, so the tier would add
+        	// nothing. With an on-EKS backend the per-session sandbox IS the tool
+        	// backend, so the tier would just be code-interpreter-mcp pointed at a
+        	// `type: sandbox` pool -- one config value there, plus a pool the
+        	// developer declares anyway.
+        	//
+        	// To get per-session TOOL isolation: declare a `type: sandbox` pool and
+        	// point an MCP server at it, leaving the agent on `shared`.
+        	//
+        	// The word `tools` IS accepted by this field and then refused at
+        	// admission with that explanation, because #99 names it and a developer
+        	// copying it deserves a message rather than a CUE disjunction error.
         	//   session A dedicated sandbox instance per (agent, user, session), so two
         	//           users -- or two sessions of one user -- never share a process, a
         	//           filesystem or a VM. Highest cost. For regulated or multi-tenant
@@ -909,7 +948,7 @@ spec:
         	//           guarantee on EKS.
         	//
         	// blue-green and replicas keep their meaning in every tier, because the agent
-        	// stays an Argo Rollout in every tier. In tools and session it is the front
+        	// stays an Argo Rollout in both tiers. In session it is the front
         	// door that resolves a session key and routes to that session's instance; the
         	// instance is a `type: sandbox` component, not a replica of this one. (That
         	// answers #99's open question 5: nothing has to be rejected.)
@@ -917,11 +956,10 @@ spec:
         	// Both non-shared tiers need the agent_sandbox addon and an agent image that
         	// claims sandboxes. Asking for them without that is an admission error, not a
         	// silent downgrade.
-        	isolation: *"shared" | "tools" | "session"
+        	isolation: *"shared" | "session" | "tools"
 
         	// +usage=Name of the `type: sandbox` component this agent claims per-session
-        	// instances from. Required for isolation: tools and isolation: session,
-        	// ignored for shared.
+        	// instances from. Required for isolation: session, ignored for shared.
         	//
         	// Must name a sandbox in the SAME NAMESPACE: the claim RBAC this component
         	// renders is a Role, so a claim anywhere else is denied.

@@ -85,7 +85,7 @@ oam-agent-components:
       sandboxRuntimeClass: '{{default "isolated-sandbox" (index .metadata.annotations "sandbox_runtime_class")}}'
       confidentialSandboxRuntimeClass: '{{default "confidential-sandbox" (index .metadata.annotations "confidential_sandbox_runtime_class")}}'
       # Whether this cluster can run the per-session isolation tiers (agent
-      # component, properties.isolation: tools | session). "false" unless the
+      # component, properties.isolation: session). "false" unless the
       # cluster secret says otherwise, because both tiers need the agent_sandbox
       # addon -- the only source of the SandboxTemplate / SandboxWarmPool /
       # SandboxClaim CRDs -- and an agent image that claims per session.

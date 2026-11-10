@@ -52,7 +52,7 @@ Three fields, all opt-in, all declared once per agent. The first already existed
   properties:
     sandbox: true                 # hardware isolation, as before
     sandboxMode: confidential     # NEW: trust model. isolated (default) | confidential
-    isolation: session            # NEW: scope.      shared (default) | tools | session
+    isolation: session            # NEW: scope.      shared (default) | session
     sandboxTemplate: analyst-sbx  # NEW: which sandbox the per-session tiers claim from
 ```
 
@@ -60,7 +60,7 @@ Three fields, all opt-in, all declared once per agent. The first already existed
 |---|---|---|
 | `sandbox` | Is there a hardware boundary at all? | developer |
 | `sandboxMode` | **Who is inside** the boundary — is the node trusted? | developer |
-| `isolation` | **How many** boundaries — one per agent, or one per session? | developer |
+| `isolation` | **How many** boundaries — one per agent, or one per user session? | developer |
 | *(the RuntimeClass)* | Which technology implements the boundary | **platform**, per cluster |
 
 That last row is the line this design holds. `.kiro/steering/oam-authoring.md` §1 forbids ambient
@@ -83,26 +83,47 @@ Application could deploy to. So the developer states the model and the platform 
 | Attestation | measured | measured, and verifiable by a KMS key policy |
 | RuntimeClass overhead | 256Mi + 1 sandbox slot | 512Mi + 1 sandbox slot |
 
-| | `shared` (default) | `tools` | `session` |
-|---|---|---|---|
-| Agent process | one, for everyone | one, for everyone | one front door |
-| Per-session sandbox | none | for code execution, filesystem, browser | a dedicated instance |
-| Cost | lowest | low — a sandbox exists only while a tool runs | highest |
-| Good for | Q&A, retrieval, read-only tools | anything running model-generated code | regulated or multi-tenant work, long-lived per-user state |
+| | `shared` (default) | `session` |
+|---|---|---|
+| Agent process | one, for everyone | one front door |
+| Per-session sandbox | none | a dedicated instance per `(agent, user, session)` |
+| Cost | lowest | highest |
+| Good for | Q&A, retrieval, read-only tools | regulated or multi-tenant work, long-lived per-user state, an AgentCore-Runtime-equivalent guarantee on EKS |
 
-`tools` puts the boundary in the cheapest useful place: a shared agent loop with per-session code
-execution covers where the prompt-injection blast radius actually is, for a fraction of a VM per
-user. It is also **the tier with the most still to build**, and earlier drafts of this design called
-it the recommended first step, which was wrong — it isolates TOOL EXECUTION, so it needs a tool
-backed by the claimed sandbox, and `code-interpreter-mcp` has only an AgentCore backend today (which
-brings its own isolation and does not touch this pool). §5.7 has the detail.
+### 2.2 Why there is no `tools` tier
+
+#99 proposes three tiers, with `tools` — "shared agent loop, per-session code execution" — as the
+recommended first step. **This design implements two**, and the omission is deliberate rather than
+deferred work.
+
+The capability is real and wanted. The objection is that the agent component is the wrong place to
+express it. `shared` and `session` answer *how many agent instances exist per user*, which is a
+property of the agent, so this component owns it. "Where does code execution run" is a property of
+the **tool server**: an agent just has an MCP server wired, and whether that server executes code in
+AgentCore or in a claimed sandbox is the server's own configuration. A field here would duplicate a
+decision that belongs one layer down — the same leak steering §1 forbids for region and account.
+
+It is also redundant either way it could be wired:
+
+| Tool backend | What `isolation: tools` would add |
+|---|---|
+| AgentCore Code Interpreter (`code-interpreter-mcp` today) | Nothing. AgentCore already isolates each session, off-cluster |
+| An on-EKS sandbox backend | Nothing new to declare. The per-session sandbox *is* the tool backend, so the "tier" is `code-interpreter-mcp` pointed at a `type: sandbox` pool — one config value there, plus a pool the developer declares anyway |
+
+So per-session tool isolation is delivered by **declaring a `type: sandbox` pool and pointing an MCP
+server at it, with the agent left on `shared`** — which is one more component and no new agent
+surface. Earlier drafts of this design shipped the tier and called it the recommended first step.
+That was wrong twice over: it was the only tier that could not work with what ships here, and
+recommending it made the whole feature look dependent on a code interpreter it does not need.
+
+If the one-word shortcut is later asked for, it can return as sugar over that wiring — once the
+backend exists. Raising it on #99 rather than narrowing the issue silently is part of this change.
 
 **What works today, with nothing else built, is the sandbox claimed directly** — a caller creates a
 `SandboxClaim`, the operator binds a warm instance, the caller drives it and deletes the claim. That
 needs no MCP server, no code interpreter and no agent image change, and the Dark Factory has run
 exactly that shape on this platform since V2. Order of adoption, therefore: `type: sandbox` claimed
-by an orchestrator or your own service first; the agent `isolation` tiers when their agent-side half
-lands.
+by an orchestrator or your own service first; `isolation: session` when its agent-side router lands.
 
 ## 3. Mechanism
 
@@ -266,7 +287,7 @@ unconfigured client gets its own sandbox per user rather than sharing with anoth
 
 ### 5.6 Two fail-closed gates
 
-`isolation: tools` and `isolation: session` are rejected at admission unless **both** hold:
+`isolation: session` is rejected at admission unless **both** hold:
 
 1. `global.sessionIsolationEnabled == "true"` (cluster-secret annotation `session_isolation`), and
 2. `sandboxTemplate` names a sandbox.
@@ -279,31 +300,23 @@ because the agent still works.
 
 ### 5.7 What is NOT implemented
 
-**The claim-and-route loop.** This design delivers the declaration, the RBAC, the env and the
-sandbox to claim from. What consumes them is not written, and the two tiers need *different*
-consumers — worth separating, because they land in different packages:
+**The session router inside the agent.** This design delivers the declaration, the claim RBAC, the
+env and the sandbox to claim from. What is not written is the agent-side half: resolving the session
+key from the JWT `sub` and the A2A `contextId`, creating the `SandboxClaim`, pinning subsequent
+requests to the bound instance, and releasing on session end. That is
+`applications/strands-agent-base` work, tracked as the follow-up to this change.
 
-| Tier | What is missing | Where it belongs |
-|---|---|---|
-| `session` | Resolve the session key from the JWT `sub` and the A2A `contextId`, create the `SandboxClaim`, pin subsequent requests to the bound instance, release on session end | `applications/strands-agent-base` |
-| `tools` | An MCP backend that claims an instance for the session and serves `executeCode` / `writeFiles` / `readFiles` against it | `applications/code-interpreter-mcp`, as a second backend beside `src/agentcore.js` |
+Until it exists, `sessionIsolationEnabled` stays `"false"` and `isolation: session` is rejected
+rather than half-delivered. That is why the gate is a separate switch from the `agent_sandbox`
+addon: having the CRDs says nothing about whether anything can consume them.
 
-The `tools` gap is the more interesting one, and it is why that tier should not be described as the
-easy first step. `tools` isolates **tool execution**, so it is only as real as the tool behind it,
-and the platform's only code-execution tool today is `code-interpreter-mcp` — whose single backend
-calls Bedrock AgentCore, which brings its own session isolation off-cluster and never touches this
-pool. Choosing AgentCore is a perfectly good answer; it just makes `isolation: tools` redundant for
-code execution rather than satisfied by it.
-
-The shape of the fix is small and needs no new component: a `sandbox.js` backend beside
-`agentcore.js`, selected by a config value, creating a `SandboxClaim` keyed on the session instead of
-calling `StartCodeInterpreterSession`. `server.js`, `tools.js` and `session.js` are unchanged, and the
-agent sees the identical tool surface either way — which is the "managed or open source, per
-capability" split this platform already applies elsewhere, applied to code execution.
-
-Until those exist, `sessionIsolationEnabled` stays `"false"` and both tiers are rejected rather than
-half-delivered. That is why the gate is a separate switch from the `agent_sandbox` addon: having the
-CRDs says nothing about whether anything can consume them.
+**The on-EKS code-execution backend**, which §2.2 identifies as the right home for per-session tool
+isolation, is also not written. The shape is small and needs no new component: a `sandbox.js` backend
+beside `applications/code-interpreter-mcp`'s `src/agentcore.js`, selected by a config value, creating
+a `SandboxClaim` keyed on the session instead of calling `StartCodeInterpreterSession`. `server.js`,
+`tools.js` and `session.js` are unchanged, so the agent sees the identical tool surface either way —
+this platform's own "managed or open source, per capability" split, applied to code execution. It is
+independent of the router above and can land first.
 
 **What does work today, with nothing else built, is the sandbox claimed directly** — see
 `platform/oam/examples/example-sandbox-isolated.yaml`, which carries the `SandboxClaim` shape, and
