@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
-# Build and push the agent-evaluation reconciler image.
+# Build and push the agent-evaluation reconciler image with docker buildx.
 #
 # Multi-arch is required, not optional: OAP clusters run mixed arm64 and amd64
 # nodes, so a single-arch image schedules onto half the fleet and ImagePulls on
-# the rest.
+# the rest. buildx produces one image index covering every platform.
 #
 # Usage:
-#   ./build.sh                                  # build only, no push
+#   ./build.sh [--push] [--registry R] [--repository NAME] [--version V]
+#              [--tag EXTRA_TAG]... [--platforms P1,P2] [--no-login]
+#
+#   ./build.sh                                  # build both arches, no push
 #   ./build.sh --push                           # build + push to $REGISTRY
-#   REGISTRY=public.ecr.aws/z0a4o2j5 ./build.sh --push
-#   VERSION=0.1.2 ./build.sh --push
+#   REGISTRY=<acct>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+#   ./build.sh --push --tag "$(git rev-parse --short HEAD)"
+#
+# Environment (flags win over env):
+#   REGISTRY     registry host[/namespace]   default public.ecr.aws/z0a4o2j5
+#   REPOSITORY   repository name             default agent-evaluation
+#   VERSION      primary tag                 default 0.3.0 (see below)
+#   EXTRA_TAGS   space-separated extra tags  default none
+#   PLATFORMS    comma-separated platforms   default linux/amd64,linux/arm64
+#   ECR_LOGIN    auto|false                  default auto
+#   BUILDER      buildx builder name         default agent-evaluation-builder
 #
 # Registries:
-#   public.ecr.aws/z0a4o2j5   the platform's published images (browser-mcp,
-#                             strands-agent). Needs credentials for the account
-#                             that owns that alias -- see README, "Publishing".
+#   public.ecr.aws/<alias>   the platform's published images. Needs credentials
+#                            for the account that owns that alias.
 #   <acct>.dkr.ecr.<region>.amazonaws.com   a private repo, for testing in your
-#                             own account before publishing.
+#                            own account before publishing.
+# With ECR_LOGIN=auto and --push, the script logs docker in to either kind of
+# ECR host using the current AWS credentials. Other registries are left alone:
+# run `docker login` yourself.
 set -euo pipefail
 
 # THE IMAGE VERSION LINE. Keep in lockstep with exactly three things:
@@ -31,45 +45,91 @@ set -euo pipefail
 # ImagePullBackOff looking like a registry or credentials problem.
 VERSION="${VERSION:-0.3.0}"
 REGISTRY="${REGISTRY:-public.ecr.aws/z0a4o2j5}"
-IMAGE="agent-evaluation"
-PLATFORMS=("linux/arm64" "linux/amd64")
+REPOSITORY="${REPOSITORY:-agent-evaluation}"
+PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+ECR_LOGIN="${ECR_LOGIN:-auto}"
+BUILDER="${BUILDER:-agent-evaluation-builder}"
+read -r -a TAGS <<<"${EXTRA_TAGS:-}"
 PUSH=false
-[[ "${1:-}" == "--push" ]] && PUSH=true
 
-CLI="${CONTAINER_CLI:-podman}"
-command -v "$CLI" >/dev/null || { echo "error: $CLI not found" >&2; exit 1; }
+die() { echo "error: $*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --push)       PUSH=true ;;
+    --registry)   REGISTRY="${2:?--registry needs a value}"; shift ;;
+    --repository) REPOSITORY="${2:?--repository needs a value}"; shift ;;
+    --version)    VERSION="${2:?--version needs a value}"; shift ;;
+    --tag)        TAGS+=("${2:?--tag needs a value}"); shift ;;
+    --platforms)  PLATFORMS="${2:?--platforms needs a value}"; shift ;;
+    --no-login)   ECR_LOGIN=false ;;
+    -h|--help)    sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *)            die "unknown argument: $1 (see --help)" ;;
+  esac
+  shift
+done
+
+REGISTRY="${REGISTRY%/}"
+command -v docker >/dev/null || die "docker not found"
+docker buildx version >/dev/null 2>&1 || die "docker buildx plugin not available"
+docker info >/dev/null 2>&1 || die "docker daemon not reachable (start Docker Desktop?)"
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-LOCAL="${IMAGE}:${VERSION}"
-echo "==> building ${LOCAL} for ${PLATFORMS[*]}"
-
-# One manifest list, built up one platform at a time. `podman build --manifest`
-# appends to the list rather than replacing it, so the list has to be cleared
-# first or a rebuild accumulates stale entries.
-"$CLI" manifest rm "$LOCAL" 2>/dev/null || true
-"$CLI" manifest create "$LOCAL" >/dev/null
-
-for platform in "${PLATFORMS[@]}"; do
-  echo "    $platform"
-  "$CLI" build --platform "$platform" --manifest "$LOCAL" . >/dev/null
+IMAGE="${REGISTRY}/${REPOSITORY}"
+TAG_ARGS=(--tag "${IMAGE}:${VERSION}")
+for t in "${TAGS[@]+"${TAGS[@]}"}"; do
+  [[ -n "$t" ]] && TAG_ARGS+=(--tag "${IMAGE}:${t}")
 done
 
-echo "==> manifest list:"
-"$CLI" manifest inspect "$LOCAL" |
-  grep -E '"architecture"|"os"' | paste - - | sed 's/^/    /'
+ecr_login() {
+  local host="${REGISTRY%%/*}" region
+  if [[ "$host" =~ ^[0-9]{12}\.dkr\.ecr(-fips)?\.([a-z0-9-]+)\.amazonaws\.com(\.cn)?$ ]]; then
+    region="${BASH_REMATCH[2]}"
+    echo "==> logging in to ${host} (region ${region})"
+    aws ecr get-login-password --region "$region" |
+      docker login --username AWS --password-stdin "$host"
+  elif [[ "$host" == "public.ecr.aws" ]]; then
+    # ECR Public's auth endpoint only exists in us-east-1.
+    echo "==> logging in to public.ecr.aws"
+    aws ecr-public get-login-password --region us-east-1 |
+      docker login --username AWS --password-stdin public.ecr.aws
+  fi
+}
 
-if [[ "$PUSH" != true ]]; then
-  echo "==> built ${LOCAL} (not pushed; pass --push)"
-  exit 0
+if [[ "$PUSH" == true && "$ECR_LOGIN" == auto ]]; then
+  command -v aws >/dev/null || die "aws CLI not found (needed for ECR login; pass --no-login to skip)"
+  ecr_login
 fi
 
-TARGET="${REGISTRY}/${IMAGE}:${VERSION}"
-echo "==> pushing ${TARGET}"
-# --all pushes every architecture in the list, not just the host's. Without it
-# the remote tag is a manifest list with one entry.
-"$CLI" manifest push --all "$LOCAL" "docker://${TARGET}"
+# The default docker driver cannot build an image index; a docker-container
+# builder can, and emulates the non-native arch through QEMU/binfmt.
+if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+  echo "==> creating buildx builder ${BUILDER}"
+  docker buildx create --name "$BUILDER" --driver docker-container >/dev/null
+fi
+docker buildx inspect "$BUILDER" --bootstrap >/dev/null
 
-echo "==> pushed ${TARGET}"
-echo "    pin by digest in production:"
-"$CLI" manifest inspect "$LOCAL" | grep -m1 '"digest"' | sed 's/^/    /' || true
+OUTPUT_ARGS=()
+if [[ "$PUSH" == true ]]; then
+  OUTPUT_ARGS=(--push)
+else
+  # A multi-platform result cannot be --load'ed into the local image store, so
+  # a no-push run only proves every platform builds; results stay in the cache.
+  echo "==> build only (pass --push to publish)"
+fi
+
+echo "==> building ${IMAGE}:${VERSION} for ${PLATFORMS}"
+docker buildx build \
+  --builder "$BUILDER" \
+  --platform "$PLATFORMS" \
+  --provenance=false \
+  "${TAG_ARGS[@]}" \
+  "${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"}" \
+  .
+
+if [[ "$PUSH" == true ]]; then
+  echo "==> pushed; image index:"
+  docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+  echo "    pin by digest in production (the Digest line above)."
+fi
