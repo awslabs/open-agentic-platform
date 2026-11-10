@@ -71,9 +71,11 @@ Agents reference MCP servers by name. The `MCP_SERVERS` env var is constructed f
 
 ### Agent Sandbox Isolation (`sandbox: true`)
 
-`properties.sandbox: true` runs the agent inside a **Kata microVM** instead of a shared-kernel container. It is opt-in and defaults to `false`; with the flag absent or false the rendered output is byte-for-byte what it was before the flag existed.
+`properties.sandbox: true` runs the agent inside a **hardware-isolated microVM** — its own kernel, its own memory — instead of a shared-kernel container. It is opt-in and defaults to `false`; with the flag absent or false the rendered output is byte-for-byte what it was before the flag existed.
 
-**The workload does not change.** It is an Argo `Rollout` in both paths, so blue-green, `replicas`, both Services, the Agent Card and gateway registration are unaffected, and KubeVela's existing Rollout health gating still applies. No `Sandbox` custom resource is created, so the agent-sandbox **operator is not a prerequisite** — only the Kata RuntimeClasses and a node pool.
+By default the microVM is an **AWS Nitro Sandbox** (`isolated-sandbox`): a Firecracker guest whose memory and CPU the Nitro hypervisor isolates in hardware, which on EKS Auto Mode (Kubernetes 1.36+) needs no node layer of ours at all. **Kata is unchanged and fully supported** — one cluster-secret annotation (`sandbox_runtime_class: kata-clh`) puts a cluster back on it, and the component renders identically either way.
+
+**The workload does not change.** It is an Argo `Rollout` in both paths, so blue-green, `replicas`, both Services, the Agent Card and gateway registration are unaffected, and KubeVela's existing Rollout health gating still applies. No `Sandbox` custom resource is created, so the agent-sandbox **operator is not a prerequisite** — only the RuntimeClass and a node that can run it.
 
 `sandbox: true` adds exactly two things to `spec.template.spec`:
 
@@ -89,11 +91,48 @@ Agents reference MCP servers by name. The `MCP_SERVERS` env var is constructed f
 >
 > Isolated with two otherwise identical pods: without `runAsUser` → `CreateContainerConfigError`; with `runAsUser: 1000` → `Running`, `uid=1000(appuser)`. Hence `sandboxRunAsUser`, defaulted to `1000` so the flag stays a one-liner on the stock image; override it for an image on a different uid. It cannot be used to gain root — `runAsNonRoot` stays on and rejects uid 0 at admission, so it only selects *which* non-root user. An image whose `USER` really is root still fails, as intended.
 
-**The VMM is a platform choice, not a developer one.** There is no `sandboxRuntimeClass` parameter. The class comes from `global.sandboxRuntimeClass` on the `oam-agent-components` chart (default `kata-clh`), consumed in `agent.cue` as the CUE **local** `_sandboxRuntimeClass` — a local rather than a parameter precisely so a developer's `properties` block cannot reach it. The VMM is ambient environment config, which a portable OAM Application must never carry (`.kiro/steering/oam-authoring.md` §1).
+**The runtime is a platform choice; the TRUST MODEL is a developer one.** There is no `sandboxRuntimeClass` parameter. Both classes come from the `oam-agent-components` chart — `global.sandboxRuntimeClass` (default `isolated-sandbox`) and `global.confidentialSandboxRuntimeClass` (default `confidential-sandbox`), each sourced per cluster from a cluster-secret annotation — and are consumed in `agent.cue` as CUE **locals**, so a developer's `properties` block cannot reach them. Which isolation technology a cluster runs is ambient environment config, which a portable OAM Application must never carry (`.kiro/steering/oam-authoring.md` §1).
 
-Leaving that platform value empty makes `sandbox: true` **fail the render** rather than silently scheduling an unisolated pod. A class that is configured but has no matching node cannot be caught at render time — nothing in the OAM layer reads node labels — and instead leaves pods `Pending`, which keeps the Rollout un-progressed and therefore not-Ready.
+`sandboxMode` is the developer-facing half, and it passes that rule where a class name would not: it states a property of the *workload*, true on every cluster the Application could deploy to.
 
-Full design, VMM comparison and limitations: [`docs/sandbox-agents/DESIGN.md`](../../docs/sandbox-agents/DESIGN.md). Worked example: `examples/example-agent-sandbox.yaml`.
+| `sandboxMode` | Who is inside the boundary | Cost |
+|---|---|---|
+| `isolated` (default) | The node is trusted, the workload is not. Protects the node and every other pod from a compromised agent; `exec`, logs and stats all still work | 256Mi RuntimeClass overhead + one sandbox slot |
+| `confidential` | The node is untrusted too. Cluster administrators cannot read the agent's memory, the overlay is encrypted, `exec` and stdin are **denied** from the host, and the guest attests its measurements to AWS KMS | 512Mi + one slot, slower start, and a `cedarPolicy` you must regenerate whenever a pinned field changes |
+
+`confidential` **requires** `cedarPolicy`, a base64 Cedar policy rendered as the pod's `sandbox.amazonaws.com/policy` annotation and measured into attestation register PCR17. Without one the sandbox applies a permissive built-in default that allows `exec` from the parent instance — confidential in name only — so omitting it fails the render. Generate it with `scripts/nitro/gen-cedar-policy.sh`.
+
+Leaving a platform class empty makes the matching mode **fail the render** rather than silently scheduling something weaker. That covers the Kata case by construction: Kata has no confidential equivalent, so a Kata cluster leaves `confidentialSandboxRuntimeClass` empty and `sandboxMode: confidential` is rejected there instead of being handed an ordinary microVM that cannot attest anything. A class that *is* configured but has no matching node cannot be caught at render time — nothing in the OAM layer reads node labels — and instead leaves pods `Pending`, which keeps the Rollout un-progressed and therefore not-Ready.
+
+Two Nitro-specific pod throttles are also exposed, because they are per-pod and invisible: `sandboxConntrackLimit` (default 4096 outbound connections per IP family) and `sandboxDnsQueriesPerSecond` (default 100). An agent holding streams to a model gateway and N MCP servers is an unusually heavy consumer of both, and exceeding them appears as dropped connections inside the guest with nothing reported at the Kubernetes layer.
+
+Full design, runtime comparison and limitations: [`docs/sandbox-agents/NITRO-DESIGN.md`](../../docs/sandbox-agents/NITRO-DESIGN.md) (Nitro, the default, and per-user isolation) and [`docs/sandbox-agents/DESIGN.md`](../../docs/sandbox-agents/DESIGN.md) (the Kata path). Worked examples: `examples/example-agent-sandbox.yaml`, `examples/example-agent-sandbox-confidential.yaml`.
+
+### Per-User, Per-Session Isolation (`isolation`)
+
+`sandbox: true` gives every replica of an agent its own microVM. It does **not** give every USER one: all callers share those pods. `properties.isolation` is the field that does, declared once by the developer — users never submit OAM.
+
+| `isolation` | What a user gets | Cost |
+|---|---|---|
+| `shared` (default) | One agent process for everyone. Memory and context are already isolated per caller | lowest; output byte-identical to before this field |
+| `tools` | The agent loop stays shared; code execution, filesystem and browser run in a per-session sandbox, claimed from a warm pool and released on idle | low — a sandbox exists only while a tool runs |
+| `session` | A dedicated sandbox instance per `(agent, user, session)` | highest |
+
+The agent remains an Argo `Rollout` in every tier. In the per-session tiers it is the **front door**: it resolves the session key and routes to that session's instance, which is a separate `type: sandbox` component named by `sandboxTemplate`. So `replicas` and blue-green keep their existing meaning, and `sessionKey` (`subject+context` by default, the gateway subject plus the A2A `contextId`) decides what counts as one session.
+
+For those tiers the component also renders a `Role` and `RoleBinding` on the agent's own ServiceAccount, granting `create`/`get`/`list`/`watch`/`delete` on `sandboxclaims` and read-only on `sandboxes` — a Role, not a ClusterRole, so a claim outside the agent's namespace is denied.
+
+Both non-shared tiers **fail the render** unless the cluster sets `global.sessionIsolationEnabled: "true"` *and* the Application names a `sandboxTemplate`. Either omission would otherwise produce an agent that deploys, serves traffic and silently shares one process between every user. Worked example: `examples/example-agent-session-isolation.yaml`.
+
+### Per-Session Sandbox (`type: sandbox`)
+
+A separate component type for the per-session execution environment: a `SandboxWarmPool` (the workload) over a `SandboxTemplate` (the pod template instances are cloned from), plus a ServiceAccount and a "sandbox card" ConfigMap that publishes the pool name, trust model and declared TTLs for whoever creates the claims.
+
+It is not a second way to declare an agent — it has no Service identity of its own, no blue-green, no gateway route and no conversation, and one instance serves exactly one session before being destroyed. Changing an agent's isolation is still one boolean and one word on `type: agent`.
+
+The warm pool is the workload rather than the template because only the pool has a status: an Application fronted by the template would report Healthy on a cluster with no sandbox-capable node, where every instance it handed out would sit `Pending`.
+
+Worked examples: `examples/example-sandbox-isolated.yaml`, `examples/example-sandbox-confidential.yaml`.
 
 ---
 
