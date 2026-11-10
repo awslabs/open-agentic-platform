@@ -55,6 +55,19 @@ template: {
 	// rejects sandboxMode: confidential instead of substituting the isolated class.
 	_confidentialSandboxRuntimeClass: "{{ .Values.global.confidentialSandboxRuntimeClass }}"
 
+	// PLATFORM-OWNED switch for per-session isolation, a string because it is
+	// substituted into CUE as text. "true" only on a cluster that actually has the
+	// pieces: the agent-sandbox operator (which is the ONLY source of the
+	// SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and an agent image
+	// that claims a sandbox per session.
+	//
+	// This is not belt-and-braces over the CRDs being absent. Without the operator
+	// the agent renders perfectly, deploys, serves traffic and silently shares one
+	// process between every user -- the exact failure #99 exists to remove, and
+	// invisible precisely because the agent still works. The guard turns it into an
+	// admission error naming the missing prerequisite.
+	_sessionIsolationEnabled: "{{ .Values.global.sessionIsolationEnabled }}"
+
 	// The class the pod actually selects: the trust model picks which platform
 	// value is read. Written as an indexed list rather than two `if` blocks on one
 	// field because the two branches would otherwise unify, and a cluster where
@@ -116,6 +129,70 @@ template: {
 	if parameter.sandbox && parameter.sandboxMode == "confidential" && parameter.cedarPolicy == "" {
 		_cedarPolicyRequired: "set" & "sandboxMode: confidential requires cedarPolicy: a base64 Cedar policy generated from this agent's rendered pod spec. Without one the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload -- and PCR17 attests nothing. Generate it with scripts/nitro/gen-cedar-policy.sh, or use sandboxMode: isolated."
 	}
+
+	// FAIL CLOSED when per-session isolation is asked for and the platform cannot
+	// deliver it. See _sessionIsolationEnabled above for why silence is the wrong
+	// answer here: the agent would work, and every user would share one process.
+	if parameter.isolation != "shared" && _sessionIsolationEnabled != "true" {
+		_sessionIsolationUnavailable: "set" & "isolation: tools and isolation: session need per-session sandboxing on this cluster: enable the agent_sandbox addon (it installs the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs) and set global.sessionIsolationEnabled: \"true\" on the oam-agent-components chart. Without it this agent would deploy, serve traffic, and silently share one process between every user. Use isolation: shared, which is what it would have been."
+	}
+
+	// FAIL CLOSED on a tier that names no pool. isolation: tools and
+	// isolation: session both work by CLAIMING from a sandbox declared elsewhere --
+	// a `type: sandbox` component, usually in the same Application. There is no
+	// default pool to fall back on, and an agent that claims from nowhere would run
+	// its tools in its own process: the shared behaviour, under a name that
+	// promises otherwise.
+	//
+	// Deliberately a NAME rather than a rendered reference: KubeVela has no
+	// cross-component typed reference, and the convention is the same one the rest
+	// of this chart uses (steering §3). A typo therefore fails at claim time, not
+	// at render time, which is why the name is also published in the agent card for
+	// an operator to check.
+	if parameter.isolation != "shared" && parameter.sandboxTemplate == "" {
+		_sandboxTemplateRequired: "set" & "isolation: tools and isolation: session require sandboxTemplate: the name of a `type: sandbox` component to claim per-session instances from. Without it the agent would run its tools in its own process -- the shared behaviour under a name that promises isolation."
+	}
+
+	// Per-session isolation wiring, handed to the agent process as env.
+	//
+	// The platform renders the DECLARATION -- which pool to claim from, in which
+	// namespace, and how to key a session -- and grants the RBAC to claim. Creating
+	// and releasing a claim is the agent's own work at request time, because only
+	// the agent knows when a session starts, and only it sees the caller's subject
+	// and the A2A contextId that together identify one.
+	//
+	// Empty for isolation: shared, so a shared agent's env is byte-identical to
+	// today's.
+	let _isolationEnv = [
+		if parameter.isolation != "shared" {
+			{
+				name:  "AGENT_ISOLATION"
+				value: parameter.isolation
+			}
+		},
+		if parameter.isolation != "shared" {
+			{
+				name:  "SANDBOX_WARM_POOL"
+				value: parameter.sandboxTemplate
+			}
+		},
+		if parameter.isolation != "shared" {
+			{
+				// The claim must land in the agent's own namespace: the RBAC below is a
+				// Role, not a ClusterRole, so a claim anywhere else is denied. Passed
+				// explicitly because the agent is not otherwise told its namespace.
+				name:  "SANDBOX_NAMESPACE"
+				value: context.namespace
+			}
+		},
+		if parameter.isolation != "shared" {
+			{
+				name:  "AGENT_SESSION_KEY"
+				value: parameter.sessionKey
+			}
+		},
+	]
+
 
 	// Build memory env vars from config
 	let _memoryEnv = [
@@ -298,7 +375,7 @@ template: {
 							{name: "LANGFUSE_PUBLIC_KEY", value: parameter.langfuse.publicKey},
 							{name: "LANGFUSE_SECRET_KEY", value: parameter.langfuse.secretKey},
 							{name: "LANGFUSE_BASE_URL", value: parameter.langfuse.baseUrl},
-						], _memoryEnv, [
+						], _memoryEnv, _isolationEnv, [
 							if len(parameter.mcpServers) > 0 {
 								{
 									name:  "MCP_SERVER_NAMES"
@@ -465,6 +542,20 @@ template: {
 			if parameter.memory != _|_ {
 				data: memoryProvider: parameter.memory.provider
 			}
+			// The isolation tier and the pool it claims from, published for the
+			// same reason the model and memory provider are: an operator looking at
+			// one ConfigMap can tell what a deployed agent actually does. It matters
+			// more here than for the others, because sandboxTemplate is a NAME with
+			// no render-time check -- a typo surfaces as claims that fail, and this
+			// is where you look to see what was asked for.
+			//
+			// Omitted for shared, so a shared agent's card is unchanged.
+			if parameter.isolation != "shared" {
+				data: isolation: parameter.isolation
+				data: sandboxWarmPool: parameter.sandboxTemplate
+				data: sessionKey: parameter.sessionKey
+			}
+
 			if parameter.mcpServers != _|_ && len(parameter.mcpServers) > 0 {
 				data: mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
 			}
@@ -563,6 +654,71 @@ template: {
 				}
 			}
 		}
+
+		// Permission to claim a per-session sandbox, granted only to the tiers that
+		// claim one. A Role and not a ClusterRole: a claim outside the agent's own
+		// namespace is denied, which is what keeps one tenant's agent from claiming
+		// instances out of another namespace's pool.
+		//
+		// Scoped to the three verbs the lifecycle needs and nothing else (steering
+		// §4). Notably absent: any write verb on `sandboxes` -- the agent claims, and
+		// the OPERATOR creates and deletes the instance. An agent that could delete a
+		// Sandbox directly could destroy another session's instance out from under
+		// it, and `update` on a claim would let it extend its own TTL past the
+		// lifecycle the sandbox component declared.
+		//
+		// delete IS granted, because releasing a session's sandbox as soon as the
+		// session ends is how the per-session tiers stay affordable: waiting for the
+		// idle TTL on every abandoned session is the difference between a warm pool
+		// that recycles and one that is permanently exhausted.
+		if parameter.isolation != "shared" {
+			sandboxClaimerRole: {
+				apiVersion: "rbac.authorization.k8s.io/v1"
+				kind:       "Role"
+				metadata: {
+					name:      context.name + "-sandbox-claimer"
+					namespace: context.namespace
+					labels: "app.kubernetes.io/name": context.name
+				}
+				rules: [{
+					apiGroups: ["extensions.agents.x-k8s.io"]
+					resources: ["sandboxclaims"]
+					verbs: ["create", "get", "list", "watch", "delete"]
+				}, {
+					// Read-only on the instances themselves: the agent needs the bound
+					// Sandbox's status to find out when it is ready and where to reach
+					// it. Creating and deleting them is the operator's job.
+					apiGroups: ["agents.x-k8s.io"]
+					resources: ["sandboxes"]
+					verbs: ["get", "list", "watch"]
+				}]
+			}
+
+			sandboxClaimerRoleBinding: {
+				apiVersion: "rbac.authorization.k8s.io/v1"
+				kind:       "RoleBinding"
+				metadata: {
+					name:      context.name + "-sandbox-claimer"
+					namespace: context.namespace
+					labels: "app.kubernetes.io/name": context.name
+				}
+				// Bound to the agent's own ServiceAccount -- the single identity anchor
+				// this component already owns, which gateway-identity and
+				// aws-service-identity also attach to. No second identity to keep in
+				// step.
+				roleRef: {
+					apiGroup: "rbac.authorization.k8s.io"
+					kind:     "Role"
+					name:     context.name + "-sandbox-claimer"
+				}
+				subjects: [{
+					kind:      "ServiceAccount"
+					name:      context.name
+					namespace: context.namespace
+				}]
+			}
+		}
+
 
 		// HTTPRoute for AgentGateway registration (optional)
 		if parameter.registerWithGateway {
@@ -727,6 +883,63 @@ template: {
 		// its gateway and MCP endpoints per request can exceed the default under load
 		// and see resolution failures rather than a throttling signal.
 		sandboxDnsQueriesPerSecond?: int & >=1 & <=512
+
+		// Per-user, per-session isolation
+		// +usage=How much of this agent is instantiated PER USER SESSION rather than
+		// shared by every caller. Declared once by the developer; users never submit
+		// OAM of their own.
+		//
+		//   shared  (default) One agent process for everyone. Memory and context are
+		//           already isolated per caller, so this is right for Q&A, retrieval
+		//           and read-only tools. Lowest cost, and byte-identical to the
+		//           output before this parameter existed.
+		//   tools   RECOMMENDED FIRST STEP. The agent loop stays shared; code
+		//           execution, the filesystem and the browser run in a per-session
+		//           sandbox claimed from a warm pool and released on idle. Cheap,
+		//           because a sandbox exists only while a tool runs -- and it covers
+		//           where the prompt-injection blast radius actually is.
+		//   session A dedicated sandbox instance per (agent, user, session), so two
+		//           users -- or two sessions of one user -- never share a process, a
+		//           filesystem or a VM. Highest cost. For regulated or multi-tenant
+		//           work, long-lived per-user state, or an AgentCore-Runtime-equivalent
+		//           guarantee on EKS.
+		//
+		// blue-green and replicas keep their meaning in every tier, because the agent
+		// stays an Argo Rollout in every tier. In tools and session it is the front
+		// door that resolves a session key and routes to that session's instance; the
+		// instance is a `type: sandbox` component, not a replica of this one. (That
+		// answers #99's open question 5: nothing has to be rejected.)
+		//
+		// Both non-shared tiers need the agent_sandbox addon and an agent image that
+		// claims sandboxes. Asking for them without that is an admission error, not a
+		// silent downgrade.
+		isolation: *"shared" | "tools" | "session"
+
+		// +usage=Name of the `type: sandbox` component this agent claims per-session
+		// instances from. Required for isolation: tools and isolation: session,
+		// ignored for shared.
+		//
+		// Must name a sandbox in the SAME NAMESPACE: the claim RBAC this component
+		// renders is a Role, so a claim anywhere else is denied.
+		sandboxTemplate: *"" | string
+
+		// +usage=What identifies one session, for the per-session tiers.
+		//
+		//   subject+context (default) The caller's gateway subject AND the A2A
+		//                   contextId. Two conversations of one user get two
+		//                   sandboxes; a client that sends no context falls back to
+		//                   the subject, so it still never shares with another user.
+		//   subject         One sandbox per user, shared by all their conversations.
+		//                   Cheaper, and enough when the isolation boundary you care
+		//                   about is the tenant.
+		//   context         One sandbox per conversation, ignoring who is calling.
+		//                   For anonymous or service-to-service callers where the
+		//                   subject is not a tenant.
+		//
+		// (This is #99's open question 1, answered as a declaration rather than a
+		// platform convention: the right key depends on what the agent's tenants are,
+		// which only its developer knows.)
+		sessionKey: *"subject+context" | "subject" | "context"
 
 		// +usage=Numeric UID a sandboxed agent's container runs as. Ignored unless sandbox is true.
 		// REQUIRED, not cosmetic: runAsNonRoot does not ask "is this image non-root", it asks
