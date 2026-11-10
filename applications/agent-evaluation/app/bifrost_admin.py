@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 KEY_VALUE_PREFIX = "sk-bf-"
 _PATH = "/api/governance/virtual-keys"
+# Bifrost denies every provider key to a virtual key whose provider config omits
+# key_ids (allow_all_keys false, no keys), so each judge call fails with "no
+# keys found for provider". The wildcard lets the key use the provider's
+# configured keys; allowed_models still limits it to the judge model.
+PROVIDER_KEY_IDS = ("*",)
 
 
 class BifrostAdminError(Exception):
@@ -42,6 +47,9 @@ def vk_name(
     payload = json.dumps(
         {
             "models": sorted(models),
+            # Part of the hash so a key minted without provider-key access gets
+            # a new name, and is replaced instead of reused.
+            "provider_key_ids": list(PROVIDER_KEY_IDS),
             "budget_usd": float(budget_usd),
             "budget_reset": budget_reset,
             "rate_limit_requests": int(rl_requests),
@@ -114,7 +122,12 @@ class BifrostAdmin:
                 "Report mode only; do not edit by hand."
             ),
             "provider_configs": [
-                {"provider": "bedrock", "weight": 1, "allowed_models": list(models)}
+                {
+                    "provider": "bedrock",
+                    "weight": 1,
+                    "allowed_models": list(models),
+                    "key_ids": list(PROVIDER_KEY_IDS),
+                }
             ],
             "budgets": [{"max_limit": float(budget_usd), "reset_duration": budget_reset}],
             "rate_limit": {

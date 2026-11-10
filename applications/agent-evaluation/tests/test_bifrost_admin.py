@@ -26,6 +26,43 @@ def test_name_is_prefixed_and_config_hashed():
     assert vk_name(("us.amazon.nova-pro-v1:0",), 30.0, "1M", 2000, "1h") != NAME
 
 
+def _legacy_name() -> str:
+    """The name a key got before provider_key_ids joined the hash (no key access)."""
+    import hashlib
+
+    payload = json.dumps(
+        {
+            "models": ["us.amazon.nova-pro-v1:0"],
+            "budget_usd": 20.0,
+            "budget_reset": "1M",
+            "rate_limit_requests": 2000,
+            "rate_limit_reset": "1h",
+        },
+        sort_keys=True,
+    )
+    return "oap-harness-judge-" + hashlib.sha256(payload.encode()).hexdigest()[:8]
+
+
+@respx.mock
+def test_replaces_a_key_minted_without_provider_key_access():
+    legacy = _legacy_name()
+    assert legacy != NAME
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(
+            200, json={"virtual_keys": [{"id": "vk0", "name": legacy, "value": "sk-bf-old"}]}
+        )
+    )
+    create = respx.post(KEYS).mock(
+        return_value=httpx.Response(
+            200, json={"virtual_key": {"id": "vk1", "name": NAME, "value": "sk-bf-new"}}
+        )
+    )
+    delete = respx.delete(f"{KEYS}/vk0").mock(return_value=httpx.Response(200, json={}))
+    with httpx.Client() as client:
+        assert admin(client).ensure_judge_key(*ARGS, known=(legacy, "sk-bf-old")) == "sk-bf-new"
+    assert create.called and delete.called
+
+
 @respx.mock
 def test_creates_the_key_when_absent():
     respx.get(KEYS).mock(return_value=httpx.Response(200, json={"virtual_keys": []}))
@@ -38,8 +75,15 @@ def test_creates_the_key_when_absent():
         assert admin(client).ensure_judge_key(*ARGS) == "sk-bf-new"
     body = json.loads(create.calls.last.request.content)
     assert body["name"] == NAME
+    # key_ids ["*"]: without it Bifrost allows the key no provider key and every
+    # judge call fails with "no keys found for provider" (seen live, Bifrost v1.5.0).
     assert body["provider_configs"] == [
-        {"provider": "bedrock", "weight": 1, "allowed_models": ["us.amazon.nova-pro-v1:0"]}
+        {
+            "provider": "bedrock",
+            "weight": 1,
+            "allowed_models": ["us.amazon.nova-pro-v1:0"],
+            "key_ids": ["*"],
+        }
     ]
     assert body["budgets"] == [{"max_limit": 20.0, "reset_duration": "1M"}]
     assert body["rate_limit"] == {"request_max_limit": 2000, "request_reset_duration": "1h"}

@@ -1420,8 +1420,11 @@ judge key stays hub-only, as D4 decided.
 - **The gap, stated:** minting relies on Bifrost's management API being open
   in-cluster, which is true only while governance auth is off (the current
   config). When #18 turns auth on, set `mint: false` and let a platform minter
-  own the Secret. Unverified on a live Bifrost: `allowed_models` matching
-  `us.amazon.nova-pro-v1:0`, and that listing keys returns the value.
+  own the Secret. Measured on the hub (Bifrost v1.5.0): the key's provider
+  config must carry `key_ids: ["*"]`, because a config without `key_ids` is
+  allowed no provider key and every judge call fails with "no keys found for
+  provider"; `allowed_models` matching `us.amazon.nova-pro-v1:0` works and
+  blocks other models; listing keys returns the value.
 
 ---
 
