@@ -372,6 +372,46 @@ second owner of the same object names is exactly the failure
 `agent-sandbox/templates/10-runtimeclasses.yaml` already records against `kata-deploy`: both apps
 permanently OutOfSync.
 
+## 6.1 Known footgun: two components, one name
+
+Found by `scripts/test-isolation-matrix.sh` (row D1) rather than by review, and worth stating because
+this change makes it easier to hit: pairing an agent with its own pool in one Application invites
+naming them similarly.
+
+**KubeVela resolves a component's type by NAME.** Two components sharing a name are not rejected —
+the second definition wins for both. An Application with an `agent` and a `sandbox` both called
+`foo` renders:
+
+```
+SandboxWarmPool/foo     <- the agent's workload, replaced
+ServiceAccount/foo      <- emitted twice
+Service/foo-stable      <- still here, selecting a Rollout that does not exist
+Service/foo-preview
+ConfigMap/foo-card
+HTTPRoute/foo
+(no Rollout at all)
+```
+
+Nothing errors, at render or at apply. The agent is simply never deployed, while every object that
+advertises it still exists — which is the worst available shape, because the gateway route resolves
+and the Application reports healthy.
+
+Neither component can guard against it: KubeVela renders components independently, so CUE in one
+cannot see the other. Three things mitigate it instead: the matrix row, which counts emitted
+`(kind, name)` pairs across the whole Application; comments in `sandbox.cue` and
+`example-agent-session-isolation.yaml`; and the examples themselves naming the pair distinctly
+(`data-analyst` / `analyst-session`).
+
+Not a collision, and asserted as such so a future rename does not quietly make it one: a sandbox
+`X` and a sandbox `X-template`. The first emits `SandboxTemplate/X-template`, the second
+`SandboxWarmPool/X-template` — same name, different kinds, which Kubernetes allows (matrix row D2).
+
+Across Applications there is no such ambiguity and no silent merge, but there is still a conflict:
+two Applications in one namespace each declaring a pool of the same name fight over all four of its
+objects, and whichever syncs last owns resources the other believes it manages (matrix row D3).
+That is ordinary Kubernetes name collision rather than anything new here, and the matrix detects it
+by intersecting emitted objects across renders.
+
 ## 7. Kata is not impacted
 
 Verified as a property of the render, not an intention:
@@ -429,6 +469,7 @@ value check uses a non-default.
 | `scripts/nitro/download-runtime-binaries.sh` | signature `Verified OK`; all 8 files `OK` against the signed manifest |
 | `scripts/nitro/gen-cedar-policy.sh` (stub generator) | resolves `SandboxTemplate/analyst-session-template` and `Rollout/regulated-assistant` from their Applications |
 | `scripts/nitro/verify-isolation.sh` on a non-sandboxed pod | correctly reports no `runtimeClassName`, exits 1 |
+| **`scripts/test-isolation-matrix.sh`** — 21 examples, 10 composition rows, 11 guard rows, 5 collision rows | **0 failures**, 4 skips (examples needing appmod-blueprints traits) |
 
 ### 9.2 Outstanding — runtime, on a sandbox-capable node
 

@@ -328,6 +328,26 @@ spec:
         	}
         }
 
+        // NAME THIS COMPONENT SOMETHING NO OTHER COMPONENT IN THE APPLICATION USES,
+        // and in particular not the same as the agent that claims from it.
+        //
+        // KubeVela resolves a component's TYPE by name. Two components sharing a name
+        // do not conflict and are not rejected -- the second definition wins for
+        // both. An Application with an `agent` and a `sandbox` both called `foo`
+        // renders a SandboxWarmPool where the agent's Rollout should be, keeps the
+        // agent's Services, Agent Card and HTTPRoute pointing at a workload that does
+        // not exist, and emits ServiceAccount/foo twice. Nothing errors, at render or
+        // at apply.
+        //
+        // This component cannot guard against it: KubeVela renders components
+        // independently, so CUE here cannot see the other one. What catches it is
+        // scripts/test-isolation-matrix.sh (row D1), which counts emitted
+        // (kind, name) pairs across the whole Application.
+        //
+        // Note that <name>-template and <name>-sandbox are DERIVED from this name, so
+        // also avoid naming one pool after another's template -- though that case is
+        // harmless today, because those collide only on kind+name together and
+        // Kubernetes allows one name across two kinds (matrix row D2).
         parameter: {
         	// Required fields
         	// +usage=What this sandbox is for. Published on the sandbox card so an

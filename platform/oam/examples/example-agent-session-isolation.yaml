@@ -128,6 +128,14 @@ spec:
         - type: gateway-identity
 
     # ── The per-session instance: declared once, instantiated per session ────
+    #
+    # THE NAME MUST DIFFER FROM THE AGENT'S. `data-analyst` and
+    # `analyst-session` here, deliberately. KubeVela resolves a component's type
+    # by name, so two components sharing one name are not rejected -- the second
+    # definition wins for both, and an agent and a sandbox both called `foo`
+    # render a warm pool where the agent's Rollout should be, with the agent's
+    # Services and gateway route left pointing at a workload that does not
+    # exist. Nothing errors. scripts/test-isolation-matrix.sh row D1 asserts it.
     - name: analyst-session
       type: sandbox
       properties:
