@@ -84,3 +84,17 @@ oam-agent-components:
       # sandbox: true at admission instead.
       sandboxRuntimeClass: '{{default "isolated-sandbox" (index .metadata.annotations "sandbox_runtime_class")}}'
       confidentialSandboxRuntimeClass: '{{default "confidential-sandbox" (index .metadata.annotations "confidential_sandbox_runtime_class")}}'
+      # Whether this cluster can run the per-session isolation tiers (agent
+      # component, properties.isolation: tools | session). "false" unless the
+      # cluster secret says otherwise, because both tiers need the agent_sandbox
+      # addon -- the only source of the SandboxTemplate / SandboxWarmPool /
+      # SandboxClaim CRDs -- and an agent image that claims per session.
+      #
+      # It is a separate annotation from enable_agent_sandbox on purpose: having
+      # the CRDs is necessary but not sufficient, and a cluster that has the
+      # operator but not a claiming agent image should still reject
+      # isolation: session rather than deploy an agent that shares one process
+      # between every user.
+      #
+      # To turn it on: annotate the cluster secret session_isolation: "true".
+      sessionIsolationEnabled: '{{default "false" (index .metadata.annotations "session_isolation")}}'
