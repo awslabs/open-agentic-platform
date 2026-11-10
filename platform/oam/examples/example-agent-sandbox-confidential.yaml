@@ -1,0 +1,106 @@
+# Confidential agent — the cluster operator is outside the trust boundary.
+#
+# `sandbox: true` alone (example-agent-sandbox.yaml) protects the NODE from the
+# agent. Adding `sandboxMode: confidential` also protects the AGENT from the
+# node: a cluster administrator cannot read the agent's memory, the overlay
+# filesystem is encrypted, `kubectl exec` and stdin are denied from the host, and
+# the guest attests its measurements to AWS KMS before any secret is released to
+# it.
+#
+# WHO THIS IS FOR: an agent handling regulated data on a cluster whose operators
+# are not cleared for that data, a multi-tenant platform where the platform team
+# must be outside the tenant's boundary, or anywhere "the admin could read it" is
+# an audit finding.
+#
+# WHAT IT COSTS, up front, because none of it is subtle:
+#
+#   1. kubectl exec and stdin STOP WORKING on this agent. Logs still work. If
+#      your runbook starts with "exec into the pod", rewrite it first.
+#   2. Every field the Cedar policy pins -- image digest, args, environment
+#      variables, mounts, capabilities, security settings -- becomes part of a
+#      deployment artifact you have to regenerate. A new image digest alone
+#      invalidates the policy, and a stale policy does not degrade: the pod is
+#      DENIED.
+#   3. 512Mi of RuntimeClass overhead per pod instead of 256Mi, and a slower
+#      start, because the overlay is encrypted.
+#   4. It only delivers confidentiality once something VERIFIES the attestation.
+#      That something is a KMS key policy with kms:RecipientAttestation
+#      conditions. Without it the measurements are recorded and never checked,
+#      and you have memory isolation with an attestation-shaped hole. See
+#      examples/nitro-sandbox/README.md.
+#
+# If 1 and 2 are unacceptable but you want the isolation, use
+# sandboxMode: isolated with a Cedar policy generated with --deny-exec: that
+# stops operators shelling in, without the pinning or the attestation work.
+#
+# PRECONDITIONS
+#   1. kubectl get runtimeclass confidential-sandbox
+#      A Kata cluster has no equivalent and this Application is REJECTED at
+#      admission there, rather than quietly given an ordinary microVM that
+#      cannot attest anything.
+#   2. A Cedar policy generated from THIS Application's rendered pod template:
+#        scripts/nitro/gen-cedar-policy.sh \
+#          --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
+#          --component regulated-assistant --profile confidential
+#      Paste the base64 below; put the printed PCR17 in the KMS key policy.
+#      Generating it from the FINAL spec matters: run it after any mutating
+#      webhook, or the policy will not match the pod that actually starts.
+#   3. EKS Pod Identity on this agent's ServiceAccount, so the guest can reach
+#      KMS. IMDS inside a sandbox serves only placement metadata -- IAM
+#      credentials are NOT available through it.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: regulated-assistant
+  namespace: default
+spec:
+  components:
+    - name: regulated-assistant
+      type: agent
+      properties:
+        sandbox: true
+        sandboxMode: confidential
+
+        # Base64 Cedar policy, rendered as the pod template's
+        # sandbox.amazonaws.com/policy annotation and measured into PCR17.
+        # REQUIRED in this mode: without it the sandbox applies a permissive
+        # built-in default that allows exec and stdin from the parent instance,
+        # so the operator this mode excludes could still read the agent -- and
+        # PCR17 would attest nothing. Omitting it is rejected at admission.
+        #
+        # The placeholder below is NOT a working policy. Generate yours.
+        cedarPolicy: "REPLACE_ME_WITH_BASE64_CEDAR_POLICY"
+
+        description: "Assistant over regulated data; cluster operators excluded"
+        systemMessage: |
+          You are an assistant working with regulated customer records.
+          Never include an identifier in a response unless the caller supplied it.
+        modelConfig:
+          modelId: claude-sonnet
+
+        # PIN THE AGENT IMAGE BY DIGEST. The platform default (global.agentImage)
+        # is a tag, and a tag that moves produces a policy mismatch and a denied
+        # pod. In confidential mode the digest is part of the deployment
+        # artifact, so name it here and regenerate the policy when it changes.
+        #
+        # Replace with the digest of the agent image your platform ships.
+        image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+        # One replica, deliberately. Each replica is a separate microVM with its
+        # own attestation, which is fine -- but every replica runs the same
+        # pinned spec, so scaling up does not weaken anything. Keep it at 1 until
+        # you have a memory provider, for the usual reason: the in-pod session
+        # cache has no A2A affinity.
+        replicas: 1
+
+        registerWithGateway: true
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+      traits:
+        - type: gateway-identity
