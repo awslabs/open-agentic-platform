@@ -39,7 +39,109 @@ namespace: agent-sandbox-system
 # on its registry entry): this chart owns the RuntimeClasses, template, network
 # policy, and pool-manager.
 
+# ── Isolation runtime for the warm pool ──────────────────────────────────────
+# WHICH microVM technology the SandboxTemplate (and therefore every warm and
+# claimed sandbox) runs on. One value, two paths, and the only thing that decides
+# whether the `nitro:` block below or the `kata:` block applies.
+#
+#   nitro  (default) AWS Nitro Sandboxes. A Firecracker microVM per pod,
+#          hardware-isolated by the Nitro hypervisor, with NO node layer of our
+#          own: on EKS Auto Mode (k8s 1.36+) the isolated-sandbox and
+#          confidential-sandbox RuntimeClasses already exist and a
+#          sandbox-capable node is provisioned on demand.
+#   kata   Kata Containers, exactly as this chart has always done it. Needs the
+#          self-managed nested-virt node pool (kata_nodepool) AND the runtime
+#          installer (agent_sandbox_kata) first, or every warm pod sits Pending
+#          forever.
+#
+# WHY NITRO IS THE DEFAULT. Both of Kata's prerequisites ship OFF in every
+# overlay in this repo (kata_nodepool: false, agent_sandbox_kata: false), so a
+# cluster that enables this chart and nothing else gets a warm pool that cannot
+# place a single pod. The Nitro path has no such prerequisite. The Kata path is
+# unchanged and fully supported -- set runtime: kata and nothing else here moves.
+#
+# Changing this value recreates the SandboxTemplate, so the pool refills onto the
+# new runtime's nodes.
+runtime: nitro
+
+# ── AWS Nitro Sandboxes ──────────────────────────────────────────────────────
+# Applies only when runtime is nitro.
+nitro:
+  # Trust model for the warm pool.
+  #
+  #   isolated     The NODE is trusted, the workload is not. Protects the node
+  #                and every other pod from whatever runs inside. exec, stdin,
+  #                logs and stats all work -- which is what lets the Dark Factory
+  #                drive a claimed coder.
+  #   confidential The NODE is untrusted too. Cluster administrators cannot read
+  #                the sandbox's memory, the overlay is encrypted, and exec and
+  #                stdin are DENIED from the host.
+  #
+  # confidential REQUIRES cedarPolicy below, and a consumer that does not need
+  # exec: the Dark Factory coder flow does, so confidential is NOT a drop-in for
+  # it. It is here for consumers that drive a sandbox over its own API.
+  mode: isolated
+
+  # THIS CHART DOES NOT RENDER THE NITRO RUNTIMECLASSES, and must not. Unlike the
+  # Kata classes below -- which this chart owns precisely because kata-deploy
+  # cannot express their tolerations -- isolated-sandbox and confidential-sandbox
+  # are owned by EKS: Auto Mode ships them with the cluster, and outside Auto Mode
+  # they come from the Nitro Sandbox AMI procedure. Rendering our own copies would
+  # put this chart in a permanent OutOfSync fight with the cluster over the same
+  # two object names, which is the exact failure the Kata/kata-deploy ownership
+  # note above records.
+  #
+  # So these are NAMES THIS CHART SELECTS, not objects it creates. Verify they
+  # exist before enabling the warm pool:
+  #   kubectl get runtimeclass isolated-sandbox confidential-sandbox
+  runtimeClasses:
+    isolated:
+      name: isolated-sandbox
+      # Documented here, NOT applied: the RuntimeClass object already carries
+      # overhead.podFixed (256Mi + one eks.amazonaws.com/nitro-sandbox slot for
+      # isolated, 512Mi for confidential) and the
+      # eks.amazonaws.com/nitro-sandbox: "true" nodeSelector, which the
+      # RuntimeClass admission controller force-merges onto every pod selecting
+      # the class. Nitro classes carry no taint, so unlike the Kata path the pod
+      # spec needs no toleration either.
+      overheadMemory: 256Mi
+    confidential:
+      name: confidential-sandbox
+      overheadMemory: 512Mi
+
+  # Base64 Cedar policy, attached to the warm-pool pod template as
+  # sandbox.amazonaws.com/policy. REQUIRED for mode: confidential, optional for
+  # isolated.
+  #
+  # The policy is enforced from INSIDE the guest -- which images may load, which
+  # containers may run, whether exec, stdin and log reads are allowed -- so it
+  # survives a compromised parent instance, and in confidential mode it is
+  # measured into attestation register PCR17, which is what a KMS key policy
+  # pins.
+  #
+  # It pins the EXACT pod spec, so regenerate it whenever this chart's rendered
+  # pod template changes -- a new coderTemplate.image digest alone is enough --
+  # with scripts/nitro/gen-cedar-policy.sh. A stale policy does not degrade
+  # quietly: the sandbox is denied.
+  cedarPolicy: ""
+
+  # Boot each sandbox with NO network device: no DNS, no NTP, no IMDS, no Pod
+  # Identity, nothing routable in either direction.
+  #
+  # OFF for the Dark Factory coder, which must reach GitHub and Bifrost. It is
+  # the right setting for a pool that runs model-written code with no business
+  # calling out -- and it is strictly stronger than the egress NetworkPolicy
+  # below, because the device is ABSENT rather than filtered, so a compromised
+  # workload cannot talk its way around it.
+  #
+  # Incompatible with mode: confidential (no route to AWS KMS) and with image
+  # signature verification (no route to AWS Signer). logs, exec, stdin and stats
+  # keep working over vsock.
+  networkIsolated: false
+
 # ── Kata micro-VM runtime ────────────────────────────────────────────────────
+# Applies only when runtime is kata. UNCHANGED by the Nitro work above: every
+# value, class and comment below behaves exactly as it always has.
 kata:
   # VMM the WARM POOL (SandboxTemplate) runs on — a key of runtimeClasses below.
   # Flip this one value to swap the VMM for every warm/claimed sandbox:
