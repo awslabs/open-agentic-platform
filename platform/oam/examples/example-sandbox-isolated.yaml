@@ -133,3 +133,78 @@ spec:
         # ZERO, so eviction never fires on an instance that fills its disk.
         workspacePath: /workspace
         workspaceSizeGi: 4
+
+# -----------------------------------------------------------------------------
+# HOW A SESSION GETS AN INSTANCE - the pattern that works today, with nothing
+# else built
+#
+# This is worth reading before the `isolation:` tiers on the agent component,
+# because it is the sandbox used directly and it needs NO MCP server, NO code
+# interpreter and NO change to any agent image. A caller creates a SandboxClaim;
+# the operator binds a warm instance; the caller drives it and deletes the
+# claim. The Dark Factory has run exactly this shape on this platform since V2 -
+# an Argo Workflows `resource` step creates the claim, the coder runs
+# autonomously inside, and an `onExit` step releases it.
+#
+# One claim per session, task, or whatever your unit of isolation is:
+#
+#   apiVersion: extensions.agents.x-k8s.io/v1beta1
+#   kind: SandboxClaim
+#   metadata:
+#     # Name it after the thing being isolated. This IS the idempotency key:
+#     # the same session re-claiming finds its own instance instead of a second
+#     # one, which is what makes a retry safe.
+#     name: session-7f3a9c
+#     namespace: default
+#     labels:
+#       # Label whatever your reaper selects on. The DF reaper CronJob finds
+#       # abandoned claims this way, because a claim whose caller died is the
+#       # one leak this model has.
+#       app.kubernetes.io/name: code-session
+#   spec:
+#     # The POOL, not the template. warmPoolRef is the claim's only required
+#     # field - which is why the sandbox component renders a pool even at
+#     # warmPool: 0.
+#     warmPoolRef:
+#       name: code-session
+#     lifecycle:
+#       # The TTL this component DECLARED on its sandbox card, applied here.
+#       # The card exists so a claimer reads one value instead of hardcoding it:
+#       #   kubectl get cm code-session-sandbox -o jsonpath='{.data.idleTimeout}'
+#       ttlSecondsAfterFinished: 900
+#     # Per-session input. The template must opt in - envVarsInjection: Allowed
+#     # (the component default) lets a claim ADD variables but not overwrite the
+#     # template's own, so a claim cannot repoint the model gateway. With the
+#     # operator default of Disallowed the claim fails with
+#     # reason=EnvVarsInjectionRejected.
+#     env:
+#       - { containerName: code-session, name: SESSION_ID, value: "7f3a9c" }
+#       - { containerName: code-session, name: USER_SUBJECT, value: "alice@example.com" }
+#
+# Then wait for the binding and read where it landed:
+#
+#   kubectl wait --for=jsonpath='{.status.conditions[0].status}'=True \
+#     sandboxclaim/session-7f3a9c
+#   kubectl get sandboxclaim session-7f3a9c -o jsonpath='{.status.sandbox.name}'
+#
+# ...drive the instance over its Service (service: true above) or with
+# `kubectl exec`, and release it when the session ends:
+#
+#   kubectl delete sandboxclaim session-7f3a9c
+#
+# RELEASE EXPLICITLY RATHER THAN WAITING OUT THE TTL. The idle timeout is the
+# backstop for a caller that died, not the normal path. Waiting for it on every
+# finished session is the difference between a warm pool that recycles and one
+# that is permanently exhausted.
+#
+# WHO THE CALLER IS, in practice:
+#   - An orchestrator. Argo Workflows for the Dark Factory; any controller,
+#     CronJob or job runner for batch work. Works today.
+#   - A service of your own that fronts users and holds the session map.
+#     Works today.
+#   - The OAP agent component, via `isolation: tools` or `isolation: session`.
+#     The declaration, the claim RBAC and the SANDBOX_* env are rendered; the
+#     agent-side loop that does the above on each session is not written yet,
+#     which is why those tiers are gated off by default
+#     (global.sessionIsolationEnabled). See
+#     example-agent-session-isolation.yaml.
