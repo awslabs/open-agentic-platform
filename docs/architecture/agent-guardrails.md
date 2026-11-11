@@ -1117,12 +1117,14 @@ sequenceDiagram
 ### Which concern is enforced at which hop
 
 This is the map the word "guardrails" usually hides, and most of it already
-exists. Only the amber row is new work.
+exists. Green is covered today, amber is this design, blue is designed elsewhere
+and red is a gap with no mechanism at all.
 
 ```mermaid
 flowchart TB
     classDef have fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef new fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef other fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef gapn fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 
     subgraph CALLER["Caller → agent"]
@@ -1133,8 +1135,10 @@ flowchart TB
         S["Spend + rate<br/>Bifrost governance — needs VK"]:::gapn
     end
     subgraph TOOL["Agent → tool"]
-        T["Tool authorization<br/>mcpServers / mcpAccess / authPolicy"]:::have
-        TC["Tool-call CONTENT<br/>not inspected by anything"]:::gapn
+        T["Tool authorization, stateless<br/>mcpServers / mcpAccess / authPolicy"]:::have
+        TP["Tool authorization, stateful<br/>Cedar or OPA via ExtMCP — #152"]:::other
+        TC["Tool-call CONTENT<br/>ExtMCP can see it — #152"]:::other
+        TR["Tool rate limit<br/>traffic.rateLimit, native"]:::have
     end
     subgraph RUNTIME["Agent runtime"]
         SB["Sandboxing<br/>Kata micro-VMs, AgentCore"]:::have
@@ -1146,6 +1150,10 @@ flowchart TB
 
     CALLER --> MODEL --> TOOL --> RUNTIME --> AFTER
 ```
+
+Read that way, only **two** boxes have no mechanism at anyone's hop: agent egress
+and model-call spend. Both are prerequisites this design depends on rather than
+owns (§D7).
 
 | Actor | Owns |
 |---|---|
