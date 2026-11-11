@@ -1193,6 +1193,14 @@ promotion. `mode: gate` is rejected at admission; gate mode and an Argo Rollouts
 `AnalysisTemplate` are deferred, and no decision is taken here on the channel a
 future gate reads.
 
+**Follow-up for gate mode: an exact revision check per reply.** In report mode
+a run is tied to its revision by timing only (the supersede rule under
+"Execution"). Once a result can block a promotion that is not enough: the agent
+should expose its `rollouts-pod-template-hash` through the downward API (agent
+component CUE plus the `strands-agent` base image, e.g. in the A2A reply or
+card), and the runner should check it on every reply and treat a reply from
+another revision as superseding the run.
+
 A developer turns it on in the `agent` component
 ([example](../../platform/oam/examples/example-agent-harness.yaml)):
 
@@ -1364,9 +1372,18 @@ Limitation: an agent image that is not the platform base image and does not map
   themselves are the "already ran" state: a reconciler restart re-publishes from
   existing results and never re-runs a revision. `backoffLimit: 0`: a failed run
   is reported, never retried, because a retry would drive the agent again.
-- **Superseded:** if the revision moves while an older run is still active, that
-  Job is deleted, an Event is recorded, `runs_total{result="superseded"}` counts
-  it, and nothing is published for it.
+- **Superseded:** a run is superseded if the revision moved before the
+  reconciler saw it finish: either the Job is still active when a newer
+  revision is selected by `-preview`, or the reconciler last saw it active and,
+  when it next finds it finished, `-preview` no longer selects the run's
+  revision (its cases may have reached the newer pods). That Job and its
+  result are deleted, a `HarnessRunSuperseded` Event is recorded,
+  `runs_total{result="superseded"}` counts it, and nothing is published for it;
+  the new revision gets its own run. Accepted cost: a valid run that ended just
+  before a rollout within the same pass interval is discarded too. The check
+  uses what this process saw, so after a reconciler restart a run already
+  finished is taken as it is. Gate mode needs an exact check ("Follow-up for
+  gate mode" at the start of §4b).
 - **Pruning:** finished Jobs and their result ConfigMaps are kept to
   `harness.historyLimit` (default 3) per agent, and removed when the agent's
   `<agent>-harness` ConfigMap goes away.

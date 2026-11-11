@@ -755,6 +755,14 @@ What to expect, and what each mismatch means:
   Job hit `runTimeoutSeconds`); read step 3's log and `result.json`.
 - A first deploy runs as `trigger="first-revision"` against pods that also serve
   users, because `-preview` and `-stable` select the same ReplicaSet then.
+- A `HarnessRunSuperseded` Event "… was discarded: it finished after revision
+  … replaced it in the preview" and no result for that revision: the revision
+  moved before the reconciler saw the run finish, so the run is dropped and
+  the new revision runs on its own (§4b, "Superseded"). A run that ended just
+  before a rollout in the same pass interval is dropped too; that is the
+  accepted cost in report mode. Gate mode needs the exact per-reply revision
+  check in the §4b follow-up (the agent exposes its pod-template-hash through
+  the downward API, the runner checks it on every reply).
 
 ## Re-verifying the Langfuse API after an upgrade
 

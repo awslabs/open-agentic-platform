@@ -10,7 +10,9 @@ Per pass:
    already selects the newest ReplicaSet (`blueGreen.previewSelector ==
    currentPodHash`). The very first revision of an agent runs too, as the
    baseline (`trigger=first-revision`).
-4. Collect finished Jobs' result ConfigMaps and publish oap_agent_harness_* for
+4. Discard runs this process saw active that finished after the preview
+   moved to another revision (superseded). Collect the other finished Jobs'
+   result ConfigMaps and publish oap_agent_harness_* for
    each agent's latest finished run on its declared dataset, against its
    declared threshold.
 5. Prune history.
@@ -143,6 +145,12 @@ class HarnessLoop:
         # process. In memory on purpose: a restart re-announces at most the
         # retained history, which is bounded by historyLimit.
         self._reported: set[str] = set()
+        # Jobs this process saw active at the end of its last pass. A run of
+        # this set that has finished since, while the agent's preview moved to
+        # another revision, may have sent its cases to the newer pods: it is
+        # superseded, not a result. In memory on purpose: after a restart the
+        # set is empty and finished runs are taken as they are.
+        self._seen_active: set[str] = set()
 
     # ── judge model and key ──────────────────────────────────────────────
 
@@ -293,13 +301,26 @@ class HarnessLoop:
                     "harness: %s failed: %s %s", decl.key, exc.status, exc.reason
                 )
 
-        finished = self._collect(jobs, results, by_key)
+        undecided: set[str] = set()
+        try:
+            if not self._supersede_finished(jobs, results, by_key, undecided):
+                ok = False
+        except ApiException as exc:  # a failed delete: decided again next pass
+            ok = False
+            undecided |= {j.metadata.name for j in jobs if j.metadata.name in self._seen_active}
+            logger.error("harness supersede failed: %s %s", exc.status, exc.reason)
+        finished = self._collect(
+            [j for j in jobs if j.metadata.name not in undecided], results, by_key
+        )
         self._publish(declarations, finished, held)
         try:
             self._prune(jobs, results, finished, set(by_key) | set(held))
         except ApiException as exc:
             ok = False
             logger.error("harness prune failed: %s %s", exc.status, exc.reason)
+        self._seen_active = undecided | {
+            j.metadata.name for j in jobs if _finished_condition(j)[0] is None
+        }
         return ok
 
     def _maybe_start(self, decl: HarnessDeclaration, jobs: list, available: set) -> None:
@@ -340,11 +361,8 @@ class HarnessLoop:
                     propagation_policy="Background",
                 )
                 jobs.remove(job)
-                self._metrics.harness_runs.labels(self._s.cluster, "superseded").inc()
-                self._recorder.normal(
-                    decl.namespace,
-                    decl.configmap,
-                    events.REASON_HARNESS_RUN_SUPERSEDED,
+                self._record_superseded(
+                    decl,
                     f"harness run for revision {_labels(job).get(LABEL_REVISION)} "
                     f"was stopped: revision {revision} replaced it",
                 )
@@ -536,6 +554,62 @@ class HarnessLoop:
             status="error",
             error=error,
         )
+
+    def _record_superseded(self, decl: HarnessDeclaration | None, message: str) -> None:
+        self._metrics.harness_runs.labels(self._s.cluster, "superseded").inc()
+        if decl is not None:
+            self._recorder.normal(
+                decl.namespace, decl.configmap, events.REASON_HARNESS_RUN_SUPERSEDED, message
+            )
+
+    def _supersede_finished(self, jobs: list, results: dict, by_key: dict, undecided: set) -> bool:
+        """Drop runs that finished after their revision moved, unseen by this process.
+
+        `_maybe_start` stops a run that is still active when a newer revision
+        appears. A run can also finish between two passes after the preview
+        Service already moved on (live campaign finding S2): its cases may
+        have reached the newer pods, so its result is not this revision's.
+        A Job this process last saw active, now finished, whose agent's
+        preview no longer selects its revision is superseded: deleted with its
+        result, counted, an Event, nothing published. If the Rollout cannot be
+        read, the decision waits for the next pass (`undecided`).
+        """
+        ok = True
+        for job in list(jobs):
+            name = job.metadata.name
+            if name not in self._seen_active or _finished_condition(job)[0] is None:
+                continue
+            labels = _labels(job)
+            try:
+                rollout = self._custom.get_namespaced_custom_object(
+                    "argoproj.io",
+                    "v1alpha1",
+                    labels.get(LABEL_AGENT_NS, ""),
+                    "rollouts",
+                    labels.get(LABEL_AGENT, ""),
+                )
+            except ApiException as exc:
+                if exc.status == 404:
+                    continue  # the agent is gone; pruning follows its declaration
+                logger.error(
+                    "harness supersede check for %s failed: %s %s", name, exc.status, exc.reason
+                )
+                undecided.add(name)
+                ok = False
+                continue
+            status = (rollout or {}).get("status") or {}
+            preview = (status.get("blueGreen") or {}).get("previewSelector")
+            revision = labels.get(LABEL_REVISION)
+            if not preview or preview == revision:
+                continue
+            self._delete_job(name, results)
+            jobs.remove(job)
+            self._record_superseded(
+                by_key.get(_agent_key(job)),
+                f"harness run for revision {revision} was discarded: it finished after "
+                f"revision {preview} replaced it in the preview",
+            )
+        return ok
 
     def _collect(self, jobs: list, results: dict, by_key: dict) -> list[_Finished]:
         finished: list[_Finished] = []

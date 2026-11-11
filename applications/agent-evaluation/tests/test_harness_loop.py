@@ -219,10 +219,73 @@ def test_new_revision_after_a_finished_run_keeps_history(settings, harness_setti
     loop.run_once()
     old = f.batch.created[0]["metadata"]["name"]
     f.batch.finish(old)
+    loop.run_once()  # the reconciler sees the run finish on its revision
     f.custom.set_rollout("team-a", "assistant", "rev2")
     loop.run_once()
     assert old not in f.batch.deleted
     assert f.batch.created[1]["metadata"]["annotations"]["harness.oap.io/trigger"] == "new-revision"
+
+
+def test_run_that_finished_after_the_revision_moved_is_superseded(
+    settings, harness_settings, catalog, metrics
+):
+    # Live finding (campaign Pass 3 S2, D5): the preview switched to rev2 five
+    # seconds after the rev1 Job started, the Job finished before the next
+    # pass, and was then reported and published as a completed rev1 run
+    # although its cases had reached the rev2 pods.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    old = f.batch.created[0]["metadata"]["name"]
+
+    f.custom.set_rollout("team-a", "assistant", "rev2")
+    write_result(f.core, old, d, "rev1", ["passed", "passed"])
+    f.batch.finish(old)
+    loop.run_once()
+
+    assert old in f.batch.deleted
+    assert (PLATFORM_NS, result_configmap_name(old)) not in f.core.configmaps
+    superseded = [n for n in f.events.normals if n[2] == REASON_HARNESS_RUN_SUPERSEDED]
+    assert len(superseded) == 1 and "rev1" in superseded[0][3] and "rev2" in superseded[0][3]
+    assert REASON_HARNESS_RUN_COMPLETED not in [n[2] for n in f.events.normals]
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_runs_total", {"cluster": "dev", "result": "superseded"}
+    ) == 1
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_runs_total", {"cluster": "dev", "result": "completed"}
+    ) is None
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+    assert not [
+        s for m in metrics.registry.collect() if m.name == "oap_agent_harness_info"
+        for s in m.samples if s.labels.get("revision") == "rev1"
+    ]
+    # rev2 gets its own run, as a new revision of the agent.
+    new = f.batch.created[1]
+    assert env_of(new)["HARNESS_REVISION"] == "rev2"
+    assert new["metadata"]["annotations"]["harness.oap.io/trigger"] == "new-revision"
+
+
+def test_restart_takes_a_finished_run_as_it_is(settings, harness_settings, catalog, metrics):
+    # The supersede check needs this process to have seen the run active; a
+    # restarted reconciler keeps today's behaviour and publishes the result.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    old = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, old, d, "rev1", ["passed"])
+    f.batch.finish(old)
+    f.custom.set_rollout("team-a", "assistant", "rev2")
+
+    restarted, _ = build(settings, harness_settings, catalog, metrics, [d], fakes=f)
+    restarted.run_once()
+
+    assert old not in f.batch.deleted
+    assert REASON_HARNESS_RUN_SUPERSEDED not in [n[2] for n in f.events.normals]
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_runs_total", {"cluster": "dev", "result": "completed"}
+    ) == 1
 
 
 def test_nothing_finished_publishes_no_pass_ratio(settings, harness_settings, catalog, metrics):
@@ -556,7 +619,7 @@ def test_history_limit_prunes_the_oldest(settings, harness_settings, catalog, me
         trigger = f.batch.created[-1]["metadata"]["annotations"]["harness.oap.io/trigger"]
         write_result(f.core, name, d, rev, ["passed"], finished_at=3_000.0 + i, trigger=trigger)
         f.batch.finish(name, at=2_000.0 + i)
-    loop.run_once()
+        loop.run_once()  # seen finished before the next revision
 
     assert set(f.batch.jobs) == set(names[1:])
     assert (PLATFORM_NS, result_configmap_name(names[0])) not in f.core.configmaps
