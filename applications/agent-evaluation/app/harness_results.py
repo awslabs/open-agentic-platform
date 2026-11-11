@@ -92,6 +92,12 @@ def summarize(
     passed = sum(1 for c in case_results if c.status == "passed")
     failed = sum(1 for c in case_results if c.status == "failed")
     errors = sum(1 for c in case_results if c.status == "error")
+    if status == "completed" and cases > 0 and errors == cases:
+        # Nothing was judged (agent or judge down for every case): an outage,
+        # so a run error with no ratio, never a 0% revision. The case results
+        # are kept so the reasons stay readable in result.json.
+        status = "error"
+        error = f"every case errored ({errors} of {cases}); first: {case_results[0].reason}"
     pass_ratio = passed / cases if status == "completed" and cases > 0 else None
     threshold_met = None if pass_ratio is None else pass_ratio >= threshold
     return RunResult(

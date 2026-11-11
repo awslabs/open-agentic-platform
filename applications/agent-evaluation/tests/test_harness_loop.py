@@ -276,6 +276,27 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     assert "promotion not affected" in completed[0][3]
 
 
+def test_run_where_every_case_errored_publishes_no_counts(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["error", "error", "error", "error"])
+    f.batch.finish(name)
+    loop.run_once()
+
+    for metric in ("cases", "passed", "failed", "case_errors", "pass_ratio", "threshold_met"):
+        assert sample(metrics, f"oap_agent_harness_{metric}") is None, metric
+    assert sample(metrics, "oap_agent_harness_threshold") == 0.5
+    info = [s for s in metrics.registry.collect() if s.name == "oap_agent_harness_info"][0].samples
+    assert [s.labels["status"] for s in info] == ["error"]
+    assert REASON_HARNESS_RUN_FAILED in f.events.reasons()
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_runs_total", {"cluster": "dev", "result": "error"}
+    ) == 1
+
+
 def test_failed_job_without_result_is_a_run_error(settings, harness_settings, catalog, metrics):
     loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
     f.custom.set_rollout("team-a", "assistant", "rev1")

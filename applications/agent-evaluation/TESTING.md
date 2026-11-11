@@ -750,8 +750,9 @@ What to expect, and what each mismatch means:
   check `oap_agent_harness_judge_key_present`. With `required: true` a missing
   key stops every run.
 - `oap_agent_harness_info{status="error"}` with no counts: the run failed (agent
-  unreachable within `readyTimeoutSeconds`, dataset invalid, or the Job hit
-  `runTimeoutSeconds`); read step 3's log and `result.json`.
+  unreachable within `readyTimeoutSeconds`, dataset invalid, every case errored
+  (agent or judge failing each call; `caseResults` keeps the reasons), or the
+  Job hit `runTimeoutSeconds`); read step 3's log and `result.json`.
 - A first deploy runs as `trigger="first-revision"` against pods that also serve
   users, because `-preview` and `-stable` select the same ReplicaSet then.
 

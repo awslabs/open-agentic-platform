@@ -109,6 +109,22 @@ def test_pass_fail_error_aggregation():
     assert all(c.startswith("oap-harness-abc123-") for c in agent.seen)
 
 
+def test_every_case_errored_is_a_run_error():
+    # Live finding (campaign S1): with the judge failing every call the run was
+    # published as completed with pass_ratio 0, so an outage read as a 0% revision.
+    agent = agent_fn({"input a": "good", "input b": "bad"})
+    judge = judge_fn({"good": JudgeError("judge returned HTTP 400"), "bad": JudgeError("judge returned HTTP 400")})
+    result = run_cases(dataset("a", "b"), CHECKS, runner_settings(), agent, judge)
+    assert result.status == "error"
+    assert "every case errored (2 of 2)" in result.error
+    assert "judge returned HTTP 400" in result.error
+    assert result.pass_ratio is None
+    assert result.threshold_met is None
+    assert [c.status for c in result.case_results] == ["error", "error"]
+    # It survives the ConfigMap round trip as an errored run.
+    assert parse_result(to_configmap_data(result)).status == "error"
+
+
 def test_threshold_met_when_ratio_reaches_it():
     agent = agent_fn({"input a": "good", "input b": "bad"})
     judge = judge_fn({"good": 0.9, "bad": 0.1})

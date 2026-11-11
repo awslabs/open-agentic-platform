@@ -1265,7 +1265,8 @@ The `expected-answer` check prompt lives in `files/harness/checks/`, not
 publishes it to Langfuse. It frames the input, the reference and the agent's
 answer as untrusted data and asks for only `{"score": <0..1>, "reasoning": ...}`.
 A case passes when `score >= casePassScore` (default 0.7). Any other judge
-reply is a case **error**, never a pass.
+reply is a case **error**, never a pass. A run in which every case errored is a
+run error, not a 0% run: nothing was judged.
 
 ### Contract 5: the harness metrics
 
