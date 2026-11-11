@@ -931,6 +931,38 @@ On the trace itself, a violation sets a Langfuse tag alongside the existing
 `langfuse.trace.tags` (`source:<chat|rca>`, agent name), so one trace shows the
 block in flight and the judge score afterwards.
 
+#### A decision records what decided it, not just what it decided
+
+Raised on #152 by @Sadrak2017 and adopted here, because it applies to a content
+verdict exactly as it does to an authorization one: a refusal that does not name
+the configuration that produced it is reproducible but not **explainable**. Replay
+a blocked prompt a week later, after the profile has been tuned, and a different
+answer is correct behaviour and useless evidence.
+
+Guardrails have two independently mutable inputs, and the proxy records both on
+every non-`allowed` decision:
+
+| Recorded | Why it moves on its own |
+|---|---|
+| `profileVersion` | the catalog is a chart value, so it changes on an addon release |
+| `guardrailVersion` | Bedrock guardrails are **versioned objects**, and `ApplyGuardrail` takes `guardrailVersion` as a required path parameter. The platform can publish a new version without the chart changing at all |
+
+So a decision record is the verdict **plus** the findings **plus** that pair, and
+`oap_agent_guardrail_info` carries both as labels so a dashboard can say which
+configuration a block came from. Two consequences worth stating:
+
+- **The pair belongs in the trace and in `info`, never in a per-request counter
+  label.** A version is low-cardinality on `info`; on
+  `oap_agent_guardrail_requests_total` it would multiply every series on each
+  release.
+- **A rollout makes replicas legitimately disagree.** During a chart rollout or a
+  guardrail-version publish, two proxy replicas hold different configuration, so
+  two identical prompts can get different verdicts and **both be right**. A test
+  asserting the replicas agree would hide that; the useful assertion is that the
+  record names the version explaining the difference. The same reasoning #104
+  applied to data age applies here, so the skew is a metric rather than something
+  inferred from a confused report.
+
 Alerts follow #104's rule that the platform pages on the **pipeline**, not on
 agent quality: a rising block rate is a product signal for the owning team, while
 the error rate, the fail-closed rate and staleness are platform signals. The
