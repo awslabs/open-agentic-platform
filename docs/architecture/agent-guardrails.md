@@ -583,6 +583,14 @@ wrong, which is the strongest available argument for being explicit:
 | Bedrock Guardrails | AWS documents the error codes and retry guidance and **publishes no recommendation at all** for what a safety-critical caller should do |
 | OAP's own `authPolicy` | the CRD warns `Deny` "is not recommended because expression failures fail to deny" — a CEL error **fails open** today |
 
+**One precedent gets it right, and it is the nearest neighbour.** agentgateway's
+MCP guardrail processor (`backend.mcp.guardrails.processors[].remote`, the hook
+#152 builds on) ships `failureMode` with **`FailClosed` as the documented
+default** — its table row reads "Fail closed (default) … Deny the request". So
+the posture argued for here is not novel; it is what the one adjacent
+implementation in OAP's own gateway already does, and the odd choice would be to
+depart from it.
+
 So the profile declares it, and the platform default is `block`:
 
 ```yaml
