@@ -130,7 +130,8 @@ the repository, not inferred from a chart name.
 
 | # | Concern | State | Where |
 |---|---|---|---|
-| 4 | **Tool authorization** | Covered, three layers | `mcpServers` (agent author) → `MCP_SERVER_NAMES`; `mcpAccess` (platform) → `traffic.authorization`; `authPolicy` (server team) → `backend.mcp.authorization` |
+| 4 | **Tool authorization, by name** | Covered, three layers | `mcpServers` (agent author) → `MCP_SERVER_NAMES`; `mcpAccess` (platform) → `traffic.authorization`; `authPolicy` (server team) → `backend.mcp.authorization` |
+| 4a | **Tool authorization, by call shape** | **Not covered** — arguments and ordering are invisible at the decision point | §3.10 |
 | 5 | **Reachability** | Covered | `agent-gateway`: `jwt-policy.yaml`, `caller-identity-policy.yaml`, `credential-passthrough-policy.yaml` |
 | 8 | **Sandboxing** | Covered where used | `agentcore-code-interpreter`, `agentcore-browser`, `agent-sandbox` (Kata micro-VMs) |
 | 9 | **Detection, post-hoc** | Covered | `agent-evaluation` addon: LLM-as-judge on sampled live traces, including a `safety` evaluator |
@@ -145,6 +146,14 @@ records why the two policies write **different** fields:
 
 That is the whole reason this design adds **no `tools:` key**. A third writer on
 `backend.mcp.authorization` would reintroduce that bug.
+
+**All three layers decide on the tool's *name*.** Row 4 is honest only with that
+qualifier, and row 4a is the part it leaves out. `mcpServers` is a list of server
+names, `mcpAccess` renders `jwt.sub in [...]`, and `authPolicy` renders CEL that
+agentgateway evaluates with the tool's identity in scope. Not one of them can
+express `s3_put` is allowed but not into the production bucket, or `issue_refund`
+is allowed but not twice. §3.10 is about that gap, which is what a reviewer
+should read row 4 as *excluding* rather than covering.
 
 ### 2.3 What OAP does not cover
 
