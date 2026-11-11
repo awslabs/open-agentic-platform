@@ -1,4 +1,4 @@
-# Agent Guardrails: Runtime Content, Topic and Action Control for OAP Agents
+# Agent Guardrails and Policies: Runtime Content, Topic and Tool-Call Control for OAP Agents
 
 | | |
 |---|---|
@@ -7,9 +7,17 @@
 | **Reviewers** | TBD |
 | **Target** | `agent` component, new `agent-guardrails` addon, `bifrost` chart |
 | **Date** | 2026-11-11 |
-| **Revision** | 2 |
+| **Revision** | 3 |
 | **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
-| **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 |
+| **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 and §3.10 |
+
+> **Why "and Policies".** Two different questions travel under the word
+> *guardrails*. One is probabilistic and about text — *is this content
+> acceptable?* — and a detector answers it. The other is deterministic and about
+> a call — *is this caller allowed to invoke this tool, with these arguments, in
+> this order?* — and only a policy evaluated against a schema answers that. The
+> first is §D1–D5. The second is §3.10, and it is the half the title used to
+> leave out.
 
 ## Scope
 
