@@ -39,7 +39,7 @@ metadata:
     # REGENERATE AND REPIN TOGETHER. Any change to a pinned field changes PCR17,
     # and the key stops releasing the layer key. A stale policy does not degrade
     # into something weaker -- the pod is denied.
-    sandbox.amazonaws.com/policy: "REPLACE_ME_WITH_BASE64_CEDAR_POLICY"
+    sandbox.amazonaws.com/policy: "UkVQTEFDRSBUSElTLiBHZW5lcmF0ZSB0aGUgcmVhbCBwb2xpY3kgd2l0aCBzY3JpcHRzL25pdHJvL2dlbi1jZWRhci1wb2xpY3kuc2ggLS1hcHAgPHRoaXMgZmlsZT4gLS1jb21wb25lbnQgPG5hbWU+IC0tcHJvZmlsZSBjb25maWRlbnRpYWw="
 spec:
   # confidential, not isolated: the parent instance is outside the trust
   # boundary. Memory is unreadable from the node, the overlay is encrypted, and
@@ -60,6 +60,11 @@ spec:
   # services/partition -- with everything else returning 404. There are no IAM
   # credentials to be had there.
   serviceAccountName: attested-demo
+  # REQUIRED by eks-nitro-sandbox-genpolicy --profile confidential, which
+  # refuses a manifest that leaves this unset: the kubelet injects a
+  # <SVC>_PORT variable per Service in the namespace, so the env set the
+  # policy pins is not knowable at generation time.
+  enableServiceLinks: false
 
   # REQUIRED for an encrypted image, not hardening. genpolicy cannot read
   # /etc/passwd out of encrypted layers, so a non-numeric USER directive (the
@@ -121,12 +126,3 @@ spec:
     - name: tmp
       emptyDir:
         sizeLimit: 256Mi
----
-# The ServiceAccount the Pod Identity association attaches to. The pod holds no
-# AWS credentials of its own; the association is what lets the guest get them.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: attested-demo
-  labels:
-    app.kubernetes.io/name: attested-demo

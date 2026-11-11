@@ -12,22 +12,70 @@
 # A confidential policy pins container admission fields -- image digest, args,
 # environment variables, mounts, capabilities, security settings -- so it has to
 # be generated from the FINAL spec and regenerated whenever any of them changes.
+#
+# Because the set of env vars is pinned exactly, anything that ADDS an env var
+# after generation breaks admission. Two of those are structural rather than
+# accidental, and this script handles both:
+#
+#   * EKS Pod Identity injects AWS_CONTAINER_CREDENTIALS_FULL_URI,
+#     AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE and a projected token volume into
+#     any pod with a service account. The generator has --with-pod-identity to
+#     account for them, and this script passes it automatically when the pod
+#     spec sets serviceAccountName (suppress with --no-pod-identity).
+#   * The kubelet injects a <SVC>_PORT_* set per Service in the namespace unless
+#     the pod sets enableServiceLinks: false. That set is not knowable at
+#     generation time, so --profile confidential REFUSES a manifest that leaves
+#     it unset. OAP emits it on every confidential pod template.
 # A new image digest alone is enough. A stale policy does not degrade quietly:
 # the pod is DENIED. Put this in the pipeline that produces your manifests.
 #
+# WHAT CONFIDENTIAL DOES NOT PROTECT
+#
+# The policy constrains what the HOST may ask the guest to run. It does not make
+# the pod opaque to whoever can author pod specs or reach the control plane:
+#
+#   * `kubectl exec` and `kubectl logs` go through the kubelet and work
+#     normally. In confidential mode this script therefore defaults to
+#     --deny-exec --deny-logs; pass --allow-exec-logs to keep them, knowing that
+#     anyone with exec on the namespace can read the agent's memory and secrets.
+#   * Anything the pod spec names, the parent can read: plain env values, mounted
+#     Secrets and CSI secrets, and EBS/EFS volumes. OAP passes Langfuse keys as
+#     plain env today, so those are visible to a namespace admin regardless of
+#     the policy.
+#   * EKS Pod Identity credentials are minted for the service account, not for
+#     the attested guest. Anyone who can run a pod with that service account can
+#     mint the same credentials.
+#
+# The property confidential mode DOES give you is attestation-gated KMS: a
+# ciphertext that only decrypts inside a guest whose measurement (PCR17 -- the
+# hash of this policy) matches. Restricting who may author pod specs in the
+# namespace is a prerequisite, not an optional extra.
+#
 # TWO SOURCES, AND THE DIFFERENCE MATTERS
 #
-#   --from rollout/<name>          Read the pod template from the LIVE object.
-#   --from sandboxtemplate/<name>  Post-webhook, so this is the spec that
-#                                  actually runs. Prefer it whenever the
-#                                  Application is already deployed.
+#   --from pod/<name>              Read a LIVE POD. This is the only source that
+#                                  is genuinely post-webhook: mutating webhooks
+#                                  run on the Pod, not on the template that
+#                                  produced it, so Pod Identity's injected
+#                                  AWS_CONTAINER_* env and its token volume --
+#                                  both of which a confidential policy PINS --
+#                                  appear here and nowhere else. Use this to
+#                                  produce the policy you actually ship.
+#   --from rollout/<name>          Read the pod template from the live object.
+#   --from sandboxtemplate/<name>  Likewise. These are closer to reality than an
+#                                  offline render (the live object carries
+#                                  whatever the controllers wrote back), but they
+#                                  are still TEMPLATES: no webhook mutation is
+#                                  visible in them.
 #   --app <file> --component <x>   Render the Application offline (helm template
 #                                  + vela dry-run). Right for a CI job that must
 #                                  produce the policy BEFORE anything deploys --
-#                                  but it cannot see mutating webhooks, so if
-#                                  your cluster injects sidecars or rewrites pod
-#                                  specs, verify against the live object before
-#                                  trusting it.
+#                                  but it is the furthest from the running pod.
+#
+# So: generate from --app in CI to get a policy at all, then regenerate from
+# --from pod/<name> once something is running and diff the two. A difference is
+# your admission chain mutating the pod, and in confidential mode it is the
+# difference between a pod that starts and a pod that is DENIED.
 #
 # usage:
 #   scripts/nitro/gen-cedar-policy.sh --from rollout/my-agent [options]
@@ -40,6 +88,14 @@
 #   --genpolicy <path>                           eks-nitro-sandbox-genpolicy binary
 #   --docker                                     run the generator in a Linux container
 #                                                (required on macOS: the binary is Linux ELF)
+#   --no-pod-identity                            do NOT pass --with-pod-identity even if the
+#                                                pod has a serviceAccountName. Only correct if
+#                                                EKS Pod Identity is not installed, or the
+#                                                policy is generated from a live pod that
+#                                                already carries the injected env and volume.
+#   --allow-exec-logs                            do NOT pass --deny-exec --deny-logs, which
+#                                                this script adds by default in confidential
+#                                                mode. See WHAT CONFIDENTIAL DOES NOT PROTECT.
 #   --                                           pass everything after this to genpolicy,
 #                                                e.g. -- --deny-exec --require-any-signer <arn>
 set -euo pipefail
@@ -53,6 +109,12 @@ NAMESPACE="default"
 OUT=""
 GENPOLICY=""
 USE_DOCKER=0
+POD_IDENTITY=auto
+DENY_EXEC_LOGS=auto
+# Declared, but never expanded as a bare "${EXTRA[@]}": bash 3.2 (the /bin/bash
+# every macOS ships) treats an EMPTY array as unset under `set -u`, so that
+# expansion aborts the script whenever nothing was passed after `--`. The
+# ${EXTRA[@]+...} form below is the portable spelling.
 EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -65,8 +127,10 @@ while [ $# -gt 0 ]; do
     --out)       OUT="$2"; shift 2 ;;
     --genpolicy) GENPOLICY="$2"; shift 2 ;;
     --docker)    USE_DOCKER=1; shift ;;
+    --no-pod-identity) POD_IDENTITY=off; shift ;;
+    --allow-exec-logs) DENY_EXEC_LOGS=off; shift ;;
     --)          shift; EXTRA=("$@"); break ;;
-    -h|--help)   sed -n '1,46p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '/^# usage:/,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -141,7 +205,25 @@ for d in yaml.safe_load_all(open(sys.argv[1])):
         yaml.safe_dump(d, open(os.path.join(sys.argv[2], '%s-%s.yaml' % (d['kind'], d['metadata']['name'])), 'w'),
                        default_flow_style=False, width=100000)
 PY
-  vela dry-run --offline -d "$WORK/defs" -f "$APP" > "$WORK/rendered.yaml"
+  # `vela dry-run --offline` is NOT reliably offline: vela 1.11 still builds a
+  # client first and exits 1 with nothing on stdout when there is no usable
+  # kubeconfig. Redirecting stdout to a file makes that look like a successful
+  # render of an empty Application, and the next stage then reports the far more
+  # confusing 'no pod template found'. Check it here, with the real cause.
+  if ! vela dry-run --offline -d "$WORK/defs" -f "$APP" \
+         > "$WORK/rendered.yaml" 2> "$WORK/vela-err.txt"; then
+    echo "vela dry-run --offline failed:" >&2
+    cat "$WORK/vela-err.txt" >&2
+    echo >&2
+    echo "Despite --offline, vela needs a readable kubeconfig to start -- it is" >&2
+    echo "never contacted. Point KUBECONFIG at any valid file." >&2
+    exit 1
+  fi
+  if [ ! -s "$WORK/rendered.yaml" ]; then
+    echo "vela dry-run --offline exited 0 but rendered nothing:" >&2
+    cat "$WORK/vela-err.txt" >&2
+    exit 1
+  fi
   SRC="$WORK/rendered.yaml"
   MODE=render
 fi
@@ -149,13 +231,16 @@ fi
 # Extract the pod template and re-wrap it as a standalone Pod, which is what
 # genpolicy takes. The two shapes OAP produces live in different places:
 # a Rollout keeps it at .spec.template, a SandboxTemplate at .spec.podTemplate.
-python3 - "$SRC" "$MODE" "$COMPONENT" "$WORK/pod.yaml" <<'PY'
+EXTRACTED="$(python3 - "$SRC" "$MODE" "$COMPONENT" "$WORK/pod.yaml" <<'PY'
 import sys, yaml
 
 src, mode, component, out = sys.argv[1:5]
 docs = [d for d in yaml.safe_load_all(open(src)) if d]
 
 POD_TEMPLATE_AT = {
+    # A Pod is already the shape genpolicy wants, and unlike every template
+    # below it has been through the mutating webhooks.
+    'Pod': (),
     'Rollout': ('spec', 'template'),
     'Deployment': ('spec', 'template'),
     'StatefulSet': ('spec', 'template'),
@@ -173,10 +258,11 @@ def dig(d, path):
 
 cands = []
 for d in docs:
-    path = POD_TEMPLATE_AT.get(d.get('kind'))
-    if not path:
+    kind_ = d.get('kind')
+    if kind_ not in POD_TEMPLATE_AT:
         continue
-    tpl = dig(d, path)
+    path = POD_TEMPLATE_AT[kind_]
+    tpl = d if path == () else dig(d, path)
     if not tpl:
         continue
     name = (d.get('metadata') or {}).get('name', '')
@@ -219,8 +305,14 @@ pod = {
     'spec': tpl['spec'],
 }
 yaml.safe_dump(pod, open(out, 'w'), default_flow_style=False, width=100000)
-print('%s/%s' % (kind, name))
+# Tab-separated, because the shell reads field 2 to decide on --with-pod-identity.
+spec = tpl['spec']
+sa = spec.get('serviceAccountName') or spec.get('serviceAccount') or ''
+print('%s/%s\t%s' % (kind, name, sa))
 PY
+)"
+printf '%s\n' "$EXTRACTED" | cut -f1
+POD_SA="$(printf '%s' "$EXTRACTED" | cut -f2)"
 
 echo "==> pod manifest: $WORK/pod.yaml"
 
@@ -235,6 +327,38 @@ if [ -f "$PROFILE" ]; then
   PROFILE_ARG="./profile.yaml"
 fi
 
+# Assemble genpolicy's argv ONCE. Everything below expands ARGS, never EXTRA
+# directly: under bash 3.2 (every macOS /bin/bash) `set -u` + an empty array is
+# an unbound-variable abort, so a bare "${EXTRA[@]}" breaks the common case of
+# passing nothing after `--`.
+ARGS=(--profile "$PROFILE_ARG")
+
+# EKS Pod Identity injects AWS_CONTAINER_CREDENTIALS_FULL_URI, an authorization
+# token file and a projected volume into any pod with a service account. A
+# confidential policy pins the env set exactly, so a policy generated without
+# accounting for them DENIES the pod the moment Pod Identity is in play. Default
+# it on from the pod spec rather than leaving it to be remembered.
+#
+# Skipped for a live Pod source: the injection is already in that spec, and
+# asking for it twice makes the generator pin the variables twice.
+if [ "$POD_IDENTITY" = auto ] && [ -n "$POD_SA" ] &&
+   [ "${EXTRACTED%%/*}" != "Pod" ] &&
+   ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qx -- '--with-pod-identity'; then
+  ARGS+=(--with-pod-identity)
+  echo "==> serviceAccountName=$POD_SA -- adding --with-pod-identity (--no-pod-identity to skip)"
+fi
+
+# exec and logs are the two ways to read a confidential pod from outside it, and
+# neither is blocked by the policy unless asked for. See WHAT CONFIDENTIAL DOES
+# NOT PROTECT at the top of this file.
+if [ "$DENY_EXEC_LOGS" = auto ] && [ "$PROFILE" = confidential ] &&
+   ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qxE -- '--(deny|allow)-(exec|logs)'; then
+  ARGS+=(--deny-exec --deny-logs)
+  echo "==> confidential profile -- adding --deny-exec --deny-logs (--allow-exec-logs to keep them)"
+fi
+
+ARGS+=(${EXTRA[@]+"${EXTRA[@]}"} pod.yaml)
+
 set +e
 if [ "$USE_DOCKER" -eq 1 ]; then
   command -v docker >/dev/null || { echo "missing: docker (needed for --docker)" >&2; exit 1; }
@@ -244,10 +368,10 @@ if [ "$USE_DOCKER" -eq 1 ]; then
   # container has to match the binary's architecture, and the default (the
   # host's) is what the download script selected.
   docker run --rm -v "$WORK:/w" -w /w public.ecr.aws/amazonlinux/amazonlinux:2023 \
-    ./genpolicy --profile "$PROFILE_ARG" "${EXTRA[@]}" pod.yaml \
+    ./genpolicy "${ARGS[@]}" \
     > "$WORK/out.txt" 2> "$WORK/err.txt"
 else
-  ( cd "$WORK" && "$GENPOLICY" --profile "$PROFILE_ARG" "${EXTRA[@]}" pod.yaml ) \
+  ( cd "$WORK" && "$GENPOLICY" "${ARGS[@]}" ) \
     > "$WORK/out.txt" 2> "$WORK/err.txt"
 fi
 RC=$?
@@ -256,6 +380,15 @@ set -e
 if [ "$RC" -ne 0 ]; then
   echo "genpolicy failed (exit $RC):" >&2
   cat "$WORK/err.txt" >&2
+  if grep -q 'enableServiceLinks' "$WORK/err.txt" 2>/dev/null; then
+    echo >&2
+    echo "The pod template is missing 'enableServiceLinks: false'. OAP emits it for" >&2
+    echo "sandboxMode: confidential and for a confidential type: sandbox -- a pod" >&2
+    echo "template without it was not produced in confidential mode. Set" >&2
+    echo "sandboxMode: confidential (or mode: confidential), re-render, and retry." >&2
+    echo "'-- --allow-additional-env' also gets past this, but it stops pinning the" >&2
+    echo "env set, which is most of what the confidential profile is for." >&2
+  fi
   exit "$RC"
 fi
 
