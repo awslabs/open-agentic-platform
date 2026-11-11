@@ -1060,6 +1060,217 @@ important rather than less.
 
 ---
 
+### 3.10 D9. The deterministic half: *how* a tool is called
+
+Everything above §3.9 answers a probabilistic question about text. This section
+answers a different one, and the distinction is not academic — it decides which
+mechanism can possibly work.
+
+> **Is this caller allowed to invoke this tool, with these arguments, in this
+> order?**
+
+That sentence has four clauses, and OAP today can enforce exactly one and a
+half of them. Taking the three the requirement names, plus the one that is
+always mistaken for them:
+
+| Dimension | The question | Needs | Decidable in OAP today |
+|---|---|---|---|
+| **By whom** | which agent, which user behind it | a verified principal at the decision point | **Yes** |
+| **With what attributes** | `bucket`, `amount`, `region`, `limit` — the argument values | the request `params` at the decision point | **No** |
+| **In what sequence** | "not after a refund", "only once per session", "read before write" | prior events, plus a key to correlate them | **No** |
+| *(How often)* | "no more than 20 per minute" | a counter | **Yes**, and it is not a policy question (§3.9) |
+
+Each "no" has a specific cause, and the causes are different. That is why this
+is one section rather than one sentence.
+
+#### By whom: already true, and it reaches further than #152 assumed
+
+Caller identity is the one dimension OAP already enforces deterministically.
+`mcp-server.cue:325` renders
+
+```cue
+traffic: authorization: {
+    action: "Require"
+    policy: matchExpressions: ["jwt.sub in [" + strings.Join(_agentSubjects, ", ") + "]"]
+}
+```
+
+and `caller-identity-policy.yaml` is what makes `jwt.sub` the *agent's* identity
+rather than the end user's. An expression over `jwt.*` is evaluated with the
+claims in scope, so "by whom" needs no new mechanism.
+
+It also reaches an external policy engine, which **answers #152's own blocking
+task 2** — recorded there as unresolved because the prose documents only
+"selected request headers". The wire protocol says more. `ext_mcp.proto` at
+v1.4.1 defines on `McpRequest`:
+
+| Field | Comment, verbatim |
+|---|---|
+| `metadata_context` (3) | "CEL-evaluated context from gateway config, one field per config key" |
+| `mcp_request` (4) | "JSON-RPC `params` as raw JSON bytes; absent when the method has none" |
+| `headers` (5) | "Incoming HTTP request headers carrying this MCP call, after gateway-side allow/deny filtering" |
+
+`metadata_context` is the answer: the gateway evaluates CEL expressions from its
+own config and ships the **results**, so configuring `sub: jwt.sub` delivers the
+verified claim to the processor as data. Identity does not depend on a header
+surviving the allow/deny filter. **#152 should unblock that task on the proto
+rather than on the prose.**
+
+#### With what attributes: the seam that looks open and is not
+
+This is the finding most worth a reviewer's attention, because OAP already has a
+field that appears to accept argument-level rules.
+
+`mcp-server.cue:430` exposes `authPolicy.matchExpressions` as `[...string]` and
+passes it through verbatim into `backend.mcp.authorization`. Arbitrary CEL, no
+schema, no validation. So this looks enforceable:
+
+```cue
+authPolicy: {
+    action: "Deny"
+    matchExpressions: ["mcp.tool.name == \"s3_put\" && mcp.tool.arguments.bucket == \"prod-data\""]
+}
+```
+
+**It is not.** `mcp.tool.arguments` is in agentgateway's CEL schema, but not at
+the phase where authorization runs. The generated reference at the pinned
+v1.4.1 says so in its description of the `mcp` object:
+
+> `mcp` contains attributes about the MCP request. **Request-time CEL only
+> includes identity fields such as `tool`, `prompt`, or `resource`.** Post-request
+> CEL may also include fields like `methodName`, `sessionId`, and **tool
+> payloads**.
+
+The implementation agrees. `McpAuthorizationSet::validate` takes
+`res: &ResourceType, method_name: &Strng` and builds its MCP view from those two
+alone; `impl DynamicType for ResourceType` materializes only the resource's name
+and target. Arguments are a *payload*, available post-request — in logging,
+metrics and tracing, where they are evidence rather than a decision.
+
+**The failure direction is the problem.** OAP already records, at
+`mcp-server.cue:431`, that the CRD warns `Deny` "is not recommended because
+expression failures fail to deny" — a CEL error in a `Deny` rule **fails open**.
+An argument-referencing expression is permanently in exactly that position. So
+the rule above does not narrow anything; it is a policy that silently never
+matches, written by someone who believes the bucket is protected. It is worse
+than no rule, because it reports as configured.
+
+Three consequences, all design-level:
+
+1. **The platform should not advertise argument rules on `authPolicy`.** If
+   anything, `authPolicy` deserves a doc string saying which fields are live at
+   decision time — a one-line CUE comment, and the cheapest item in this whole
+   document.
+2. **`action: Allow` / `Require` fail safe and are still wrong here.** An
+   `Allow` rule referencing arguments never matches either, so it denies
+   everything rather than permitting selectively. Safe, useless, and it will be
+   read as a bug in the gateway.
+3. **Argument-level decisions need a hop that is handed the payload.** At
+   v1.4.1 exactly one exists: an ExtMCP processor, which receives
+   `mcp_request` — the raw `params`. **That is #152's mechanism, and this is the
+   strongest argument for #152 in either issue.** Not "a policy engine would be
+   nice", but: it is the only place the arguments exist at decision time.
+
+#### One cheaper option, and the version it costs
+
+A remote processor is a service to run, a hop to pay for and a fail-mode to get
+right. For simple attribute rules there is now an in-process alternative:
+agentgateway's **CEL guardrails**, where a request-phase processor evaluates an
+expression against `mcp.params` and returns `reject` or `transform`. No external
+service, no extra network hop.
+
+It is not available at OAP's pin. Tracing `mcp.params` through the generated CEL
+reference per tag:
+
+| agentgateway | `mcp.params` | Request-time `mcp` context |
+|---|---|---|
+| **v1.4.1** (OAP's pin, 2026-07-29) | absent | identity fields only |
+| v1.5.0 (2026-08-27) | absent | identity fields only |
+| v1.6.0 (2026-10-02) | absent | identity fields **plus `methodName`** |
+| **v1.7.0** (2026-10-27) | **present** — "Available only during request-phase CEL guardrails" | identity fields plus `methodName` |
+
+So in-process argument checks arrive in **v1.7.0** and the remote ExtMCP path
+works at **v1.4.1**. Phase a design on the second and treat the first as an
+optimization, not a plan.
+
+One note on the upgrade, because it contradicts a deliberate comment.
+`gitops/addons/registry/gateway.yaml:63` pins v1.4.1 and explains that a higher
+tag in that registry can be a *downgrade* — the `cr.agentgateway.dev` v2.2.x
+charts track kgateway's versioning and ship a smaller API surface. That reasoning
+is sound and should stand. The adjacent claim that upstream's "newest final
+release is v1.4.1" was true when written and is now stale: v1.5.0, v1.6.0 and
+v1.7.0 are all published, non-prerelease upstream releases. Anyone acting on the
+v1.7.0 row above should re-verify the **chart** surface, not just the release
+tag, for exactly the reason the note gives.
+
+#### In what sequence: the one nothing covers
+
+Ordering is categorically harder than the other two, and it is worth being
+blunt about why rather than listing it as future work.
+
+A sequence rule — *not after*, *only once*, *read before write* — is a predicate
+over **prior events**. Every mechanism discussed so far is a pure function of the
+call in front of it. Making ordering enforceable needs three things OAP does not
+have, and they fail independently:
+
+| Requirement | State |
+|---|---|
+| A **vocabulary** for "formerly" | Exists, in Dogwood: exactly three temporal operators — `formerly`, `previous`, `since` (§D6) |
+| A **store** for the trace | The reference interpreter's is in-memory with no eviction and no persistence, so a `formerly within 1h` *permit* denies everything after a pod restart (§D6). AgentCore Policy solves this and has no callable API (§D6) |
+| A **correlation key** | Missing at the wire. `ext_mcp.proto`'s `McpRequest` carries `service_names`, `method`, `metadata_context`, `mcp_request`, `headers` — and **no session identifier**. `mcp.sessionId` exists in CEL but post-request at v1.4.1, so it cannot be shipped through `metadata_context` at decision time |
+
+The correlation key is the new finding and the cheapest to fix. MCP's Streamable
+HTTP transport defines `Mcp-Session-Id`, and `headers` reaches the processor
+"after gateway-side allow/deny filtering" — so the candidate route is to allow
+that header through and key the trace on it. **It is a candidate, not an
+answer**, and the spec itself says why: a server **MAY** assign a session ID,
+and only *if* it does must the client echo it on subsequent requests. A session
+key that exists at the server's discretion cannot be the foundation of an
+enforcement decision. It is also stdio-blind — `headers` is "Empty for stdio
+upstreams".
+
+So the sequence dimension needs a correlation key the **platform** controls, not
+one the tool server may or may not issue. The obvious candidate is a
+platform-minted identifier injected per agent conversation, which is a change to
+how OAP's gateway labels traffic rather than a policy feature — and it is
+therefore the first thing to settle, not the last. Phase 3's validation plan is
+where it gets tested.
+
+Until all three land, the honest statement is: **OAP cannot enforce call
+ordering, at any hop, in any currently pinned version.** It can *detect* it
+after the fact — §D6's Phase 3 replay over Langfuse traces is exactly that, and
+offline replay is the right place to learn whether the rules one would write are
+rules one would want enforced.
+
+#### The decision
+
+**D9. Sequence-and-attribute policy is the tool hop's job, and this design owns
+the three things that make it consistent with the model hop rather than a second
+unrelated system.**
+
+What this design does *not* do: add a `tools:` key, add a fourth writer on
+`backend.mcp.authorization`, or put a policy engine in the content proxy. §2.2's
+silent-drop bug and §3.9's one-verdict-seam-per-hop both still apply.
+
+What it does own:
+
+| Owned here | Why it has to be shared rather than duplicated |
+|---|---|
+| **Tighten-only semantics** (§D2) | A per-agent `onViolation` that can weaken the platform floor is the same defect as a per-agent tool policy that can widen its own permissions. One rule, both hops |
+| **The fail-closed verdict shape** (§D4) | One function, one place, fails closed. `failureMode: FailClosed` at the tool hop and `onError: block` at the model hop are the same decision spelled twice |
+| **Provenance** (§D8) | A tool-call denial has to record the policy-set version that denied it, exactly as a content block records `profileVersion` and `guardrailVersion`. Same metric family, one `hop` label |
+| **The schema, not the engine** | §3.9 argues against one engine across both hops — different inputs, latency budgets and blast radii. The *vocabulary* is the opposite case, and it already models the attribute dimension: `dogwood schema mcp --manifest tools.json` emits one Cedar action per tool and maps each tool's `inputSchema.properties` to `context.input` (§D6). The argument names a policy would constrain are therefore **derivable from the `tools/list` payload OAP already has** — no new authoring surface. Share the schema; run two engines |
+
+And one new boundary, stated so it is not mistaken for an oversight:
+**attribute and sequence rules are authored by the team that owns the tool, not
+the team that calls it.** That is §2.2's ownership rule applied one level down.
+The agent author declaring `mcpServers: [refunds]` must not be able to assert
+which refund amounts are acceptable; the refunds team must. Whatever shape #152
+settles on, this is the property to preserve, because it is the reason the
+existing three-layer split is worth protecting.
+
+---
+
 ## 4. Architecture
 
 ### Where the hop sits
