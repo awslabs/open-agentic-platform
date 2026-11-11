@@ -60,7 +60,7 @@ spec:
         # exists to prevent.
         #
         # Replace with your own image and digest.
-        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:c930abc3f4348118c4ff57f87e875468bae833cee238a4588babe318c5e3d9a9
 
         command: ["sleep", "infinity"]
 
@@ -76,7 +76,11 @@ spec:
         # hand is how a deploy ends up denied at 3am.
         #
         # The placeholder below is NOT a working policy. Generate yours.
-        cedarPolicy: "REPLACE_ME_WITH_BASE64_CEDAR_POLICY"
+        # PLACEHOLDER WITH THE RIGHT SHAPE. The components shape-check both
+        # of these, so an unreplaced REPLACE_ME string or an all-zero digest
+        # now fails the render instead of failing at pod start. This value
+        # base64-decodes to the instruction for replacing it.
+        cedarPolicy: "UkVQTEFDRSBUSElTLiBHZW5lcmF0ZSB0aGUgcmVhbCBwb2xpY3kgd2l0aCBzY3JpcHRzL25pdHJvL2dlbi1jZWRhci1wb2xpY3kuc2ggLS1hcHAgPHRoaXMgZmlsZT4gLS1jb21wb25lbnQgPG5hbWU+IC0tcHJvZmlsZSBjb25maWRlbnRpYWw="
 
         # ── Network ───────────────────────────────────────────────────────────
         # Confidential mode NEEDS the network: the guest calls AWS KMS to have

@@ -69,6 +69,24 @@ global:
   # component then fails the render on sandboxMode: confidential, rather than
   # quietly handing out a kata-clh pod that cannot attest anything.
   confidentialSandboxRuntimeClass: confidential-sandbox
+  # Which RuntimeClass names are AWS Nitro Sandboxes classes.
+  #
+  # networkIsolated, cedarPolicy / PCR17 attestation and confidential mode are
+  # all features of the NITRO runtime. A Kata class accepts a pod carrying them
+  # and IGNORES them: the sandbox.amazonaws.com/policy annotation means nothing
+  # to kata-clh, and a "network-isolated" Kata pod has an ordinary network
+  # device. That is the worst failure shape available -- the Application renders,
+  # the agent card advertises the guarantee, and the guarantee is absent.
+  #
+  # So the components check the class they are about to emit against this list
+  # and REJECT those fields when it is not here, rather than rendering a pod that
+  # lies about its own isolation.
+  #
+  # A cluster that names its Nitro classes something else adds those names here;
+  # the list is comma-separated, platform-owned (no Application can set it), and
+  # per-cluster via the nitro_sandbox_runtime_classes annotation on the cluster
+  # secret. Emptying it disables every Nitro-only field on this cluster.
+  nitroSandboxRuntimeClasses: "isolated-sandbox,confidential-sandbox"
   # Whether this cluster can run the per-session isolation tiers
   # (agent component, properties.isolation: session). A string, because it
   # is substituted into CUE as text.
