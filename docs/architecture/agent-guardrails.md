@@ -1490,7 +1490,7 @@ response is an **error, not a clean result**.
 |---|---|
 | **1** | `agent-guardrails` addon: the proxy, the profile catalog, `provider-aws-bedrock` ≥ v2.9.0 and the `Guardrail` resources, the `guardrails` block on `agent`, **input inspection only**, `oap_agent_guardrail_*` metrics, the dashboard, the staleness and error alerts, and a measured latency and cost report on real hub traffic |
 | **2** | Output inspection (buffered when blocking, §D5). The bypass chain in §D7: `llmGatewayUrl` becomes platform-set, a default-deny egress NetworkPolicy, and admission rejection of a weakened or ungranted declaration |
-| **3** | The Dogwood offline experiment (§D6): generate the schema from real MCP manifests, write three policies, convert recorded traffic to the replay format, and report what the language expressed. Decides whether a policy engine is worth scoping at all |
+| **3** | The Dogwood offline experiment (§D6): generate the schema from real MCP manifests, write three policies, convert recorded traffic to the replay format, and report what the language expressed. Decides whether a policy engine is worth scoping at all. It also settles §3.10's two prerequisites, because both are cheap to answer offline and expensive to discover later: whether a **platform-controlled correlation key** can be minted per agent conversation and carried to the tool hop, and whether the argument names a policy would constrain actually appear in OAP's `tools/list` payloads |
 | Later | A second backend behind the boundary (Bifrost Enterprise for licensed customers, Azure Content Safety, Model Armor); per-team profiles; human review of blocked requests |
 
 Phase 1 ships with the addon **off by default** in every overlay, as
@@ -1517,6 +1517,22 @@ has been shown.
       proven by reading the trace's per-entry `action: ANONYMIZED` rather than
       `stopReason`
 - [ ] A clean prompt is forwarded byte-identical
+
+**Deterministic policy (§3.10) — three assertions, all testable without building
+anything**
+
+- [ ] **An argument rule on `authPolicy` does not enforce.** Write
+      `action: Deny` with `mcp.tool.arguments.<field> == "<value>"`, call the
+      tool with that value, and show the call **succeeds**. This is the claim
+      most likely to be disputed in review and the cheapest to settle: it needs
+      one MCP server, one policy and one call
+- [ ] **The same rule under `action: Allow` denies everything**, which is the
+      safe-but-useless half of the same finding
+- [ ] **Caller identity reaches a processor as data.** Configure
+      `metadata_context` with a `jwt.sub` expression against a stub ExtMCP
+      server and show the claim arrives in the `McpRequest`, independent of
+      header allow/deny filtering. This is #152's blocking task 2, answerable
+      with a stub rather than a policy engine
 
 **Failure behaviour**
 
