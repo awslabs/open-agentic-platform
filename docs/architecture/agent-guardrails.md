@@ -1396,10 +1396,12 @@ flowchart TB
         S["Spend + rate<br/>Bifrost governance — needs VK"]:::gapn
     end
     subgraph TOOL["Agent → tool"]
-        T["Tool authorization, stateless<br/>mcpServers / mcpAccess / authPolicy"]:::have
-        TP["Tool authorization, stateful<br/>Cedar or OPA via ExtMCP — #152"]:::other
+        T1["WHICH tool, by name<br/>mcpServers / mcpAccess / authPolicy"]:::have
+        T2["BY WHOM<br/>jwt.sub, and metadata_context to ExtMCP"]:::have
+        T3["WITH WHAT ARGUMENTS<br/>only ExtMCP sees params — #152"]:::other
+        T4["IN WHAT SEQUENCE<br/>no durable store, no platform key"]:::gapn
         TC["Tool-call CONTENT<br/>ExtMCP can see it — #152"]:::other
-        TR["Tool rate limit<br/>traffic.rateLimit, native"]:::have
+        TR["HOW OFTEN<br/>traffic.rateLimit, native"]:::have
     end
     subgraph RUNTIME["Agent runtime"]
         SB["Sandboxing<br/>Kata micro-VMs, AgentCore"]:::have
@@ -1412,9 +1414,16 @@ flowchart TB
     CALLER --> MODEL --> TOOL --> RUNTIME --> AFTER
 ```
 
-Read that way, only **two** boxes have no mechanism at anyone's hop: agent egress
-and model-call spend. Both are prerequisites this design depends on rather than
-owns (§D7).
+Read that way, **three** boxes have no mechanism at anyone's hop: agent egress,
+model-call spend, and **tool-call ordering**. The first two are prerequisites
+this design depends on rather than owns (§D7). The third is the one the word
+"policy" is usually assumed to cover and nothing currently does — §3.10 names
+the three missing pieces, of which a platform-controlled correlation key is both
+the least discussed and the first to settle.
+
+The tool hop is drawn as five questions rather than one box because they have
+five different answers. "Tool authorization is covered" is true only of the
+first.
 
 | Actor | Owns |
 |---|---|
