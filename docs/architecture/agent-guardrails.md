@@ -1595,3 +1595,26 @@ anything**
    This design deliberately keeps the catalog in git (§D2) on the grounds that a
    reviewed definition is the point — but if #152 builds a narrowing-only runtime
    overlay, reusing it here is cheaper than inventing a second mechanism.
+9. **Who owns the correlation key that makes ordering enforceable?** §3.10's
+    conclusion is that sequence policy needs a session identifier the *platform*
+    mints, because MCP's `Mcp-Session-Id` is optional for a server to issue and
+    absent on stdio. That is a change to how the gateway labels agent traffic,
+    not a policy feature — so it belongs to whoever owns `agent-gateway`, and it
+    should be settled before anyone writes a temporal policy. **It is also the
+    one item on this list that blocks #146 rather than this design.**
+10. **Should `authPolicy` reject argument references outright?** §3.10 shows an
+    argument rule is a policy that never matches, and under `action: Deny` it
+    fails open. Three options: document the live fields in a CUE comment
+    (cheapest, no enforcement), validate `matchExpressions` against a field
+    allowlist in CUE (enforces, but hardcodes an upstream schema that moves per
+    release — v1.6.0 already added `methodName` to the request phase), or leave
+    it and rely on review. The first is nearly free and the recommendation; the
+    second is the only one that actually stops the mistake.
+11. **Is an agentgateway upgrade on the table, and who verifies the chart?**
+    In-process CEL guardrails over `mcp.params` arrive in upstream **v1.7.0**,
+    which would give simple attribute rules with no external service and no
+    extra hop. OAP pins **v1.4.1** behind a deliberate note about the
+    `cr.agentgateway.dev` charts versioning independently of upstream (§3.10).
+    The question is not whether v1.7.0 has the feature — it does — but whether
+    the *chart* at that tag carries the API surface OAP already depends on,
+    which only a pull-and-diff answers.
