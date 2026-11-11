@@ -88,7 +88,12 @@ spec:
         # artifact, so name it here and regenerate the policy when it changes.
         #
         # Replace with the digest of the agent image your platform ships.
-        image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:c930abc3f4348118c4ff57f87e875468bae833cee238a4588babe318c5e3d9a9
+        # PINNED BY DIGEST, because confidential mode's Cedar policy pins the
+        # image and a tag that moves under you is a denied pod, not a new
+        # version. This was the digest at the time of writing; re-resolve it for
+        # your own build and regenerate the policy in the same change:
+        #   docker buildx imagetools inspect <image:tag>   (or: crane digest)
+        image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:996e1c19489b0515887fa55f86ae12907d8da03c8e7c7488fcb28fac3fabd5e0
 
         # One replica, deliberately. Each replica is a separate microVM with its
         # own attestation, which is fine -- but every replica runs the same

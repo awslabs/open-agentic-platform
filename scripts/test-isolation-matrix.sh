@@ -950,6 +950,29 @@ row D3 "two Applications, one namespace, same pool name collide" detected \
 row D4 "agent + its own pool emit no shared object (control)" clean \
   "$([ -z "$b6_dupes" ] && echo clean || echo "collides:$b6_dupes")"
 
+# D5. THE SHIPPED EXAMPLES, against each other. D1-D3 prove the detection works
+# on inputs built to collide; this asks whether anything we actually ship does.
+# It did: example-sandbox-confidential and example-agent-session-isolation both
+# declared a sandbox component named analyst-session in namespace default.
+#
+# A reader's first move is `kubectl apply -f` on two examples that look
+# unrelated, and the result is two Applications each believing they own one warm
+# pool. Both reconcile, neither errors, and whichever syncs last wins.
+#
+# Every example rendered in section A is reused here -- no re-rendering -- and
+# they are compared as a single set, because the collision is between
+# Applications rather than within one.
+example_renders=()
+for f in "$OAP"/platform/oam/examples/example-*.yaml; do
+  b="$(basename "$f" .yaml)"
+  [ -s "$WORK/out-$b.yaml" ] && example_renders+=("$WORK/out-$b.yaml")
+done
+ex_dupes="$(dupes ${example_renders[@]+"${example_renders[@]}"})"
+row D5 "no two SHIPPED examples emit the same object" clean \
+  "$([ -z "$ex_dupes" ] && echo clean || echo collides)"
+[ -n "$ex_dupes" ] && printf '      objects: %s\n' "$ex_dupes"
+[ -n "$ex_dupes" ] && printf '      (apply those two examples together and they fight over these)\n'
+
 echo
 echo "failed rows: $FAILS"
 exit $((FAILS > 255 ? 255 : FAILS))

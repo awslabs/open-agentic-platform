@@ -33,7 +33,7 @@
 #   2. A Cedar policy generated from THIS Application's rendered pod template:
 #        scripts/nitro/gen-cedar-policy.sh \
 #          --app platform/oam/examples/example-sandbox-confidential.yaml \
-#          --component analyst-session --profile confidential
+#          --component regulated-session --profile confidential
 #      Paste the base64 into cedarPolicy below and the printed PCR17 into the KMS
 #      key policy. Omitting cedarPolicy is rejected at admission: with no policy
 #      the sandbox falls back to a permissive built-in default that allows exec
@@ -48,7 +48,13 @@ metadata:
   namespace: default
 spec:
   components:
-    - name: analyst-session
+    # NOT `analyst-session`: example-agent-session-isolation.yaml already
+    # declares a sandbox component by that name in this namespace, and two
+    # Applications emitting the same (kind, namespace, name) both apply --
+    # whichever syncs last owns a SandboxWarmPool, SandboxTemplate,
+    # ServiceAccount and ConfigMap the other still believes it manages.
+    # scripts/test-isolation-matrix.sh section D exists to catch exactly this.
+    - name: regulated-session
       type: sandbox
       properties:
         description: "Per-session analysis of regulated data, node operator untrusted"
@@ -60,7 +66,12 @@ spec:
         # exists to prevent.
         #
         # Replace with your own image and digest.
-        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:c930abc3f4348118c4ff57f87e875468bae833cee238a4588babe318c5e3d9a9
+        # PINNED BY DIGEST, because confidential mode's Cedar policy pins the
+        # image and a tag that moves under you is a denied pod, not a new
+        # version. This was the digest at the time of writing; re-resolve it for
+        # your own build and regenerate the policy in the same change:
+        #   docker buildx imagetools inspect <image:tag>   (or: crane digest)
+        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
         command: ["sleep", "infinity"]
 

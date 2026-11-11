@@ -355,7 +355,12 @@ Then:
 kubectl get sandboxtemplate -A -o custom-columns=\
 'NAME:.metadata.name,CLASS:.spec.podTemplate.spec.runtimeClassName'
 kubectl get sandboxwarmpool -A
-kubectl get pods -l agent-sandbox.io/role=coder -o wide   # must be Running, not Pending
+# BOTH pools, because this annotation set touches both and they use
+# different role labels: the agent-sandbox chart's Dark Factory pool is
+# role=coder, an OAM `type: sandbox` pool is role=session.
+kubectl get pods -l agent-sandbox.io/role=coder   -o wide   # chart pool
+kubectl get pods -l agent-sandbox.io/role=session -o wide   # OAM pools
+# both must be Running, not Pending
 ```
 
 **The regression to watch for:** warm-pool pods `Pending` with no node matching
@@ -373,74 +378,580 @@ equivalent.
 
 ---
 
-## Part 3 — on Nitro-capable nodes (k8s 1.36+, US commercial region)
+## Part 3 — on Nitro-capable nodes: every example, step by step
 
-Nothing here was verified during this work — there was no Nitro node available —
-so treat all of it as unproven until you run it.
+**This is the only part that tests isolation rather than manifests.** Parts 1–2
+prove the platform emits the right pod spec and rejects the wrong Application.
+Nothing in them can tell you a kernel boundary exists. That is what this part is
+for, and none of it was verified during the work — there was no Nitro node
+available — so treat all of it as unproven until you have run it.
+
+Requirements: Kubernetes **1.36+**, a **US commercial region**, and either EKS
+Auto Mode (which provisions a sandbox-capable node on demand) or your own nodes
+from a Nitro Sandbox AMI launched with `EnclaveOptions.Enabled=true`.
+
+### 3.0 Gate: can this cluster run a sandbox at all?
+
+Do this before touching any example. If it fails, every step below fails for the
+same reason and the errors will be much harder to read.
 
 ```bash
 kubectl get runtimeclass isolated-sandbox confidential-sandbox
+```
+
+```
+NAME                   HANDLER                AGE
+confidential-sandbox   confidential-sandbox   5m
+isolated-sandbox       isolated-sandbox       5m
+```
+
+Then the smoke test, which is a raw Pod on purpose — no OAM, no KubeVela, no
+chart, so a failure here is the cluster and nothing of ours:
+
+```bash
 kubectl apply -f examples/nitro-sandbox/pod-hello-sandbox.yaml
 kubectl wait --for=condition=Ready pod/hello-sandbox --timeout=300s
+kubectl logs hello-sandbox
 ```
 
-### 3.1 The decisive check: does the pod have its own kernel?
+```
+/sys/class/dmi/id/product_name:  <something>.enclave
+disks:   vda vdb
+kernel:  <a version that is NOT your node's>
+```
 
-A container *cannot* have a different kernel from its node. So a pod reporting a
-different kernel version is, necessarily, in its own VM. Everything else —
-labels, class names, annotations — is a claim; the kernel is a consequence.
+Three independent signals, and the third is the one that matters: a container
+*cannot* have a different kernel from its node. The `.enclave` suffix and the
+virtio disks (`vda`, not `nvme`) corroborate it.
+
+**If it stays Pending**, no node can take it. Read the events —
+`kubectl describe pod hello-sandbox | grep -A5 Events` — and check the usual
+causes: a cluster below 1.36, a NodeClass using FIPS AMIs, or a
+GPU/Neuron/multi-NUMA instance type, none of which Auto Mode provisions as a
+sandbox node. This Pending-rather-than-running is the designed behaviour, not a
+bug: the alternative is a pod that runs with no isolation and reports success.
 
 ```bash
-bash scripts/nitro/verify-isolation.sh hello-sandbox -n default
+kubectl delete -f examples/nitro-sandbox/pod-hello-sandbox.yaml
 ```
 
-**Expect** `pod kernel differs from node kernel -- this is a real microVM`.
+### Before you apply any OAM example: two things that will bite
 
-If your workload image is distroless or scratch there is no shell to exec, and
-the script now reports that as *skipped* rather than a FAIL (it used to exit 1,
-which was simply wrong). To read the kernel anyway:
+**1. Two examples used to collide, and your namespace choice still matters.**
+`example-sandbox-confidential.yaml` declared a sandbox component named
+`analyst-session` — the same name `example-agent-session-isolation.yaml` uses —
+both in `default`. Applied together, the two Applications each believed they
+owned one warm pool, both reconciled, neither errored, and whichever synced last
+won. That is fixed (it is now `regulated-session`, and matrix row D5 checks the
+shipped examples against each other), but the general rule stands: **apply one
+example at a time, or put each in its own namespace**, and clean up between.
+
+**2. The two confidential examples carry a placeholder `cedarPolicy`.** It is
+correctly *shaped*, so the Application renders and admission accepts it — and it
+base64-decodes to the instruction for replacing it:
 
 ```bash
-bash scripts/nitro/verify-isolation.sh <pod> --debug-image busybox
+grep -h cedarPolicy platform/oam/examples/example-*-confidential.yaml \
+  | sed 's/.*: "//;s/"//' | head -1 | base64 -d; echo
+# REPLACE THIS. Generate the real policy with scripts/nitro/gen-cedar-policy.sh ...
 ```
 
-That uses an ephemeral container, which joins the same sandbox — so its kernel
-*is* the guest's. Note it permanently alters the pod's spec; the pod must be
-recreated to remove it, which is why it is opt-in.
+Deploy it unchanged and the pod does **not** start: the sandbox agent rejects the
+policy. That is the intended behaviour, and it is worth seeing once (3.3).
 
-### 3.2 Per-session isolation, end to end
+---
+
+### 3.1 `example-agent-sandbox.yaml` — an isolated agent
+
+The baseline: one boolean on an ordinary agent. Everything else about the agent —
+gateway registration, MCP wiring, two replicas, blue-green — is unchanged.
+
+| | |
+|---|---|
+| Application | `my-assistant-sandboxed` |
+| Component | `oap-assistant-sbx` (`type: agent`) |
+| Asks for | `sandbox: true`, `sandboxMode: isolated` |
+| Proves | the trust model where the node is trusted and the workload is not |
+
+```bash
+kubectl apply -f platform/oam/examples/example-agent-sandbox.yaml
+kubectl get application my-assistant-sandboxed -w        # until status: running
+```
+
+Confirm the class reached the pods, then confirm the boundary:
+
+```bash
+kubectl get pods -l app.kubernetes.io/name=oap-assistant-sbx \
+  -o custom-columns='NAME:.metadata.name,CLASS:.spec.runtimeClassName,NODE:.spec.nodeName,STATUS:.status.phase'
+```
+
+Expect **two** pods (`replicas: 2`), each `isolated-sandbox`, each Running.
+
+```bash
+bash scripts/nitro/verify-isolation.sh -l app.kubernetes.io/name=oap-assistant-sbx
+```
+
+Expect `pod kernel differs from node kernel -- this is a real microVM`.
+
+Two pods on the **same node** is the sharper version of this check — it means one
+node is running two independent kernels, which is the whole claim:
+
+```bash
+kubectl get pods -l app.kubernetes.io/name=oap-assistant-sbx \
+  -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.name}{"\n"}{end}'
+# if two share a node:
+for p in <pod-a> <pod-b>; do kubectl exec "$p" -- uname -r; done
+kubectl get node <node> -o jsonpath='{.status.nodeInfo.kernelVersion}'; echo
+```
+
+Then confirm the agent still *works* — isolation that breaks the agent is not a
+feature. It registers with the gateway and has the `mcp-time` server wired:
+
+```bash
+kubectl get configmap oap-assistant-sbx-card -o jsonpath='{.data}' | python3 -m json.tool
+kubectl get httproute oap-assistant-sbx
+# drive a prompt through the gateway and confirm the time tool is called
+```
+
+```bash
+kubectl delete -f platform/oam/examples/example-agent-sandbox.yaml
+```
+
+### 3.2 `example-sandbox-isolated.yaml` — a standalone warm pool
+
+No agent involved. This is the pool on its own, which is what an MCP server or
+the Dark Factory coder flow claims from.
+
+| | |
+|---|---|
+| Application | `session-code-sandbox` |
+| Component | `code-session` (`type: sandbox`) |
+| Asks for | `mode: isolated`, `warmPool: 2`, `service: true` |
+| Proves | warm pods exist *before* anyone asks, and a claim is fast |
+
+```bash
+kubectl apply -f platform/oam/examples/example-sandbox-isolated.yaml
+kubectl get sandboxwarmpool code-session \
+  -o custom-columns='NAME:.metadata.name,REPLICAS:.spec.replicas,TEMPLATE:.spec.sandboxTemplateRef.name'
+kubectl get sandboxtemplate code-session-template \
+  -o jsonpath='{.spec.podTemplate.spec.runtimeClassName}'; echo    # isolated-sandbox
+```
+
+The point of a warm pool is that the pods are **already there**:
+
+```bash
+kubectl get pods -l agent-sandbox.io/role=session -o wide     # expect 2, Running
+```
+
+> **Mind the label.** An OAM `type: sandbox` pool labels its pods
+> `agent-sandbox.io/role=session`. The `agent-sandbox` *chart* — the Dark Factory
+> coder pool — uses `role=coder`. Both can exist on one cluster, so selecting on
+> the wrong one returns nothing, or somebody else's pods.
+
+Read the card, which is how an operator sees what they actually got rather than
+what the Application asked for:
+
+```bash
+kubectl get configmap code-session-sandbox -o jsonpath='{.data}' | python3 -m json.tool
+```
+
+```json
+{
+  "mode": "isolated",
+  "runtimeClass": "isolated-sandbox",
+  "warmReplicas": "2",
+  "idleTimeout": "15m",
+  "maxLifetime": "4h",
+  "networkIsolated": "false",
+  "service": "true"
+}
+```
+
+Now claim one and time it — this is the number that justifies a warm pool:
+
+```bash
+cat <<'YAML' | kubectl apply -f -
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxClaim
+metadata:
+  # The claim NAME is the idempotency key: the same session re-claiming finds
+  # its own instance rather than a second one, which is what makes a retry safe.
+  # Name it after the thing being isolated.
+  name: probe-session-7f3a9c
+  namespace: default
+  labels:
+    app.kubernetes.io/name: code-session
+spec:
+  # The POOL, not the template. warmPoolRef is the claim's only required field,
+  # which is why the sandbox component renders a pool even at warmPool: 0.
+  warmPoolRef:
+    name: code-session
+YAML
+time kubectl wait --for=jsonpath='{.status.phase}'=Bound sandboxclaim/probe-session-7f3a9c --timeout=120s
+kubectl get sandboxclaim probe-session-7f3a9c -o yaml | grep -A5 status:
+```
+
+A warm claim should bind in **seconds**. If it takes as long as a cold pod start,
+the pool is not actually warm — check that the warm pods were Running *before*
+you claimed.
+
+Confirm the claimed sandbox is a real microVM, and that the pool refilled:
+
+```bash
+SBX=$(kubectl get sandboxclaim probe-session-7f3a9c -o jsonpath='{.status.sandboxRef.name}')
+kubectl get sandbox "$SBX" -o jsonpath='{.status.podRef.name}'; echo
+bash scripts/nitro/verify-isolation.sh <that-pod>
+kubectl get pods -l agent-sandbox.io/role=session            # back to 2
+```
+
+Then idle it out — `idleTimeout: 15m` — and confirm the sandbox is destroyed
+rather than lingering:
+
+```bash
+kubectl delete sandboxclaim probe-session-7f3a9c
+kubectl get sandbox,pods -l agent-sandbox.io/role=session
+kubectl delete -f platform/oam/examples/example-sandbox-isolated.yaml
+```
+
+### 3.3 `example-agent-sandbox-confidential.yaml` — a confidential agent
+
+The trust model where the **node operator is untrusted too**. This is the one
+worth doing carefully, because it has a step order and a negative control.
+
+| | |
+|---|---|
+| Application | `regulated-assistant` |
+| Component | `regulated-assistant` (`type: agent`) |
+| Asks for | `sandboxMode: confidential` + `cedarPolicy`, image pinned by digest |
+| Proves | exec/stdin denied from the host, and the policy is enforced not advisory |
+
+**Step 1 — see it refuse the placeholder.** Do this first; it takes one minute
+and it is the only way to know the policy is load-bearing:
+
+```bash
+kubectl apply -f platform/oam/examples/example-agent-sandbox-confidential.yaml
+kubectl get pods -l app.kubernetes.io/name=regulated-assistant
+kubectl describe pod -l app.kubernetes.io/name=regulated-assistant | grep -A10 Events
+```
+
+Expect the pod **not** to start, with the sandbox agent rejecting the policy. A
+pod that starts here means the policy is not being enforced, and that is a
+finding — stop and report it.
+
+```bash
+kubectl delete -f platform/oam/examples/example-agent-sandbox-confidential.yaml
+```
+
+**Step 2 — get the real binaries.**
+
+```bash
+bash scripts/nitro/download-runtime-binaries.sh
+```
+
+Expect `Verified OK` and all files `OK` against the signed manifest. This is a
+signature check, not a checksum of a file you just downloaded from the same
+place — if it fails, do not proceed.
+
+**Step 3 — re-resolve the image digest.** The example pins one, and a pinned
+digest in a repo goes stale. Confidential mode pins the image *in the policy*, so
+a mismatch is a denied pod:
+
+```bash
+docker buildx imagetools inspect public.ecr.aws/z0a4o2j5/strands-agent:v1.6.0 \
+  | grep Digest
+# put that value in the example's `image:` field if it differs
+```
+
+**Step 4 — generate the policy from the rendered pod spec.** Not from the
+Application: what runs is a pod template rendered from CUE by KubeVela and
+wrapped in an Argo Rollout, and the policy pins *that*.
+
+```bash
+./scripts/nitro/gen-cedar-policy.sh \
+  --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
+  --component regulated-assistant \
+  --profile confidential
+```
+
+Expect, and read each line:
+
+```
+Rollout/regulated-assistant
+==> serviceAccountName=regulated-assistant -- adding --with-pod-identity (--no-pod-identity to skip)
+==> confidential profile -- adding --deny-exec --deny-logs (--allow-exec-logs to keep them)
+policy written: regulated-assistant-cedar-policy.b64  (N base64 chars)
+```
+
+plus the predicted **PCR17**. Both auto-added flags matter: without
+`--with-pod-identity` the policy denies the pod over the env Pod Identity
+injects, and `--deny-exec --deny-logs` is what actually closes the two ways to
+read a confidential pod from outside it.
+
+Paste the base64 into the example's `cedarPolicy` and apply:
+
+```bash
+kubectl apply -f platform/oam/examples/example-agent-sandbox-confidential.yaml
+kubectl get pods -l app.kubernetes.io/name=regulated-assistant \
+  -o custom-columns='NAME:.metadata.name,CLASS:.spec.runtimeClassName,STATUS:.status.phase'
+```
+
+Expect `confidential-sandbox` and Running. **The pod starting is the test
+passing** — the policy was accepted and measured.
+
+**Step 5 — confirm the confidential guarantee, which is exec being denied.**
+
+```bash
+kubectl exec -it -l app.kubernetes.io/name=regulated-assistant -- sh
+```
+
+This must **fail**. In isolated mode it succeeds; here the Cedar policy refuses
+it so the parent instance cannot introspect the guest. `kubectl logs` should
+likewise be refused, because of `--deny-logs`.
+
+```bash
+bash scripts/nitro/verify-isolation.sh -l app.kubernetes.io/name=regulated-assistant
+```
+
+The script knows this case and reports
+`exec is DENIED, which is the confidential guarantee working` rather than a
+scary FAIL — and tells you that verifying a confidential sandbox means checking
+the **attestation** instead, which is Part 4.
+
+**Step 6 — the policy is a pin, so prove it pins.** Change anything the policy
+covers — bump `replicas`, add an env var, change the digest — without
+regenerating:
+
+```bash
+kubectl patch application regulated-assistant --type=merge \
+  -p '{"spec":{"components":[{"name":"regulated-assistant","type":"agent","properties":{"replicas":2}}]}}'
+kubectl describe pod -l app.kubernetes.io/name=regulated-assistant | grep -A10 Events
+```
+
+The new pod must be **denied**. This is the operational cost of confidential mode
+and the thing to internalise: **the policy and the pod spec are one artifact, and
+they are regenerated together, in one commit.** A new image digest alone is
+enough to require it.
+
+```bash
+kubectl delete -f platform/oam/examples/example-agent-sandbox-confidential.yaml
+```
+
+### 3.4 `example-sandbox-confidential.yaml` — a confidential warm pool
+
+Same trust model, applied to a pool rather than an agent. Short, because 3.3
+covered the mechanics.
+
+| | |
+|---|---|
+| Application | `confidential-session-sandbox` |
+| Component | `regulated-session` (`type: sandbox`) — renamed, see the warning above |
+| Asks for | `mode: confidential` + `cedarPolicy`, `warmPool: 2`, `idleTimeout: 5m` |
+
+```bash
+docker buildx imagetools inspect public.ecr.aws/docker/library/python:3.12-slim | grep Digest
+# update `image:` if it differs, then:
+./scripts/nitro/gen-cedar-policy.sh \
+  --app platform/oam/examples/example-sandbox-confidential.yaml \
+  --component regulated-session --profile confidential
+# paste into cedarPolicy, then:
+kubectl apply -f platform/oam/examples/example-sandbox-confidential.yaml
+```
+
+```bash
+kubectl get sandboxtemplate regulated-session-template \
+  -o jsonpath='{.spec.podTemplate.spec.runtimeClassName}{"\n"}{.spec.podTemplate.spec.enableServiceLinks}'; echo
+```
+
+Expect `confidential-sandbox` and `false`. That `false` is not hardening — the
+generator *refuses* a confidential manifest without it, because the kubelet
+injects a `<SVC>_PORT` variable per Service in the namespace and the pinned env
+set would not be knowable at generation time.
+
+```bash
+kubectl get configmap regulated-session-sandbox -o jsonpath='{.data.mode}'; echo   # confidential
+kubectl get pods -l agent-sandbox.io/role=session                                    # 2, Running
+```
+
+**The one that matters here:** a confidential pool denies exec, and the Dark
+Factory coder flow *drives* its sandbox over exec. So confirm exec is refused,
+and understand that this pool shape is for a consumer that talks to the sandbox
+over its own API — which is exactly why `nitro.mode` defaults to `isolated` for
+the coder pool.
+
+```bash
+kubectl delete -f platform/oam/examples/example-sandbox-confidential.yaml
+```
+
+### 3.5 `example-agent-session-isolation.yaml` — per-session isolation
+
+The feature issue #99 asked for: one microVM per (agent, user, session), rather
+than one agent process shared by everyone.
+
+| | |
+|---|---|
+| Application | `data-analyst-isolated` |
+| Components | `data-analyst` (`type: agent`) + `analyst-session` (`type: sandbox`) |
+| Asks for | `isolation: session`, `sandboxTemplate: analyst-session`, `sessionKey: subject+context` |
+| Needs | `sessionIsolationEnabled: "true"` **and** the `agent_sandbox` addon |
+
+**Step 1 — confirm the platform switch is on**, or the Application is rejected
+with a message naming the prerequisite (which you can verify in Part 2):
+
+```bash
+kubectl get cm -n argocd -o yaml | grep -i sessionIsolationEnabled
+kubectl get crd sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io
+```
+
+**Step 2 — apply, and check both halves came up.** The agent is still a Rollout,
+so blue-green survives; the pool is separate:
 
 ```bash
 kubectl apply -f platform/oam/examples/example-agent-session-isolation.yaml
-kubectl get sandboxwarmpool,sandboxtemplate -n default
-kubectl get configmap <pool>-sandbox -o jsonpath='{.data}' | python3 -m json.tool
+kubectl get rollout data-analyst
+kubectl get sandboxwarmpool analyst-session \
+  -o jsonpath='{.spec.replicas}'; echo                      # 3
+kubectl get pods -l agent-sandbox.io/role=session             # 3, Running, pre-warmed
 ```
 
-Then drive two different users through the agent and confirm two distinct
-`SandboxClaim`s, one sandbox each, and that they are destroyed on idle
-(`idleTimeout`, default 15m).
-
-**Known limitation, stated plainly:** `sessionIsolationEnabled` is a declarative
-switch. It asserts the cluster has the `agent_sandbox` addon *and* an agent image
-that claims a sandbox per session. Nothing verifies the second half — an agent on
-an image that never calls `SandboxClaim` will render, deploy, serve traffic and
-share one process between every user. If you see one sandbox for two users, check
-the image before the platform.
-
-### 3.3 The real generator
+Note what the agent pods are **not**: the front door is an ordinary pod. The
+microVM is the *session*, not the agent.
 
 ```bash
-bash scripts/nitro/download-runtime-binaries.sh     # signature-verified
-./scripts/nitro/gen-cedar-policy.sh --from pod/attested-demo -n default \
-  --profile confidential --out from-live.b64
+kubectl get pods -l app.kubernetes.io/name=data-analyst \
+  -o jsonpath='{.items[0].spec.runtimeClassName}'; echo     # empty -- correct
 ```
 
-`--from pod/<name>` is the only genuinely post-webhook source: mutating webhooks
-run on the **Pod**, not on the template that produced it, so Pod Identity's
-injected env and token volume appear there and nowhere else. Generate from
-`--app` in CI, regenerate from the live pod, and **diff the two** — a difference
-is your admission chain mutating the pod, and in confidential mode that is the
-gap between a pod that starts and a pod that is denied.
+**Step 3 — the four env vars are the contract with the image.** If the image
+does not read these, nothing claims anything:
+
+```bash
+kubectl get rollout data-analyst -o jsonpath=\
+'{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \
+  | grep -E 'AGENT_ISOLATION|SANDBOX_WARM_POOL|SANDBOX_NAMESPACE|AGENT_SESSION_KEY'
+```
+
+```
+AGENT_ISOLATION=session
+SANDBOX_WARM_POOL=analyst-session
+SANDBOX_NAMESPACE=default
+AGENT_SESSION_KEY=subject+context
+```
+
+**Step 4 — the RBAC, without which those vars are decoration.** A missing
+RoleBinding is a 403 at claim time, long after deploy:
+
+```bash
+kubectl auth can-i create sandboxclaims \
+  --as=system:serviceaccount:default:data-analyst         # yes
+kubectl auth can-i create sandboxes \
+  --as=system:serviceaccount:default:data-analyst         # no -- read-only by design
+```
+
+**Step 5 — the actual test: two users, two sandboxes.** Drive prompts through
+the gateway as **two different authenticated subjects**, then:
+
+```bash
+kubectl get sandboxclaims -o custom-columns=\
+'NAME:.metadata.name,PHASE:.status.phase,SANDBOX:.status.sandboxRef.name,AGE:.metadata.creationTimestamp'
+```
+
+Expect **two distinct claims**, each bound to a **different** sandbox. One claim
+for two users means sessions are being shared — and see the limitation below
+before blaming the platform.
+
+Then confirm the isolation is real, not just two objects:
+
+```bash
+for s in $(kubectl get sandboxclaims -o jsonpath='{range .items[*]}{.status.sandboxRef.name}{" "}{end}'); do
+  pod=$(kubectl get sandbox "$s" -o jsonpath='{.status.podRef.name}')
+  echo "$s -> $pod  kernel: $(kubectl exec "$pod" -- uname -r 2>/dev/null)"
+done
+```
+
+Write a file in one session and confirm it is **not** visible in the other —
+separate kernels mean separate filesystems:
+
+```bash
+kubectl exec <pod-a> -- sh -c 'echo secret-a > /workspace/probe.txt'
+kubectl exec <pod-b> -- cat /workspace/probe.txt      # must fail: No such file
+```
+
+**Step 6 — `sessionKey` semantics.** `subject+context` means the same user in a
+*new* conversation gets a *new* sandbox. Drive the same user through two
+conversations and expect two claims; switch the example to
+`sessionKey: subject`, re-apply, and the same user should reuse one.
+
+**Step 7 — idle teardown.** `idleTimeout: 15m`, `maxLifetime: 2h`. Leave a
+session alone and confirm the sandbox is destroyed and the pool refills to 3 —
+sandboxes that never get reclaimed are a capacity leak that only shows up under
+load.
+
+```bash
+kubectl get sandbox,sandboxclaim
+kubectl get pods -l agent-sandbox.io/role=session
+kubectl delete -f platform/oam/examples/example-agent-session-isolation.yaml
+```
+
+> **Limitation, and the first thing to check if step 5 gives you one sandbox.**
+> `sessionIsolationEnabled` is a *declarative* switch. It asserts the cluster has
+> the addon **and** an agent image that claims a sandbox per session. Nothing
+> verifies the second half — an agent on an image that never calls `SandboxClaim`
+> renders, deploys, serves traffic and shares one process between every user,
+> which is the exact failure #99 exists to remove. If you see one sandbox for two
+> users, check the image before the platform. This is recorded as open in
+> NITRO-DESIGN §9.4.
+
+### 3.6 `examples/nitro-sandbox/pod-attested.yaml` — raw, no OAM
+
+The attestation example, as a plain Pod. Covered by Part 4, because without the
+KMS key policy there is nothing checking the measurements. Two things specific to
+it:
+
+```bash
+# the ServiceAccount is a SEPARATE file on purpose: genpolicy takes a POD
+# manifest and exits 1 on `unsupported kind: ServiceAccount`
+kubectl apply -f examples/nitro-sandbox/serviceaccount-attested.yaml \
+               -f examples/nitro-sandbox/pod-attested.yaml
+```
+
+And generate its policy from the **live pod**, not the file — the only genuinely
+post-webhook source, because mutating webhooks run on the Pod rather than on
+whatever produced it:
+
+```bash
+./scripts/nitro/gen-cedar-policy.sh --from pod/attested-demo -n default \
+  --profile confidential --out from-live.b64
+diff <(cat attested-demo-cedar-policy.b64) from-live.b64
+```
+
+A difference is your admission chain mutating the pod — Pod Identity's injected
+env and token volume are the usual cause — and in confidential mode that
+difference is the gap between a pod that starts and a pod that is denied.
+
+### 3.7 Kata, on the same examples
+
+If you have a Kata node pool, this is the portability claim: **the same
+Applications, unchanged**, with one annotation on the cluster secret.
+
+```
+sandbox_runtime_class: kata-clh
+confidential_sandbox_runtime_class:        # EMPTY: Kata cannot attest
+nitro_sandbox_runtime_classes:             # EMPTY: no Nitro-only features here
+sandbox_runtime: kata                      # the agent-sandbox warm pool
+```
+
+```bash
+kubectl apply -f platform/oam/examples/example-agent-sandbox.yaml
+kubectl get pods -l app.kubernetes.io/name=oap-assistant-sbx \
+  -o jsonpath='{.items[0].spec.runtimeClassName}'; echo      # kata-clh
+bash scripts/nitro/verify-isolation.sh -l app.kubernetes.io/name=oap-assistant-sbx
+```
+
+The kernel check passes the same way — Kata gives a separate kernel per pod too.
+What Kata does **not** give is attestation, so both confidential examples must be
+**rejected** here rather than quietly handed a `kata-clh` pod (Part 2.4), and
+`example-sandbox-isolated.yaml` should come up on `kata-clh` with its warm pool
+Running rather than Pending — the finding-1 regression.
 
 ---
 
@@ -500,8 +1011,15 @@ Read the **error**, not the failure:
 | ☐ | guards reject against the real webhook | 2.2 |
 | ☐ | Kata warm pool Running, not Pending | 2.3 |
 | ☐ | confidential fails closed on Kata, both ways | 2.4 |
-| ☐ | pod kernel ≠ node kernel | 3.1 |
-| ☐ | two users → two sandboxes | 3.2 |
-| ☐ | `--app` and `--from pod/` policies diffed | 3.3 |
+| ☐ | `pod-hello-sandbox` Ready; kernel ≠ node, `.enclave`, virtio disks | 3.0 |
+| ☐ | isolated agent: 2 pods on `isolated-sandbox`, own kernel, agent still answers | 3.1 |
+| ☐ | isolated pool: 2 warm pods, claim binds in seconds, pool refills, idles out | 3.2 |
+| ☐ | **confidential agent: placeholder policy REFUSED before the real one works** | 3.3 |
+| ☐ | confidential agent: exec denied; a spec change without regen is denied | 3.3 |
+| ☐ | confidential pool: `enableServiceLinks: false`, exec denied | 3.4 |
+| ☐ | session: 4 env vars, RBAC `can-i`, **two users → two sandboxes, separate FS** | 3.5 |
+| ☐ | session: `sessionKey` semantics, idle teardown, pool refill | 3.5 |
+| ☐ | `--app` vs `--from pod/` policies diffed | 3.6 |
+| ☐ | Kata: same Applications unchanged, `kata-clh`, confidential rejected | 3.7 |
 | ☐ | wrong guest denied | 4 |
 | ☐ | **administrator denied** | 4 |
