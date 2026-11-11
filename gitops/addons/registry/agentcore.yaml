@@ -82,8 +82,26 @@ oam-agent-components:
       # Pending (the Rollout reports not-Ready, never fake-green). Annotate such a
       # cluster onto Kata, or leave sandbox_runtime_class empty to reject
       # sandbox: true at admission instead.
-      sandboxRuntimeClass: '{{default "isolated-sandbox" (index .metadata.annotations "sandbox_runtime_class")}}'
-      confidentialSandboxRuntimeClass: '{{default "confidential-sandbox" (index .metadata.annotations "confidential_sandbox_runtime_class")}}'
+      #
+      # hasKey, NOT `| default`: sprig's `default` treats "" as unset, so
+      # `default "isolated-sandbox" (index ... )` turned an annotation that was
+      # PRESENT AND EMPTY back into the Nitro class -- which made the paragraph
+      # above ("leave sandbox_runtime_class empty to reject sandbox: true")
+      # false, and left a Kata cluster annotated only with sandbox_runtime_class
+      # still being handed confidential-sandbox for sandboxMode: confidential.
+      # hasKey distinguishes the three states the docs rely on:
+      #   absent          -> the Nitro default below
+      #   present, value  -> that value
+      #   present, empty  -> "", so the CUE guard rejects at admission
+      # `index` is still used for the read (see _defaults.yaml: missingkey=error
+      # makes a field access on an absent key fail before anything else runs).
+      sandboxRuntimeClass: '{{if hasKey .metadata.annotations "sandbox_runtime_class"}}{{index .metadata.annotations "sandbox_runtime_class"}}{{else}}isolated-sandbox{{end}}'
+      confidentialSandboxRuntimeClass: '{{if hasKey .metadata.annotations "confidential_sandbox_runtime_class"}}{{index .metadata.annotations "confidential_sandbox_runtime_class"}}{{else}}confidential-sandbox{{end}}'
+      # Which of those class names are Nitro. See the chart's values.yaml:
+      # the Nitro-only fields (networkIsolated, cedarPolicy, confidential mode)
+      # are REJECTED on a class that is not in this list, because Kata ignores
+      # them silently. Present-and-empty disables them all on this cluster.
+      nitroSandboxRuntimeClasses: '{{if hasKey .metadata.annotations "nitro_sandbox_runtime_classes"}}{{index .metadata.annotations "nitro_sandbox_runtime_classes"}}{{else}}isolated-sandbox,confidential-sandbox{{end}}'
       # Whether this cluster can run the per-session isolation tiers (agent
       # component, properties.isolation: session). "false" unless the
       # cluster secret says otherwise, because both tiers need the agent_sandbox
