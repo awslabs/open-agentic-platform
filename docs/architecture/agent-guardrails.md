@@ -1294,6 +1294,18 @@ has been shown.
 6. **Does the platform ever mandate guardrails?** A namespace label that makes
    `enabled: false` a rejected declaration is the mechanism; whether the platform
    should own that decision is a governance question, not a technical one.
-7. **Who owns the tool-call content gap?** Bedrock Guardrails cannot see
-   `toolUse.input` or `toolResult`. Inspecting them means inspecting at the MCP
-   hop, which is `agent-gateway`'s territory and a different design.
+7. ~~**Who owns the tool-call content gap?**~~ **Answered by #152.** Bedrock
+   Guardrails cannot see `toolUse.input` or `toolResult`, and the hop that can is
+   agentgateway's ExtMCP processor, which receives the JSON-RPC params. Kept here
+   rather than deleted because the *answer* raises a narrower question for
+   reviewers: should a content detector ever run at the MCP hop as well, sharing
+   this design's profile catalog, or does tool-call inspection belong wholly to
+   #152's policy engine? §3.9 argues the second — one verdict seam per hop — but
+   it is a judgement call, not a derivation.
+8. **Does the two-tier policy-store question in #152 reach this design?** #152
+   proposes git for the baseline plus a runtime store for emergency `forbid`
+   overrides with a TTL. The same argument applies to a guardrail profile: an
+   incident may want a denied topic added in seconds, not in a chart release.
+   This design deliberately keeps the catalog in git (§D2) on the grounds that a
+   reviewed definition is the point — but if #152 builds a narrowing-only runtime
+   overlay, reusing it here is cheaper than inventing a second mechanism.
