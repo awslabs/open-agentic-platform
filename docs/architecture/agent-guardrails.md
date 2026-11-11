@@ -914,7 +914,8 @@ two read together.
 | `oap_agent_guardrail_findings_total` | + `category`, `severity` | findings by normalized category, so "what are we actually catching" is answerable |
 | `oap_agent_guardrail_latency_seconds` | + `direction` | histogram of the inspection call. The number that decides whether this is affordable |
 | `oap_agent_guardrail_errors_total` | `cluster`, `loop` | backend call failures, separate from violations |
-| `oap_agent_guardrail_info` | `profile`, `on_violation`, `on_error`, `backend`, `streaming` | always 1; join in PromQL. Makes a weakened profile or a buffered agent visible |
+| `oap_agent_guardrail_info` | `profile`, `profile_version`, `guardrail_version`, `on_violation`, `on_error`, `backend`, `streaming` | always 1; join in PromQL. Makes a weakened profile or a buffered agent visible, and names the configuration a verdict came from |
+| `oap_agent_guardrail_config_skew` | `cluster` | replicas holding different `profile_version` / `guardrail_version`, so a mid-rollout disagreement is visible rather than reported |
 | `oap_agent_guardrail_last_success_timestamp_seconds` | `cluster` | liveness, so silence is distinguishable from health |
 
 Three rules bind it, all inherited from evaluation's hard-won §4a:
