@@ -86,6 +86,15 @@ no persistence, and AgentCore Policy — which is GA, really is Dogwood, and sol
 those problems — has no callable authorization API. What Phase 1 owes it is a
 decision seam (D4) so the engine can be substituted later without an API change.
 
+**#152 is adjacent, not overlapping, and the two should land independently.** It
+puts a policy engine at the **tool** hop, where the JSON-RPC params carry the tool
+name and arguments; this design sits at the **model** hop, where only the prompt
+and completion exist. Neither hop can answer the other's question, so a platform
+that wants both needs both (§3.9). Three things here came from reading it: the
+fail-closed default is no longer an argument but a convention OAP's own gateway
+already follows, a verdict now records the configuration that produced it, and the
+tool-call content gap is a stated boundary rather than an open hole.
+
 ---
 
 ## 2. Background
