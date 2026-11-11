@@ -62,8 +62,8 @@ admin who can create a Workflow, so branch protection is the real control; and r
 *all* step code conflates the few steps that decide mergeability with the many that merely
 report a verdict.
 
-That leaves the central claim: **we already execute untrusted code safely** — Kata
-micro-VM, no Kubernetes token, no IAM, default-deny egress. A team's step image on that
+That leaves the central claim: **we already execute untrusted code safely** — an agent
+sandbox with its own kernel, no Kubernetes token, no IAM, default-deny egress. A team's step image on that
 same substrate, with no credentials and no merge authority, is strictly less dangerous
 than what the factory already runs: model-written code prompted by text anyone can put in
 a public issue. Running it costs nothing new, and it is what turns the factory from a
@@ -82,9 +82,9 @@ cluster control plane.
 `changeset`, `ci-check`, `holdout`, `security-scan`, `approval`, `merge`; a `process`
 schema with presets and explicit stages (`onFail`, `skipWhen`); `factoryPolicy`
 guardrails; and the per-namespace factory — identities, four scoped tokens, warm pool,
-holdout source, settings, webhook trigger, status. The contract is **substrate-neutral**
-even though only Kata is wired in v1: Lambda MicroVM and Nitro are sequencing, not
-non-goals (§3.2).
+holdout source, settings, webhook trigger, status. The contract is **substrate-neutral**:
+a factory runs on whichever agent sandbox substrate the cluster provides (Kata or Nitro),
+and Lambda MicroVM is sequencing, not a non-goal (§3.2).
 
 **Not building**
 
@@ -92,7 +92,7 @@ non-goals (§3.2).
 |---|---|
 | The `shared/` registry tier | Teams reference their own steps directly; promotion needs a review workflow and an owner (D3) |
 | Signature verification of step images | Digest pinning and an allowed-registry list ship now; cosign is a follow-up |
-| A warm pool for step execution | Steps run as Kata pods on demand; pool once real durations are known (D4) |
+| A warm pool for step execution | Steps run as agent sandboxes on demand; pool once real durations are known (D4) |
 | `deploy`, environment promotion | Nothing needs it before merge gating works |
 | Pluggable intake | `issue-labeled` with a configurable label; issue types and slash commands are additive |
 | Autonomy 3.5 (low-risk auto-merge) | Targets the README's Level 3; needs `changeset` proven first |
@@ -122,9 +122,9 @@ GitHub ─webhook─► Ingress ─► EventSource ─► Sensor ─► Workflow
       │ Workflow pods ── run as SA dark-factory                            │
       │   read  ConfigMap dark-factory-config                              │
       │   read  Secret    dark-factory-github-orchestrator  (platform only)│
-      │   claim SandboxWarmPool dark-factory-coder ─► Kata VM (coder)       │
+      │   claim SandboxWarmPool dark-factory-coder ─► sandbox (coder)       │
       │   mount Secret    dark-factory-holdout  (hidden scenarios)         │
-      │   TEAM STEPS ─► Kata pod, no tokens, declared egress only          │
+      │   TEAM STEPS ─► sandbox, no tokens, declared egress only           │
       └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -190,15 +190,31 @@ creates all of it; defined once in `dark-factory-templates/values.yaml` → `con
 | `dark-factory-process` | WorkflowTemplate | The rendered process (D5) |
 
 **Substrate.** The process depends only on the Sandbox CRD surface: `dark-factory-coder`
-points at a SandboxTemplate, and the template is where the substrate lives (Kata sets
-`runtimeClassName`; the Lambda shim emits the same kind without one). Any substrate **must**
+points at a SandboxTemplate, and the template is where the substrate lives (each substrate's
+SandboxTemplate carries its own runtime settings; Kata, for example, sets `runtimeClassName`,
+and the Lambda shim emits the same kind without one). Any substrate **must**
 stamp `agent-sandbox.io/role` (`coder` or `step`) — without it the pod silently loses D13's
 isolation — and `agent-sandbox.io/substrate`. The substrate is chosen by a `substrate` key
 in `dark-factory-config`, never by a template name, so adding one does not fork platform step
 versions (D9). Claim and release are the one substrate-specific part (Lambda needs suspend
 and resume); they belong in a per-substrate step that `platform/code` calls.
 
-### 3.3 Component properties
+### 3.3 Platform steps
+
+Each platform step honors the §3.1 contract and posts its verdict under
+`dark-factory/<name>` (D7). The decision named in each row covers the step in depth.
+
+| Step | Does | Config | Posts |
+|---|---|---|---|
+| `platform/code` | Claims a coder sandbox, runs the coder on the issue (or on revision notes), pushes `df/issue-<n>`, opens or updates the PR, releases the sandbox | `engine` (default from `coder-engine`) | `dark-factory/code` |
+| `platform/changeset` | Lists the PR's changed paths so later stages can evaluate `skipWhen` (D8) | none | `dark-factory/changeset` |
+| `platform/ci-check` | Waits, with a time limit, for a named external GitHub check and copies its verdict; a timeout is a failure (D18) | `check`, `timeoutSeconds` | `dark-factory/ci-check-<check>` |
+| `platform/holdout` | Runs the hidden scenarios against the branch through the runner, then has a judge confirm them; fails closed if the repo has no scenarios (D17) | `threshold`, `requireScenarios`, `judgeModel`, `judgeRuns`, `judgeQuorum` | `dark-factory/holdout` |
+| `platform/security-scan` | Waits for the Security Agent App's review and copies its verdict, failing at or above `blockLevel` (D16) | `blockLevel`, `waitSeconds` | `dark-factory/security-scan` |
+| `platform/approval` | Ends the run until a qualifying GitHub review arrives, then starts the continuation run (D8) | `count`, `approvers` | `dark-factory/approval` |
+| `platform/merge` | Re-reads the PR head, requires every rendered status and every `requiredSteps` entry from the orchestrator, merges, closes the issue (D7) | none | none (merges) |
+
+### 3.4 Component properties
 
 | Property | Type | Default | Config key |
 |---|---|---|---|
@@ -250,7 +266,7 @@ code is a security control. Examine which steps that is true of:
 2. **No merge authority.** `platform/merge` requires the statuses the *platform* computed
    from the rendered process, plus policy's `requiredSteps`, which only platform steps can
    satisfy (D7). A team step can block its own team's merge; it cannot unblock anything.
-3. **Isolated execution.** Kata micro-VM, default-deny egress, no control-plane reach
+3. **Isolated execution.** An agent sandbox (Kata or Nitro), default-deny egress, no control-plane reach
    (D4, D13).
 
 **Costs.** The contract becomes a public ABI we must keep stable (D2). Step quality
@@ -298,13 +314,13 @@ supply-chain control, not a curation decision.
 ### D4. Team steps: images, executed on the sandbox substrate
 
 **Decision:** a digest-pinned OCI image, run by a platform-owned runner
-(`df-step-runner-v1`) as a Kata pod in the factory namespace with
+(`df-step-runner-v1`) as an agent sandbox in the factory namespace with
 `automountServiceAccountToken: false`, the token-less executor identity, read-only root,
 all capabilities dropped, and default-deny egress plus whatever `egress:` named.
 
 | Option | Verdict |
 |---|---|
-| **Kata pod via the sandbox substrate** (**chosen**) | The isolation already exists for the coder: one substrate, one `ClusterNetworkPolicy`, one posture to reason about. |
+| **An agent sandbox on the coder's substrate** (**chosen**) | The isolation already exists for the coder: one substrate, one `ClusterNetworkPolicy`, one posture to reason about. |
 | Hardened ordinary pod | Probably sufficient given no credentials, and faster to start — but a second posture to maintain, and on EKS VPC-CNI a namespaced NetworkPolicy does not reliably apply to Sandbox-owned pods (D13), so the policy story diverges too. Reasonable per environment; not the default. |
 | Reuse the coder warm pool | The pool is built from the coder image; a step needs its own. |
 
@@ -314,7 +330,7 @@ launches the image, reads `$DF_RESULT`, and posts the status under the step's re
 context (D7).
 
 **Step pod shape.** A team image never runs as an Argo task: Argo's `wait` container needs a
-ServiceAccount token, which in the same Kata guest would reach the API server and every
+ServiceAccount token, which in the same sandbox would reach the API server and every
 `workflowtaskresult` in the namespace. Instead:
 
 | Concern | Mechanism |
@@ -324,7 +340,7 @@ ServiceAccount token, which in the same Kata guest would reach the API server an
 | Workspace | An init container clones with the factory's **reader** token (contents:read only, D15), mounted only into that init container, so the step's container never sees it. It grants nothing beyond read access to source the step already receives |
 | Logs | Read by the runner, linked from the status's target URL |
 
-**Costs.** Per-step Kata boot latency, paid in parallel across a stage but still paid.
+**Costs.** Per-step sandbox boot latency, paid in parallel across a stage but still paid.
 And a team now owns an image lifecycle — build, scan, digest bump — real work we are
 moving onto them in exchange for autonomy.
 
@@ -561,7 +577,7 @@ Application owning cluster-wide admin-tier network policy.
 The component also keeps a namespaced default-deny egress policy as defence in depth.
 
 **Hostname egress goes through a proxy.** IP-based NetworkPolicy cannot express hostnames,
-and hostname-aware policy is not available on the self-managed Karpenter Kata pools. A
+and hostname-aware policy is not available on the self-managed Karpenter node pools the sandboxes run on. A
 platform-owned forward proxy (one per hub) enforces per-step host lists from the rendered
 process; the proxy, not the step, is what `allowedEgressHosts` binds.
 
@@ -637,7 +653,7 @@ no capability that grants them, which is why holdout cannot be team-ownable (D1)
 with no key fails closed (`NOT VERIFIED`) while `requireScenarios` is true, the default.
 
 **Execution.** `platform/holdout` splits in two. The **tests**, which run coder-written
-code, go through the D4 runner like a team step: a Kata pod with no token, the workspace,
+code, go through the D4 runner like a team step: an agent sandbox with no token, the workspace,
 and **only this repo's scenario key** mounted (a Secret volume `items:` entry set from the
 run's `<owner>-<repo>`). The **judge and verdict** stay in the platform step, which reads
 the runner's result and posts it. Coder output never shares a pod with a credential or with
@@ -670,10 +686,10 @@ label` mode is dropped; a team using the coding-agent plugin wires its own check
 Developers never set account, region, cluster name, webhook host, or Bifrost's address.
 These flow from the cluster secret's annotations through the addon registry to Helm globals
 (`awsAccountId`, `awsRegion`, `clusterName`, `bifrostUrl`, `bifrostClusterIp`,
-`ingressDomain`) and into CUE defaults. Bifrost is reached by **ClusterIP** (Kata guests
-cannot resolve cluster DNS) and admitted by a `/32` egress rule, because VPC-CNI matches
-egress on the pre-DNAT ClusterIP. The Bifrost address is a per-substrate value: Kata takes
-the ClusterIP; a substrate on ordinary node pods takes the service name. `webhook.host` defaults to
+`ingressDomain`) and into CUE defaults. Bifrost is reached by **ClusterIP** where the
+substrate's guests cannot resolve cluster DNS (Kata today) and admitted by a `/32` egress rule, because VPC-CNI matches
+egress on the pre-DNAT ClusterIP. The Bifrost address is a per-substrate value: a substrate
+whose guests cannot resolve cluster DNS takes the ClusterIP; a substrate on ordinary node pods takes the service name. `webhook.host` defaults to
 `ingressDomain`, and factories are told apart by D14's `/dark-factory/<ns>/<name>` path,
 as the hub factory does today (`registry/sandbox.yaml`). A per-factory host would sit two
 labels below the domain, which a single-level wildcard certificate does not cover. Override
@@ -734,15 +750,15 @@ expressions get long and brittle. A reconciler would be better (§8).
 
 | Threat | Control |
 |---|---|
-| Coder code reaches credentials | Kata VM (own kernel); no Kubernetes token, no IAM; only a narrow GitHub token at `/etc/secrets` (0400) |
+| Coder code reaches credentials | Agent sandbox (own kernel); no Kubernetes token, no IAM; only a narrow GitHub token at `/etc/secrets` (0400) |
 | **Team step reaches credentials** | **No tokens mounted (D1, D15); only declared `stepSecrets` keys, which the team owns** |
 | Coder or team step reaches the control plane | Admin-tier ClusterNetworkPolicy on `role in (coder, step)` (D13); default-deny egress plus declared hosts |
 | **Team step forges another step's verdict** | **Steps never post statuses; the platform runner reads `$DF_RESULT` and posts under a tier-namespaced context it chooses (D2, D7)** |
 | Another token posts a same-named passing status | Merge accepts only statuses created by the orchestrator account; the coder token has no statuses permission (§3.1, D15) |
 | **Team step satisfies a required gate with a stub** | **`requiredSteps` may only name `platform/` steps — structural, not configurable (D7)** |
-| **Hostile step image** | **Digest-pinned from an allowed registry (D7); Kata pod, no tokens, read-only root, caps dropped, deny-all egress (D4). Worst case: that team's own PRs fail to merge** |
+| **Hostile step image** | **Digest-pinned from an allowed registry (D7); agent sandbox, no tokens, read-only root, caps dropped, deny-all egress (D4). Worst case: that team's own PRs fail to merge** |
 | Coder games its own tests | Hidden scenarios no step but `platform/holdout` can reach (D17); a judge from a different model family; fail-closed on missing scenarios |
-| Coder output executed on the hub (holdout) | Runs through the D4 runner: no token, one repo's scenarios, Kata (D17); `npm install --ignore-scripts`; no AWS identity in the namespace (D16) |
+| Coder output executed on the hub (holdout) | Runs through the D4 runner: no token, one repo's scenarios, agent sandbox (D17); `npm install --ignore-scripts`; no AWS identity in the namespace (D16) |
 | Unreviewed or failing code merged | Merge only on a human approval event; `platform/merge` refuses unless every required status is green at the PR head; a missing status is a refusal |
 | Tampered platform step code | Each platform step's image is digest-pinned in a cluster-scoped, platform-owned template (D10); only the platform changes the digest, through a reviewed commit; each run records the digest it ran (D9) |
 | Tenant process drops a required gate | Three overlapping enforcement points (D7) |
@@ -863,8 +879,8 @@ Needed, none of it done:
 - `helm lint` and `argo lint` on every platform step template and the runner; every
   `configMapKeyRef` key present in the rendered `dark-factory-config`.
 - Both Admin ClusterNetworkPolicies admitted with distinct priorities on a live VPC-CNI, and
-  that `role=step` covers runner-launched Kata pods (D13).
-- Kata cold-boot latency for a trivial step image, to decide whether §2's "no warm pool"
+  that `role=step` covers runner-launched sandboxes on each substrate (D13).
+- Sandbox cold-boot latency per substrate for a trivial step image, to decide whether §2's "no warm pool"
   holds.
 - A live run on `preset: standard` (label → VM → PR → steps → approval → merge), then one
   with a team step and `onFail: revise`.
@@ -876,7 +892,7 @@ Needed, none of it done:
 1. **The `shared/` registry tier** — promotion, review and ownership for a team step others
    depend on.
 2. **Cosign verification of step images**, alongside `allowedRegistries`.
-3. **A warm pool for step execution**, if Kata boot latency proves to matter.
+3. **A warm pool for step execution**, if sandbox boot latency proves to matter.
 4. **Move the chart's hub factory onto the step templates**, removing the last duplicated
    pipeline. **Port the chart's templates to `mutexes`** — they fail on Argo v4 today.
 5. **Evaluate `templateReferencing: Strict`** on the hub's Argo controller — the only thing
