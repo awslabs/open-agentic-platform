@@ -11,7 +11,8 @@ Per pass:
    currentPodHash`). The very first revision of an agent runs too, as the
    baseline (`trigger=first-revision`).
 4. Collect finished Jobs' result ConfigMaps and publish oap_agent_harness_* for
-   each agent's latest finished run.
+   each agent's latest finished run on its declared dataset, against its
+   declared threshold.
 5. Prune history.
 
 The Job objects ARE the state. Job names are deterministic per (namespace,
@@ -588,20 +589,31 @@ class HarnessLoop:
             )
 
     def _publish(self, declarations: list, finished: list[_Finished], held: dict) -> None:
-        latest: dict[str, _Finished] = {}
+        # Series follow the CURRENT declaration: the newest finished run for the
+        # declared dataset, shown against the declared threshold. A dataset or
+        # threshold change on the same revision starts no run (the Job name
+        # ignores the threshold), so threshold_met is recomputed here from the
+        # run's pass ratio. An agent whose declaration is invalid (held) has no
+        # current declaration and keeps its newest run as it was.
+        latest: dict[tuple[str, str | None], _Finished] = {}
         for item in finished:
-            key = _agent_key(item.job)
-            if key not in latest or item.finished_at > latest[key].finished_at:
-                latest[key] = item
+            agent_key = _agent_key(item.job)
+            for key in ((agent_key, item.run.dataset), (agent_key, None)):
+                if key not in latest or item.finished_at > latest[key].finished_at:
+                    latest[key] = item
         rows: list[HarnessRow] = []
-        agents = [(d.key, d.namespace, d.agent) for d in declarations]
-        agents += [(key, ns, agent) for key, (ns, agent) in sorted(held.items())]
-        for key, namespace, agent in agents:
-            item = latest.get(key)
+        agents = [(d.key, d.namespace, d.agent, d) for d in declarations]
+        agents += [(key, ns, agent, None) for key, (ns, agent) in sorted(held.items())]
+        for key, namespace, agent, current in agents:
+            item = latest.get((key, current.dataset if current else None))
             if item is None:
-                continue  # never run: absent, not 0
+                continue  # never run on this dataset: absent, not 0
             run = item.run
             completed = run.status == "completed"
+            threshold = current.threshold if current else run.threshold
+            threshold_met = None
+            if completed and run.pass_ratio is not None:
+                threshold_met = run.pass_ratio >= threshold
             rows.append(
                 HarnessRow(
                     cluster=self._s.cluster,
@@ -613,14 +625,14 @@ class HarnessLoop:
                     judge_model=run.judge_model,
                     trigger=run.trigger,
                     status=run.status,
-                    threshold=run.threshold,
+                    threshold=threshold,
                     last_run_timestamp=item.finished_at,
                     cases=run.cases if completed else None,
                     passed=run.passed if completed else None,
                     failed=run.failed if completed else None,
                     errors=run.errors if completed else None,
                     pass_ratio=run.pass_ratio if completed else None,
-                    threshold_met=run.threshold_met if completed else None,
+                    threshold_met=threshold_met,
                 )
             )
         self._metrics.publish_harness(rows)

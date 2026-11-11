@@ -297,6 +297,91 @@ def test_run_where_every_case_errored_publishes_no_counts(settings, harness_sett
     ) == 1
 
 
+def test_threshold_change_publishes_the_declared_threshold(settings, harness_settings, catalog, metrics):
+    # Live finding (campaign S5c, D3): lowering the declared threshold on the
+    # same revision started no run (correct) but the series kept the run's old
+    # threshold and threshold_met 0.
+    strict = decl(threshold=0.9)
+    loop, f = build(settings, harness_settings, catalog, metrics, [strict])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, strict, "rev1", ["passed", "passed", "failed"])
+    f.batch.finish(name)
+    loop.run_once()
+    assert sample(metrics, "oap_agent_harness_threshold") == 0.9
+    assert sample(metrics, "oap_agent_harness_threshold_met") == 0
+
+    relaxed, _ = build(settings, harness_settings, catalog, metrics, [decl(threshold=0.5)], fakes=f)
+    relaxed.run_once()
+
+    assert len(f.batch.created) == 1  # a threshold change is not a new run
+    assert sample(metrics, "oap_agent_harness_threshold") == 0.5
+    assert sample(metrics, "oap_agent_harness_threshold_met") == 1
+    assert abs(sample(metrics, "oap_agent_harness_pass_ratio") - 2 / 3) < 1e-9
+
+
+def test_series_follow_the_declared_dataset(settings, harness_settings, catalog, metrics, harness_dirs):
+    # Live finding (campaign S5c, D4): after the declaration went back to the
+    # smoke dataset, the series still showed the newer run on another dataset.
+    smoke_text = (harness_dirs.datasets / "example-smoke-v1.yaml").read_text()
+    for other in ("campaign-fail-v1", "campaign-new-v1"):
+        (harness_dirs.datasets / f"{other}.yaml").write_text(
+            smoke_text.replace("example-smoke-v1", other)
+        )
+    smoke = decl(threshold=0.8)
+    fail = decl(dataset="campaign-fail-v1", threshold=0.9)
+    loop, f = build(settings, harness_settings, catalog, metrics, [smoke])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    smoke_job = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, smoke_job, smoke, "rev1", ["passed", "passed"], finished_at=3_000.0)
+    f.batch.finish(smoke_job)
+    loop.run_once()
+
+    on_fail, _ = build(settings, harness_settings, catalog, metrics, [fail], fakes=f)
+    on_fail.run_once()
+    fail_job = f.batch.created[1]["metadata"]["name"]
+    write_result(f.core, fail_job, fail, "rev1", ["passed", "failed"], finished_at=4_000.0)
+    f.batch.finish(fail_job)
+    on_fail.run_once()
+    assert sample(metrics, "oap_agent_harness_pass_ratio", dataset="campaign-fail-v1") == 0.5
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+
+    back, _ = build(settings, harness_settings, catalog, metrics, [smoke], fakes=f)
+    back.run_once()
+    assert len(f.batch.created) == 2  # the smoke run of rev1 exists: no re-run
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
+    assert sample(metrics, "oap_agent_harness_threshold") == 0.8
+    assert sample(metrics, "oap_agent_harness_last_run_timestamp_seconds") == 3_000.0
+    for metric in ("pass_ratio", "threshold", "info"):
+        assert not [
+            s for s in metrics.registry.collect() if s.name == f"oap_agent_harness_{metric}"
+            for s in s.samples if s.labels.get("dataset") == "campaign-fail-v1"
+        ], metric
+
+    # A dataset with no finished run yet: the agent's series are absent, not 0.
+    new = decl(dataset="campaign-new-v1", threshold=0.8)
+    pending, _ = build(settings, harness_settings, catalog, metrics, [new], fakes=f)
+    pending.run_once()
+    new_job = f.batch.created[2]["metadata"]["name"]
+    for metric in ("cases", "pass_ratio", "threshold", "threshold_met", "info"):
+        assert not [
+            s for s in metrics.registry.collect() if s.name == f"oap_agent_harness_{metric}"
+            for s in s.samples
+        ], metric
+
+    # Every case errored on the declared dataset: still a run error, no counts.
+    write_result(f.core, new_job, new, "rev1", ["error", "error"], finished_at=5_000.0)
+    f.batch.finish(new_job)
+    pending.run_once()
+    for metric in ("cases", "passed", "failed", "case_errors", "pass_ratio", "threshold_met"):
+        assert sample(metrics, f"oap_agent_harness_{metric}", dataset="campaign-new-v1") is None, metric
+    assert sample(metrics, "oap_agent_harness_threshold", dataset="campaign-new-v1") == 0.8
+    info = [s for s in metrics.registry.collect() if s.name == "oap_agent_harness_info"][0].samples
+    assert [(s.labels["dataset"], s.labels["status"]) for s in info] == [("campaign-new-v1", "error")]
+
+
 def test_failed_job_without_result_is_a_run_error(settings, harness_settings, catalog, metrics):
     loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
     f.custom.set_rollout("team-a", "assistant", "rev1")

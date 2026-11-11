@@ -1271,7 +1271,11 @@ run error, not a 0% run: nothing was judged.
 ### Contract 5: the harness metrics
 
 Common labels `cluster`, `namespace`, `agent`, `dataset`. One set of series per
-agent: the latest run.
+agent, following its current declaration: the latest finished run on the
+declared dataset, shown against the declared threshold. Changing only the
+threshold starts no run; the series switch to the new threshold at the next
+pass. An agent with no finished run on its declared dataset has no result
+series.
 
 | Metric | Extra labels | Meaning |
 |---|---|---|
@@ -1281,7 +1285,7 @@ agent: the latest run.
 | `oap_agent_harness_case_errors` | | cases with no usable answer or verdict |
 | `oap_agent_harness_pass_ratio` | | `passed / cases`; errors count against it |
 | `oap_agent_harness_threshold` | | the agent's declared threshold |
-| `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold`. Informational only |
+| `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold` (the declared threshold). Informational only |
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
 | `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status` | always 1; `trigger` is `first-revision` or `new-revision`, `status` `completed` or `error` |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
