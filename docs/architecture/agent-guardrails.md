@@ -962,6 +962,14 @@ two read together.
 | `oap_agent_guardrail_config_skew` | `cluster` | replicas holding different `profile_version` / `guardrail_version`, so a mid-rollout disagreement is visible rather than reported |
 | `oap_agent_guardrail_last_success_timestamp_seconds` | `cluster` | liveness, so silence is distinguishable from health |
 
+**One label is reserved rather than used: `hop`.** Every series above is
+`hop="model"`. A tool-hop denial (§3.10) is the same question asked one hop
+later — what was refused, by which configuration, and was it a refusal or a
+failure — so it belongs in this metric family with `hop="tool"`, not in a
+parallel one. Reserving the label now costs a constant and saves a reviewer
+later discovering two dashboards that cannot be joined. Phase 1 emits a single
+value for it.
+
 Three rules bind it, all inherited from evaluation's hard-won §4a:
 
 - **A fail-closed block is never a violation.** `error_blocked` is its own
