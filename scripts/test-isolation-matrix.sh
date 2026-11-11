@@ -2,10 +2,17 @@
 # Sandbox / isolation: RENDER-TIME capability matrix. PASS/FAIL per row; exit
 # code = number of failed rows.
 #
-# Needs NO cluster and NO AWS. It renders the real definitions the way the
+# CONTACTS NO CLUSTER and NO AWS: it renders the real definitions the way the
 # platform does -- helm template (which substitutes the globals INTO the CUE)
-# then `vela dry-run --offline` -- and asks three questions a single-example
-# check cannot:
+# then `vela dry-run --offline`.
+#
+# It does, however, need a READABLE KUBECONFIG. `vela dry-run --offline` builds
+# a client before it looks at --offline, and exits 1 with an empty stdout when it
+# cannot; any kubeconfig will do, and nothing in it is ever contacted. The
+# preflight below checks for one, because without it every guard row rejects for
+# the wrong reason and PASSES.
+#
+# It asks four questions a single-example check cannot:
 #
 #   A. Does every shipped example still render?
 #   B. Does each capability still work ALONGSIDE the others in one Application?
@@ -34,6 +41,21 @@ for t in helm vela python3; do
 done
 python3 -c 'import yaml' 2>/dev/null || { echo "missing: python3 PyYAML" >&2; exit 1; }
 
+# `vela dry-run --offline` is not actually offline enough to skip this: vela
+# 1.11 constructs a client first and exits 1 with NOTHING on stdout when there is
+# no readable kubeconfig. Inside this script that failure is indistinguishable
+# from a guard firing, so all 11 C rows would pass and the rest would fail.
+# Catch it here, where the message can say what is wrong.
+if ! vela dry-run --offline -d /dev/null -f /dev/null >/dev/null 2>"$TMPDIR/vela-probe.err" &&
+   grep -qi 'kubeconfig\|connection refused\|no configuration has been provided' "$TMPDIR/vela-probe.err" 2>/dev/null; then
+  echo "vela cannot start: no usable kubeconfig." >&2
+  echo >&2
+  echo "Despite --offline, vela builds a client before rendering. It never contacts" >&2
+  echo "the cluster -- any valid kubeconfig is enough. Set KUBECONFIG to one you" >&2
+  echo "already have, then re-run." >&2
+  exit 1
+fi
+
 OAP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -60,8 +82,18 @@ defs_for() { # defs_for <tag> [--set k=v ...] -> prints the definitions dir
   mkdir -p "$dir" "$chart"
   cp -R "$OAP/gitops/addons/charts/oam-agent-components/." "$chart/"
   rm -f "$chart/templates/"*.yaml
-  vela def render "$OAP/platform/oam/definitions/components" -o "$chart/templates" --message "# gen" >/dev/null 2>&1
-  vela def render "$OAP/platform/oam/definitions/traits" -o "$chart/templates" --message "# gen" >/dev/null 2>&1
+  # NOT >/dev/null 2>&1. A `vela def render` that fails here leaves an empty
+  # templates dir, which produces an empty DEFINITION SET -- and an empty
+  # definition set makes every single guard row reject (there is nothing to
+  # render against) and therefore PASS, while the ok-rows fail. The matrix then
+  # reports "all guards fire" having tested nothing at all. Fail loudly instead.
+  for src in components traits; do
+    vela def render "$OAP/platform/oam/definitions/$src" -o "$chart/templates" \
+      --message "# gen" > "$chart/vela-$src.log" 2>&1 || {
+      echo "vela def render failed for $src ($tag):" >&2
+      cat "$chart/vela-$src.log" >&2
+      exit 1; }
+  done
   helm template oap-matrix "$chart" "$@" > "$chart/rendered.yaml" 2>"$chart/helm.err" || {
     echo "helm template failed for $tag:" >&2; cat "$chart/helm.err" >&2; exit 1; }
   python3 - "$chart/rendered.yaml" "$dir" <<'PY'
@@ -71,16 +103,63 @@ for d in yaml.safe_load_all(open(sys.argv[1])):
         yaml.safe_dump(d, open(os.path.join(sys.argv[2], '%s-%s.yaml' % (d['kind'], d['metadata']['name'])), 'w'),
                        default_flow_style=False, width=100000)
 PY
+  # Belt and braces: the renders above can succeed and still yield nothing the
+  # extractor recognises (a definition kind rename would do it). An empty set is
+  # never a legitimate state, and silently continuing with one is the vacuous
+  # pass described above.
+  local n
+  n="$(find "$dir" -name '*.yaml' | wc -l | tr -d ' ')"
+  if [ "$n" -lt 2 ]; then
+    echo "definition set '$tag' has $n definitions -- expected the full component+trait set." >&2
+    echo "Every guard row would PASS vacuously against this. Refusing to continue." >&2
+    exit 1
+  fi
   echo "$dir"
 }
 
 # render <app.yaml> <defs-dir> <out.yaml> -> prints ok | reject
+#
+# STDOUT CARRIES THE VERDICT AND NOTHING ELSE. Every caller is a $(...) capture,
+# so a single stray line of diagnostics here becomes part of `actual` and fails
+# the row -- which is exactly what -v used to do to all 45 of them. The verbose
+# dump therefore goes to stderr, where it reaches the terminal without entering
+# the capture.
 render() {
   if vela dry-run --offline -d "$2" -f "$1" > "$3" 2> "$3.err"; then
     echo ok
   else
-    [ "$VERBOSE" = 1 ] && sed 's/^/        /' "$3.err"
+    [ "$VERBOSE" = 1 ] && sed 's/^/        /' "$3.err" >&2
     echo reject
+  fi
+}
+
+# guard <app.yaml> <defs-dir> <out.yaml> <expected-local> -> prints the local
+# name | ok | reject:<something-else>
+#
+# WHY THE NAME MATTERS. A C row asserting only "reject" passes on ANY failed
+# render: a typo in the test fixture, a missing definition, an unrelated guard
+# firing first. That is the failure mode this whole section exists to catch, so
+# asserting "it was rejected" is not enough -- the row has to show that THE
+# GUARD UNDER TEST is what rejected it.
+#
+# The name is matched against the CUE local (e.g. _cedarPolicyRequired), which
+# KubeVela prints as part of the conflict because these guards are written as a
+# deliberate unification failure between "set" and the explanatory message.
+guard() {
+  local app="$1" defs="$2" out="$3" want="$4"
+  if vela dry-run --offline -d "$defs" -f "$app" > "$out" 2> "$out.err"; then
+    echo ok
+    return
+  fi
+  [ "$VERBOSE" = 1 ] && sed 's/^/        /' "$out.err" >&2
+  if grep -q -- "$want" "$out.err"; then
+    echo "$want"
+  else
+    # First plausible guard local in the output, so a FAIL line names what DID
+    # fire rather than just denying the expectation.
+    local got
+    got="$(grep -oE '_[a-zA-Z]+(Required|Available|Unavailable|Supported|NeedsSandbox|NeedsNitro|NeedsNetwork|HasNoService)' "$out.err" | head -1)"
+    echo "reject:${got:-other}"
   fi
 }
 
@@ -90,17 +169,38 @@ app() { # app <name> <<'YAML' ... YAML   -> prints the path
   echo "$f"
 }
 
+# A correctly SHAPED stub Cedar policy. The components shape-check cedarPolicy
+# (64+ chars of base64) so an unreplaced example placeholder fails the render
+# rather than the pod, which means a fixture carrying a short dummy value now
+# trips the shape guard before reaching the guard the row is actually testing.
+# Row C19 is where the short/invalid case is asserted deliberately.
+POLICY_STUB='cGVybWl0KHByaW5jaXBhbCwgYWN0aW9uLCByZXNvdXJjZSk7IC8vIG1hdHJpeCBmaXh0dXJlIG9ubHkgLS0gbG9uZyBlbm91Z2ggdG8gc2F0aXNmeSB0aGUgY2VkYXJQb2xpY3kgc2hhcGUgY2hlY2sgaW4gYWdlbnQuY3VlIC8gc2FuZGJveC5jdWU='
+
 # Shorthand for an agent component's required fields.
 AGENT_MIN='        description: "m"
         systemMessage: "m"'
 
+# `defs_for` runs inside a command substitution, so its own `exit 1` only kills
+# that subshell -- the parent would carry on and run every row against an empty
+# definition set, which is the vacuous-pass failure the loud errors inside
+# defs_for are there to prevent. A variable assignment's exit status IS the
+# substitution's, so propagate it here. `set -e` is deliberately off in this
+# script (rows are allowed to fail), hence the explicit guard per line.
+die_defs() { echo "cannot build definition set '$1' -- see the render error above." >&2; exit 1; }
+
 echo "== definitions =="
 # nitro: the shipped defaults. session: per-session isolation switched on.
-D_NITRO="$(defs_for nitro)"
-D_SESSION="$(defs_for session --set global.sessionIsolationEnabled=true)"
-D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)"
-D_NORUNTIME="$(defs_for noruntime --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)"
-printf 'rendered 4 definition sets (nitro default, session-enabled, kata-only, no-runtime)\n\n'
+D_NITRO="$(defs_for nitro)" || die_defs nitro
+D_SESSION="$(defs_for session --set global.sessionIsolationEnabled=true)" || die_defs session
+D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)" || die_defs kata
+D_NORUNTIME="$(defs_for noruntime --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)" || die_defs noruntime
+# A MISCONFIGURED cluster: confidential_sandbox_runtime_class pointed at a Kata
+# class. Not a hypothetical -- it is the obvious thing to try on a Kata cluster
+# that wants confidential mode, and it is the only way to reach the
+# confidential-needs-Nitro guards, since the ordinary Kata cluster leaves the
+# confidential class empty and trips the empty-class guard first.
+D_KATACONF="$(defs_for kataconf --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=kata-clh)" || die_defs kataconf
+printf 'rendered 5 definition sets (nitro default, session-enabled, kata-only, no-runtime, kata-as-confidential)\n\n'
 
 # ---------------------------------------------------------------- A. examples
 echo "== A. every shipped example renders =="
@@ -216,7 +316,7 @@ spec:
 $AGENT_MIN
         sandbox: true
         sandboxMode: confidential
-        cedarPolicy: "cGVybWl0KHByaW5jaXBhbCwgYWN0aW9uLCByZXNvdXJjZSk7"
+        cedarPolicy: "$POLICY_STUB"
         memory: {provider: agentcore, config: {memoryId: "m-1", region: us-west-2}}
         evaluation: {enabled: true, evaluators: ["helpfulness"]}
         mcpServers: [{name: mcp-time}]
@@ -267,7 +367,7 @@ spec:
 $AGENT_MIN
         sandbox: true
         sandboxMode: confidential
-        cedarPolicy: "cGVybWl0KHByaW5jaXBhbCwgYWN0aW9uLCByZXNvdXJjZSk7"
+        cedarPolicy: "$POLICY_STUB"
         isolation: session
         sandboxTemplate: b7-pool
     - name: b7-pool
@@ -276,7 +376,7 @@ $AGENT_MIN
         description: "pool"
         image: public.ecr.aws/amazonlinux/amazonlinux:2023
         mode: confidential
-        cedarPolicy: "cGVybWl0KHByaW5jaXBhbCwgYWN0aW9uLCByZXNvdXJjZSk7"
+        cedarPolicy: "$POLICY_STUB"
         warmPool: 1
 YAML
 )"
@@ -370,8 +470,8 @@ $AGENT_MIN
         sandboxMode: confidential
 YAML
 )"
-row C1 "confidential without cedarPolicy" reject "$(render "$c_conf_nopolicy" "$D_NITRO" "$WORK/o-c1.yaml")"
-row C2 "confidential on a Kata-only cluster" reject "$(render "$c_conf_nopolicy" "$D_KATA" "$WORK/o-c2.yaml")"
+row C1 "confidential without cedarPolicy" _cedarPolicyRequired "$(guard "$c_conf_nopolicy" "$D_NITRO" "$WORK/o-c1.yaml" _cedarPolicyRequired)"
+row C2 "confidential on a Kata-only cluster" _confidentialAvailable "$(guard "$c_conf_nopolicy" "$D_KATA" "$WORK/o-c2.yaml" _confidentialAvailable)"
 
 c_sandbox_noclass="$(app c3 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -386,7 +486,7 @@ $AGENT_MIN
         sandbox: true
 YAML
 )"
-row C3 "sandbox:true with no runtime class configured" reject "$(render "$c_sandbox_noclass" "$D_NORUNTIME" "$WORK/o-c3.yaml")"
+row C3 "sandbox:true with no runtime class configured" _isolationRuntimeRequired "$(guard "$c_sandbox_noclass" "$D_NORUNTIME" "$WORK/o-c3.yaml" _isolationRuntimeRequired)"
 
 c_session_gate="$(app c4 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -402,7 +502,7 @@ $AGENT_MIN
         sandboxTemplate: c4-pool
 YAML
 )"
-row C4 "isolation:session without sessionIsolationEnabled" reject "$(render "$c_session_gate" "$D_NITRO" "$WORK/o-c4.yaml")"
+row C4 "isolation:session without sessionIsolationEnabled" _sessionIsolationUnavailable "$(guard "$c_session_gate" "$D_NITRO" "$WORK/o-c4.yaml" _sessionIsolationUnavailable)"
 
 c_session_notpl="$(app c5 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -417,7 +517,7 @@ $AGENT_MIN
         isolation: session
 YAML
 )"
-row C5 "isolation:session without sandboxTemplate" reject "$(render "$c_session_notpl" "$D_SESSION" "$WORK/o-c5.yaml")"
+row C5 "isolation:session without sandboxTemplate" _sandboxTemplateRequired "$(guard "$c_session_notpl" "$D_SESSION" "$WORK/o-c5.yaml" _sandboxTemplateRequired)"
 
 c_tools="$(app c6 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -433,7 +533,7 @@ $AGENT_MIN
         sandboxTemplate: c6-pool
 YAML
 )"
-row C6 "isolation:tools (refused by design)" reject "$(render "$c_tools" "$D_SESSION" "$WORK/o-c6.yaml")"
+row C6 "isolation:tools (refused by design)" _toolsTierNotSupported "$(guard "$c_tools" "$D_SESSION" "$WORK/o-c6.yaml" _toolsTierNotSupported)"
 
 c_netiso_svc="$(app c7 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -449,7 +549,7 @@ spec:
         networkIsolated: true
 YAML
 )"
-row C7 "sandbox: networkIsolated with default service:true" reject "$(render "$c_netiso_svc" "$D_NITRO" "$WORK/o-c7.yaml")"
+row C7 "sandbox: networkIsolated with default service:true" _networkIsolatedHasNoService "$(guard "$c_netiso_svc" "$D_NITRO" "$WORK/o-c7.yaml" _networkIsolatedHasNoService)"
 
 c_conf_netiso="$(app c8 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -463,12 +563,12 @@ spec:
         description: "p"
         image: public.ecr.aws/amazonlinux/amazonlinux:2023
         mode: confidential
-        cedarPolicy: "cGVybWl0"
+        cedarPolicy: "$POLICY_STUB"
         networkIsolated: true
         service: false
 YAML
 )"
-row C8 "sandbox: confidential + networkIsolated" reject "$(render "$c_conf_netiso" "$D_NITRO" "$WORK/o-c8.yaml")"
+row C8 "sandbox: confidential + networkIsolated" _confidentialNeedsNetwork "$(guard "$c_conf_netiso" "$D_NITRO" "$WORK/o-c8.yaml" _confidentialNeedsNetwork)"
 
 c_sbx_conf_nopolicy="$(app c9 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -484,7 +584,7 @@ spec:
         mode: confidential
 YAML
 )"
-row C9 "sandbox: confidential without cedarPolicy" reject "$(render "$c_sbx_conf_nopolicy" "$D_NITRO" "$WORK/o-c9.yaml")"
+row C9 "sandbox: confidential without cedarPolicy" _cedarPolicyRequired "$(guard "$c_sbx_conf_nopolicy" "$D_NITRO" "$WORK/o-c9.yaml" _cedarPolicyRequired)"
 
 c_sbx_noruntime="$(app c10 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -499,7 +599,7 @@ spec:
         image: public.ecr.aws/amazonlinux/amazonlinux:2023
 YAML
 )"
-row C10 "sandbox component with no isolation runtime configured" reject "$(render "$c_sbx_noruntime" "$D_NORUNTIME" "$WORK/o-c10.yaml")"
+row C10 "sandbox component with no isolation runtime configured" _isolationRuntimeRequired "$(guard "$c_sbx_noruntime" "$D_NORUNTIME" "$WORK/o-c10.yaml" _isolationRuntimeRequired)"
 
 # The pre-existing guard, which this branch must not have broken: evaluation
 # only works on the centralized observability path.
@@ -519,6 +619,164 @@ $AGENT_MIN
 YAML
 )"
 row C11 "PRE-EXISTING: evaluation + decentralized observability" reject "$(render "$c_eval_decentral" "$D_NITRO" "$WORK/o-c11.yaml")"
+
+# ---- review finding 2: isolation fields that need sandbox: true ----------
+# Every guard and every emission on type: agent was gated on `parameter.sandbox
+# &&`, so sandboxMode and cedarPolicy on their own rendered an ORDINARY pod --
+# no runtimeClassName, no policy annotation -- and reported success. The
+# developer asked for confidentiality and got a shared-kernel container.
+c_mode_nosandbox="$(app c12 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c12, namespace: default}
+spec:
+  components:
+    - name: c12-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandboxMode: confidential
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C12 "agent: sandboxMode without sandbox:true" _sandboxModeNeedsSandbox "$(guard "$c_mode_nosandbox" "$D_NITRO" "$WORK/o-c12.yaml" _sandboxModeNeedsSandbox)"
+
+c_policy_nosandbox="$(app c13 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c13, namespace: default}
+spec:
+  components:
+    - name: c13-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C13 "agent: cedarPolicy without sandbox:true" _cedarPolicyNeedsSandbox "$(guard "$c_policy_nosandbox" "$D_NITRO" "$WORK/o-c13.yaml" _cedarPolicyNeedsSandbox)"
+
+# ---- review finding 5: Nitro-only fields on a non-Nitro class ------------
+# A Kata class ADMITS a pod carrying sandbox.amazonaws.com/policy and never
+# reads it, and gives a "network-isolated" pod an ordinary network device. These
+# four rows are the difference between rejecting the request and shipping a pod
+# that advertises isolation it does not have.
+c_policy_kata="$(app c14 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c14, namespace: default}
+spec:
+  components:
+    - name: c14-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C14 "agent: cedarPolicy on a Kata class" _cedarPolicyNeedsNitro "$(guard "$c_policy_kata" "$D_KATA" "$WORK/o-c14.yaml" _cedarPolicyNeedsNitro)"
+
+c_conf_kataclass="$(app c15 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c15, namespace: default}
+spec:
+  components:
+    - name: c15-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+        sandboxMode: confidential
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C15 "agent: confidential with a Kata confidential class" _confidentialNeedsNitro "$(guard "$c_conf_kataclass" "$D_KATACONF" "$WORK/o-c15.yaml" _confidentialNeedsNitro)"
+
+c_netiso_kata="$(app c16 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c16, namespace: default}
+spec:
+  components:
+    - name: c16-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim
+        service: false
+        networkIsolated: true
+YAML
+)"
+row C16 "sandbox: networkIsolated on a Kata class" _networkIsolatedNeedsNitro "$(guard "$c_netiso_kata" "$D_KATA" "$WORK/o-c16.yaml" _networkIsolatedNeedsNitro)"
+
+c_sbxpolicy_kata="$(app c17 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c17, namespace: default}
+spec:
+  components:
+    - name: c17-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C17 "sandbox: cedarPolicy on a Kata class" _cedarPolicyNeedsNitro "$(guard "$c_sbxpolicy_kata" "$D_KATA" "$WORK/o-c17.yaml" _cedarPolicyNeedsNitro)"
+
+c_sbxconf_kata="$(app c18 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c18, namespace: default}
+spec:
+  components:
+    - name: c18-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim
+        service: false
+        mode: confidential
+        cedarPolicy: "$POLICY_STUB"
+YAML
+)"
+row C18 "sandbox: confidential with a Kata confidential class" _confidentialNeedsNitro "$(guard "$c_sbxconf_kata" "$D_KATACONF" "$WORK/o-c18.yaml" _confidentialNeedsNitro)"
+
+# ---- review 'smaller': unreplaced example placeholders --------------------
+# Both used to render, deploy, and fail minutes later -- the sandbox agent
+# rejecting the policy, or an ImagePullBackOff -- with an error nowhere near the
+# manifest that caused it.
+c_ph_policy="$(app c19 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c19, namespace: default}
+spec:
+  components:
+    - name: c19-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+        sandboxMode: confidential
+        cedarPolicy: "REPLACE_ME_WITH_BASE64_CEDAR_POLICY"
+YAML
+)"
+row C19 "agent: unreplaced cedarPolicy placeholder" _cedarPolicyShape "$(guard "$c_ph_policy" "$D_NITRO" "$WORK/o-c19.yaml" _cedarPolicyShape)"
+
+c_ph_digest="$(app c20 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c20, namespace: default}
+spec:
+  components:
+    - name: c20-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        service: false
+YAML
+)"
+row C20 "sandbox: all-zero placeholder image digest" _imageDigestPlaceholder "$(guard "$c_ph_digest" "$D_NITRO" "$WORK/o-c20.yaml" _imageDigestPlaceholder)"
 
 # ------------------------------------------------- D. object-name collisions
 echo

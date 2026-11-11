@@ -15,17 +15,37 @@
 #
 # usage: scripts/nitro/verify-isolation.sh <pod> [-n <namespace>]
 #        scripts/nitro/verify-isolation.sh -l app.kubernetes.io/name=my-agent [-n ns]
+#
+# options:
+#   -n, --namespace <ns>
+#   -l, --selector <sel>
+#   --debug-image <image>   Read the guest kernel from an EPHEMERAL CONTAINER
+#                           instead of exec'ing the workload's own shell. Needed
+#                           for a distroless or scratch image, which has no
+#                           shell to exec -- and that is the likely shape of a
+#                           hardened sandbox workload, so the check that matters
+#                           most would otherwise be the one that cannot run.
+#                           busybox is the usual choice. MUTATES THE POD: an
+#                           ephemeral container is a permanent addition to the
+#                           pod's spec (it cannot be removed; the pod has to be
+#                           recreated), which is why it is opt-in.
+#
+#                           It is a valid substitute because an ephemeral
+#                           container joins THE SAME sandbox, so the kernel it
+#                           reports is the guest's.
 set -euo pipefail
 
 POD=""
 SELECTOR=""
 NAMESPACE="default"
+DEBUG_IMAGE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -l|--selector)  SELECTOR="$2"; shift 2 ;;
     -n|--namespace) NAMESPACE="$2"; shift 2 ;;
-    -h|--help)      sed -n '1,18p' "$0"; exit 0 ;;
+    --debug-image)  DEBUG_IMAGE="$2"; shift 2 ;;
+    -h|--help)      sed -n '/^# usage:/,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     -*) echo "unknown argument: $1" >&2; exit 2 ;;
     *)  POD="$1"; shift ;;
   esac
@@ -67,9 +87,21 @@ case "$RUNTIME_CLASS" in
   isolated-sandbox)     FAMILY=nitro; MODE=isolated ;;
   confidential-sandbox) FAMILY=nitro; MODE=confidential ;;
   kata-*)               FAMILY=kata;  MODE=isolated ;;
+  # A class this script does not recognise is NOT assumed to be Kata. It used to
+  # be, by falling through to the Kata branch of the node-label check below, and
+  # a cluster that renames its Nitro class (which global.nitroSandboxRuntimeClasses
+  # exists to support) then got a confident FAIL for a correctly isolated pod.
+  # The kernel check in section 4 does not care what the class is called, so an
+  # unknown class still gets a real answer -- just not a guessed one.
   *)                    FAMILY=unknown; MODE=unknown ;;
 esac
 note "runtime family: $FAMILY, trust model: $MODE"
+if [ "$FAMILY" = unknown ]; then
+  note "$RUNTIME_CLASS is not a class name this script recognises, so the node-label"
+  note "check below is skipped. Section 4 (the kernel) is runtime-agnostic and still"
+  note "decides. If this is a renamed Nitro class, add it to the case statement here"
+  note "and to global.nitroSandboxRuntimeClasses on the oam-agent-components chart."
+fi
 
 # The one failure this catches that nothing else does: a runtimeClassName that is
 # a Helm placeholder rather than a class name. It happens when the
@@ -121,16 +153,25 @@ fi
 
 echo
 echo "== 3. the node advertises sandbox capacity =="
+# OBSERVED, NOT CONTRACTUAL. eks.amazonaws.com/nitro-sandbox as a node label and
+# as an allocatable resource is what the RuntimeClass's scheduling block selects
+# on in practice, but it is not in the public documentation, so a rename or a
+# change of mechanism would make a FAIL here wrong. Reported, therefore, rather
+# than asserted: an absent label is worth printing and is not evidence of absent
+# isolation. Section 4 is the check that decides.
 if [ "$FAMILY" = nitro ]; then
   NITRO_LABEL="$(kubectl get node "$NODE" -o jsonpath='{.metadata.labels.eks\.amazonaws\.com/nitro-sandbox}' 2>/dev/null || true)"
   if [ "$NITRO_LABEL" = "true" ]; then
     ok "node label eks.amazonaws.com/nitro-sandbox=true"
   else
-    bad "node $NODE is not labelled eks.amazonaws.com/nitro-sandbox=true"
-    note "the RuntimeClass admission controller should have made this impossible"
+    note "node $NODE carries no eks.amazonaws.com/nitro-sandbox=true label"
+    note "not treated as a failure: this label is observed behaviour, not a documented"
+    note "contract, and the pod is Running on a class the admission controller accepted"
   fi
   SLOTS="$(kubectl get node "$NODE" -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}' 2>/dev/null || true)"
   [ -n "$SLOTS" ] && note "node sandbox slots (allocatable): $SLOTS"
+elif [ "$FAMILY" = unknown ]; then
+  note "skipped: no node-label expectation for runtime class $RUNTIME_CLASS"
 else
   KATA_LABEL="$(kubectl get node "$NODE" -o jsonpath='{.metadata.labels.katacontainers\.io/kata-runtime}' 2>/dev/null || true)"
   if [ -n "$KATA_LABEL" ]; then
@@ -149,12 +190,47 @@ note "node kernel:  ${NODE_KERNEL:-unknown}"
 # the parent instance cannot introspect the guest. A failure here is therefore
 # the feature working, not a problem, and the script says so rather than
 # reporting a scary FAIL.
+PROBE='uname -r; echo "---"; cat /sys/class/dmi/id/product_name 2>/dev/null; echo "---"; ls /sys/block 2>/dev/null | tr "\n" " "'
+
 EXEC_OUT=""
 EXEC_RC=0
 set +e
-EXEC_OUT="$(kubectl exec -n "$NAMESPACE" "$POD" -- sh -c 'uname -r; echo "---"; cat /sys/class/dmi/id/product_name 2>/dev/null; echo "---"; ls /sys/block 2>/dev/null | tr "\n" " "' 2>&1)"
+if [ -n "$DEBUG_IMAGE" ]; then
+  # An ephemeral container joins the same sandbox, so its kernel IS the guest's.
+  # --quiet keeps kubectl's own progress text out of the parsed output.
+  EXEC_OUT="$(kubectl debug -n "$NAMESPACE" "$POD" --image="$DEBUG_IMAGE" \
+      --quiet --attach=true -- sh -c "$PROBE" 2>&1)"
+else
+  EXEC_OUT="$(kubectl exec -n "$NAMESPACE" "$POD" -- sh -c "$PROBE" 2>&1)"
+fi
 EXEC_RC=$?
 set -e
+
+# THE IMAGE HAVING NO SHELL IS NOT A FAILED ISOLATION CHECK. A distroless or
+# scratch image is the likely shape of a hardened sandbox workload, and exec'ing
+# `sh` in one fails with "executable file not found" -- which this script used to
+# report as "could not exec into the pod to read its kernel", a FAIL, and an exit
+# 1. The isolation was never in question; the probe was.
+#
+# Checked BEFORE the confidential branch: a shell-less image fails this way in
+# every mode, and attributing it to the Cedar policy would be the same mistake in
+# the other direction.
+if [ "$EXEC_RC" -ne 0 ] && [ -z "$DEBUG_IMAGE" ] &&
+   printf '%s' "$EXEC_OUT" | grep -qiE 'executable file not found|no such file or directory|exec: "sh"'; then
+  note "this image has no shell, so the in-guest probe cannot run"
+  note "NOT a failure -- a distroless or scratch image is expected here, and nothing"
+  note "about it says anything either way about the isolation boundary."
+  echo
+  echo "To read the guest kernel anyway, re-run with an ephemeral container:"
+  echo "  scripts/nitro/verify-isolation.sh $POD -n $NAMESPACE --debug-image busybox"
+  echo
+  echo "It joins the same sandbox, so the kernel it reports is the guest's. Note that"
+  echo "an ephemeral container permanently alters the pod's spec -- the pod must be"
+  echo "recreated to remove it -- which is why this is not the default."
+  echo
+  echo "checks passed: $PASS   failed: $FAIL   (in-guest checks skipped: no shell in image)"
+  exit $(( FAIL > 0 ? 1 : 0 ))
+fi
 
 if [ "$EXEC_RC" -ne 0 ]; then
   if [ "$MODE" = confidential ]; then
@@ -169,6 +245,7 @@ if [ "$EXEC_RC" -ne 0 ]; then
   fi
   bad "could not exec into the pod to read its kernel"
   note "$EXEC_OUT"
+  note "if the image simply has no shell, re-run with --debug-image busybox"
   echo
   echo "checks passed: $PASS   failed: $FAIL"
   exit 1

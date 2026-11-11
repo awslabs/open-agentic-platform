@@ -1,0 +1,128 @@
+# Sandbox / isolation render matrix — the guard catalogue, on every PR that
+# touches it.
+#
+# WHY THIS EXISTS AS CI. The matrix's section C asserts that ~20 combinations
+# still FAIL to render. A guard that stops firing is worse than one that never
+# existed: the Application renders, deploys, and the isolation it asked for is
+# silently absent. That regression is invisible in a diff — it looks like a
+# condition being simplified — and it is caught only by trying the combination.
+# Running it by hand catches it only when someone remembers to.
+#
+# It contacts no cluster and needs no AWS credentials: `helm template` to
+# substitute the chart globals into the CUE, then `vela dry-run --offline`.
+name: isolation-matrix
+
+on:
+  pull_request:
+    paths:
+      - 'platform/oam/definitions/**'
+      - 'platform/oam/examples/**'
+      - 'gitops/addons/charts/oam-agent-components/**'
+      - 'gitops/addons/charts/agent-sandbox/**'
+      - 'scripts/test-isolation-matrix.sh'
+      - '.github/workflows/isolation-matrix.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'platform/oam/definitions/**'
+      - 'gitops/addons/charts/oam-agent-components/**'
+      - 'gitops/addons/charts/agent-sandbox/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Install KubeVela CLI
+        run: |
+          curl -fsSL https://kubevela.io/script/install.sh | bash -s 1.10.3
+          vela version
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # `vela dry-run --offline` builds a client before it honours --offline and
+      # exits 1 with an empty stdout when it cannot. On a runner there is no
+      # kubeconfig at all, so without this every guard row would reject for the
+      # wrong reason and PASS. The file is never contacted — it only has to
+      # parse. The matrix has a preflight that catches a missing one, so this
+      # failing would be reported clearly rather than as 11 vacuous passes.
+      - name: Give vela a kubeconfig to parse
+        run: |
+          mkdir -p "$HOME/.kube"
+          cat > "$HOME/.kube/config" <<'EOF'
+          apiVersion: v1
+          kind: Config
+          clusters:
+            - name: offline
+              cluster:
+                server: https://127.0.0.1:6443
+          contexts:
+            - name: offline
+              context:
+                cluster: offline
+                user: offline
+          current-context: offline
+          users:
+            - name: offline
+              user: {}
+          EOF
+
+      - name: Render matrix
+        run: bash scripts/test-isolation-matrix.sh -v
+
+      # The chart is rendered separately because the matrix covers the OAM
+      # components, not the agent-sandbox chart's own runtime branching — where
+      # the Kata default and the Nitro-only guards live.
+      - name: agent-sandbox chart — Kata default, Nitro opt-in, and the guards
+        run: |
+          set -euo pipefail
+          C=gitops/addons/charts/agent-sandbox
+          IMG=--set=coderTemplate.image=example.com/coder:1
+
+          echo "== default must stay Kata =="
+          helm template s "$C" $IMG | grep -q 'runtimeClassName: kata-clh'
+
+          echo "== runtime=nitro selects the Nitro class =="
+          helm template s "$C" $IMG --set runtime=nitro | grep -q 'runtimeClassName: isolated-sandbox'
+
+          echo "== an unknown runtime must FAIL, not fall through to Kata =="
+          ! helm template s "$C" $IMG --set runtime=nitr0 2>&1 | grep -q 'kata-clh'
+
+          echo "== Nitro-only values on a Kata pool must FAIL =="
+          ! helm template s "$C" $IMG --set runtime=kata --set nitro.networkIsolated=true >/dev/null 2>&1
+          ! helm template s "$C" $IMG --set runtime=kata --set nitro.cedarPolicy=abc >/dev/null 2>&1
+
+          echo "== confidential emits enableServiceLinks: false (genpolicy requires it) =="
+          helm template s "$C" $IMG --set runtime=nitro --set nitro.mode=confidential \
+            --set nitro.cedarPolicy=abc | grep -q 'enableServiceLinks: false'
+
+      - name: Generated definitions are in step with the CUE
+        run: |
+          set -euo pipefail
+          # A stale committed template is deployable while the CUE says something
+          # else -- which is exactly the drift NITRO-DESIGN.md section 7.1 is about.
+          for f in platform/oam/definitions/components/*.cue; do
+            b="$(basename "$f" .cue)"
+            out="gitops/addons/charts/oam-agent-components/templates/$b.yaml"
+            [ -f "$out" ] || continue
+            vela def render "$f" -o "/tmp/$b.yaml" \
+              --message "# Code generated from CUE definitions. DO NOT EDIT."
+            if ! diff -q "/tmp/$b.yaml" "$out" >/dev/null; then
+              echo "::error file=$out::out of step with $f -- regenerate with:"
+              echo "  vela def render $f -o $out --message '# Code generated from CUE definitions. DO NOT EDIT.'"
+              diff -u "$out" "/tmp/$b.yaml" | head -40
+              exit 1
+            fi
+          done
+          echo "all generated definitions match their CUE"
