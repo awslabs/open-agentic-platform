@@ -78,6 +78,11 @@ jobs:
               user: {}
           EOF
 
+      # Features first: it asserts WHAT each feature emits, so when both fail,
+      # its output says which field broke rather than just "a row rejected".
+      - name: Feature assertions
+        run: bash scripts/test-isolation-features.sh
+
       - name: Render matrix
         run: bash scripts/test-isolation-matrix.sh -v
 
