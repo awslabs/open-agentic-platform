@@ -80,18 +80,26 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Fill the template and strip the documentation fields. Comment and _notes are
 # not IAM policy language: leaving them in gets MalformedPolicyDocumentException.
-python3 - "$TEMPLATE" "$WORK/policy.json" <<PY
+# <<'PY' -- QUOTED, and every value arrives through argv. With an unquoted
+# heredoc the shell expands these into the Python SOURCE, so an ARN or alias
+# containing a quote, a backslash or a brace is a syntax error or worse, and the
+# values are shell-visible rather than data.
+python3 - "$TEMPLATE" "$WORK/policy.json" \
+  "$ACCOUNT_ID" "$BUILD_PRINCIPAL" "$ROLE_ARN" "$PCR17" "$PCR0" <<'PY'
 import json, sys
 
-src, out = sys.argv[1], sys.argv[2]
+src, out, account, build, role, pcr17, pcr0 = sys.argv[1:8]
 policy = json.load(open(src))
 policy.pop('_notes', None)
 
 subs = {
-    'ACCOUNT_ID': "$ACCOUNT_ID",
-    'BUILD_PRINCIPAL_ARN': "$BUILD_PRINCIPAL",
-    'POD_ROLE_ARN': "$ROLE_ARN",
-    'PCR17_VALUE': "$PCR17".lower(),
+    'ACCOUNT_ID': account,
+    'BUILD_PRINCIPAL_ARN': build,
+    'POD_ROLE_ARN': role,
+    # Substituted in BOTH the attested Allow and the unattested Deny, which is
+    # the point of doing it here rather than by hand: the two must agree or the
+    # key either blocks the sandbox or stops being gated at all.
+    'PCR17_VALUE': pcr17.lower(),
 }
 
 
@@ -109,7 +117,11 @@ def fill(x):
 
 policy = fill(policy)
 
-pcr0 = "$PCR0".lower()
+# PCR0 pins the guest system image, and belongs only on the Allow: the Deny is
+# the catch-all for callers presenting no attestation, and adding a second
+# negated key there would weaken it (the keys in one condition block are ANDed,
+# so the Deny would need BOTH to mismatch).
+pcr0 = pcr0.lower()
 if pcr0:
     for st in policy['Statement']:
         if st.get('Sid') == 'AllowDecryptOnlyFromAnAttestedSandbox':
@@ -118,6 +130,20 @@ if pcr0:
 left = [k for k in subs if json.dumps(policy).find(k) >= 0]
 if left:
     sys.exit('placeholders left unsubstituted: %s' % ', '.join(left))
+
+# The Allow and the Deny must BOTH carry the measurement. If a future edit drops
+# one, the key either refuses the sandbox it was made for or stops being gated,
+# and neither shows up until an image pull fails (or does not) in production.
+n = json.dumps(policy).count(pcr17.lower())
+if n != 2:
+    sys.exit('expected PCR17 in exactly 2 statements (the attested Allow and the '
+             'unattested Deny); found %d. Refusing to create a key whose gate is '
+             'not symmetric -- check kms-key-policy.json.' % n)
+sids = {st.get('Sid') for st in policy['Statement']}
+if 'DenyDataPlaneWithoutAttestation' not in sids:
+    sys.exit('kms-key-policy.json has no DenyDataPlaneWithoutAttestation statement. '
+             'Without it, key administration can delegate kms:Decrypt through IAM '
+             'with no attestation, which is the boundary this key exists to enforce.')
 
 json.dump(policy, open(out, 'w'), indent=2)
 PY
@@ -132,6 +158,9 @@ echo "  may DECRYPT:      $ROLE_ARN, and only when the attestation says"
 echo "                      PCR17 = $(printf '%s' "$PCR17" | tr 'A-F' 'a-f')"
 [ -n "$PCR0" ] && echo "                      PCR0  = $(printf '%s' "$PCR0" | tr 'A-F' 'a-f')"
 echo "                      PCR8:ServiceName = eks.amazonaws.com"
+echo "  may NOT decrypt:  everyone else, INCLUDING key administrators and anyone"
+echo "                      they delegate to through IAM -- an explicit Deny on"
+echo "                      the data-plane actions, which no Allow can override"
 echo
 echo "the key policy that will be applied:"
 sed 's/^/  /' "$WORK/policy.json"
@@ -146,12 +175,30 @@ fi
 # Fail rather than repoint: an alias that already exists points at a key some
 # encrypted image somewhere needs, and moving it silently breaks that image's
 # decryption with no error at move time.
-if aws kms describe-key --key-id "$ALIAS" --region "$REGION" >/dev/null 2>&1; then
+# THREE outcomes, not two. `>/dev/null 2>&1` collapsed "the alias is not there"
+# together with "I could not tell" -- a throttle, expired credentials, or a role
+# without kms:DescribeKey -- and then created a key anyway. Only a genuine
+# NotFoundException is permission to proceed.
+set +e
+DESCRIBE_ERR="$(aws kms describe-key --key-id "$ALIAS" --region "$REGION" 2>&1 >/dev/null)"
+DESCRIBE_RC=$?
+set -e
+
+if [ "$DESCRIBE_RC" -eq 0 ]; then
   echo "$ALIAS already exists in $REGION. Refusing to repoint it: every image" >&2
   echo "encrypted to the current key would stop decrypting. Pass a different" >&2
   echo "--alias, or update the existing key's policy instead:" >&2
   echo "  aws kms put-key-policy --key-id $ALIAS --policy-name default \\" >&2
   echo "    --region $REGION --policy file://<policy.json>" >&2
+  exit 1
+elif ! printf '%s' "$DESCRIBE_ERR" | grep -q 'NotFoundException'; then
+  echo "cannot determine whether $ALIAS exists in $REGION:" >&2
+  echo "  $DESCRIBE_ERR" >&2
+  echo >&2
+  echo "Refusing to create a key on a guess. Creating one here would be billable" >&2
+  echo "and undeletable for 7-30 days, and if the alias DOES exist the follow-up" >&2
+  echo "create-alias would fail and leave it orphaned. Fix the error above (often" >&2
+  echo "kms:DescribeKey on the caller, or expired credentials) and re-run." >&2
   exit 1
 fi
 
@@ -165,9 +212,26 @@ KEY_ID="$(aws kms create-key \
          TagKey=purpose,TagValue=nitro-sandbox-attestation \
   --output json | python3 -c 'import json,sys;print(json.load(sys.stdin)["KeyMetadata"]["KeyId"])')"
 
-aws kms create-alias --region "$REGION" --alias-name "$ALIAS" --target-key-id "$KEY_ID"
-
 KEY_ARN="arn:aws:kms:$REGION:$ACCOUNT_ID:key/$KEY_ID"
+
+# The key EXISTS now and is billable. If the alias fails, say so with the ARN and
+# the exact cleanup command: a key nobody has the id for cannot be deleted, and
+# it cannot be deleted quickly even when it can be found.
+if ! aws kms create-alias --region "$REGION" --alias-name "$ALIAS" --target-key-id "$KEY_ID"; then
+  echo >&2
+  echo "THE KEY WAS CREATED BUT THE ALIAS WAS NOT. Do not re-run this script -- it" >&2
+  echo "would create a SECOND billable key. The key is:" >&2
+  echo >&2
+  echo "  $KEY_ARN" >&2
+  echo >&2
+  echo "Either attach the alias yourself:" >&2
+  echo "  aws kms create-alias --region $REGION --alias-name $ALIAS --target-key-id $KEY_ID" >&2
+  echo >&2
+  echo "or schedule it for deletion (7-day minimum waiting period):" >&2
+  echo "  aws kms schedule-key-deletion --region $REGION --key-id $KEY_ID --pending-window-in-days 7" >&2
+  exit 1
+fi
+
 echo
 echo "created: $KEY_ARN  ($ALIAS)"
 echo
