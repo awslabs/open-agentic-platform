@@ -121,7 +121,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Code Interpreter** | `crossplane-agentcore` / sandbox | ⚠️ CRD ready | Sandboxed code execution for agents. |
 | **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code. |
 | **Agent Evaluation** | `agent-evaluation` | ✅ (Phase 1) | Online LLM-as-a-judge on agent traces, turned on from the agent's OAM `evaluation` block; pass ratios in Grafana — [design](docs/architecture/agent-evaluation.md), [example](platform/oam/examples/example-agent-evaluation.yaml). |
-| **Agent Guardrails** | (design) `agent-guardrails` | ⬜ | Runtime content and topic control on the model call, turned on from the agent's OAM `guardrails` block. Design only — [design](docs/architecture/agent-guardrails.md), [example](platform/oam/examples/example-agent-guardrails.yaml). |
+| **Agent Guardrails and Policies** | (design) `agent-guardrails` | ⬜ | Runtime content and topic control on the model call, turned on from the agent's OAM `guardrails` block — plus where deterministic policy over a tool *call* (caller, arguments, ordering) can and cannot be enforced today. Design only — [design](docs/architecture/agent-guardrails.md), [example](platform/oam/examples/example-agent-guardrails.yaml). |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
 keys, model routing); **LiteLLM** is included as an alternative chart. Both front Amazon Bedrock.
@@ -376,7 +376,7 @@ Design docs and open work items — check these before starting a new feature:
 |---|---|---|
 | [`workshop/README.md`](workshop/README.md) | No-domain install via CloudFront (`cd workshop && task install`) | — |
 | [`docs/architecture/`](docs/architecture/) | Agent identity & token exchange, platform architecture | — |
-| [`docs/architecture/agent-guardrails.md`](docs/architecture/agent-guardrails.md) | Runtime content/topic guardrails at the model hop: enforcement point, fail-closed verdict seam, Dogwood, and the #152 boundary | ⬜ Proposed — 8 open questions; needs egress + VK work (D7) before the hop is unbypassable |
+| [`docs/architecture/agent-guardrails.md`](docs/architecture/agent-guardrails.md) | Guardrails **and policies**: content/topic control at the model hop (enforcement point, fail-closed verdict seam, Dogwood), and deterministic control over *how* a tool is called — caller, arguments, ordering — including the #152 boundary | ⬜ Proposed — 11 open questions; needs egress + VK work (D7) before the hop is unbypassable, and call ordering has no mechanism at any hop (§3.10) |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Tracing, LLM observability, metrics/dashboards | — |
 | [`docs/dark-factory/README.md`](docs/dark-factory/README.md) | Dark Factory design, flows, diagrams | — |
 | [`docs/dark-factory/AGENT-INSTALL.md`](docs/dark-factory/AGENT-INSTALL.md) | Connecting the AWS DevOps + Security Agents | — |
