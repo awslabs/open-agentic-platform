@@ -888,6 +888,19 @@ high-volume cases at a hop a developer does not control, and it makes the rest
 visible. The layers that actually bound damage are tool authorization, egress
 restriction, sandboxing and spend caps — three of which OAP already has.
 
+**The tool-call gap has a known mechanism, and it is not this hop.** The two
+bullets above are the same hole seen twice, and the reason is structural rather
+than a Bedrock limitation: a model call carries the prompt and the completion, so
+a proxy on that hop can only ever see those. agentgateway's MCP guardrail
+processor sits at the JSON-RPC layer and receives "the JSON-RPC method name, the
+target backend, the request or response parameters, and selected request
+headers" — so it *does* see the tool name and its arguments, and in the response
+phase the tool result. That is the hop where indirect injection and tool-argument
+PII are inspectable, it is the subject of #152, and §3.9 draws the line between
+the two designs. This design does not reach for it, and should not: the same
+`Mutate` capability that would let it redact a tool argument is also what creates
+#152's processor-ordering trap.
+
 ### D8. Observability: mirror the evaluation contract exactly
 
 A blocked request and a badly-scored response are the same question asked at two
