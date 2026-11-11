@@ -375,6 +375,48 @@ def test_malformed_declaration_is_reported(settings, harness_settings, catalog, 
     assert REASON_INVALID_HARNESS_DECLARATION in f.events.reasons()
 
 
+def test_invalid_declaration_is_skipped_and_keeps_history(settings, harness_settings, catalog, metrics):
+    # Live finding (campaign S7c): hand-editing a rendered <agent>-harness
+    # ConfigMap to a hostile previewService pruned the agent's Jobs, results
+    # and series, and the re-rendered ConfigMap re-ran the same revision.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed"])
+    f.batch.finish(name)
+    loop.run_once()
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
+
+    edited = make_configmap(
+        "team-a", "assistant-harness", {"previewService": "evil.example.com"},
+        labels={"harness.oap.io/agent": "assistant"},
+    )
+    invalid, _ = build(
+        settings, harness_settings, catalog, metrics, [], fakes=f,
+        malformed=[(edited, "previewService 'evil.example.com' is not a Service name")],
+    )
+    invalid.run_once()
+    assert REASON_INVALID_HARNESS_DECLARATION in f.events.reasons()
+    assert name in f.batch.jobs
+    assert (PLATFORM_NS, result_configmap_name(name)) in f.core.configmaps
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
+    assert sample(metrics, "oap_agent_harness_cases") == 1
+
+    # A new revision while the declaration is invalid starts nothing.
+    f.custom.set_rollout("team-a", "assistant", "rev2")
+    invalid.run_once()
+    assert len(f.batch.created) == 1
+
+    # Fixed again on the already-run revision: no re-run.
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    fixed, _ = build(settings, harness_settings, catalog, metrics, [d], fakes=f)
+    fixed.run_once()
+    assert len(f.batch.created) == 1
+    assert name in f.batch.jobs
+
+
 def test_declaration_removed_deletes_jobs_results_and_series(settings, harness_settings, catalog, metrics):
     d = decl()
     loop, f = build(settings, harness_settings, catalog, metrics, [d])

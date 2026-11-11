@@ -1235,7 +1235,9 @@ a declaration cannot point the Job at another host or namespace.
 
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
-`UnknownDataset`) and skipped; it never stops the pass.
+`UnknownDataset`) and skipped; it never stops the pass. Skipped means no new
+run starts, while the agent's finished runs and series stay; history is
+removed only when the ConfigMap itself goes away.
 
 ### Contract 4: the dataset schema
 

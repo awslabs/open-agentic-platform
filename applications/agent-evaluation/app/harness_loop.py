@@ -250,6 +250,16 @@ class HarnessLoop:
                 error,
             )
         by_key = {d.key: d for d in declarations}
+        # Agents whose declaration ConfigMap still exists but is invalid: their
+        # history and series are kept (the declaration is skipped, not removed),
+        # and nothing new runs for them. Keyed like a declaration, by the
+        # ConfigMap's namespace and its harness.oap.io/agent label.
+        held = {}
+        for cm, _ in malformed:
+            agent = (getattr(cm.metadata, "labels", None) or {}).get(LABEL_AGENT, "")
+            key = f"{cm.metadata.namespace}/{agent}"
+            if agent and key not in by_key:
+                held[key] = (cm.metadata.namespace, agent)
 
         jobs = list(
             self._batch.list_namespaced_job(
@@ -283,9 +293,9 @@ class HarnessLoop:
                 )
 
         finished = self._collect(jobs, results, by_key)
-        self._publish(declarations, finished)
+        self._publish(declarations, finished, held)
         try:
-            self._prune(jobs, results, finished, by_key)
+            self._prune(jobs, results, finished, set(by_key) | set(held))
         except ApiException as exc:
             ok = False
             logger.error("harness prune failed: %s %s", exc.status, exc.reason)
@@ -577,15 +587,17 @@ class HarnessLoop:
                 "(report mode: promotion not affected)",
             )
 
-    def _publish(self, declarations: list, finished: list[_Finished]) -> None:
+    def _publish(self, declarations: list, finished: list[_Finished], held: dict) -> None:
         latest: dict[str, _Finished] = {}
         for item in finished:
             key = _agent_key(item.job)
             if key not in latest or item.finished_at > latest[key].finished_at:
                 latest[key] = item
         rows: list[HarnessRow] = []
-        for decl in declarations:
-            item = latest.get(decl.key)
+        agents = [(d.key, d.namespace, d.agent) for d in declarations]
+        agents += [(key, ns, agent) for key, (ns, agent) in sorted(held.items())]
+        for key, namespace, agent in agents:
+            item = latest.get(key)
             if item is None:
                 continue  # never run: absent, not 0
             run = item.run
@@ -593,8 +605,8 @@ class HarnessLoop:
             rows.append(
                 HarnessRow(
                     cluster=self._s.cluster,
-                    namespace=decl.namespace,
-                    agent=decl.agent,
+                    namespace=namespace,
+                    agent=agent,
                     dataset=run.dataset,
                     revision=run.revision,
                     mode=run.mode,
@@ -636,17 +648,21 @@ class HarnessLoop:
             if exc.status != 404:
                 raise
 
-    def _prune(self, jobs: list, results: dict, finished: list[_Finished], by_key: dict) -> None:
+    def _prune(self, jobs: list, results: dict, finished: list[_Finished], present: set) -> None:
+        """Remove history of agents whose declaration ConfigMap is gone.
+
+        `present` holds every agent with a declaration ConfigMap, valid or not.
+        """
         deleted: set[str] = set()
         for job in list(jobs):
-            if _agent_key(job) not in by_key:
+            if _agent_key(job) not in present:
                 self._delete_job(job.metadata.name, results)
                 deleted.add(job.metadata.name)
 
         per_agent: dict[str, list[_Finished]] = {}
         for item in finished:
             key = _agent_key(item.job)
-            if key in by_key:
+            if key in present:
                 per_agent.setdefault(key, []).append(item)
         for items in per_agent.values():
             items.sort(key=lambda i: i.finished_at, reverse=True)
