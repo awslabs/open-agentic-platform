@@ -376,7 +376,7 @@ Design docs and open work items — check these before starting a new feature:
 |---|---|---|
 | [`workshop/README.md`](workshop/README.md) | No-domain install via CloudFront (`cd workshop && task install`) | — |
 | [`docs/architecture/`](docs/architecture/) | Agent identity & token exchange, platform architecture | — |
-| [`docs/architecture/agent-guardrails.md`](docs/architecture/agent-guardrails.md) | Runtime content/topic guardrails: enforcement point, fail-closed verdict seam, Dogwood | ⬜ Proposed — 7 open questions; needs egress + VK work (D7) before the hop is unbypassable |
+| [`docs/architecture/agent-guardrails.md`](docs/architecture/agent-guardrails.md) | Runtime content/topic guardrails at the model hop: enforcement point, fail-closed verdict seam, Dogwood, and the #152 boundary | ⬜ Proposed — 8 open questions; needs egress + VK work (D7) before the hop is unbypassable |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Tracing, LLM observability, metrics/dashboards | — |
 | [`docs/dark-factory/README.md`](docs/dark-factory/README.md) | Dark Factory design, flows, diagrams | — |
 | [`docs/dark-factory/AGENT-INSTALL.md`](docs/dark-factory/AGENT-INSTALL.md) | Connecting the AWS DevOps + Security Agents | — |
