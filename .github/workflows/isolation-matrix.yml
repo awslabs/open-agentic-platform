@@ -88,21 +88,40 @@ jobs:
 
       # The chart is rendered separately because the matrix covers the OAM
       # components, not the agent-sandbox chart's own runtime branching — where
-      # the Kata default and the Nitro-only guards live.
-      - name: agent-sandbox chart — Kata default, Nitro opt-in, and the guards
+      # the Nitro default, the Kata opt-in and the Nitro-only guards live.
+      - name: agent-sandbox chart — Nitro default, Kata opt-in, and the guards
         run: |
           set -euo pipefail
           C=gitops/addons/charts/agent-sandbox
           IMG=--set=coderTemplate.image=example.com/coder:1
 
-          echo "== default must stay Kata =="
-          helm template s "$C" $IMG | grep -q 'runtimeClassName: kata-clh'
+          echo "== default is Nitro, and the POD carries NO Kata node scheduling =="
+          # A Kata nodeSelector on a Nitro pod is the specific bug that made every
+          # warm pod Pending: it would demand katacontainers.io/kata-runtime AND
+          # eks.amazonaws.com/nitro-sandbox on one node, and no node has both.
+          # Scoped to the SandboxTemplate's POD SPEC, not the whole render:
+          # the chart also emits the three Kata RuntimeClass objects, which
+          # legitimately carry katacontainers.io/kata-runtime in their own
+          # scheduling block. The pod is what must not.
+          # One line on purpose: a multi-line python here would need to sit
+          # inside this block scalar's indentation, and getting that wrong
+          # silently ends the YAML block.
+          podsel() { helm template s "$C" $IMG "$@" | python3 -c 'import sys,yaml; [print(k, "=", (d["spec"]["podTemplate"]["spec"] or {}).get(k, "absent")) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="SandboxTemplate" for k in ("runtimeClassName","nodeSelector","tolerations")]'; }
 
-          echo "== runtime=nitro selects the Nitro class =="
-          helm template s "$C" $IMG --set runtime=nitro | grep -q 'runtimeClassName: isolated-sandbox'
+          podsel | grep -qx 'runtimeClassName = isolated-sandbox'
+          podsel | grep -qx 'nodeSelector = absent'
+          podsel | grep -qx 'tolerations = absent'
 
-          echo "== an unknown runtime must FAIL, not fall through to Kata =="
-          ! helm template s "$C" $IMG --set runtime=nitr0 2>&1 | grep -q 'kata-clh'
+          echo "== runtime=kata still selects Kata, WITH its node scheduling =="
+          podsel --set runtime=kata | grep -qx 'runtimeClassName = kata-clh'
+          podsel --set runtime=kata | grep -q 'kata-runtime'
+
+          echo "== an unknown runtime must FAIL, not fall through to either =="
+          ! helm template s "$C" $IMG --set runtime=nitr0 >/dev/null 2>&1
+
+          echo "== warmPool.enabled=false drops the pool and nothing else =="
+          ! helm template s "$C" $IMG --set warmPool.enabled=false | grep -q 'kind: SandboxWarmPool'
+          helm template s "$C" $IMG --set warmPool.enabled=false | grep -q 'kind: SandboxTemplate'
 
           echo "== Nitro-only values on a Kata pool must FAIL =="
           ! helm template s "$C" $IMG --set runtime=kata --set nitro.networkIsolated=true >/dev/null 2>&1

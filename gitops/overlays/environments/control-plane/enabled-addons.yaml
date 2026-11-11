@@ -187,7 +187,19 @@ enabledAddons:
   # self-heal. So: dark_factory: true REQUIRES agent_sandbox: true. The Kata flags
   # (agent_sandbox_kata, kata_nodepool) stay optional — they matter only for the
   # Kata path, whose warm pool df-run claims from.
-  agent_sandbox: false
+  #
+  # ON, and the prerequisites that used to make this risky are gone. It defaults
+  # to NITRO now (gitops/addons/charts/agent-sandbox/values.yaml), which needs no
+  # node layer of ours: on EKS Auto Mode with k8s 1.36+ the RuntimeClass is
+  # AWS-owned and a sandbox-capable node is provisioned on demand -- verified
+  # live on a 1.37 Auto Mode cluster. So kata_nodepool and agent_sandbox_kata
+  # stay FALSE above and nothing goes Pending for want of a kata node.
+  #
+  # This is the only source of the Sandbox* CRDs, which `type: sandbox` and
+  # `isolation: session` need. Clusters that do not want the Dark Factory coder
+  # warm pool this chart also renders set warmPool.enabled: false in their
+  # per-cluster overlay -- see gitops/overlays/clusters/hub/agent-sandbox.
+  agent_sandbox: true
   # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
   # Required, or the warm pool's runtimeClassName has no handler on the node.
   agent_sandbox_kata: false

@@ -62,12 +62,31 @@ namespace: agent-sandbox-system
 #
 # Changing this value recreates the SandboxTemplate, so the pool refills onto the
 # new runtime's nodes.
-# Default is kata, NOT nitro: this pool has a live consumer (the Dark Factory
-# coder) that runs on Kata today, and flipping the default recreated the
-# SandboxTemplate on a class that may not exist on the cluster. Nitro is opt-in
-# per cluster via the sandbox_runtime annotation (see registry/sandbox.yaml)
-# until it is validated on a real Nitro node.
-runtime: kata
+#
+# VALIDATED ON REAL HARDWARE 2026-11-11, which is what review finding 1 asked for
+# before Nitro could be the default (EKS Auto Mode, k8s v1.37.1): a c8a.large
+# sandbox node was provisioned on demand in ~2 min, the pod reported kernel
+# 6.18.54 against the node's 6.18.56, DMI c8a.enclave, virtio disks;
+# scripts/nitro/verify-isolation.sh gave 7 PASS / 0 FAIL. A confidential pod with
+# a real Cedar policy ran too, with exec denied by the policy.
+#
+# Finding 1's OTHER objection -- "no per-cluster knob" -- was the real defect and
+# is fixed separately: the registry entry reads a `sandbox_runtime` annotation off
+# the cluster secret, so a Kata cluster pins kata without editing this file.
+#
+# ⚠️ MIGRATION. A cluster already running this pool on KATA NODES must set
+#     sandbox_runtime: kata
+# before this reaches it, or the SandboxTemplate is recreated on a Nitro class,
+# the Kata nodeSelector and toleration go with it, and every warm pod goes
+# Pending because no node matches. Nothing in this repo is affected -- both
+# agent_sandbox consumers ship with dark_factory: false -- but a consumer's
+# cluster can be.
+#
+# SEPARATE KNOB from the OAM layer: `sandbox: true` and `type: sandbox` on an
+# Application are governed by oam-agent-components' global.sandboxRuntimeClass,
+# which has always defaulted to the Nitro classes. This value governs only the
+# warm pool THIS chart renders.
+runtime: nitro
 
 # ── AWS Nitro Sandboxes ──────────────────────────────────────────────────────
 # Applies only when runtime is nitro.

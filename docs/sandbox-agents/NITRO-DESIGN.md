@@ -460,7 +460,7 @@ Verified as a property of the render, not an intention:
 | Check | Result |
 |---|---|
 | `--set global.sandboxRuntimeClass=kata-clh` on a `sandbox: true` agent | `runtimeClassName: kata-clh`, nothing else differs |
-| `runtime: kata` on the `agent-sandbox` chart | SandboxTemplate byte-identical to before this branch, with its nodeSelector and toleration |
+| `runtime: kata` on the `agent-sandbox` chart | SandboxTemplate byte-identical to `origin/main`, with its nodeSelector and toleration. The chart's DEFAULT is now `nitro` (validated on hardware 2026-11-11), so a Kata cluster pins `sandbox_runtime: kata` — see §7.2 |
 | `sandboxMode: confidential` on a cluster with no confidential class | render **rejected**, with a message saying Kata has no equivalent — rather than a `kata-clh` pod that cannot attest |
 | Every Kata value, class and comment in `agent-sandbox/values.yaml` | unchanged |
 | `example-agent-simple`, `-with-mcp`, `-minimal`, `-milvus-memory`, `-with-browser`, `-with-code-interpreter`, `-centralized-observability`, `-mcp-local` rendered against `origin/main` | **byte-identical** (8 of 12) |
@@ -469,6 +469,43 @@ Verified as a property of the render, not an intention:
 A Kata cluster is one annotation: `sandbox_runtime_class: kata-clh`, and leave
 `confidential_sandbox_runtime_class` empty so confidential fails closed there.
 
+
+### 7.2 The default moved to Nitro, and what a Kata cluster must do
+
+Review finding 1 objected to a Nitro default on two grounds. Both are now
+settled, in opposite ways:
+
+- **"No per-cluster knob"** — the real defect, and fixed: the registry entry
+  reads a `sandbox_runtime` annotation off the cluster secret, so a Kata cluster
+  pins Kata without overriding the chart. That knob did not exist when the
+  finding was written, which is what made a default flip dangerous.
+- **"Until Nitro is validated live"** — done, 2026-11-11, on a k8s v1.37.1 EKS
+  Auto Mode cluster. A `c8a.large` sandbox node was provisioned on demand in
+  ~2 min; the pod reported kernel `6.18.54` against the node's `6.18.56`, DMI
+  `c8a.enclave`, virtio disks; `verify-isolation.sh` gave 7 PASS / 0 FAIL. A
+  confidential pod with a real Cedar policy ran too, with `exec` denied.
+
+So the default is `nitro`, for the reason it was proposed: it needs **no node
+layer of ours**. Both Kata prerequisites (`kata_nodepool`, `agent_sandbox_kata`)
+ship `false` in every overlay here, so a cluster that enables this chart and
+nothing else gets a pool that cannot place a single pod on the Kata default —
+whereas Auto Mode provisions a sandbox node for the Nitro default on demand.
+
+**A cluster whose nodes are Kata must set `sandbox_runtime: kata`** before this
+reaches it. Otherwise its SandboxTemplate is recreated on a Nitro class, the Kata
+nodeSelector and toleration vanish with it, and every warm pod goes Pending. No
+cluster in this repo is affected — `dark_factory` is `false` everywhere, so
+nothing claims from this pool — but a consumer's cluster can be, which is why the
+migration note sits in `values.yaml` next to the value rather than only here.
+
+**Dark Factory stays on Kata by pinning, not by default.** Its coder flow claims
+from this pool, and a cluster running it on nested-virt nodes sets the annotation.
+That is the right shape: the consumer that needs Kata says so, instead of every
+other cluster inheriting a default it cannot schedule.
+
+**The OAM layer is a separate knob and did not move.** `sandbox: true` and
+`type: sandbox` on an Application are governed by `oam-agent-components`'
+`global.sandboxRuntimeClass`, which has always defaulted to the Nitro classes.
 
 ### 7.1 The one difference, and why it is not a regression from this work
 

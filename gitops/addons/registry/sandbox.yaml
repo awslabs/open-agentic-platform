@@ -296,16 +296,28 @@ agent-sandbox:
     # and the Dark Factory coder pods sat Pending. The PR claimed Kata was
     # "selected per cluster"; that was true of the OAM component only.
     #
-    # Defaults to kata, not nitro: this pool has a live consumer (the Dark
-    # Factory coder) that works on Kata today, so Nitro here is opt-in until it
-    # is validated on a real Nitro node. Note this is a SEPARATE knob from
-    # sandbox_runtime_class, which still defaults to the Nitro classes and
-    # governs `sandbox: true` on `type: agent`.
+    # Defaults to NITRO, since it was validated on a real Nitro node
+    # (2026-11-11: own guest kernel, verify-isolation.sh 7 PASS / 0 FAIL) and
+    # because Nitro is the only option that needs no node layer of ours. The
+    # Dark Factory coder flow, which claims from this pool, pins
+    # sandbox_runtime: kata on any cluster whose nodes are Kata. Note this is a
+    # SEPARATE knob from sandbox_runtime_class, which governs `sandbox: true`
+    # and `type: sandbox` at the OAM layer and has always defaulted to Nitro.
     #
     #   sandbox_runtime: nitro    -> isolated-sandbox / confidential-sandbox
     #   sandbox_runtime: kata     -> kata-clh (+ Kata nodeSelector/toleration)
-    #   absent                    -> kata
-    runtime: '{{if hasKey .metadata.annotations "sandbox_runtime"}}{{index .metadata.annotations "sandbox_runtime"}}{{else}}kata{{end}}'
+    #   absent                    -> nitro
+    #
+    # ABSENT MEANS NITRO, matching the chart default. Nitro needs no node layer
+    # on EKS Auto Mode (k8s 1.36+), where a Kata class needs kata_nodepool plus
+    # agent_sandbox_kata -- both off by default -- so a cluster that has said
+    # nothing is far likelier to be able to run Nitro than Kata.
+    #
+    # A KATA CLUSTER MUST SAY SO: set sandbox_runtime: kata, or its pool is
+    # recreated on a Nitro class, loses the Kata nodeSelector and toleration, and
+    # every warm pod goes Pending. Present-and-empty is NOT a way to mean kata;
+    # it reaches the chart as "" and the chart rejects it by name.
+    runtime: '{{if hasKey .metadata.annotations "sandbox_runtime"}}{{index .metadata.annotations "sandbox_runtime"}}{{else}}nitro{{end}}'
     coderTemplate:
       # Bifrost gateway the IN-VM coder reaches. Defaults to the PINNED ClusterIP
       # (bifrost chart staticService.clusterIP), NOT the svc DNS name, because a

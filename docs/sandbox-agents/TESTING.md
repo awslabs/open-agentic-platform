@@ -211,14 +211,37 @@ recreated on a class that may not exist.
 C=gitops/addons/charts/agent-sandbox
 IMG=--set=coderTemplate.image=example.com/coder:1
 
-# the default MUST still be Kata
-helm template s $C $IMG | grep 'runtimeClassName:'          # kata-clh
+# the default is NITRO -- and must carry no Kata node scheduling, which is the
+# bug that made every warm pod Pending (it would demand both node labels)
+# Check the SandboxTemplate's POD SPEC, not the whole render -- the chart also
+# emits the three Kata RuntimeClass objects, which legitimately carry
+# katacontainers.io/kata-runtime in their own scheduling block.
+helm template s $C $IMG | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get("kind") == "SandboxTemplate":
+        s = d["spec"]["podTemplate"]["spec"]
+        print("class       :", s.get("runtimeClassName"))
+        print("nodeSelector:", s.get("nodeSelector", "absent"))
+        print("tolerations :", s.get("tolerations", "absent"))'
+# class: isolated-sandbox, nodeSelector: absent, tolerations: absent
 
-# and byte-identical to main, which is the actual claim. Needs a second
-# worktree, because the comparison is between two checkouts of the chart:
+# kata is one value away, and keeps its nodeSelector + toleration
+helm template s $C $IMG --set runtime=kata | grep 'runtimeClassName:'  # kata-clh
+
+# NOT byte-identical to main any more, and that is the intended change: the
+# default moved from kata-clh to isolated-sandbox once Nitro was validated on
+# real hardware. The diff below should show exactly that and nothing else --
+# the runtime class, and the Kata nodeSelector/toleration disappearing with it.
 git worktree add /tmp/oap-main origin/main -f >/dev/null 2>&1
-diff <(helm template s $C $IMG) \
-     <(helm template s /tmp/oap-main/$C $IMG) && echo "BYTE-IDENTICAL to main"
+diff <(helm template s /tmp/oap-main/$C $IMG) <(helm template s $C $IMG)
+git worktree remove /tmp/oap-main --force
+
+# A cluster whose nodes ARE Kata pins the runtime instead of inheriting it, and
+# that render IS byte-identical to main:
+git worktree add /tmp/oap-main origin/main -f >/dev/null 2>&1
+diff <(helm template s /tmp/oap-main/$C $IMG) \
+     <(helm template s $C $IMG --set runtime=kata) && echo "kata path UNCHANGED"
 git worktree remove /tmp/oap-main --force
 
 helm template s $C $IMG --set runtime=nitro | grep 'runtimeClassName:'   # isolated-sandbox
