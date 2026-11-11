@@ -1050,13 +1050,14 @@ Three things, already folded in above rather than left as future work:
 
 #### Sequencing
 
-They are independent and can land in either order. One soft dependency is worth
-naming: #152's work establishes whether caller identity actually reaches an
-ExtMCP processor — its own task 2, and marked blocking there, because the docs
-describe only "selected request headers" and do not confirm JWT claims are
-exposed. If that resolves badly, the tool hop can authorize on the tool but not
-on the caller, which would make the content layer here relatively *more*
-important rather than less.
+They are independent and can land in either order. The soft dependency named in
+revision 2 — #152's blocking task 2, whether caller identity actually reaches an
+ExtMCP processor — **resolves in #152's favour**, and §3.10 shows the evidence.
+The prose documents only "selected request headers", but `ext_mcp.proto` gives
+`McpRequest` a `metadata_context` field carrying "CEL-evaluated context from
+gateway config, one field per config key": the gateway evaluates `jwt.sub`
+itself and ships the result. Identity arrives as data, not as a header that has
+to survive filtering. #152 can close that task on the wire format.
 
 ---
 
