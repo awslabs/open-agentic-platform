@@ -188,10 +188,18 @@ a Rollout has the same shape.
 A confidential pod with no policy annotation is the subtlest failure in this design, so it is
 rejected at admission.
 
-**Corrected against a live Nitro node.** This section previously claimed the sandbox falls back to
-a *permissive built-in default* — every container admitted, `exec` and `stdin` allowed — so that an
-unpolicied confidential pod would run and look right while the node operator read its memory. That
-is **not** what the runtime does, and the real behaviour is the opposite:
+**The runtime's behaviour here CHANGED during the preview, and both versions are in the wild.**
+Which one you get depends on the AMI, so neither is safe to assume.
+
+*Originally* — measured 2026-08-20 on `nitro-prod` (m7i.xlarge, private preview) — an unpolicied
+confidential pod **ran**, and `kubectl exec … -- id` returned `uid=0(root)`. Confidential mode
+behaved like isolated: the memory boundary held, but `exec`, `stdin` and process listing were all
+allowed from the parent instance, so the node operator the mode exists to exclude could read the
+workload by exec'ing into it. Exec denial was **policy-driven, not automatic**. That is what this
+section used to describe, and it was accurate for that AMI.
+
+*Now* — measured 2026-11-11 on `hub` (EKS Auto Mode, k8s v1.37.1, c8a.large) — the same pod shape
+never starts:
 
 ```
 FailedCreatePodSandBox  ...  CreateSandbox: resolve sandbox policy:
@@ -199,15 +207,33 @@ FailedCreatePodSandBox  ...  CreateSandbox: resolve sandbox policy:
   a policy is required in confidential mode (default-deny is enforced)
 ```
 
-The runtime enforces **default-deny**. An unpolicied confidential pod never starts; it loops in
-`ContainerCreating` for as long as it is left there, retrying every ~15s, with the reason only in
-kubelet events.
+It loops in `ContainerCreating` for as long as it is left there, retrying every ~15s, with the
+reason only in kubelet events.
 
-So the render-time guard is still right, for a different and simpler reason. It is not preventing a
-silently-insecure pod — the runtime already refuses that — it is converting an indefinite
-`ContainerCreating` loop whose cause is buried in events into an immediate admission error naming
-`scripts/nitro/gen-cedar-policy.sh`. PCR17 also measures the policy, so with no policy there is
-nothing for a KMS key policy to pin: attestation becomes a number nobody checks.
+**Why the guard matters either way, and why it is not redundant now.** The two behaviours fail in
+opposite directions, and `cedarPolicy` is required for a different reason under each:
+
+| AMI behaviour | Without a policy | What the guard buys |
+|---|---|---|
+| Aug 2026 preview | pod **runs**, `exec` allowed — confidential in name only | prevents a silently-unprotected pod. This is the dangerous case |
+| Nov 2026 (default-deny) | pod **never starts**, cause buried in kubelet events | turns an indefinite `ContainerCreating` loop into an immediate admission error naming the generator |
+
+So: do **not** read "the runtime fails closed now" as "the policy is optional". On an older AMI it
+is the only thing standing between you and an unprotected pod, and nothing in a manifest tells you
+which AMI your nodes are running. Require it unconditionally, which is what the guard does.
+
+PCR17 also measures the policy, so with no policy there is nothing for a KMS key policy to pin:
+attestation becomes a number nobody checks. That is true on every AMI.
+
+**Where exec-denial actually comes from (measured 2026-11-11).** `--profile confidential` denies
+`Agent::Action::"Exec"` in the policy it generates, with no extra flags passed. A pod running such a
+policy refuses `kubectl exec` with `policy denied Agent::Action::"Exec" on container "c"`. So
+`--deny-exec`/`--deny-logs`, which `gen-cedar-policy.sh` adds by default, are belt-and-braces rather
+than the thing creating the denial. They stay because the profile's contents are not a documented
+contract and an explicit deny costs nothing.
+
+This also closes the loop on the August observation: exec was allowed there because there was **no
+policy at all**, not because confidential mode permits exec. Given a policy, it does not.
 
 That is the same shape as an unconfigured RuntimeClass — isolation requested, isolation not
 delivered, nothing reporting a problem — which `DESIGN.md` already fails closed on. So:

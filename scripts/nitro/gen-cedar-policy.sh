@@ -348,11 +348,24 @@ if [ "$POD_IDENTITY" = auto ] && [ -n "$POD_SA" ] &&
   echo "==> serviceAccountName=$POD_SA -- adding --with-pod-identity (--no-pod-identity to skip)"
 fi
 
-# exec and logs are the two ways to read a confidential pod from outside it, and
-# neither is blocked by the policy unless asked for. See WHAT CONFIDENTIAL DOES
-# NOT PROTECT at the top of this file.
+# exec and logs are the two ways to read a confidential pod from outside it. See
+# WHAT CONFIDENTIAL DOES NOT PROTECT at the top of this file.
+#
+# MEASURED on a live node (2026-11-11): --profile confidential ALREADY denies
+# Exec in the policy it generates -- a pod running a policy generated with no
+# extra flags refused `kubectl exec` with
+#   policy denied Agent::Action::"Exec" on container "c"
+# So these two are belt-and-braces rather than the thing that creates the
+# denial. They stay because the profile's contents are not a documented
+# contract, and an explicit deny is cheap.
+#
+# PREFIX match, not an exact one: the generator's real opt-outs are
+# --allow-exec-all, --allow-exec-all-for-container,
+# --allow-exec-command-for-container, --allow-logs-container and --allow-stdin.
+# An exact test would miss every one of them and happily add a contradicting
+# --deny-exec next to the user's own flag.
 if [ "$DENY_EXEC_LOGS" = auto ] && [ "$PROFILE" = confidential ] &&
-   ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qxE -- '--(deny|allow)-(exec|logs)'; then
+   ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qE -- '^--(deny|allow)-(exec|logs|stdin)'; then
   ARGS+=(--deny-exec --deny-logs)
   echo "==> confidential profile -- adding --deny-exec --deny-logs (--allow-exec-logs to keep them)"
 fi

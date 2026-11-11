@@ -392,8 +392,10 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2):
 | Step | Status |
 |---|---|
 | **3.0** cluster gate + smoke test | **PASSED.** Auto Mode provisioned a `c8a.large` sandbox node on demand (~2 min); pod kernel **6.18.54** vs node **6.18.56**; DMI `c8a.enclave`; virtio disks `vda vdb vdc`. `verify-isolation.sh` → **7 PASS / 0 FAIL**, exit 0 |
-| confidential runtime class, raw pod, no policy | **PASSED, and it corrected our docs** — see the box in 3.3 |
-| `download-runtime-binaries.sh` | **PASSED.** Signature verified, all 8 files `OK` |
+| confidential runtime class, raw pod, no policy | **PASSED.** Refused by the runtime — see the box in 3.3 |
+| **confidential mode WITH a real Cedar policy** | **PASSED END TO END.** Real `eks-nitro-sandbox-genpolicy`, pod Running 1/1, `exec` denied by the policy. Procedure in 3.3a |
+| `download-runtime-binaries.sh` | **PASSED.** Signature `Verified OK`, all 8 files `OK`, on both `aarch64` and `x86_64` |
+| `verify-isolation.sh` on a confidential pod | **PASSED.** 5 PASS / 0 FAIL, correctly reports exec-denial as the guarantee working |
 | **3.1–3.5** (the OAM examples) | **BLOCKED on `hub` today.** Reasons below — these are cluster-state problems, not problems with the examples |
 | **3.6** attested pod, **Part 4** KMS | **Not run.** Needs an encrypted image and a billable KMS key |
 
@@ -702,12 +704,14 @@ kubectl describe pod -l app.kubernetes.io/name=regulated-assistant | grep -A10 E
 Expect the pod **not** to start. A pod that starts here means the policy is not
 being enforced, and that is a finding — stop and report it.
 
-> **Verified on a live node, and it corrected this repo's documentation.** The
-> guards used to justify themselves by claiming that an unpolicied confidential
-> pod "applies a permissive built-in default that allows exec and stdin from the
-> parent instance" — i.e. that it runs, looks fine, and is readable by the node
-> operator. **That is not what the runtime does.** A raw
-> `runtimeClassName: confidential-sandbox` pod with no policy annotation gives:
+> **This behaviour CHANGED during the preview, so check which one you get.**
+> Measured 2026-08-20 on a private-preview cluster (m7i.xlarge): an unpolicied
+> confidential pod **ran**, and `kubectl exec … -- id` returned `uid=0(root)` —
+> confidential in name only, with exec denial being policy-driven rather than
+> automatic.
+>
+> Measured 2026-11-11 on `hub` (Auto Mode, v1.37.1, c8a.large): the same pod
+> shape is refused outright —
 >
 > ```
 > FailedCreatePodSandBox  ...  CreateSandbox: resolve sandbox policy:
@@ -715,15 +719,18 @@ being enforced, and that is a finding — stop and report it.
 >   a policy is required in confidential mode (default-deny is enforced)
 > ```
 >
-> The runtime enforces **default-deny**. The pod never starts; it loops in
-> `ContainerCreating` indefinitely, retrying every ~15s, with the reason only in
-> kubelet events.
+> — and loops in `ContainerCreating` indefinitely, retrying every ~15s, with
+> the reason only in kubelet events.
 >
-> The render-time guard is therefore still right, for a simpler reason than was
-> claimed: it is not preventing a silently-insecure pod, it is converting an
-> indefinite `ContainerCreating` loop into an immediate admission error that
-> names the script which generates a policy. Every copy of the old claim has
-> been corrected — see NITRO-DESIGN §4.
+> **So if your pod STARTS here, you are on the older behaviour and the test is
+> still meaningful** — go on to step 5 and confirm `exec` is allowed, which is
+> the "confidential in name only" failure. If it loops in
+> `ContainerCreating` with the message above, you are on default-deny.
+>
+> Either way `cedarPolicy` is required, for opposite reasons: on the old AMI it
+> is the only thing preventing an unprotected pod; on the new one it is what
+> lets the pod start at all. Nothing in a manifest tells you which AMI your
+> nodes run, which is why the guard is unconditional. See NITRO-DESIGN §4.
 
 ```bash
 kubectl delete -f platform/oam/examples/example-agent-sandbox-confidential.yaml
@@ -822,6 +829,93 @@ enough to require it.
 ```bash
 kubectl delete -f platform/oam/examples/example-agent-sandbox-confidential.yaml
 ```
+
+### 3.3a Confidential mode without OAM — the verified procedure
+
+Everything in 3.3 depends on the PR's ComponentDefinitions being deployed. This
+variant needs none of that: a raw Pod, the real generator, and a real policy. It
+is the shortest path to *confidential mode actually working*, and it is the one
+that has been executed.
+
+**Where the generator has to run.** The binaries are Linux ELF. On a Mac,
+`gen-cedar-policy.sh --docker` handles it — but if Docker is not running, the
+other option is a pod on the cluster itself. Note the arch: the download script
+defaults to the **host** arch, so from an arm64 Mac you need
+`--arch x86_64` for amd64 nodes.
+
+```bash
+# 1. the pod you want a policy for. enableServiceLinks: false is REQUIRED --
+#    the confidential profile refuses a manifest without it.
+cat > pod.yaml <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: conf-demo
+spec:
+  runtimeClassName: confidential-sandbox
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  containers:
+    - name: c
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh","-c","sleep infinity"]
+      resources:
+        requests: {cpu: "1", memory: 1Gi}
+        limits:   {cpu: "1", memory: 1Gi}
+EOF
+
+# 2. generate. On a Linux host or Cloud Desktop:
+bash scripts/nitro/download-runtime-binaries.sh
+./.platform/private/nitro-sandbox-runtime/x86_64/eks-nitro-sandbox-genpolicy \
+  --profile confidential pod.yaml
+```
+
+It prints the Cedar policy in clear, then a **Base64 Encoded Policy Envelope**,
+then a **Predicted PCR17** and the KMS condition block. Put the base64 in the
+pod as `sandbox.amazonaws.com/policy` and apply. **The pod reaching Running is
+the test passing** — the policy was accepted, enforced and measured.
+
+Three things this run established that are easy to get wrong:
+
+- **`--with-pod-identity` must match the pod.** Passed for a pod with
+  `automountServiceAccountToken: false` and no service account, the policy
+  expects injected env the pod will not have, and the container is **denied**:
+
+  ```
+  create_container: PERMISSION_DENIED
+    policy denied Agent::Action::"CreateContainer" on container "c"
+  ```
+
+  That is the policy working, not a bug. `gen-cedar-policy.sh` gets this right
+  automatically by reading `serviceAccountName` off the rendered spec; a
+  hand-rolled `genpolicy` invocation is where you get it wrong.
+
+- **`--profile confidential` denies `exec` on its own.** With no `--deny-exec`
+  passed at all:
+
+  ```console
+  $ kubectl exec conf-demo -- id
+  error: ... policy denied Agent::Action::"Exec" on container "c"
+  ```
+
+  So exec-denial comes from the profile. `gen-cedar-policy.sh` still adds
+  `--deny-exec --deny-logs` explicitly, because the profile's contents are not a
+  documented contract.
+
+- **On EKS Auto Mode, protect long-lived bare Pods.** Auto Mode consolidates
+  nodes, and a bare Pod on a removed node is deleted rather than rescheduled —
+  mid-test pods vanish with no obvious cause. Add
+  `karpenter.sh/do-not-disrupt: "true"`, or use a Deployment/Job.
+
+```bash
+bash scripts/nitro/verify-isolation.sh conf-demo -n <ns>
+```
+
+Expect **5 PASS / 0 FAIL** and
+`exec is DENIED, which is the confidential guarantee working` — the script
+recognises the confidential case and tells you to verify the attestation (Part
+4) instead of trying to look inside.
 
 ### 3.4 `example-sandbox-confidential.yaml` — a confidential warm pool
 
@@ -1102,6 +1196,9 @@ Read the **error**, not the failure:
 | ☐ | isolated agent: 2 pods on `isolated-sandbox`, own kernel, agent still answers | 3.1 |
 | ☐ | isolated pool: 2 warm pods, claim binds in seconds, pool refills, idles out | 3.2 |
 | ☐ | **confidential agent: placeholder policy REFUSED before the real one works** | 3.3 |
+| ☐ | **confidential WITHOUT OAM: real policy generated, pod Running, exec denied** | 3.3a |
+| ☐ | `--with-pod-identity` mismatch → `CreateContainer` denied (policy working) | 3.3a |
+| ☐ | `verify-isolation.sh` on a confidential pod → 5 PASS, exec-denial reported as the guarantee | 3.3a |
 | ☐ | confidential agent: exec denied; a spec change without regen is denied | 3.3 |
 | ☐ | confidential pool: `enableServiceLinks: false`, exec denied | 3.4 |
 | ☐ | session: 4 env vars, RBAC `can-i`, **two users → two sandboxes, separate FS** | 3.5 |
