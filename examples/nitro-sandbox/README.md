@@ -65,7 +65,8 @@ unpack the image without a successful attested `kms:Decrypt`, so a pod that runs
 | `create-attested-key.sh` | Creates the KMS key whose policy pins `PCR17` and `PCR8:ServiceName`. |
 | `kms-key-policy.json` | The key policy, with placeholders. Read this one even if you use the script — the conditions are the whole point. |
 | `encrypt-image.sh` | Encrypts an image's layers to that key with `skopeo` + `nitro-sandbox-keyprovider`. |
-| `pod-attested.yaml` | The confidential pod running the encrypted image. Starts only if attestation passes. |
+| `pod-attested.yaml` | The confidential pod running the encrypted image. Starts only if attestation passes. **Pod only, deliberately** — `genpolicy` takes a pod manifest and exits 1 on `unsupported kind: ServiceAccount`. |
+| `serviceaccount-attested.yaml` | The pod's ServiceAccount, in its own file for the reason above. Apply it first. |
 
 Related, outside this directory:
 
@@ -158,9 +159,30 @@ Two flags that are not optional here:
 
 - `--with-pod-identity`, because the guest needs the Pod Identity token to call
   KMS for the layer key. Without it the policy denies the very call the pod
-  depends on.
+  depends on. It is needed for a second reason too: Pod Identity *injects*
+  `AWS_CONTAINER_CREDENTIALS_FULL_URI`, a token-file variable and a projected
+  volume, and `--profile confidential` pins the environment exactly — so a
+  policy generated without this flag denies the pod over an env mismatch.
 - `--profile confidential`, which pins image digest, args, environment, mounts,
   capabilities and security settings.
+
+Two things about the manifest, both of which the generator enforces:
+
+- **`enableServiceLinks: false` is required**, not hardening. The kubelet injects
+  a `<SVC>_PORT…` variable per Service in the namespace, so the pinned env set is
+  not knowable at generation time; `--profile confidential` refuses a manifest
+  that leaves it unset. `pod-attested.yaml` sets it, and OAP emits it on every
+  confidential pod template. The only other way past it is
+  `--allow-additional-env`, which stops pinning the environment — most of what
+  the confidential profile is for.
+- **One Pod per file.** The generator takes a *pod* manifest and exits 1 with
+  `unsupported kind: ServiceAccount` on a multi-document file, which is why the
+  ServiceAccount lives in `serviceaccount-attested.yaml`. Apply both:
+
+  ```console
+  $ kubectl apply -f examples/nitro-sandbox/serviceaccount-attested.yaml \
+                  -f examples/nitro-sandbox/pod-attested.yaml
+  ```
 
 It prints the base64 policy **and the predicted PCR17**. That prediction is the
 useful part: you can configure KMS before anything is deployed, rather than
@@ -173,8 +195,27 @@ KubeVela actually renders:
 $ scripts/nitro/gen-cedar-policy.sh \
     --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
     --component regulated-assistant \
-    --profile confidential -- --with-pod-identity
+    --profile confidential
 ```
+
+No `-- --with-pod-identity`: the wrapper reads `serviceAccountName` off the
+rendered pod spec and adds it, and adds `--deny-exec --deny-logs` on the
+confidential profile (see *What confidential does not protect* below).
+`--no-pod-identity` and `--allow-exec-logs` opt out of each.
+
+**Then regenerate from the running pod and diff the two.** `--app` renders
+offline, which is what makes it usable in CI, and offline is exactly what cannot
+see a mutating webhook. `--from pod/<name>` is the only post-mutation source:
+
+```console
+$ scripts/nitro/gen-cedar-policy.sh --from pod/attested-demo -n default \
+    --profile confidential --out from-live.b64
+$ diff <(cat regulated-assistant-cedar-policy.b64) from-live.b64
+```
+
+A difference means your admission chain is changing the pod, and in confidential
+mode that difference is the gap between a pod that starts and a pod that is
+denied.
 
 ## Step 2 — create the KMS key with the attestation conditions
 
@@ -205,6 +246,38 @@ certificate rather than the raw hash — so pinning it to `eks.amazonaws.com`
 attests that the guest image was signed by the EKS Nitro Sandbox service, and it
 keeps matching when AWS rotates the signing certificate. Pinning a raw PCR8 hash
 breaks on rotation; pinning nothing breaks the guarantee.
+
+**And a Deny, which is what makes the Allow mean anything.** A KMS key policy is
+the root of authorization for its key, so the administration statement every key
+needs is also the hole: granted as `kms:*`, it delegates `kms:Decrypt` to the
+account, and any administrator can then write themselves an IAM policy and
+unwrap the layer key with no attestation whatsoever — the exact actor
+confidential mode exists to exclude. So `kms-key-policy.json` does two things:
+the administration statement no longer includes the data-plane actions, and an
+explicit `Deny` catches anything that still reaches them without a matching
+measurement.
+
+```json
+{
+  "Sid": "DenyDataPlaneWithoutAttestation",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey", "..."],
+  "Resource": "*",
+  "Condition": {
+    "StringNotEqualsIfExists": {
+      "kms:RecipientAttestation:PCR17": "<sha-384 of your Cedar policy>"
+    }
+  }
+}
+```
+
+`Deny` beats every `Allow` — in the key policy, in IAM, and in grants — so this
+holds even if a future statement or a `kms:CreateGrant` adds a path nobody
+remembers. The `IfExists` suffix is load-bearing: it makes the condition true
+when the attestation key is **absent**, which is precisely the ordinary caller
+with no attestation document. The attested sandbox presents a matching `PCR17`,
+so the Deny does not apply to it.
 
 `PCR0` measures the system image itself and can be added when you want to pin a
 specific guest image version. Be aware of what that costs: every AWS update to
@@ -258,6 +331,75 @@ $ kubectl describe pod attested-demo | grep -A5 Events
 That `AccessDeniedException` is KMS refusing to release a key to a guest whose
 measurements do not match. Nothing else in the stack can produce that error, and
 seeing it once is worth more than reading this README.
+
+### The second negative control: try it as an administrator
+
+The control above proves the key refuses the *wrong guest*. It says nothing about
+whether the key refuses **you** — and a key policy granting `kms:*` to the
+account root refuses nobody, while looking identical from the outside. Check it
+with your own admin credentials and no attestation at all:
+
+```console
+$ aws kms encrypt --key-id <key-arn> --plaintext $(echo -n probe | base64) \
+    --query CiphertextBlob --output text | base64 -d > /tmp/probe.bin
+$ aws kms decrypt --key-id <key-arn> --ciphertext-blob fileb:///tmp/probe.bin
+
+An error occurred (AccessDeniedException) when calling the Decrypt operation: ...
+```
+
+(The `encrypt` call is expected to fail too unless you are the build principal —
+in that case borrow a ciphertext from the encrypted image, or run the `decrypt`
+against any blob at all. Authorization is evaluated **before** the ciphertext is
+examined, which is the whole trick below.)
+
+**Read the error, not just the failure.** `AccessDeniedException` is the pass.
+`InvalidCiphertextException` is a **FAIL**: it means authorization succeeded and
+KMS got as far as looking at your bytes, so this key will decrypt for an
+administrator. Plaintext back is obviously a fail. Both mean the Deny statement
+is missing or its `PCR17` does not match the one in the Allow.
+
+## What confidential mode does not protect
+
+The sections above are about what attestation *buys*. This one is the boundary of
+it, because every limit here is reachable by someone a reader might assume
+confidential mode had excluded. AWS lists these on the EKS Nitro Sandboxes
+security-model page; the OAP-specific consequences are called out per item.
+
+The property you get is narrow and real: **a ciphertext that decrypts only inside
+a guest whose measurements match**. Not "nobody can see anything about this pod".
+
+- **Anything the pod spec names, the parent can read.** Plain `env` values,
+  mounted Secrets, CSI secrets, EBS and EFS volumes are all supplied *by* the
+  untrusted side. **This hits OAP directly:** agents receive Langfuse keys as
+  plain environment variables, so those are visible to anyone who can read the
+  pod spec, regardless of the sandbox. Treat them as parent-visible, and keep
+  anything that must not be, in a ciphertext this key gates.
+- **Pod Identity credentials belong to the ServiceAccount, not to the guest.**
+  Anyone who can run a pod with that service account mints the same credentials —
+  from an ordinary runc pod, with no attestation. The attestation gate protects
+  the *KMS key*, not the role. Scope the role to exactly the attested key, and
+  restrict who may use the service account.
+- **`kubectl exec` and `kubectl logs` go through the kubelet and work normally.**
+  Unless the Cedar policy denies them, a namespace admin reads the agent's
+  working memory by attaching to it. `scripts/nitro/gen-cedar-policy.sh` now adds
+  `--deny-exec --deny-logs` by default on the confidential profile for this
+  reason; `--allow-exec-logs` opts out, knowingly. Note the trade: a consumer
+  that *drives* the sandbox over exec — the Dark Factory coder flow is one —
+  cannot use the denying profile, which is why `nitro.mode` defaults to
+  `isolated` for that pool.
+- **Whoever can author pod specs in the namespace sets the measurements.** They
+  choose the image, the args, the env and the Cedar policy, so they decide what
+  gets attested. Restricting pod-spec authorship in the namespace is a
+  prerequisite for this guarantee, not an optional hardening step.
+- **Scheduling, lifecycle and metadata stay with the control plane.** Node
+  placement, eviction, resource limits and every label and annotation are the
+  parent's. Confidential mode hides memory contents, not the pod's existence or
+  its shape.
+
+Put the other way round: confidential mode moves the trust boundary off the node
+and onto *the Kubernetes API server and whoever can write to it in this
+namespace*. If that set is as large as your cluster administrators, the gate is
+real but the blast radius has not moved much.
 
 ## Operational notes, each of which has cost somebody an afternoon
 

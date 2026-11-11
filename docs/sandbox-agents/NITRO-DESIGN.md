@@ -422,10 +422,51 @@ Verified as a property of the render, not an intention:
 | `runtime: kata` on the `agent-sandbox` chart | SandboxTemplate byte-identical to before this branch, with its nodeSelector and toleration |
 | `sandboxMode: confidential` on a cluster with no confidential class | render **rejected**, with a message saying Kata has no equivalent — rather than a `kata-clh` pod that cannot attest |
 | Every Kata value, class and comment in `agent-sandbox/values.yaml` | unchanged |
-| `example-agent-simple`, `-with-mcp`, `-evaluation` rendered against `origin/main` | **byte-identical** |
+| `example-agent-simple`, `-with-mcp`, `-minimal`, `-milvus-memory`, `-with-browser`, `-with-code-interpreter`, `-centralized-observability`, `-mcp-local` rendered against `origin/main` | **byte-identical** (8 of 12) |
+| `example-agent-evaluation`, `-imageless`, `-multidim`, `-smoketest` | **differ, and the difference is NOT from this work** — see below |
 
 A Kata cluster is one annotation: `sandbox_runtime_class: kata-clh`, and leave
 `confidential_sandbox_runtime_class` empty so confidential fails closed there.
+
+
+### 7.1 The one difference, and why it is not a regression from this work
+
+Regenerating `templates/agent.yaml` from `agent.cue` changes the four
+`example-agent-evaluation*` renders:
+
+```diff
+-  backend: centralized
+-  annotations: {}
++  annotations:
++    evaluation.oap.io/observability-mode: centralized
+```
+
+**This is not caused by anything on this branch.** `main`'s committed
+`templates/agent.yaml` is STALE relative to `main`'s own `agent.cue`: the CUE
+already replaced the `backend` field with the annotation, and the generated YAML
+was never regenerated to match. Any change that regenerates that file picks the
+difference up, and this branch regenerates it because it has to.
+
+How to see that for yourself — and note that the FIRST of these is the
+comparison that misleads:
+
+```console
+# From CUE on both sides: all 12 non-sandbox examples identical, including the
+# evaluation four. This hides the drift, because it renders main's CUE rather
+# than main's committed YAML.
+# From the COMMITTED chart on both sides -- what actually ships -- 8 identical,
+# these 4 different.
+$ helm template r gitops/addons/charts/oam-agent-components   # per side
+$ vela dry-run --offline -d <defs> -f platform/oam/examples/example-agent-evaluation.yaml
+```
+
+The change itself is correct and should land: the annotation is what
+`agent.cue` has specified for some time, and `backend` is a field the evaluation
+addon no longer reads. It is carried here as **its own commit**
+(`regenerate: pick up pre-existing agent.cue drift`) so it can be reviewed,
+reverted or landed separately from the isolation work, and so this document's
+zero-regression claim stays honest about which files it covers.
+
 
 ## 8. Alternatives considered
 
@@ -460,7 +501,8 @@ value check uses a non-default.
 | `isolation: session` + `sessionIsolationEnabled=true` | four env vars, claim Role and RoleBinding, warm pool of 3 on `isolated-sandbox` |
 | `networkIsolated: true` with default `service: true` | render **rejected** |
 | `type: sandbox` default | SandboxWarmPool, SandboxTemplate, ServiceAccount, sandbox card; `runtimeClassName: isolated-sandbox`; no nodeSelector |
-| **Zero regression:** `example-agent-simple`, `-with-mcp`, `-evaluation` vs `origin/main` | **byte-identical** |
+| **Zero regression:** the 8 non-sandbox examples other than the evaluation four, vs `origin/main` | **byte-identical** |
+| **Zero regression:** the 4 `example-agent-evaluation*` examples | **differ** — pre-existing CUE-vs-YAML drift on `main`, picked up by regenerating. See §7.1 |
 | `kubectl apply --dry-run=server` on both regenerated definitions (hub, k8s 1.37) | both accepted |
 | `kubectl apply --dry-run=server` on `pod-hello-sandbox.yaml`, `pod-attested.yaml` | both accepted, including `supplementalGroupsPolicy: Strict` |
 | `agent-sandbox` chart, `runtime: nitro` | `isolated-sandbox`, no Kata nodeSelector or toleration |
@@ -513,6 +555,33 @@ gets a `runtimeClassName` that is not a valid class name and is rejected outrigh
 
 Sync the Application before testing. `scripts/nitro/verify-isolation.sh` detects this specific case
 and names it, because nothing else in the stack does.
+
+### 9.4 Open, and deliberately not claimed
+
+Recorded here rather than left implicit, because each one is something a reader
+could reasonably assume was verified.
+
+- **`SandboxTemplate.networkPolicyManagement` is left at the CRD default
+  (`Managed`).** With `service: true` the operator creates the NetworkPolicy, and
+  nothing here checks that the policy it creates actually admits the Service's
+  traffic. If a claimed sandbox is reachable on its Service but connections are
+  refused, this is the first thing to look at: compare the operator-created
+  policy against the Service's selector and port. Needs a cluster with the
+  sandbox operator to settle.
+- **`sessionIsolationEnabled` is a declarative switch.** It asserts that the
+  cluster has the `agent_sandbox` addon AND an agent image that claims a sandbox
+  per session. The first half is a real prerequisite the guard names; the second
+  cannot be checked from a render — nothing verifies the image actually calls
+  `SandboxClaim`. An agent on an image that does not will render, deploy, serve
+  traffic and share one process, which is the failure the switch exists to
+  prevent. A readiness probe or a startup assertion in the image is the real
+  answer; the switch is the honest interim.
+- **No Nitro node was available for this work.** Guest kernel and DMI,
+  Pod Identity from inside the microVM, blue-green through a sandboxed Rollout,
+  warm-pool fill behaviour, density, and end-to-end attestation with an encrypted
+  image are all unverified on hardware. Everything claimed above is a render-time
+  or chart-time property, measured offline.
+
 
 ## 10. Files
 
