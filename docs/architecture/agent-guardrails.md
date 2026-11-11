@@ -33,6 +33,10 @@
 - Reachability, sandboxing and spend, each already owned (§2.2)
 - Replacing the `authPolicy` CEL surface on `mcp-server`
 - Running Dogwood's reference interpreter on the request path (§D6)
+- **Inspecting tool-call content, and the external policy engine that would do
+  it.** The model hop cannot see a tool call, and the hop that can is the MCP
+  hop, which has its own mechanism and its own issue (#152). §3.9 draws the
+  boundary and lists what the two designs owe each other
 
 ---
 
