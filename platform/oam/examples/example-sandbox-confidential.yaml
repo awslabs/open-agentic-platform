@@ -35,9 +35,15 @@
 #          --app platform/oam/examples/example-sandbox-confidential.yaml \
 #          --component regulated-session --profile confidential
 #      Paste the base64 into cedarPolicy below and the printed PCR17 into the KMS
-#      key policy. Omitting cedarPolicy is rejected at admission: with no policy
-#      the sandbox falls back to a permissive built-in default that allows exec
-#      from the parent instance, which is confidential in name only.
+#      key policy. Omitting cedarPolicy is rejected at admission -- and that
+#      rejection is a convenience, not the security boundary: the Nitro runtime
+#      itself enforces DEFAULT-DENY, so an unpolicied confidential pod never
+#      starts. Verified on a live node: containerd returns
+#      "confidential-sandbox requires the sandbox.amazonaws.com/policy
+#      annotation; a policy is required in confidential mode (default-deny is
+#      enforced)" and the pod loops in ContainerCreating indefinitely. Catching
+#      it at admission just means you read the reason immediately instead of
+#      digging it out of kubelet events.
 #   3. EKS Pod Identity for the sandbox's ServiceAccount, so the guest can reach
 #      KMS. IMDS inside a sandbox serves only placement metadata — IAM
 #      credentials are NOT available through it.

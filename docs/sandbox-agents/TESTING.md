@@ -383,8 +383,47 @@ equivalent.
 **This is the only part that tests isolation rather than manifests.** Parts 1–2
 prove the platform emits the right pod spec and rejects the wrong Application.
 Nothing in them can tell you a kernel boundary exists. That is what this part is
-for, and none of it was verified during the work — there was no Nitro node
-available — so treat all of it as unproven until you have run it.
+for.
+
+### What has actually been run, and what has not
+
+Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2):
+
+| Step | Status |
+|---|---|
+| **3.0** cluster gate + smoke test | **PASSED.** Auto Mode provisioned a `c8a.large` sandbox node on demand (~2 min); pod kernel **6.18.54** vs node **6.18.56**; DMI `c8a.enclave`; virtio disks `vda vdb vdc`. `verify-isolation.sh` → **7 PASS / 0 FAIL**, exit 0 |
+| confidential runtime class, raw pod, no policy | **PASSED, and it corrected our docs** — see the box in 3.3 |
+| `download-runtime-binaries.sh` | **PASSED.** Signature verified, all 8 files `OK` |
+| **3.1–3.5** (the OAM examples) | **BLOCKED on `hub` today.** Reasons below — these are cluster-state problems, not problems with the examples |
+| **3.6** attested pod, **Part 4** KMS | **Not run.** Needs an encrypted image and a billable KMS key |
+
+Three things block 3.1–3.5 on `hub` right now, all of which you fix before
+testing rather than by changing the PR:
+
+1. **The deployed `agent` ComponentDefinition is from `main`.** It has `sandbox`
+   but not `sandboxMode`, `cedarPolicy`, `isolation` or `sandboxTemplate`, so
+   every example in 3.3–3.5 is rejected on an unknown field. Sync the
+   `oam-agent-components-hub` ArgoCD app to this branch first.
+2. **`sandbox: true` is broken on `hub` independently of this PR.** The deployed
+   definition contains the Helm placeholder **unsubstituted**:
+
+   ```
+   _sandboxRuntimeClass: "{{ .Values.global.sandboxRuntimeClass }}"
+   ```
+
+   So a `sandbox: true` agent renders `runtimeClassName:
+   {{ .Values.global.sandboxRuntimeClass }}`, which the API server rejects. No
+   live agent on `hub` sets `sandbox: true`, so nobody is hitting it — but the
+   feature cannot work there until the chart is rendered through Helm properly.
+   `verify-isolation.sh` has a dedicated check for exactly this
+   ("runtimeClassName contains an unsubstituted Helm placeholder"), which is how
+   it was spotted.
+3. **The `agent_sandbox` addon is not installed** — no `sandboxclaims`,
+   `sandboxes`, `sandboxtemplates` or `sandboxwarmpools` CRDs — so `type:
+   sandbox`, warm pools and claims (3.2, 3.4, 3.5) cannot be created at all.
+
+Everything below is written to be run in order. Where a step has been verified,
+the real observed output is shown rather than an idealised one.
 
 Requirements: Kubernetes **1.36+**, a **US commercial region**, and either EKS
 Auto Mode (which provisions a sandbox-capable node on demand) or your own nodes
@@ -415,10 +454,36 @@ kubectl logs hello-sandbox
 ```
 
 ```
-/sys/class/dmi/id/product_name:  <something>.enclave
-disks:   vda vdb
-kernel:  <a version that is NOT your node's>
+/sys/class/dmi/id/product_name:  c8a.enclave
+disks:   dm-0 vda vdb vdc
+kernel:  6.18.54
 ```
+
+That is the real output from `hub`. Compare it with the node:
+
+```console
+$ kubectl get node <node> -o jsonpath='{.status.nodeInfo.kernelVersion}'
+6.18.56
+```
+
+**6.18.54 inside, 6.18.56 outside.** Two different kernels on one machine, which
+a container cannot do.
+
+On Auto Mode the node is provisioned on demand, so expect the pod to sit
+`Pending` for a minute or two first, with a `FailedScheduling` event naming
+`eks.amazonaws.com/nitro-sandbox In [true]` — that is the RuntimeClass admission
+controller having force-merged the node selector, working as intended. The node
+that appears is sandbox-capable and advertises slots:
+
+```console
+$ kubectl get nodes -l eks.amazonaws.com/nitro-sandbox=true
+$ kubectl get node <node> -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
+10
+```
+
+Note the instance type will change under you: `c6a.large`/`c6g.large` nodes are
+**not** sandbox-capable (2 vCPU is below the enclave minimum, and Graviton is a
+separate question), and Auto Mode picked `c8a.large` instead.
 
 Three independent signals, and the third is the one that matters: a container
 *cannot* have a different kernel from its node. The `.enclave` suffix and the
@@ -634,9 +699,31 @@ kubectl get pods -l app.kubernetes.io/name=regulated-assistant
 kubectl describe pod -l app.kubernetes.io/name=regulated-assistant | grep -A10 Events
 ```
 
-Expect the pod **not** to start, with the sandbox agent rejecting the policy. A
-pod that starts here means the policy is not being enforced, and that is a
-finding — stop and report it.
+Expect the pod **not** to start. A pod that starts here means the policy is not
+being enforced, and that is a finding — stop and report it.
+
+> **Verified on a live node, and it corrected this repo's documentation.** The
+> guards used to justify themselves by claiming that an unpolicied confidential
+> pod "applies a permissive built-in default that allows exec and stdin from the
+> parent instance" — i.e. that it runs, looks fine, and is readable by the node
+> operator. **That is not what the runtime does.** A raw
+> `runtimeClassName: confidential-sandbox` pod with no policy annotation gives:
+>
+> ```
+> FailedCreatePodSandBox  ...  CreateSandbox: resolve sandbox policy:
+>   confidential-sandbox requires the sandbox.amazonaws.com/policy annotation;
+>   a policy is required in confidential mode (default-deny is enforced)
+> ```
+>
+> The runtime enforces **default-deny**. The pod never starts; it loops in
+> `ContainerCreating` indefinitely, retrying every ~15s, with the reason only in
+> kubelet events.
+>
+> The render-time guard is therefore still right, for a simpler reason than was
+> claimed: it is not preventing a silently-insecure pod, it is converting an
+> indefinite `ContainerCreating` loop into an immediate admission error that
+> names the script which generates a policy. Every copy of the old claim has
+> been corrected — see NITRO-DESIGN §4.
 
 ```bash
 kubectl delete -f platform/oam/examples/example-agent-sandbox-confidential.yaml

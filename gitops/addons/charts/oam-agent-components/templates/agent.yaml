@@ -198,7 +198,7 @@ spec:
         // scripts/nitro/gen-cedar-policy.sh, and regenerate whenever a pinned field
         // changes -- including a new image digest.
         if parameter.sandbox && parameter.sandboxMode == "confidential" && parameter.cedarPolicy == "" {
-        	_cedarPolicyRequired: "set" & "sandboxMode: confidential requires cedarPolicy: a base64 Cedar policy generated from this agent's rendered pod spec. Without one the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload -- and PCR17 attests nothing. Generate it with scripts/nitro/gen-cedar-policy.sh, or use sandboxMode: isolated."
+        	_cedarPolicyRequired: "set" & "sandboxMode: confidential requires cedarPolicy: a base64 Cedar policy generated from this agent's rendered pod spec. The Nitro runtime ENFORCES DEFAULT-DENY: with no policy annotation containerd refuses to create the sandbox (verified on a live node -- 'confidential-sandbox requires the sandbox.amazonaws.com/policy annotation; a policy is required in confidential mode'), so the pod never starts and loops in ContainerCreating with the reason buried in kubelet events. This guard turns that into an immediate error here. Generate it with scripts/nitro/gen-cedar-policy.sh, or use sandboxMode: isolated."
         }
 
         // FAIL CLOSED when an isolation-only field is set WITHOUT sandbox: true.
@@ -367,8 +367,7 @@ spec:
         				//
         				// Emitted only when a policy is supplied, so an isolated agent's
         				// output is unchanged. The Cedar policy is OPTIONAL in isolated mode
-        				// (the sandbox applies a permissive built-in default) and MANDATORY
-        				// in confidential mode, which the guard above enforces.
+        				// (the Nitro runtime refuses to create the sandbox at all (default-deny, verified on a live node).
         				//
         				// Attaching it does NOT invalidate the policy it carries: a
         				// confidential policy pins container admission fields -- image

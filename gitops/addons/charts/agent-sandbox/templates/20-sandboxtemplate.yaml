@@ -62,7 +62,7 @@ spec:
              eks.amazonaws.com/nitro-sandbox on one node, and no node has both. */}}
       {{- $nrc := index .Values.nitro.runtimeClasses .Values.nitro.mode | required (printf "nitro.mode=%q has no matching entry in nitro.runtimeClasses" .Values.nitro.mode) }}
       {{- if and (eq .Values.nitro.mode "confidential") (not .Values.nitro.cedarPolicy) }}
-      {{- fail "nitro.mode=confidential requires nitro.cedarPolicy: without a Cedar policy the sandbox applies a permissive built-in default that allows exec and stdin from the parent instance, so the node operator can still read the workload, and PCR17 attests nothing. Generate one with scripts/nitro/gen-cedar-policy.sh." }}
+      {{- fail "nitro.mode=confidential requires nitro.cedarPolicy: the Nitro runtime enforces default-deny, so with no policy annotation containerd refuses to create the sandbox and every warm pod loops in ContainerCreating (verified on a live node). Generate one with scripts/nitro/gen-cedar-policy.sh." }}
       {{- end }}
       {{- if and .Values.nitro.networkIsolated (eq .Values.nitro.mode "confidential") }}
       {{- fail "nitro.networkIsolated cannot be combined with nitro.mode=confidential: confidential mode releases secrets only after the guest attests to AWS KMS, and a network-isolated sandbox has no route to KMS, no Pod Identity credentials and no IMDS." }}

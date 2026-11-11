@@ -150,10 +150,9 @@ spec:
         // FAIL CLOSED on confidential without a Cedar policy. Same reasoning as
         // agent.cue, and it bites harder here: this component exists to run code
         // nobody has reviewed, so the policy IS the admission control. With no policy
-        // the sandbox applies a permissive built-in default that admits any container
-        // and allows exec and stdin from the parent instance.
+        // the Nitro runtime refuses to create the sandbox at all (default-deny, verified on a live node).
         if parameter.mode == "confidential" && parameter.cedarPolicy == "" {
-        	_cedarPolicyRequired: "set" & "mode: confidential requires cedarPolicy: a base64 Cedar policy generated from this sandbox's rendered pod template. Without one the sandbox admits any container and allows exec and stdin from the parent instance, and PCR17 attests nothing. Generate it with scripts/nitro/gen-cedar-policy.sh, or use mode: isolated."
+        	_cedarPolicyRequired: "set" & "mode: confidential requires cedarPolicy: a base64 Cedar policy generated from this sandbox's rendered pod template. The Nitro runtime ENFORCES DEFAULT-DENY: with no policy annotation containerd refuses to create the sandbox (verified on a live node), so every warm pod loops in ContainerCreating rather than starting unprotected. This guard turns that into an immediate error here. Generate it with scripts/nitro/gen-cedar-policy.sh, or use mode: isolated."
         }
 
         // FAIL CLOSED on confidential + networkIsolated. This is an OAP judgement, not

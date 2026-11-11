@@ -188,10 +188,25 @@ a Rollout has the same shape.
 A confidential pod with no policy annotation is the subtlest failure in this design, so it is
 rejected at admission.
 
-The sandbox falls back to a **permissive built-in default**: every container admitted, and `exec`,
-`stdin` and process listing all allowed from the parent instance. The memory boundary still holds,
-so the pod runs and looks right — while the node operator the mode exists to defend against reads
-the workload's data by exec'ing into it. And PCR17 measures the policy, so with no policy there is
+**Corrected against a live Nitro node.** This section previously claimed the sandbox falls back to
+a *permissive built-in default* — every container admitted, `exec` and `stdin` allowed — so that an
+unpolicied confidential pod would run and look right while the node operator read its memory. That
+is **not** what the runtime does, and the real behaviour is the opposite:
+
+```
+FailedCreatePodSandBox  ...  CreateSandbox: resolve sandbox policy:
+  confidential-sandbox requires the sandbox.amazonaws.com/policy annotation;
+  a policy is required in confidential mode (default-deny is enforced)
+```
+
+The runtime enforces **default-deny**. An unpolicied confidential pod never starts; it loops in
+`ContainerCreating` for as long as it is left there, retrying every ~15s, with the reason only in
+kubelet events.
+
+So the render-time guard is still right, for a different and simpler reason. It is not preventing a
+silently-insecure pod — the runtime already refuses that — it is converting an indefinite
+`ContainerCreating` loop whose cause is buried in events into an immediate admission error naming
+`scripts/nitro/gen-cedar-policy.sh`. PCR17 also measures the policy, so with no policy there is
 nothing for a KMS key policy to pin: attestation becomes a number nobody checks.
 
 That is the same shape as an unconfigured RuntimeClass — isolation requested, isolation not

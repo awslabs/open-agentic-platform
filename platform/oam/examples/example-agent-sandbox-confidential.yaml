@@ -63,10 +63,13 @@ spec:
 
         # Base64 Cedar policy, rendered as the pod template's
         # sandbox.amazonaws.com/policy annotation and measured into PCR17.
-        # REQUIRED in this mode: without it the sandbox applies a permissive
-        # built-in default that allows exec and stdin from the parent instance,
-        # so the operator this mode excludes could still read the agent -- and
-        # PCR17 would attest nothing. Omitting it is rejected at admission.
+        # REQUIRED in this mode, by the RUNTIME and not only by us: the Nitro
+        # runtime enforces default-deny, so a confidential pod with no policy
+        # annotation is refused by containerd and never starts (verified on a
+        # live node). PCR17 also measures the policy, so with no policy there is
+        # nothing for a KMS key policy to pin. Omitting it is rejected at
+        # admission so you get the reason at apply time rather than from a pod
+        # stuck in ContainerCreating.
         #
         # The placeholder below is NOT a working policy. Generate yours.
         # PLACEHOLDER WITH THE RIGHT SHAPE. The components shape-check both
