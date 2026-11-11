@@ -1038,7 +1038,12 @@ Three things, already folded in above rather than left as future work:
 - **`redact` is a mutation, and mutations have an ordering trap.** #152 records
   that a request-phase processor may rewrite `params` while CEL RBAC still checks
   the **pre-mutation** values, so an authorization processor must run after every
-  mutating one. This design has the same hazard in miniature: a `redact` verdict
+  mutating one. The wire format states it outright: `McpRequestResult.mutated`
+  "replaces JSON-RPC `params` before forwarding to the upstream MCP server" and
+  "**the gateway does not re-run other RBAC on the mutated request**". So a
+  mutating processor is not merely ordered before authorization — it can hand
+  the upstream arguments that no policy ever saw. This design has the same
+  hazard in miniature: a `redact` verdict
   changes the prompt that Bifrost then sees. Today nothing downstream authorizes
   on prompt content, so the trap is latent — but anything added that *does* must
   run after redaction, and §D8's record is what makes the before/after visible.
