@@ -971,6 +971,67 @@ the error rate, the fail-closed rate and staleness are platform signals. The
 `.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule"`, per
 the regression #143 fixed.
 
+### 3.9 Relationship to #152: two hops, two engines, one set of lessons
+
+#152 proposes an external policy engine (Cedar, or OPA) behind agentgateway's
+**ExtMCP** hook. It is easy to read the two issues as competing proposals for
+"the policy layer". They are not, and the distinction is the hop:
+
+| | This design (#144) | #152 |
+|---|---|---|
+| Hop | agent → **model** | agent → **tool** (MCP) |
+| Mechanism | an OAP-owned proxy in front of Bifrost (§D1) | `backend.mcp.guardrails.processors[].remote`, an agentgateway hook that already exists |
+| Sees | the prompt and the completion | the JSON-RPC method, **the params — tool name and arguments** — and the result |
+| Question answered | "is this text acceptable?" | "is this caller allowed to call this tool, with these arguments, right now?" |
+| Decides with | detector findings + thresholds (`decide()`, §D4) | a policy engine over principal / action / resource / entities |
+| Fail mode | `onError: block` by default (§D4) | `failureMode: FailClosed`, already the documented default |
+
+Neither hop can do the other's job, and that is structural rather than a
+limitation to engineer away. A model call carries no tool name, so no proxy on
+that path can authorize a tool. An MCP call carries no prompt, so no processor on
+that path can judge what the user asked the model. **A platform that wants both
+needs both**, which is why these are two designs rather than one.
+
+#### What this design takes from #152
+
+Three things, already folded in above rather than left as future work:
+
+| Taken | Where it landed |
+|---|---|
+| `FailClosed` as the default of the nearest adjacent implementation | §D4 — it turns "fail closed" from an argument into a convention already in use in OAP's own gateway |
+| Decision provenance: a verdict records the configuration that produced it | §D8 — `profileVersion` + `guardrailVersion`, and the skew metric |
+| The tool-call content gap has a hop that can see it | §D7, and the Scope list — it stops being an unanswered hole and becomes a boundary |
+
+#### What this design owes #152, and one trap it should inherit
+
+- **The verdict seam is per-hop, not shared.** §D4's `decide()` is the content
+  verdict at the model hop. #152's engine is the authorization decision at the
+  tool hop. Sharing one engine across both sounds tidy and is wrong: the inputs,
+  the latency budget and the failure blast radius all differ. What they should
+  share is the *shape* — one function, fail-closed, provenance recorded.
+- **`redact` is a mutation, and mutations have an ordering trap.** #152 records
+  that a request-phase processor may rewrite `params` while CEL RBAC still checks
+  the **pre-mutation** values, so an authorization processor must run after every
+  mutating one. This design has the same hazard in miniature: a `redact` verdict
+  changes the prompt that Bifrost then sees. Today nothing downstream authorizes
+  on prompt content, so the trap is latent — but anything added that *does* must
+  run after redaction, and §D8's record is what makes the before/after visible.
+- **Rate and frequency belong to neither engine.** #152 is right that "no more
+  than N calls" is not an authorization question; agentgateway answers it
+  natively at `spec.traffic.rateLimit`, and Bifrost answers the model-side
+  equivalent through `governance` once per-workload virtual keys exist (§2.3).
+  Neither this proxy nor a policy engine should be made to count.
+
+#### Sequencing
+
+They are independent and can land in either order. One soft dependency is worth
+naming: #152's work establishes whether caller identity actually reaches an
+ExtMCP processor — its own task 2, and marked blocking there, because the docs
+describe only "selected request headers" and do not confirm JWT claims are
+exposed. If that resolves badly, the tool hop can authorize on the tool but not
+on the caller, which would make the content layer here relatively *more*
+important rather than less.
+
 ---
 
 ## 4. Architecture
