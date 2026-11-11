@@ -6,9 +6,10 @@
 | **Author** | @elamaran11 |
 | **Reviewers** | TBD |
 | **Target** | `agent` component, new `agent-guardrails` addon, `bifrost` chart |
-| **Date** | 2026-11-10 |
-| **Revision** | 1 |
+| **Date** | 2026-11-11 |
+| **Revision** | 2 |
 | **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
+| **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 |
 
 ## Scope
 
