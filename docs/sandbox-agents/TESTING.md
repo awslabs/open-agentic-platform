@@ -410,17 +410,61 @@ for.
 
 ### What has actually been run, and what has not
 
-Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2):
+Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 
 | Step | Status |
 |---|---|
-| **3.0** cluster gate + smoke test | **PASSED.** Auto Mode provisioned a `c8a.large` sandbox node on demand (~2 min); pod kernel **6.18.54** vs node **6.18.56**; DMI `c8a.enclave`; virtio disks `vda vdb vdc`. `verify-isolation.sh` → **7 PASS / 0 FAIL**, exit 0 |
-| confidential runtime class, raw pod, no policy | **PASSED.** Refused by the runtime — see the box in 3.3 |
-| **confidential mode WITH a real Cedar policy** | **PASSED END TO END.** Real `eks-nitro-sandbox-genpolicy`, pod Running 1/1, `exec` denied by the policy. Procedure in 3.3a |
-| `download-runtime-binaries.sh` | **PASSED.** Signature `Verified OK`, all 8 files `OK`, on both `aarch64` and `x86_64` |
-| `verify-isolation.sh` on a confidential pod | **PASSED.** 5 PASS / 0 FAIL, correctly reports exec-denial as the guarantee working |
-| **3.1–3.5** (the OAM examples) | **BLOCKED on `hub` today.** Reasons below — these are cluster-state problems, not problems with the examples |
+| **3.0** gate + smoke test | **PASS.** `c8a.large` sandbox node provisioned on demand in ~2 min; pod kernel `6.18.54` vs node `6.18.56`; DMI `c8a.enclave`; virtio disks; `verify-isolation.sh` 7 PASS / 0 FAIL |
+| **3.1** isolated agent | **PASS.** Both replicas on `isolated-sandbox`, **on the same node**, both kernel `6.18.54` vs node `6.18.56`, DMI `c8a.enclave`; `verify-isolation.sh` 7 PASS / 0 FAIL. Readiness does *not* go green — see the box below, it is not an isolation failure |
+| **3.2** isolated pool | **PASS.** `warmPool: 2` → 2 pods pre-warmed and Running; claim adopted a warm sandbox in **<60s**; claimed pod verified 7 PASS / 0 FAIL (`c6a.enclave`); pool refilled to 3 while claimed |
+| **3.3** confidential agent | **RENDER + NEGATIVE CONTROL PASS.** `confidential-sandbox`, `enableServiceLinks: false`, policy annotation emitted; the **placeholder policy is refused** and the pod never starts. Generating a real policy through the OAM path was not run — 3.3a proves that mechanism |
+| **3.3a** confidential without OAM | **PASS end to end.** Real generator, real policy + PCR17, pod Running 1/1, `exec` denied, `verify-isolation.sh` 5 PASS / 0 FAIL |
+| **3.5** session isolation | **PASS (platform half).** All four env vars exact; agent front door correctly **not** sandboxed; RBAC exactly right; pool at 3. Two claims → **two distinct sandboxes**, each with its own kernel, and a cross-session filesystem probe confirms one cannot read the other's `/workspace`. Driving two real users through the gateway was not run — see the box below |
+| `download-runtime-binaries.sh` | **PASS.** Signature verified, all 8 files, both arches |
+| **3.4** confidential pool | **Not run.** Same mechanism as 3.3 + 3.3a |
 | **3.6** attested pod, **Part 4** KMS | **Not run.** Needs an encrypted image and a billable KMS key |
+| **3.7** Kata | **Not run.** No Kata nodes on this cluster |
+
+### Two things that look like failures and are not
+
+> **The shipped agent examples do not reach Ready on a cluster without their
+> dependencies.** 3.1's pods run, isolate correctly, and then fail readiness with
+> `503` on `/ready`. The cause is in the agent log:
+>
+> ```
+> MCPError: failed to send message: http upstream error:
+>   backends required DNS resolution which failed
+> ```
+>
+> `example-agent-sandbox.yaml` wires `mcpServers: [mcp-time]`, which is not
+> deployed here. **Isolation is unaffected** — `verify-isolation.sh` passes 7/7
+> on those same pods. If you want the "agent still answers" step to pass, deploy
+> `mcp-time` first; otherwise read 3.1 as an isolation test and stop at the
+> kernel check.
+
+> **A released claim does not shrink the pool immediately.** After deleting a
+> claim, the pod count stays up until `idleTimeout` (15m in these examples)
+> reaps the sandbox. Counting pods straight after a release and seeing no change
+> is correct behaviour, not a leak.
+
+### Prerequisites this cluster needed, which the doc did not mention
+
+Setting these on the hub cluster secret was required before 3.1–3.5 would work.
+The annotation names are not guessable from the chart values:
+
+```bash
+kubectl annotate secret <cluster> -n argocd --overwrite \
+  sandbox_runtime_class=isolated-sandbox \
+  confidential_sandbox_runtime_class=confidential-sandbox \
+  nitro_sandbox_runtime_classes=isolated-sandbox,confidential-sandbox \
+  sandbox_runtime=nitro \
+  session_isolation=true          # NOTE: session_isolation, not session_isolation_enabled
+kubectl label secret <cluster> -n argocd --overwrite enable_agent_sandbox=true
+```
+
+Without `session_isolation=true` the agent component rejects `isolation: session`
+by design (guard `_sessionIsolationUnavailable`), which is 3.5's own negative
+control — worth seeing once before you turn it on.
 
 Three things block 3.1–3.5 on `hub` right now, all of which you fix before
 testing rather than by changing the PR:
@@ -677,8 +721,20 @@ spec:
   warmPoolRef:
     name: code-session
 YAML
-time kubectl wait --for=jsonpath='{.status.phase}'=Bound sandboxclaim/probe-session-7f3a9c --timeout=120s
-kubectl get sandboxclaim probe-session-7f3a9c -o yaml | grep -A5 status:
+# The status shape is conditions + .status.sandbox -- NOT .status.phase and NOT
+# .status.sandboxRef, which is what this doc said before it was run. Waiting on
+# a field that does not exist looks exactly like a claim that never binds.
+time kubectl wait --for=condition=Ready sandboxclaim/probe-session-7f3a9c --timeout=120s
+kubectl get sandboxclaim probe-session-7f3a9c \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.sandbox.name}{"\n"}'
+```
+
+**Observed:** `True analyst-session-2v44d` — adopted from the warm pool in under a
+minute. The operator log is the clearest confirmation:
+
+```
+Attempting sandbox adoption  sandbox candidate=code-session-6kzmr warm pool=code-session
+Successfully adopted sandbox from warm pool
 ```
 
 A warm claim should bind in **seconds**. If it takes as long as a cold pod start,
@@ -688,9 +744,9 @@ you claimed.
 Confirm the claimed sandbox is a real microVM, and that the pool refilled:
 
 ```bash
-SBX=$(kubectl get sandboxclaim probe-session-7f3a9c -o jsonpath='{.status.sandboxRef.name}')
-kubectl get sandbox "$SBX" -o jsonpath='{.status.podRef.name}'; echo
-bash scripts/nitro/verify-isolation.sh <that-pod>
+SBX=$(kubectl get sandboxclaim probe-session-7f3a9c -o jsonpath='{.status.sandbox.name}')
+# The Sandbox name IS the pod name for this operator, so pass it straight in.
+bash scripts/nitro/verify-isolation.sh "$SBX" -n default
 kubectl get pods -l agent-sandbox.io/role=session            # back to 2
 ```
 
@@ -726,6 +782,20 @@ kubectl describe pod -l app.kubernetes.io/name=regulated-assistant | grep -A10 E
 
 Expect the pod **not** to start. A pod that starts here means the policy is not
 being enforced, and that is a finding — stop and report it.
+
+**Observed on the hub**, and note it is a *different* refusal from the no-policy
+case: the placeholder is correctly SHAPED (it passes the render-time base64
+check) but is not a real policy envelope, so the sandbox agent rejects it when
+it tries to parse it:
+
+```
+FailedCreatePodSandBox ... create_container: ... PERMISSION_DENIED
+  parse policy envelope: expected value at line 1 column 1
+```
+
+A missing annotation gives `confidential-sandbox requires the
+sandbox.amazonaws.com/policy annotation` instead. Both end in a pod that never
+starts; the message tells you which mistake you made.
 
 > **This behaviour CHANGED during the preview, so check which one you get.**
 > Measured 2026-08-20 on a private-preview cluster (m7i.xlarge): an unpolicied
@@ -1062,6 +1132,21 @@ kubectl get sandboxclaims -o custom-columns=\
 Expect **two distinct claims**, each bound to a **different** sandbox. One claim
 for two users means sessions are being shared — and see the limitation below
 before blaming the platform.
+
+**Verified on the hub by making the claims directly**, which is what the image
+does and which separates the platform's half from the image's:
+
+```
+alice -> analyst-session-2v44d
+bob   -> analyst-session-4xfj5     DISTINCT: YES
+both kernels 6.18.54, node 6.18.56
+
+alice: echo secret-from-alice > /workspace/probe.txt   -> secret-from-alice
+bob:   cat /workspace/probe.txt                        -> No such file or directory
+```
+
+That last pair is the guarantee, not the object count: separate kernels mean
+separate filesystems, and bob cannot read alice's workspace.
 
 Then confirm the isolation is real, not just two objects:
 

@@ -640,9 +640,21 @@ Recorded here rather than left implicit, because each one is something a reader
 could reasonably assume was verified.
 
 - **`SandboxTemplate.networkPolicyManagement` is left at the CRD default
-  (`Managed`).** With `service: true` the operator creates the NetworkPolicy, and
-  nothing here checks that the policy it creates actually admits the Service's
-  traffic. If a claimed sandbox is reachable on its Service but connections are
+  (`Managed`), and that now has an OBSERVED consequence.** With the addon running
+  on the hub, the operator and the chart both try to own the same object and the
+  operator reconciles in a permanent error loop:
+
+  ```
+  Failed to create NetworkPolicy ... SandboxTemplate=coder-sandbox
+    networkpolicies.networking.k8s.io "coder-sandbox-network-policy" already exists
+  ```
+
+  Nothing breaks — the policy the chart created is in place — but the controller
+  logs an error every reconcile, which buries real failures. Either set
+  `networkPolicyManagement: Unmanaged` on the template the chart renders, or stop
+  rendering the NetworkPolicy and let the operator own it. Also still unchecked:
+  whether the operator-created policy admits the Service's traffic with
+  `service: true`. If a claimed sandbox is reachable on its Service but connections are
   refused, this is the first thing to look at: compare the operator-created
   policy against the Service's selector and port. Needs a cluster with the
   sandbox operator to settle.
