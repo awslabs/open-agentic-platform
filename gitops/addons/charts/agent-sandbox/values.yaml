@@ -62,7 +62,12 @@ namespace: agent-sandbox-system
 #
 # Changing this value recreates the SandboxTemplate, so the pool refills onto the
 # new runtime's nodes.
-runtime: nitro
+# Default is kata, NOT nitro: this pool has a live consumer (the Dark Factory
+# coder) that runs on Kata today, and flipping the default recreated the
+# SandboxTemplate on a class that may not exist on the cluster. Nitro is opt-in
+# per cluster via the sandbox_runtime annotation (see registry/sandbox.yaml)
+# until it is validated on a real Nitro node.
+runtime: kata
 
 # ── AWS Nitro Sandboxes ──────────────────────────────────────────────────────
 # Applies only when runtime is nitro.

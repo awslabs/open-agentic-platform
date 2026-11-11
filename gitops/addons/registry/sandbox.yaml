@@ -287,6 +287,25 @@ agent-sandbox:
         operator: In
         values: ['true']
   valuesObject:
+    # PER-CLUSTER warm-pool runtime, read from the cluster secret the same way
+    # sandbox_runtime_class is (agentcore.yaml). Without this the chart default
+    # applied fleet-wide: every cluster with enable_agent_sandbox: true had its
+    # SandboxTemplate recreated with runtimeClassName: isolated-sandbox and LOST
+    # the Kata nodeSelector/toleration, so on a Kata cluster -- or any cluster
+    # below k8s 1.36 -- the warm pool refilled onto a class that does not exist
+    # and the Dark Factory coder pods sat Pending. The PR claimed Kata was
+    # "selected per cluster"; that was true of the OAM component only.
+    #
+    # Defaults to kata, not nitro: this pool has a live consumer (the Dark
+    # Factory coder) that works on Kata today, so Nitro here is opt-in until it
+    # is validated on a real Nitro node. Note this is a SEPARATE knob from
+    # sandbox_runtime_class, which still defaults to the Nitro classes and
+    # governs `sandbox: true` on `type: agent`.
+    #
+    #   sandbox_runtime: nitro    -> isolated-sandbox / confidential-sandbox
+    #   sandbox_runtime: kata     -> kata-clh (+ Kata nodeSelector/toleration)
+    #   absent                    -> kata
+    runtime: '{{if hasKey .metadata.annotations "sandbox_runtime"}}{{index .metadata.annotations "sandbox_runtime"}}{{else}}kata{{end}}'
     coderTemplate:
       # Bifrost gateway the IN-VM coder reaches. Defaults to the PINNED ClusterIP
       # (bifrost chart staticService.clusterIP), NOT the svc DNS name, because a

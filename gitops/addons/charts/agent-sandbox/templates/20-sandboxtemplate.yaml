@@ -69,7 +69,42 @@ spec:
       {{- end }}
       runtimeClassName: {{ $nrc.name }}
       automountServiceAccountToken: false
+      {{- if eq .Values.nitro.mode "confidential" }}
+      {{- /* REQUIRED by the real generator on the confidential profile, not
+             hardening: eks-nitro-sandbox-genpolicy --profile confidential
+             refuses a manifest that leaves enableServiceLinks unset, because
+             the kubelet injects a <SVC>_PORT variable per Service in the
+             namespace and the pinned env set is then not knowable at
+             generation time. Without it the only way past the generator is
+             --allow-additional-env, which defeats the env pinning. */}}
+      enableServiceLinks: false
+      {{- end }}
       {{- else }}
+      {{- /* FAIL on an unknown runtime rather than falling through to Kata. The
+             branch is a two-way if, so `runtime: nitr0` silently produced a Kata
+             pool -- isolation chosen by typo. */ -}}
+      {{- if ne .Values.runtime "kata" }}
+      {{- fail (printf "agent-sandbox: runtime=%q is not valid; use \"nitro\" or \"kata\" (per-cluster via the sandbox_runtime annotation)" .Values.runtime) }}
+      {{- end }}
+      {{- /* FAIL on the NITRO-ONLY values when the pool is Kata, rather than
+             dropping them. Kata does not read sandbox.amazonaws.com/policy and
+             gives a "network-isolated" pod an ordinary network device, so the
+             annotation block above is deliberately inside the Nitro branch --
+             which means setting these on a Kata pool previously rendered a
+             perfectly ordinary Kata pool with the guarantee silently absent.
+
+             nitro.mode is NOT checked: it is only read on the Nitro path and
+             its default is meaningful there, so a cluster that flips runtime to
+             kata should not have to also reset it. cedarPolicy and
+             networkIsolated are different -- neither has a default, so setting
+             either is always an explicit request for something Kata cannot
+             do. */ -}}
+      {{- if .Values.nitro.cedarPolicy }}
+      {{- fail "agent-sandbox: nitro.cedarPolicy is set but runtime=kata. A Cedar policy is enforced by the Nitro sandbox agent and measured into PCR17; kata-clh ignores the annotation entirely, so the pool would admit any container and attest nothing. Set runtime=nitro, or remove nitro.cedarPolicy." }}
+      {{- end }}
+      {{- if .Values.nitro.networkIsolated }}
+      {{- fail "agent-sandbox: nitro.networkIsolated=true but runtime=kata. Network isolation is a Nitro sandbox feature; a Kata pod gets a normal network device and full egress, so the pool would report isolation it does not have. Set runtime=nitro, or use a NetworkPolicy for the Kata pool." }}
+      {{- end }}
       {{- /* KATA PATH, unchanged. Warm-pool VMM selected by kata.vmm (a key of
              kata.runtimeClasses). runtimeClassName + matching node scheduling
              both come from that one entry, so flipping kata.vmm moves the pool
