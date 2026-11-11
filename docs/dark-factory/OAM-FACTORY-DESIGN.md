@@ -81,7 +81,7 @@ cluster control plane.
 (digest-pinned images, sandboxed, platform-posted status); platform steps `code`,
 `changeset`, `ci-check`, `holdout`, `security-scan`, `approval`, `merge`; a `process`
 schema with presets and explicit stages (`onFail`, `skipWhen`); `factoryPolicy`
-guardrails; and the per-namespace factory — identities, four scoped tokens, warm pool,
+guardrails; and the per-namespace factory — identities, four short-lived tokens minted from the platform GitHub App, warm pool,
 holdout source, settings, webhook trigger, status. The contract is **substrate-neutral**:
 a factory runs on whichever agent sandbox substrate the cluster provides (Kata or Nitro),
 and Lambda MicroVM is sequencing, not a non-goal (§3.2).
@@ -96,6 +96,7 @@ and Lambda MicroVM is sequencing, not a non-goal (§3.2).
 | `deploy`, environment promotion | Nothing needs it before merge gating works |
 | Pluggable intake | `issue-labeled` with a configurable label; issue types and slash commands are additive |
 | Autonomy 3.5 (low-risk auto-merge) | Targets the README's Level 3; needs `changeset` proven first |
+| Per-host step egress | EKS enforces `domainNames` rules only on Auto Mode nodes, and a substrate must not be forced onto them; v1 step egress is public-or-none (D13) |
 | Multiple factories per namespace | D12 |
 | Chart parity: sticky comment, claim reaper, metrics, Lambda substrate | Follow-ups; none gate a first factory |
 
@@ -124,7 +125,7 @@ GitHub ─webhook─► Ingress ─► EventSource ─► Sensor ─► Workflow
       │   read  Secret    dark-factory-github-orchestrator  (platform only)│
       │   claim SandboxWarmPool dark-factory-coder ─► sandbox (coder)       │
       │   mount Secret    dark-factory-holdout  (hidden scenarios)         │
-      │   TEAM STEPS ─► sandbox, no tokens, declared egress only           │
+      │   TEAM STEPS ─► sandbox, no tokens, egress only if granted         │
       └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -153,20 +154,27 @@ Out — one JSON file at `$DF_RESULT`:
 
 A non-zero exit with no result file is a `failure` carrying the last log line. The result
 file is capped at 4 KB (the termination-message limit, D4); `details` beyond that is
-truncated and the full log is linked from the status.
+truncated and the full log is linked from the check-run.
 
-A step **never posts its own status**: the runner reads the result and the platform posts
-it with the orchestrator token. What makes a status a verdict is **who posted it**, not its
-name: `platform/merge` accepts a required `dark-factory/*` status only if its `creator.id`
-is the orchestrator account (resolved once with `GET /user`). A same-named status from any
-other token counts as missing, which means a refusal. This requires the orchestrator token
-to belong to an account no other factory token or `stepSecrets` key belongs to — a
-dedicated machine user (D15).
+A step **never posts its own verdict**: the runner reads the result and the platform posts
+it as a **check-run from the platform GitHub App** (D15). What makes a check a verdict is
+**which App created it**, not its name:
+
+- `platform/merge` accepts a required `dark-factory/*` check only if its `app.id` is the
+  platform App's. A same-named commit status, or a check-run from any other App, counts as
+  missing, which means a refusal.
+- The branch ruleset requires each `dark-factory/*` check **from the platform App**
+  (rulesets can pin a required check to an App), so GitHub enforces the same rule when a
+  human merges in the UI.
+- Only the orchestrator token carries `checks: write`. The coder, reader and events tokens
+  are minted from the same App without it, and a `stepSecrets` token cannot act as the App,
+  so nothing else in a factory can create a platform check.
 
 **Capabilities**, requested in the Application and granted narrowly: `workspace: true`
-(the branch at `$DF_WORKSPACE`, discarded after), `egress: [<host>...]` (reached **through
-the platform egress proxy**, which admits only the declared hosts for that step, identified
-by its pod IP; the step's NetworkPolicy allows DNS and the proxy, nothing else), `secrets: [<name>...]` (keys from the factory's
+(the branch at `$DF_WORKSPACE`, discarded after), `egress: true` (public HTTPS,
+port 443 to any address outside the cluster's and the VPC's private ranges; granted only
+where `factoryPolicy.stepEgress` is `public`, D7; without it a step gets DNS only),
+`secrets: [<name>...]` (keys from the factory's
 `stepSecrets/` prefix, read-only).
 
 Nothing else is reachable. There is no capability granting the orchestrator token, the
@@ -212,7 +220,7 @@ Each platform step honors the §3.1 contract and posts its verdict under
 | `platform/holdout` | Runs the hidden scenarios against the branch through the runner, then has a judge confirm them; fails closed if the repo has no scenarios (D17) | `threshold`, `requireScenarios`, `judgeModel`, `judgeRuns`, `judgeQuorum` | `dark-factory/holdout` |
 | `platform/security-scan` | Waits for the Security Agent App's review and copies its verdict, failing at or above `blockLevel` (D16) | `blockLevel`, `waitSeconds` | `dark-factory/security-scan` |
 | `platform/approval` | Ends the run until a qualifying GitHub review arrives, then starts the continuation run (D8) | `count`, `approvers` | `dark-factory/approval` |
-| `platform/merge` | Re-reads the PR head, requires every rendered status and every `requiredSteps` entry from the orchestrator, merges, closes the issue (D7) | none | none (merges) |
+| `platform/merge` | Re-reads the PR head, requires a platform-App check for every rendered step and every `requiredSteps` entry, merges, closes the issue (D7) | none | none (merges) |
 
 ### 3.4 Component properties
 
@@ -233,6 +241,7 @@ Each platform step honors the §3.1 contract and posts its verdict under
 | `coder.runTimeoutMinutes` | int | `30` | `run-timeout-seconds` |
 | `claimTtlSeconds` | int | `10800` | `claim-ttl-seconds` |
 | `webhook.host` | string | `ingressDomain` | — (D19) |
+| `githubApp.installationIds` | map of repo owner → int | required | — (D15) |
 | `secrets.keyPrefix` | string | `<cluster>/dark-factory/<ns>/<name>` | — (D15) |
 | `holdout.requireScenarios` | bool | `true` | — (D17) |
 | `eventBus.create` | bool | `true` | — (D14) |
@@ -316,7 +325,7 @@ supply-chain control, not a curation decision.
 **Decision:** a digest-pinned OCI image, run by a platform-owned runner
 (`df-step-runner-v1`) as an agent sandbox in the factory namespace with
 `automountServiceAccountToken: false`, the token-less executor identity, read-only root,
-all capabilities dropped, and default-deny egress plus whatever `egress:` named.
+all capabilities dropped, and DNS-only egress unless the step was granted `egress: true` (D13).
 
 | Option | Verdict |
 |---|---|
@@ -338,7 +347,7 @@ ServiceAccount token, which in the same sandbox would reach the API server and e
 | Launch | The runner (a platform Argo task, SA `dark-factory`) creates the step pod directly: `automountServiceAccountToken: false`, SA `dark-factory-executor`, label `role: step` |
 | Result | `terminationMessagePath: $DF_RESULT`; the runner reads it from pod status. Needs no token and no API reach from the step |
 | Workspace | An init container clones with the factory's **reader** token (contents:read only, D15), mounted only into that init container, so the step's container never sees it. It grants nothing beyond read access to source the step already receives |
-| Logs | Read by the runner, linked from the status's target URL |
+| Logs | Read by the runner, linked from the check-run's details |
 
 **Costs.** Per-step sandbox boot latency, paid in parallel across a stage but still paid.
 And a team now owns an image lifecycle — build, scan, digest bump — real work we are
@@ -392,18 +401,18 @@ factoryPolicy:
   requiredSteps: [platform/security-scan]   # platform tier only, by construction
   minApprovals: 1
   allowedRegistries: ["ghcr.io/acme/", "<acct>.dkr.ecr.<region>.amazonaws.com/"]
-  allowedEgressHosts: ["api.github.com", "*.acme-internal.com"]
+  stepEgress: none          # none | public — whether any step may request egress (D13)
   maxStages: 12
   maxStepsPerStage: 8
 ```
 
 1. **Render.** A non-compliant process fails the Application naming the violated rule, so
-   nothing deploys weakened. Covers `requiredSteps`, `minApprovals`, the allowlists, size
+   nothing deploys weakened. Covers `requiredSteps`, `minApprovals`, `allowedRegistries`, `stepEgress`, size
    caps, and that every step image is digest-pinned.
 2. **Merge.** `platform/merge` requires the status of every step in the rendered process
    **and** every `requiredSteps` entry, declared or not — so deleting a required step does
    not produce a mergeable PR.
-3. **GitHub.** Branch protection requiring the `dark-factory/*` checks.
+3. **GitHub.** A ruleset requiring the `dark-factory/*` checks from the platform App.
 
 Each covers the others' bypass: render gives the good error message but is only reached
 through the component; merge catches a hand-written Workflow that skipped a step; branch
@@ -415,8 +424,8 @@ protection catches one that skipped merge.
   platform-mandated security gate with its own stub. The most important guardrail here, and
   structural rather than configurable.
 - **Verdicts are attributed, not named.** Platform steps own `dark-factory/<name>`, team
-  steps `dark-factory/team/<step-name>`; the runner picks the name and the orchestrator
-  posts it. Merge checks the poster (§3.1), so naming a status
+  steps `dark-factory/team/<step-name>`; the runner picks the name and the platform App
+  posts it. Merge and the ruleset both check the App (§3.1), so naming a status
   `dark-factory/security-scan` from another token gains nothing.
 
 Trust follows the tier rather than a prefix allowlist, which would conflate "which
@@ -576,12 +585,32 @@ Application owning cluster-wide admin-tier network policy.
 
 The component also keeps a namespaced default-deny egress policy as defence in depth.
 
-**Hostname egress goes through a proxy.** IP-based NetworkPolicy cannot express hostnames,
-and hostname-aware policy is not available on the self-managed Karpenter node pools the sandboxes run on. A
-platform-owned forward proxy (one per hub) enforces per-step host lists from the rendered
-process; the proxy, not the step, is what `allowedEgressHosts` binds.
+**Step egress is by address range, not by host.** The label-keyed Admin policy for
+`role: step` always denies the cluster's service and pod ranges, the VPC's private ranges
+and the instance metadata endpoint, and allows DNS. A step granted `egress: true` is stamped
+`agent-sandbox.io/egress: public` by the runner, and a second rule allows that label TCP 443
+to any remaining address. Everything else is denied. These are CIDR rules, which
+`ClusterNetworkPolicy` enforces on every EKS node type (VPC CNI 1.21.1 or later), so they
+hold on any substrate and any node pool. The service range must be in the deny list
+explicitly, because VPC CNI matches egress before Service address translation.
 
-**Cost:** a proxy to run, and a step that ignores `HTTPS_PROXY` simply has no egress.
+**Why not per-host lists.** EKS's `ClusterNetworkPolicy` and `ApplicationNetworkPolicy`
+accept `domainNames`, but AWS enforces DNS-based rules only on EKS Auto Mode-launched nodes;
+elsewhere they are accepted and silently not applied. The Kata pools are self-managed
+Karpenter, and Nitro sandboxes can run on Auto Mode but must not be forced to, so a
+`domainNames` rule would hold on some substrates and not others. A forward proxy would work
+everywhere but is a new service to run. Neither is worth it for v1.
+
+| Option | Verdict |
+|---|---|
+| **CIDR rules, public-or-none per step** (**chosen**) | Enforced on every node and substrate; nothing new to run |
+| `domainNames` in the Admin policy | Enforced only on Auto Mode nodes; silently open elsewhere |
+| A platform forward proxy | Works everywhere; a new service and a new failure point |
+| No egress at all | Most test steps need a package registry |
+
+**Cost:** a step with `egress: true` can reach any public host, so it can send out whatever
+it can read (§5). Environments that need a host allowlist apply one at the VPC (AWS Network
+Firewall or Route 53 Resolver DNS Firewall), outside the factory.
 
 **The two Admin policies must not share a priority.** Both default to `adminPriority: 10`,
 and if the controller requires uniqueness per tier one is rejected — the label-keyed one
@@ -600,26 +629,53 @@ compromise.
 `eventBus.create: false`. Webhook paths include the namespace
 (`/dark-factory/<ns>/<name>`), so factories share one ALB host without colliding.
 
-### D15. Four tokens per factory, from Secrets Manager
+### D15. One platform GitHub App; four short-lived tokens per factory
 
-ExternalSecrets from the `aws-secrets-manager` ClusterSecretStore at
-`<cluster>/dark-factory/<namespace>/<name>/github/{coder,orchestrator,events,reader}`:
+The platform registers **one GitHub App per environment**; each team installs it on the
+repos its factory watches. Its private key is held **only in a platform namespace** — never
+in a factory namespace — because anything holding it can mint tokens for every repo the App
+is installed on. The App's permissions exclude `administration: write`, so no token minted
+from it can change the ruleset that enforces its own checks (D20).
+
+Each factory gets four installation tokens, minted by an External Secrets
+`GithubAccessToken` generator from that key, each **down-scoped** to the factory's repos and
+to one role's permissions. Installation tokens expire after an hour; the generator refreshes
+them well inside that.
 
 | Token | Used by | Scope |
 |---|---|---|
-| coder | The coder VM (0400, never in env) | Issues read; contents and PRs write. **No commit statuses** — `platform/code` posts for it. Contents:write also opens the merge endpoint on a fine-grained PAT, so **only the ruleset stops a self-merge** (D20) |
-| orchestrator | **Platform steps only.** Owned by a dedicated machine user | Adds commit statuses, Issues write and merge. The only account whose statuses merge accepts (§3.1) |
-| events | EventSource only | Webhook registration and HMAC |
+| coder | The coder VM (0400, never in env) | Issues read; contents and PRs write. **No checks** — `platform/code` posts for it |
+| orchestrator | **Platform steps only** | Adds `checks: write` and Issues write. The only token that can post a verdict merge accepts |
+| events | EventSource only | Repository webhooks write, for webhook registration. The HMAC secret still comes from Secrets Manager |
 | reader | D4 workspace init containers only | Contents read. Nothing else |
 
-The orchestrator's account must hold no other token in the factory and must not be one a
-team can mint tokens as; otherwise the §3.1 creator check cannot tell the two apart.
-Short-lived per-run App tokens (§8 item 6) would replace the standing coder token and
-remove its merge reach.
+**Who can merge.** GitHub has no separate merge permission: any token with contents write —
+the coder's and the orchestrator's — can *call* the merge endpoint. Whether the call
+*succeeds* is the ruleset's decision, and it requires every `dark-factory/*` check from the
+platform App, approval included, to be green at the PR head (§3.1, D20). The coder token
+cannot create those checks, so it cannot merge anything a human has not approved and every
+gate has not passed; a push after approval moves the head and leaves the new head
+unchecked. `platform/merge` is simply the step that makes the call once they have.
+
+**The generator must be cluster-scoped.** A namespaced generator needs the private key in
+the same namespace as the Secret it fills, which would put the key in every factory. The
+design depends on External Secrets' cluster-scoped generator, so the key stays in the
+platform namespace and a factory namespace only ever holds minted tokens — a §7 go/no-go
+check. If it is unavailable, the fallback is a small platform-namespace token service.
+
+| Option | Verdict |
+|---|---|
+| **One platform App, tokens minted per role** (**chosen**) | GitHub enforces who posted a verdict; every token is short-lived and down-scoped; no machine users |
+| Fine-grained PATs, merge checks the poster's account | No App to install, but GitHub checks names only, tokens are standing, and the orchestrator needs a dedicated machine user |
+| One App per factory | Smaller key blast radius, but every team registers and operates its own App |
+
+**Cost:** each team installs one more App per repo; the private key is a high-value secret
+whose blast radius is every installed repo; and status must report an App missing from a
+watched repo (D20).
 
 Team steps get none of these (D1); one needing its own credential declares `secrets:` and
 gets keys from the factory's `stepSecrets/` prefix, which the team controls and which never
-holds a GitHub token we issued. The most exposed components hold the least privilege, and
+holds a GitHub token minted from the platform App. The most exposed components hold the least privilege, and
 the cluster prefix lets each cluster's External Secrets identity be limited to its own
 paths.
 
@@ -627,7 +683,7 @@ paths.
 
 No factory ServiceAccount carries IAM, and `factoryPolicy` forbids attaching an identity
 trait to one. The one GitHub credential a team step's pod ever sees is the D4 reader token:
-read-only, and confined to the init container.
+read-only, expiring within the hour, and confined to the init container.
 `platform/security-scan` waits for the Security Agent **GitHub App** and
 mirrors its verdict rather than calling AWS APIs; the chart's IRSA-plus-S3 mode is not
 ported. The coder and every team step execute untrusted code in a shared namespace, so
@@ -658,6 +714,11 @@ and **only this repo's scenario key** mounted (a Secret volume `items:` entry se
 run's `<owner>-<repo>`). The **judge and verdict** stay in the platform step, which reads
 the runner's result and posts it. Coder output never shares a pod with a credential or with
 another repo's scenarios.
+
+The test launch **never gets egress**, whatever `stepEgress` says: the scenarios are mounted
+there, and a test with network access could send them out. Dependencies are installed in a
+preceding launch that has egress and the workspace but no scenarios. How the installed
+workspace passes between the two launches is open (§9).
 
 **Cost:** one runner launch per holdout run, and the evaluator splits into a test image and
 a judge.
@@ -704,7 +765,7 @@ factory.
 
 `customStatus` and `healthPolicy` report the **expanded** process (stages, steps, each
 step's tier, resolved platform versions and team digests), each prerequisite's state (the
-four tokens, the holdout source per repo, warm pool readiness, webhook registration, step
+App installation and the four minted tokens, the holdout source per repo, warm pool readiness, webhook registration, step
 images resolvable), and which `factoryPolicy` applied. The platform also takes over
 namespace creation, `webhook.host` defaulting (D19), and the holdout source as a
 secrets-store reference (D17); the team keeps what lives in GitHub — the Apps, branch
@@ -725,10 +786,27 @@ administer it. The platform's onboarding creates `dark-factory-<team>` with:
   `dark-factory-github-*` unless it comes from a platform template;
 - a ResourceQuota sized for the warm pool plus `maxStepsPerStage` step pods.
 
-**Branch protection is checked, not assumed.** At startup and before every merge, the
-factory reads the repo's rulesets with the orchestrator token and reports in status whether
-the default branch requires every `dark-factory/*` check. A repo without it fails closed:
-runs start, merge refuses, and status names the missing rule.
+**The ruleset is the hard barrier.** A GitHub ruleset is enforced by GitHub on every push and
+merge — API, UI or git — so it is what stops a merge no factory component should make
+(D15). It holds only if the default branch's ruleset has all of:
+
+| Setting | Required value | Why |
+|---|---|---|
+| Required status checks | Every `dark-factory/*` check of the rendered process and `requiredSteps`, each pinned to the **platform App** as its source | A same-named check from any other source does not satisfy it (§3.1) |
+| Force pushes, deletions | Blocked | History cannot be rewritten around the checks |
+| Enforcement | **Active** | "Evaluate" only logs; it blocks nothing |
+| Bypass list | **Empty** | Any bypass actor skips every rule |
+| Level | **Organization ruleset** (recommended) | Repo admins can edit or delete a repo ruleset; only organization owners can change an organization one |
+
+The platform App must **not** hold `administration: write`, or a token minted from it could
+weaken the ruleset; reading it is all the check below needs. Organization rulesets on private
+repos need GitHub Team or Enterprise; where only a repo ruleset is possible, the team's repo
+admins can still switch it off, and the check below is what notices (§5).
+
+**The ruleset is checked, not assumed.** At startup and before every merge, the factory
+reads the default branch's rules with the orchestrator token and reports in status whether
+the platform App is installed and every row above holds. Any gap fails closed: runs start,
+merge refuses, and status names the missing setting.
 
 **Cost:** status needs state from objects the component does not own, so `customStatus`
 expressions get long and brittle. A reconciler would be better (§8).
@@ -750,13 +828,13 @@ expressions get long and brittle. A reconciler would be better (§8).
 
 | Threat | Control |
 |---|---|
-| Coder code reaches credentials | Agent sandbox (own kernel); no Kubernetes token, no IAM; only a narrow GitHub token at `/etc/secrets` (0400) |
+| Coder code reaches credentials | Agent sandbox (own kernel); no Kubernetes token, no IAM; only a narrow, hour-long GitHub token at `/etc/secrets` (0400) |
 | **Team step reaches credentials** | **No tokens mounted (D1, D15); only declared `stepSecrets` keys, which the team owns** |
-| Coder or team step reaches the control plane | Admin-tier ClusterNetworkPolicy on `role in (coder, step)` (D13); default-deny egress plus declared hosts |
+| Coder or team step reaches the control plane | Admin-tier ClusterNetworkPolicy on `role in (coder, step)` (D13); DNS-only egress unless granted; private ranges always denied (D13) |
 | **Team step forges another step's verdict** | **Steps never post statuses; the platform runner reads `$DF_RESULT` and posts under a tier-namespaced context it chooses (D2, D7)** |
-| Another token posts a same-named passing status | Merge accepts only statuses created by the orchestrator account; the coder token has no statuses permission (§3.1, D15) |
+| Another token posts a same-named passing status | Merge and the ruleset accept only check-runs from the platform App; only the orchestrator token can create them (§3.1, D15) |
 | **Team step satisfies a required gate with a stub** | **`requiredSteps` may only name `platform/` steps — structural, not configurable (D7)** |
-| **Hostile step image** | **Digest-pinned from an allowed registry (D7); agent sandbox, no tokens, read-only root, caps dropped, deny-all egress (D4). Worst case: that team's own PRs fail to merge** |
+| **Hostile step image** | **Digest-pinned from an allowed registry (D7); agent sandbox, no tokens, read-only root, caps dropped, DNS-only egress unless granted (D4, D13). Worst case: that team's own PRs fail to merge** |
 | Coder games its own tests | Hidden scenarios no step but `platform/holdout` can reach (D17); a judge from a different model family; fail-closed on missing scenarios |
 | Coder output executed on the hub (holdout) | Runs through the D4 runner: no token, one repo's scenarios, agent sandbox (D17); `npm install --ignore-scripts`; no AWS identity in the namespace (D16) |
 | Unreviewed or failing code merged | Merge only on a human approval event; `platform/merge` refuses unless every required status is green at the PR head; a missing status is a refusal |
@@ -764,49 +842,51 @@ expressions get long and brittle. A reconciler would be better (§8).
 | Tenant process drops a required gate | Three overlapping enforcement points (D7) |
 | Runaway revision loop | One iteration budget shared by `onFail: revise` and comments (D8); factory-authored comments filtered at the Sensor |
 | Two runs for one issue holding two VMs | Mutex and claim keyed on owner, repo and issue number (D21); `maxConcurrentRuns` semaphore (D8) |
-| A step reaches another factory | Step egress is DNS plus the proxy only; the proxy admits only the step's declared external hosts, never cluster or pod CIDRs (D13) |
+| A step reaches another factory | The `role: step` Admin policy always denies the cluster's service and pod ranges and the VPC's private ranges; granted egress is public addresses only (D13) |
 | Cross-factory interference | One factory per namespace (D12); per-namespace events and secrets (D14, D15); Argo locks are namespace-scoped |
 
 **Residual risks**
 
-- Branch protection is the only hard stop on self-merge, and is unavailable on private
-  repos on GitHub's free plan.
-- **GitHub enforces names, not posters.** A ruleset can pin a required check to an App, not
-  to the account behind a PAT. `platform/merge` refuses a forged status, but a human merging
-  in the UI relies on the ruleset, which checks only the name. Exploiting this needs a token
-  with statuses permission on the repo, which no factory grants except the orchestrator's.
+- **The ruleset is the only hard stop on self-merge** (D20). Rulesets on private repos are
+  unavailable on GitHub's free plan. With a repo-level ruleset, the team's repo admins can
+  switch it off; the factory then refuses to merge, but a human could still merge in the UI.
+  An organization ruleset removes that gap.
 - **Render-time policy binds only the component path.** Team RBAC removes raw Workflow
   submission for the team (D20); a cluster admin can still bypass it.
   `templateReferencing: Strict` would close it cluster-wide (§8).
 - **A valid process can still be a bad process**, and team steps widen this: a team can
   compose something that passes policy and verifies very little, or whose own steps always
   return success. Policy floors *our* gates, not the quality of a team's.
-- **A team step can exfiltrate the source it is given.** With `workspace: true` and any
-  `egress:` host, a step sees the branch and can post it outward. Inherent in letting teams
-  run code against their own source, which is why `allowedEgressHosts` is per-environment
-  policy rather than a team setting.
-- The coder's token is a standing credential; short-lived per-run App tokens would be
-  stronger.
+- **A team step can exfiltrate the source it is given.** With `workspace: true` and
+  `egress: true`, a step sees the branch and can post it to any public host — v1 has no
+  per-host limit (D13). Inherent in letting teams run code against their own source, which
+  is why `stepEgress` is per-environment policy rather than a team setting, and why an
+  environment needing a host allowlist applies one at the VPC.
+- **The App private key is the highest-value secret in the system.** It can mint any
+  permission the App has on every installed repo, across every factory. It lives only in a
+  platform namespace (D15); a compromise there is a compromise of every factory.
 
 ---
 
 ## 6. Operations
 
-**Platform, once per hub.** Make the platform step images pullable in this hub's account,
+**Platform, once per hub.** Register the platform GitHub App and store its private key in
+the platform namespace (D15). Make the platform step images pullable in this hub's account,
 so the digests their templates pin resolve (D10). Set `enable_dark_factory=true`, which
 syncs `dark-factory-templates` plus the agent-sandbox stack. Set `factoryPolicy` for the
 environment (D7) — the shipped default is production-shaped: `platform/security-scan`
-required, one approval, no registries allowed until the operator names them. Enable
+required, one approval, no registries allowed until the operator names them, and
+`stepEgress: none`. Enable
 `enable_oam_components`, then regenerate the component YAML with `platform/oam/generate.sh`
 and **commit the result**: `oam-agent-components/templates/dark-factory.yaml` is a
 generated, checked-in file like the other components', and the chart cannot register the
 type without it.
 
 **Team, per factory.** Apply the Application, starting from `preset: standard`. Install the
-Security and DevOps Agent GitHub Apps on each repo (or leave those steps out, if policy
-allows) and enable the ruleset status reports as missing, requiring the `dark-factory/*`
-checks (D20). Seed the
-holdout scenarios and the four tokens at the paths status reports as missing. The DevOps
+platform App and the Security and DevOps Agent GitHub Apps on each repo (or leave those steps out, if policy
+allows). Have an organization owner apply the D20 ruleset, or apply it at repo level where
+the plan allows only that; status reports any setting that is missing. Seed the
+holdout scenarios at the paths status reports as missing; the tokens are minted, not seeded. The DevOps
 Agent has no API path: connecting a repo to an Agent Space is console work
 ([`AGENT-INSTALL.md`](AGENT-INSTALL.md) A1–A3), a vendor constraint rather than a design
 choice.
@@ -830,10 +910,10 @@ the namespace:
   them, and `claimTtlSeconds` reaps any VM the deletion misses.
 - **Webhooks** registered by the EventSource are deregistered on its deletion; status
   reports any it could not remove.
-- **Tokens in Secrets Manager are not deleted.** The platform does not own their lifecycle;
-  the team revokes the PATs and removes the `<prefix>/github/*` entries.
+- **Minted tokens expire within the hour.** The team uninstalls the platform App from repos
+  no other factory watches.
 - **Open `df/` PRs and branches stay open**, so work in progress is not lost silently; their
-  `dark-factory/*` statuses can no longer turn green.
+  `dark-factory/*` checks can no longer turn green.
 
 The namespace itself is removed through onboarding (D20), not the Application.
 
@@ -858,6 +938,10 @@ honest implementation passed 4/4, a hard-coded one failed 2/4, to be re-run in t
 
 Needed, none of it done:
 
+- **Go/no-go: External Secrets' cluster-scoped `GithubAccessToken` generator** works with the
+  External Secrets version the hubs run, keeping the App key in the platform namespace while
+  filling Secrets in factory namespaces (D15). If not, build the token service fallback.
+
 - **Go/no-go: `configMapKeyRef` defaults resolve in the Workflow's namespace** for a
   Workflow submitted against the namespaced `dark-factory-process` whose tasks are
   `templateRef` with `clusterScope: true`. Owner: `<fill>`. Gates any factory beyond the
@@ -869,7 +953,8 @@ Needed, none of it done:
   `success` after an internal error, a step attempting to post a GitHub status, a step
   reaching for the API server and the holdout Secret. The last three must fail closed. This
   suite is the executable form of D1's three invariants. Also: a passing `dark-factory/*`
-  status posted by a non-orchestrator token must be refused by `platform/merge` (§3.1).
+  status or check-run not created by the platform App must be refused by `platform/merge`
+  (§3.1).
 - CUE type-checks: each preset, `addSteps`, an explicit process, a violation of each
   `factoryPolicy` rule (must fail naming the rule), a tag-not-digest image, and a
   `requiredSteps` entry naming a team step (must be rejected).
@@ -897,14 +982,14 @@ Needed, none of it done:
    pipeline. **Port the chart's templates to `mutexes`** — they fail on Argo v4 today.
 5. **Evaluate `templateReferencing: Strict`** on the hub's Argo controller — the only thing
    that would close the inline-Workflow bypass.
-6. **Short-lived GitHub App tokens** per run instead of standing tokens.
-7. **Update `setup-secrets.sh`** for per-factory paths, the holdout source and `stepSecrets`.
-8. **Implement D10:** split the chart's scripts into one image per platform step, each
+6. **Update `setup-secrets.sh`** for the App key, per-factory paths, the holdout source and
+   `stepSecrets`.
+7. **Implement D10:** split the chart's scripts into one image per platform step, each
    honoring the contract; pin each by digest in its template; stand up the build-and-publish
    pipeline; delete `examples/dark-factory/steps/` and `stepsImage`.
-9. **A reconciler for status** instead of long `customStatus` expressions (D20).
-10. **Optional: verdicts from a platform GitHub App**, posted as check-runs, with the
-    ruleset pinned to that App, so GitHub itself enforces who posted (§5).
+8. **A reconciler for status** instead of long `customStatus` expressions (D20).
+9. **Per-host step egress**, through `domainNames` where every step substrate runs on Auto
+   Mode nodes, or a VPC firewall (D13).
 
 ---
 
@@ -931,8 +1016,9 @@ Needed, none of it done:
 3. **How is `platform/approval` verified?** GitHub review state is the obvious signal, but
    "two approvals from `acme/security`" needs team-membership lookups and CODEOWNERS is
    enforced by branch protection rather than visible to the step — so the two can disagree.
-4. **May a team step request `egress` to the LLM gateway?** A model-graded check is an
-   obvious team step and Bifrost is already reachable from the coder, but allowing it means
+4. **May a team step reach the LLM gateway?** Step egress excludes cluster addresses, so it
+   would need an explicit exception. A model-graded check is an obvious team step and Bifrost
+   is already reachable from the coder, but allowing it means
    team steps consume gateway quota under the factory's identity.
 5. **Who owns a team step that outlives its team?** The registry records an owner, but a
    factory pinned to an abandoned digest keeps working with nobody to fix it.
@@ -941,6 +1027,11 @@ Needed, none of it done:
 7. **What do consumers outside our accounts pull?** This repo is public, so the digests in
    the shipped templates need either a public upstream to mirror from or to be treated as
    placeholders an operator re-pins.
+
+8. **How does holdout's installed workspace reach the test launch?** D17 installs
+   dependencies in a launch with egress and no scenarios, then runs tests in one with
+   scenarios and no egress. The runner delivers the workspace per pod (D4); passing an
+   installed tree between two pods needs a shared per-run volume or a copy step.
 
 ---
 
