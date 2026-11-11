@@ -33,13 +33,20 @@
   change
 - An honest account of what content inspection cannot promise
 - Observability that puts a blocked request next to an evaluation score
+- **Where deterministic policy over a tool *call* — caller, arguments, ordering —
+  can and cannot be enforced today**, which mechanism answers each dimension,
+  and what the three layers in §2.2 do *not* cover (§3.10)
 
 **Not in scope**
 
-- Tool authorization. Three layers already own it (§2.2) and a fourth writer
-  would reintroduce a silent-drop bug the platform has already paid for
+- Tool authorization **by name**. Three layers already own it (§2.2) and a
+  fourth writer would reintroduce a silent-drop bug the platform has already
+  paid for. Authorization by *call shape* is a different question, and §3.10 is
+  where it is answered
 - Reachability, sandboxing and spend, each already owned (§2.2)
-- Replacing the `authPolicy` CEL surface on `mcp-server`
+- Replacing the `authPolicy` CEL surface on `mcp-server` — though §3.10 records
+  that one class of rule it accepts cannot work, which is a doc fix, not a
+  redesign
 - Running Dogwood's reference interpreter on the request path (§D6)
 - **Inspecting tool-call content, and the external policy engine that would do
   it.** The model hop cannot see a tool call, and the hop that can is the MCP
@@ -93,6 +100,17 @@ interpreter is explicitly not for production, its event store has no eviction an
 no persistence, and AgentCore Policy — which is GA, really is Dogwood, and solves
 those problems — has no callable authorization API. What Phase 1 owes it is a
 decision seam (D4) so the engine can be substituted later without an API change.
+
+**The deterministic half has its own answer, in §3.10.** "Is this caller allowed
+to call this tool, with these arguments, in this order?" is not a detector
+question, and OAP can enforce only part of it today. *By whom* is already
+enforced. *With what attributes* is not: tool arguments are absent from the CEL
+context at the phase where authorization runs, so an argument rule written on
+`authPolicy` never matches — and with `action: Deny` it **fails open**, which
+makes it worse than no rule. *In what sequence* has no mechanism at any hop: no
+durable event store, and no correlation key the platform controls. The one hop
+handed the arguments at decision time is #152's ExtMCP processor, which is the
+strongest argument for #152 in either issue.
 
 **#152 is adjacent, not overlapping, and the two should land independently.** It
 puts a policy engine at the **tool** hop, where the JSON-RPC params carry the tool
