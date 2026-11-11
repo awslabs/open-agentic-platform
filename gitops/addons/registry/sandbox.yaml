@@ -315,9 +315,14 @@ agent-sandbox:
     #
     # A KATA CLUSTER MUST SAY SO: set sandbox_runtime: kata, or its pool is
     # recreated on a Nitro class, loses the Kata nodeSelector and toleration, and
-    # every warm pod goes Pending. Present-and-empty is NOT a way to mean kata;
-    # it reaches the chart as "" and the chart rejects it by name.
-    runtime: '{{if hasKey .metadata.annotations "sandbox_runtime"}}{{index .metadata.annotations "sandbox_runtime"}}{{else}}nitro{{end}}'
+    # every warm pod goes Pending.
+    #
+    # NOT hasKey: sprig's hasKey needs map[string]interface{} and ArgoCD types
+    # annotations as map[string]string, so it fails with "wrong type for value"
+    # and the appset generates NO parameters at all. Verified on a live cluster.
+    # `none` is the sentinel for "no runtime"; the empty string cannot be, because
+    # `index` returns "" for an absent key too.
+    runtime: '{{ $v := index .metadata.annotations "sandbox_runtime" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}nitro{{ end }}'
     coderTemplate:
       # Bifrost gateway the IN-VM coder reaches. Defaults to the PINNED ClusterIP
       # (bifrost chart staticService.clusterIP), NOT the svc DNS name, because a
