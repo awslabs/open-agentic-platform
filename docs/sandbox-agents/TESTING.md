@@ -892,18 +892,40 @@ Pin the list digest: the generator resolves every platform ref beneath it, and
 the runtime picks the one matching the node. Pin a platform digest instead and
 the policy pins an image the node may not be able to run.
 
-Put that value in the example's `image:` field if it differs.
+**This is a comparison, not an edit.** Diff what you just printed against the
+digest already in the example:
+
+```bash
+grep -oE 'sha256:[0-9a-f]{64}' platform/oam/examples/example-agent-sandbox-confidential.yaml | head -1
+```
+
+Same value → **nothing to paste, go to step 4.** Different → the tag was rebuilt
+since this example was written, so replace the `image:` digest. The thing you
+paste in step 4 is the *policy*, not this.
 
 **Step 4 — generate the policy from the rendered pod spec.** Not from the
 Application: what runs is a pod template rendered from CUE by KubeVela and
 wrapped in an Argo Rollout, and the policy pins *that*.
 
 ```bash
+# On Linux, no --docker needed:
 ./scripts/nitro/gen-cedar-policy.sh \
   --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
   --component regulated-assistant \
   --profile confidential
+
+# On a Mac the binaries are Linux ELF, so add --docker. The script calls the
+# `docker` CLI, so with PODMAN point DOCKER_HOST at its socket first:
+export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+./scripts/nitro/gen-cedar-policy.sh \
+  --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
+  --component regulated-assistant \
+  --profile confidential --docker
 ```
+
+Without `--docker` on a Mac the script stops with
+`is a Linux ELF binary and this is Darwin` rather than letting it fail mid-run —
+and `podman machine start` first, or the socket is not there.
 
 Expect, and read each line:
 
