@@ -1530,7 +1530,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A per-evaluator `strictness` override changes the reported `pass_threshold` and creates **no** additional rule
 - [x] The `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import, via grafana-operator
 
-### Covered by unit tests (`pytest tests/`, 171 tests, no cluster needed)
+### Covered by unit tests (`pytest tests/`, 210 tests, no cluster needed)
 
 - [x] Two agents with the same `coverage` but different `strictness` share one rule, and their pass ratios use different thresholds
 - [x] Deleting one agent's Application removes its tag from the rule; deleting the last agent removes the rule

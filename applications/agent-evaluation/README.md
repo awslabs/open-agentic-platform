@@ -206,7 +206,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 ```
 
 No cluster or Langfuse instance needed: the Kubernetes and Langfuse clients are
-faked in `tests/conftest.py`, and the loops' planning logic is pure. 171 tests;
+faked in `tests/conftest.py`, and the loops' planning logic is pure. 210 tests;
 `tests/test_harness_chart_files.py` also loads the chart's shipped harness
 dataset and check prompt, and renders the chart with `helm template` when `helm`
 is on the PATH (skipped otherwise).
