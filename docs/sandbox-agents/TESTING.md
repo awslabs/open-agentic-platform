@@ -426,137 +426,6 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 | **Part 4** KMS key policy | **PASS on the control that matters.** Real key created from `pod-attested.yaml`'s own PCR17; `kms:Encrypt` as the build principal succeeds; `kms:Decrypt` as the **key administrator** is denied — `with an explicit deny in a resource-based policy`. That is review finding 8's statement doing its job against the actor the old `kms:*`-to-root policy allowed |
 | **3.6** attested pull | **PASS END TO END.** Encrypted an amd64 image to the key, created the pod's IAM role + PodIdentityAssociation, generated the policy from the final spec, pinned its PCR17 in the key policy — and the pod **ran**, which only happens after an attested `kms:Decrypt` succeeds. Layer mediaType confirms it: `application/vnd.oci.image.layer.v1.tar+gzip+encrypted`. Both negative controls refuse |
 
-### 3.6 + Part 4, as actually run — and the two refusals
-
-This is the whole chain, executed. On a Mac the Linux-only steps run in a
-container; `skopeo` has to exec the keyprovider, so both live in the same one.
-
-```console
-# 1. encrypt an AMD64 image (Nitro sandbox nodes are amd64) to the key
-$ podman run --rm -v "$PWD:/w" -v "<runtime>:/rt:ro" \
-    -e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=... -e AWS_SESSION_TOKEN=... \
-    public.ecr.aws/amazonlinux/amazonlinux:2023 bash -c '
-      dnf install -y -q skopeo
-      echo "{\"key-providers\":{\"awskms\":{\"cmd\":{\"path\":\"/rt/nitro-sandbox-keyprovider\",\"args\":[]}}}}" > /w/ocicrypt.json
-      OCICRYPT_KEYPROVIDER_CONFIG=/w/ocicrypt.json skopeo --override-arch amd64 copy \
-        --encryption-key provider:awskms:<key-arn> \
-        docker://public.ecr.aws/amazonlinux/amazonlinux:2023 \
-        docker://<acct>.dkr.ecr.us-west-2.amazonaws.com/attested-demo:encrypted'
-
-# 2. the guest needs Pod Identity to call KMS -- IRSA is NOT used for image decryption
-$ aws iam create-role --role-name oap-attested-demo \
-    --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
-      "Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}'
-$ aws iam put-role-policy --role-name oap-attested-demo --policy-name kms-decrypt-attested \
-    --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
-      "Action":["kms:Decrypt","kms:DescribeKey"],"Resource":"<key-arn>"}]}'
-$ aws eks create-pod-identity-association --cluster-name <cluster> \
-    --namespace default --service-account attested-demo --role-arn <role-arn>
-
-# 3. policy from the FINAL spec -- image pinned BY DIGEST, not tag
-# 4. put-key-policy with that PCR17 and the pod role as the Decrypt principal
-# 5. apply the ServiceAccount and the Pod
-```
-
-**Observed:** `attested-demo  confidential-sandbox  Running`. The pod reaching
-Running *is* the verification — the layer key only arrives after KMS compares the
-guest's measurements. Corroborated independently:
-
-```console
-$ aws ecr batch-get-image ... --query 'images[0].imageManifest' | jq '.layers[].mediaType'
-"application/vnd.oci.image.layer.v1.tar+gzip+encrypted"
-```
-
-`verify-isolation.sh` on it: **5 PASS / 0 FAIL**, reporting exec-denial as the
-guarantee working.
-
-**Refusal 1 — the wrong guest.** Regenerated the policy with one extra flag
-(`--deny-logs`), which changed PCR17 from `77af7917…` to `16211330…`, and applied
-it with the key still pinning the old value:
-
-```
-Failed ... Error: failed to pull and unpack image ...
-  AccessDeniedException: User: arn:aws:sts::<acct>:assumed-role/oap-attested-demo/...
-    is not authorized to perform: kms:Decrypt
-```
-
-The call came from the pod's own Pod Identity role and was refused on the
-attestation condition. Nothing else in the stack produces that.
-
-**Refusal 2 — the administrator.** See below; this is the one the example used to
-get wrong.
-
-### Part 4, as actually run
-
-```console
-$ podman run --rm -v "$PWD:/w" -v "<runtime>:/rt:ro" -w /w \
-    public.ecr.aws/amazonlinux/amazonlinux:2023 \
-    /rt/eks-nitro-sandbox-genpolicy --profile confidential --with-pod-identity pod.yaml
-  -> PCR17 040ede6619d5ad56f0cc2c4771bc128b880bc150bbf4e643172ce2da0611b0e8f431b1c3c5fbe1a43c4edd9439bd4959
-
-$ examples/nitro-sandbox/create-attested-key.sh --pcr17 <that> \
-    --role-arn <pod role> --alias alias/nitro-sandbox-attested-test --region us-west-2 --yes
-  -> created: arn:aws:kms:us-west-2:<acct>:key/<id>
-
-$ aws kms encrypt --key-id <arn> --plaintext "$(printf probe | base64)" ...   # build principal: OK
-$ aws kms decrypt --key-id <arn> --ciphertext-blob fileb://probe.bin           # administrator:
-  AccessDeniedException ... kms:Decrypt ... with an explicit deny in a resource-based policy
-```
-
-**On a Mac, generate the policy with a container.** The binaries are Linux ELF;
-`podman`/`docker` runs them, and the arch must match the binaries you downloaded
-(`--arch` defaults to the HOST's). `gen-cedar-policy.sh --docker` does this for an
-OAM component; for a raw pod manifest, call the generator in a container directly
-as above.
-
-> **Add `karpenter.sh/do-not-disrupt: "true"` to `pod-attested.yaml` on Auto
-> Mode.** The negative control's pod was deleted mid-test twice by consolidation
-> before the refusal could be read — a bare Pod is not rescheduled when its node
-> goes, so the evidence disappears with it.
-
-> **The key is billable and cannot be deleted immediately.** Schedule it when
-> you are done:
-> ```
-> aws kms schedule-key-deletion --key-id <arn> --pending-window-in-days 7 --region us-west-2
-> ```
-
-
-### 3.4's trap: a confidential policy pins the pod's HOSTNAME
-
-Worth its own box because the error message points nowhere near the cause, and
-it cost several iterations here.
-
-A confidential policy pins `context.hostname`, and the hostname **is the pod's
-name**. A warm pool's pods have generated names (`regulated-session-h7wmt`), so a
-policy generated from the *template* pins a name no pool pod will ever have, and
-every single one is denied:
-
-```
-FailedCreatePodSandBox ... policy denied SetupSandbox
-```
-
-`SetupSandbox` says nothing about hostnames — it sends you looking at mounts,
-volumes and env. The fix is `--no-pin-hostname`, and
-`scripts/nitro/gen-cedar-policy.sh` now adds it automatically for any **template**
-source (SandboxTemplate, Rollout), because pods built from a template always have
-generated names. Only a live `--from pod/<name>` source has the name the policy
-will be matched against, so that is the one case where pinning is right. Pass
-`--pin-hostname` to override.
-
-Two more things 3.4 showed, both operational:
-
-- **Changing `cedarPolicy` does not recycle existing warm pods.** The Application
-  and the SandboxTemplate pick up the new policy immediately; the pods keep the
-  old one. A policy rotation needs the pool drained —
-  `kubectl delete sandbox -n <ns> --all` — or the pool serves sandboxes under a
-  policy you have replaced.
-- **`--with-pod-identity` is wrong for this pool.** Its pods set
-  `automountServiceAccountToken: false` and get no injected env, so the flag makes
-  the policy expect credentials that never arrive. That denial surfaces as
-  `CreateContainer`, not `SetupSandbox` — a different message for a different
-  mistake.
-
-
 ### Two things that look like failures and are not
 
 > **The shipped agent examples do not reach Ready on a cluster without their
@@ -1188,6 +1057,42 @@ the coder pool.
 kubectl delete -f platform/oam/examples/example-sandbox-confidential.yaml
 ```
 
+### 3.4's trap: a confidential policy pins the pod's HOSTNAME
+
+Worth its own box because the error message points nowhere near the cause, and
+it cost several iterations here.
+
+A confidential policy pins `context.hostname`, and the hostname **is the pod's
+name**. A warm pool's pods have generated names (`regulated-session-h7wmt`), so a
+policy generated from the *template* pins a name no pool pod will ever have, and
+every single one is denied:
+
+```
+FailedCreatePodSandBox ... policy denied SetupSandbox
+```
+
+`SetupSandbox` says nothing about hostnames — it sends you looking at mounts,
+volumes and env. The fix is `--no-pin-hostname`, and
+`scripts/nitro/gen-cedar-policy.sh` now adds it automatically for any **template**
+source (SandboxTemplate, Rollout), because pods built from a template always have
+generated names. Only a live `--from pod/<name>` source has the name the policy
+will be matched against, so that is the one case where pinning is right. Pass
+`--pin-hostname` to override.
+
+Two more things 3.4 showed, both operational:
+
+- **Changing `cedarPolicy` does not recycle existing warm pods.** The Application
+  and the SandboxTemplate pick up the new policy immediately; the pods keep the
+  old one. A policy rotation needs the pool drained —
+  `kubectl delete sandbox -n <ns> --all` — or the pool serves sandboxes under a
+  policy you have replaced.
+- **`--with-pod-identity` is wrong for this pool.** Its pods set
+  `automountServiceAccountToken: false` and get no injected env, so the flag makes
+  the policy expect credentials that never arrive. That denial surfaces as
+  `CreateContainer`, not `SetupSandbox` — a different message for a different
+  mistake.
+
+
 ### 3.5 `example-agent-session-isolation.yaml` — per-session isolation
 
 The feature issue #99 asked for: one microVM per (agent, user, session), rather
@@ -1349,9 +1254,189 @@ A difference is your admission chain mutating the pod — Pod Identity's injecte
 env and token volume are the usual cause — and in confidential mode that
 difference is the gap between a pod that starts and a pod that is denied.
 
-### 3.7 Kata, on the same examples
+### 3.6 + Part 4, as actually run — and the two refusals
 
-If you have a Kata node pool, this is the portability claim: **the same
+This is the whole chain, executed. On a Mac the Linux-only steps run in a
+container; `skopeo` has to exec the keyprovider, so both live in the same one.
+
+**Get the credentials for the container with `export-credentials`, not
+`get-session-token`.** `aws sts get-session-token` only works for an IAM *user*;
+on an assumed role (Isengard, SSO, CI) it fails, the env vars end up empty, and
+the keyprovider reports `no credentials found in chain` several minutes into the
+copy — the one failure in this chain that does not say what is wrong.
+
+```console
+$ KEY=<key-arn>
+$ DEST=<acct>.dkr.ecr.us-west-2.amazonaws.com/attested-demo:encrypted
+$ RT="$PWD/.platform/private/nitro-sandbox-runtime/$(uname -m | sed s/arm64/aarch64/)"
+
+$ C=$(aws configure export-credentials --format process)
+$ AK=$(echo "$C" | python3 -c 'import sys,json;print(json.load(sys.stdin)["AccessKeyId"])')
+$ SK=$(echo "$C" | python3 -c 'import sys,json;print(json.load(sys.stdin)["SecretAccessKey"])')
+$ ST=$(echo "$C" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("SessionToken",""))')
+$ ECRPW=$(aws ecr get-login-password --region us-west-2)
+$ aws ecr create-repository --repository-name attested-demo --region us-west-2   # once
+```
+
+```console
+# 1. encrypt an AMD64 image (Nitro sandbox nodes are amd64) to the key
+$ podman run --rm -v "$PWD:/w" -v "$RT:/rt:ro" \
+    -e AWS_ACCESS_KEY_ID="$AK" -e AWS_SECRET_ACCESS_KEY="$SK" -e AWS_SESSION_TOKEN="$ST" \
+    -e AWS_REGION=us-west-2 -e KEY="$KEY" -e DEST="$DEST" -e ECRPW="$ECRPW" \
+    public.ecr.aws/amazonlinux/amazonlinux:2023 bash -c '
+      dnf install -y -q skopeo
+      echo "{\"key-providers\":{\"awskms\":{\"cmd\":{\"path\":\"/rt/nitro-sandbox-keyprovider\",\"args\":[]}}}}" > /w/ocicrypt.json
+      echo "$ECRPW" | skopeo login --username AWS --password-stdin "${DEST%%/*}"
+      OCICRYPT_KEYPROVIDER_CONFIG=/w/ocicrypt.json \
+        skopeo --override-arch amd64 --override-os linux copy \
+          --encryption-key "provider:awskms:$KEY" \
+          docker://public.ecr.aws/amazonlinux/amazonlinux:2023 \
+          "docker://$DEST"'
+
+# confirm the layers really are wrapped, independently of the pod
+$ aws ecr batch-get-image --repository-name attested-demo --region us-west-2 \
+    --image-ids imageTag=encrypted --query 'images[0].imageManifest' --output text \
+  | python3 -c 'import sys,json;print([l["mediaType"] for l in json.load(sys.stdin)["layers"]])'
+# ['application/vnd.oci.image.layer.v1.tar+gzip+encrypted']
+
+# the digest, which is what the pod and the policy must both pin
+$ aws ecr describe-images --repository-name attested-demo --region us-west-2 \
+    --image-ids imageTag=encrypted --query 'imageDetails[0].imageDigest' --output text
+
+# 2. the guest needs Pod Identity to call KMS -- IRSA is NOT used for image decryption
+$ aws iam create-role --role-name oap-attested-demo \
+    --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+      "Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}'
+$ aws iam put-role-policy --role-name oap-attested-demo --policy-name kms-decrypt-attested \
+    --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+      "Action":["kms:Decrypt","kms:DescribeKey"],"Resource":"<key-arn>"}]}'
+$ aws eks create-pod-identity-association --cluster-name <cluster> \
+    --namespace default --service-account attested-demo --role-arn <role-arn>
+
+# 3. policy from the FINAL spec -- image pinned BY DIGEST, not tag. Put that
+#    digest in pod-attested.yaml's `image:` first, then:
+$ podman run --rm -v "$PWD:/w" -v "$RT:/rt:ro" -w /w \
+    -e AWS_ACCESS_KEY_ID="$AK" -e AWS_SECRET_ACCESS_KEY="$SK" -e AWS_SESSION_TOKEN="$ST" \
+    -e AWS_REGION=us-west-2 -e ECRPW="$ECRPW" \
+    public.ecr.aws/amazonlinux/amazonlinux:2023 bash -c '
+      mkdir -p /root/.docker
+      printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "${DEST%%/*}" \
+        "$(printf "AWS:%s" "$ECRPW" | base64 -w0)" > /root/.docker/config.json
+      /rt/eks-nitro-sandbox-genpolicy --profile confidential --with-pod-identity pod.yaml'
+#   -> prints the base64 policy envelope and the predicted PCR17
+
+# 4. pin that PCR17 on the key. The policy template has it in TWO statements
+#    (the attested Allow and the unattested Deny) and both must change, which is
+#    why create-attested-key.sh substitutes from one argument. For an existing
+#    key, fill examples/nitro-sandbox/kms-key-policy.json and:
+$ aws kms put-key-policy --region us-west-2 --key-id "$KEY" \
+    --policy-name default --policy file://keypolicy.json
+
+# 5. apply the ServiceAccount and the Pod -- two files, on purpose
+$ kubectl apply -f examples/nitro-sandbox/serviceaccount-attested.yaml \
+                -f examples/nitro-sandbox/pod-attested.yaml
+$ kubectl wait --for=condition=Ready pod/attested-demo -n default --timeout=600s
+```
+
+**Observed:** `attested-demo  confidential-sandbox  Running`. The pod reaching
+Running *is* the verification — the layer key only arrives after KMS compares the
+guest's measurements. Corroborated independently:
+
+```console
+$ aws ecr batch-get-image ... --query 'images[0].imageManifest' | jq '.layers[].mediaType'
+"application/vnd.oci.image.layer.v1.tar+gzip+encrypted"
+```
+
+`verify-isolation.sh` on it: **5 PASS / 0 FAIL**, reporting exec-denial as the
+guarantee working.
+
+**Refusal 1 — the wrong guest.** Regenerated the policy with one extra flag
+(`--deny-logs`), which changed PCR17 from `77af7917…` to `16211330…`, and applied
+it with the key still pinning the old value:
+
+```
+Failed ... Error: failed to pull and unpack image ...
+  AccessDeniedException: User: arn:aws:sts::<acct>:assumed-role/oap-attested-demo/...
+    is not authorized to perform: kms:Decrypt
+```
+
+The call came from the pod's own Pod Identity role and was refused on the
+attestation condition. Nothing else in the stack produces that.
+
+**Refusal 2 — the administrator.** See below; this is the one the example used to
+get wrong.
+
+### Part 4, as actually run
+
+```console
+$ podman run --rm -v "$PWD:/w" -v "<runtime>:/rt:ro" -w /w \
+    public.ecr.aws/amazonlinux/amazonlinux:2023 \
+    /rt/eks-nitro-sandbox-genpolicy --profile confidential --with-pod-identity pod.yaml
+  -> PCR17 040ede6619d5ad56f0cc2c4771bc128b880bc150bbf4e643172ce2da0611b0e8f431b1c3c5fbe1a43c4edd9439bd4959
+
+$ examples/nitro-sandbox/create-attested-key.sh --pcr17 <that> \
+    --role-arn <pod role> --alias alias/nitro-sandbox-attested-test --region us-west-2 --yes
+  -> created: arn:aws:kms:us-west-2:<acct>:key/<id>
+
+$ aws kms encrypt --key-id <arn> --plaintext "$(printf probe | base64)" ...   # build principal: OK
+$ aws kms decrypt --key-id <arn> --ciphertext-blob fileb://probe.bin           # administrator:
+  AccessDeniedException ... kms:Decrypt ... with an explicit deny in a resource-based policy
+```
+
+**On a Mac, generate the policy with a container.** The binaries are Linux ELF;
+`podman`/`docker` runs them, and the arch must match the binaries you downloaded
+(`--arch` defaults to the HOST's). `gen-cedar-policy.sh --docker` does this for an
+OAM component; for a raw pod manifest, call the generator in a container directly
+as above.
+
+> **Add `karpenter.sh/do-not-disrupt: "true"` to `pod-attested.yaml` on Auto
+> Mode.** The negative control's pod was deleted mid-test twice by consolidation
+> before the refusal could be read — a bare Pod is not rescheduled when its node
+> goes, so the evidence disappears with it.
+
+### Tearing 3.6 down
+
+Everything 3.6 creates, in the order that works (the role policy before the role,
+the association before the role it points at):
+
+```bash
+# cluster
+kubectl delete pod attested-demo -n default --now --ignore-not-found
+kubectl delete -f examples/nitro-sandbox/serviceaccount-attested.yaml --ignore-not-found
+
+# Pod Identity association
+ASSOC=$(aws eks list-pod-identity-associations --cluster-name <cluster> --region us-west-2 \
+  --namespace default --service-account attested-demo \
+  --query 'associations[0].associationId' --output text)
+aws eks delete-pod-identity-association --cluster-name <cluster> --region us-west-2 \
+  --association-id "$ASSOC"
+
+# IAM
+aws iam delete-role-policy --role-name oap-attested-demo --policy-name kms-decrypt-attested
+aws iam delete-role       --role-name oap-attested-demo
+
+# ECR
+aws ecr delete-repository --repository-name attested-demo --region us-west-2 --force
+
+# KMS -- BILLABLE, and the only one with a waiting period. 7 days is the minimum.
+aws kms schedule-key-deletion --key-id <key-arn> --pending-window-in-days 7 --region us-west-2
+```
+
+> The KMS key is the one to remember: it is billable and **cannot be deleted
+> immediately** — `schedule-key-deletion` starts a 7–30 day window. Everything
+> else above is free and deletes instantly.
+
+
+### 3.7 Kata, on the same examples — OPTIONAL, skip unless you run Kata
+
+**Skip this section if your clusters are Nitro.** Nothing else in Section 3
+depends on it, and it needs a nested-virt Karpenter node pool
+(`kata_nodepool` + `agent_sandbox_kata`) that a Nitro cluster has no reason to
+stand up. The *render* half below was verified on a Nitro cluster by flipping the
+annotation and reading what came out; the node half was not, because there were
+no Kata nodes to run it on.
+
+If you do have a Kata node pool, this is the portability claim: **the same
 Applications, unchanged**, with one annotation on the cluster secret.
 
 ```
@@ -1444,6 +1529,8 @@ Read the **error**, not the failure:
 | ☐ | session: 4 env vars, RBAC `can-i`, **two users → two sandboxes, separate FS** | 3.5 |
 | ☐ | session: `sessionKey` semantics, idle teardown, pool refill | 3.5 |
 | ☐ | `--app` vs `--from pod/` policies diffed | 3.6 |
-| ☐ | Kata: same Applications unchanged, `kata-clh`, confidential rejected | 3.7 |
-| ☐ | wrong guest denied | 4 |
-| ☐ | **administrator denied** | 4 |
+| ☐ | *(optional, Kata only)* same Applications unchanged → `kata-clh` | 3.7 |
+| ☐ | attested pod Running from the encrypted image | 3.6 |
+| ☐ | wrong guest denied (`kms:Decrypt` AccessDenied) | 3.6 |
+| ☐ | **administrator denied** (explicit deny) | 4 |
+| ☐ | teardown: pod, SA, association, role, ECR, KMS key scheduled | 3.6 |
