@@ -424,7 +424,67 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 | **3.4** confidential pool | **PASS end to end.** Render + card correct; placeholder policy refused; with a REAL policy the warm pods run and `exec` is denied (`policy denied Agent::Action::"Exec"`); `verify-isolation.sh` 5 PASS / 0 FAIL. Needed `--no-pin-hostname` — see the box below |
 | **3.7** Kata | **PASS (render half).** The SAME Application, unchanged, renders `kata-clh` and the scheduler demands `katacontainers.io/kata-runtime=true`; confidential is **rejected by the real webhook** with both guards firing. Pods stay Pending because this cluster has no Kata nodes — which is the finding-1 symptom, deliberately observed |
 | **Part 4** KMS key policy | **PASS on the control that matters.** Real key created from `pod-attested.yaml`'s own PCR17; `kms:Encrypt` as the build principal succeeds; `kms:Decrypt` as the **key administrator** is denied — `with an explicit deny in a resource-based policy`. That is review finding 8's statement doing its job against the actor the old `kms:*`-to-root policy allowed |
-| **3.6** attested pull | **Not run.** The split-manifest fix is verified (one `kind:` per file; the real generator accepts a Pod-only confidential manifest in 3.3a, 3.4 and here), and the policy + PCR17 generate cleanly. The *pull* additionally needs an encrypted image — `skopeo` on a **Linux** host (it has to exec the keyprovider) — an ECR repo, and an IAM role + PodIdentityAssociation so the guest can reach KMS |
+| **3.6** attested pull | **PASS END TO END.** Encrypted an amd64 image to the key, created the pod's IAM role + PodIdentityAssociation, generated the policy from the final spec, pinned its PCR17 in the key policy — and the pod **ran**, which only happens after an attested `kms:Decrypt` succeeds. Layer mediaType confirms it: `application/vnd.oci.image.layer.v1.tar+gzip+encrypted`. Both negative controls refuse |
+
+### 3.6 + Part 4, as actually run — and the two refusals
+
+This is the whole chain, executed. On a Mac the Linux-only steps run in a
+container; `skopeo` has to exec the keyprovider, so both live in the same one.
+
+```console
+# 1. encrypt an AMD64 image (Nitro sandbox nodes are amd64) to the key
+$ podman run --rm -v "$PWD:/w" -v "<runtime>:/rt:ro" \
+    -e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=... -e AWS_SESSION_TOKEN=... \
+    public.ecr.aws/amazonlinux/amazonlinux:2023 bash -c '
+      dnf install -y -q skopeo
+      echo "{\"key-providers\":{\"awskms\":{\"cmd\":{\"path\":\"/rt/nitro-sandbox-keyprovider\",\"args\":[]}}}}" > /w/ocicrypt.json
+      OCICRYPT_KEYPROVIDER_CONFIG=/w/ocicrypt.json skopeo --override-arch amd64 copy \
+        --encryption-key provider:awskms:<key-arn> \
+        docker://public.ecr.aws/amazonlinux/amazonlinux:2023 \
+        docker://<acct>.dkr.ecr.us-west-2.amazonaws.com/attested-demo:encrypted'
+
+# 2. the guest needs Pod Identity to call KMS -- IRSA is NOT used for image decryption
+$ aws iam create-role --role-name oap-attested-demo \
+    --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+      "Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}'
+$ aws iam put-role-policy --role-name oap-attested-demo --policy-name kms-decrypt-attested \
+    --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+      "Action":["kms:Decrypt","kms:DescribeKey"],"Resource":"<key-arn>"}]}'
+$ aws eks create-pod-identity-association --cluster-name <cluster> \
+    --namespace default --service-account attested-demo --role-arn <role-arn>
+
+# 3. policy from the FINAL spec -- image pinned BY DIGEST, not tag
+# 4. put-key-policy with that PCR17 and the pod role as the Decrypt principal
+# 5. apply the ServiceAccount and the Pod
+```
+
+**Observed:** `attested-demo  confidential-sandbox  Running`. The pod reaching
+Running *is* the verification — the layer key only arrives after KMS compares the
+guest's measurements. Corroborated independently:
+
+```console
+$ aws ecr batch-get-image ... --query 'images[0].imageManifest' | jq '.layers[].mediaType'
+"application/vnd.oci.image.layer.v1.tar+gzip+encrypted"
+```
+
+`verify-isolation.sh` on it: **5 PASS / 0 FAIL**, reporting exec-denial as the
+guarantee working.
+
+**Refusal 1 — the wrong guest.** Regenerated the policy with one extra flag
+(`--deny-logs`), which changed PCR17 from `77af7917…` to `16211330…`, and applied
+it with the key still pinning the old value:
+
+```
+Failed ... Error: failed to pull and unpack image ...
+  AccessDeniedException: User: arn:aws:sts::<acct>:assumed-role/oap-attested-demo/...
+    is not authorized to perform: kms:Decrypt
+```
+
+The call came from the pod's own Pod Identity role and was refused on the
+attestation condition. Nothing else in the stack produces that.
+
+**Refusal 2 — the administrator.** See below; this is the one the example used to
+get wrong.
 
 ### Part 4, as actually run
 
@@ -448,6 +508,11 @@ $ aws kms decrypt --key-id <arn> --ciphertext-blob fileb://probe.bin           #
 (`--arch` defaults to the HOST's). `gen-cedar-policy.sh --docker` does this for an
 OAM component; for a raw pod manifest, call the generator in a container directly
 as above.
+
+> **Add `karpenter.sh/do-not-disrupt: "true"` to `pod-attested.yaml` on Auto
+> Mode.** The negative control's pod was deleted mid-test twice by consolidation
+> before the refusal could be read — a bare Pod is not rescheduled when its node
+> goes, so the evidence disappears with it.
 
 > **The key is billable and cannot be deleted immediately.** Schedule it when
 > you are done:
