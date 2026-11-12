@@ -912,20 +912,22 @@ wrapped in an Argo Rollout, and the policy pins *that*.
 ./scripts/nitro/gen-cedar-policy.sh \
   --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
   --component regulated-assistant \
-  --profile confidential
+  --profile confidential --no-pod-identity
 
-# On a Mac the binaries are Linux ELF, so add --docker. The script calls the
-# `docker` CLI, so with PODMAN point DOCKER_HOST at its socket first:
-export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+# On a Mac the binaries are Linux ELF, so add --docker. Podman is fine: the
+# script probes `docker` then `podman` for one whose daemon ANSWERS and prints
+# which it chose. `podman machine start` first.
 ./scripts/nitro/gen-cedar-policy.sh \
   --app platform/oam/examples/example-agent-sandbox-confidential.yaml \
   --component regulated-assistant \
-  --profile confidential --docker
+  --profile confidential --no-pod-identity --docker
 ```
 
 Without `--docker` on a Mac the script stops with
-`is a Linux ELF binary and this is Darwin` rather than letting it fail mid-run —
-and `podman machine start` first, or the socket is not there.
+`is a Linux ELF binary and this is Darwin` rather than letting it fail mid-run.
+`CONTAINER_RUNTIME=podman` forces the choice. A `docker` on PATH with Docker
+Desktop *not* running is exactly why the script probes instead of trusting
+`command -v` — it used to die with `failed to connect to the docker API`.
 
 **Check Pod Identity before you generate, or the pod will be denied.** The
 script adds `--with-pod-identity` whenever the pod has a `serviceAccountName`,
@@ -948,15 +950,46 @@ Expect, and read each line:
 
 ```
 Rollout/regulated-assistant
-==> serviceAccountName=regulated-assistant -- adding --with-pod-identity (--no-pod-identity to skip)
 ==> confidential profile -- adding --deny-exec --deny-logs (--allow-exec-logs to keep them)
+==> template source (Rollout) -- adding --no-pin-hostname, because its pods get
+    generated names and a pinned hostname denies all but one of them
+==> generator runtime: podman
 policy written: regulated-assistant-cedar-policy.b64  (N base64 chars)
 ```
 
-plus the predicted **PCR17**. Both auto-added flags matter: without
-`--with-pod-identity` the policy denies the pod over the env Pod Identity
-injects, and `--deny-exec --deny-logs` is what actually closes the two ways to
-read a confidential pod from outside it.
+plus the predicted **PCR17**. `--deny-exec --deny-logs` is what actually closes
+the two ways to read a confidential pod from outside it.
+
+> **Generating from the LIVE POD instead — and the trap that only appears
+> there.** `--from pod/<name>` is the higher-fidelity source: a live pod has been
+> through the mutating webhooks, a Rollout template has not. But a live pod also
+> carries the **kubelet-generated service-account volume**, `kube-api-access-`
+> plus a random suffix, and the policy pins `context.mounts` as an **exact
+> list**. Pin that literal name and the next pod the Rollout creates
+> (`kube-api-access-` + a *different* suffix) is denied with
+>
+> ```
+> policy denied Agent::Action::"CreateContainer" on container "regulated-assistant"
+> ```
+>
+> which names no mount and sends you hunting through env vars. Worse, the mount
+> is listed **twice**: genpolicy emits its own generic `<sa-token-volume-name>`
+> entry from the service account as well.
+>
+> The script now handles both for any pod with a **controller owner**
+> (ReplicaSet / Rollout / Job / StatefulSet): it drops the materialised volume
+> and skips hostname pinning, and says so —
+>
+> ```
+> ==> dropped the kubelet-injected service-account token volume (kube-api-access-n9glw)
+> ==> pod controlled by ReplicaSet/regulated-assistant-59f6447b5b -- adding --no-pin-hostname
+> ```
+>
+> Verified on `hub` 2026-11-12: generated this way the pod went `1/1 Running` and
+> stayed there across the rollout; generated from the same pod *without* these
+> two, it was denied at `CreateContainer`, and with the hostname pinned, at
+> `SetupSandbox`. A pod with no controller keeps its name for life and is left
+> alone.
 
 **IGNORE the script's "2. pin it on the KMS key policy" for 3.3.** The script
 prints the full attestation story every time, but this example pulls an ordinary
@@ -1013,7 +1046,20 @@ kubectl exec -it -l app.kubernetes.io/name=regulated-assistant -- sh
 
 This must **fail**. In isolated mode it succeeds; here the Cedar policy refuses
 it so the parent instance cannot introspect the guest. `kubectl logs` should
-likewise be refused, because of `--deny-logs`.
+likewise be refused, because of `--deny-logs`. Observed on `hub`, both refusals
+from one Running pod:
+
+```
+$ kubectl exec -n default regulated-assistant-... -- /bin/sh -c 'echo reached'
+error: Internal error occurred: ... policy denied Agent::Action::"Exec"
+  on container "regulated-assistant" reasons=[] errors=[]
+
+$ kubectl logs -n default regulated-assistant-...
+Container logs are disabled by policy.
+```
+
+Note the second is not an error — the kubelet returns a normal response saying
+the policy disabled it. Do not read a clean exit as logs being available.
 
 ```bash
 bash scripts/nitro/verify-isolation.sh -l app.kubernetes.io/name=regulated-assistant

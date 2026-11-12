@@ -295,11 +295,65 @@ else:
     kind, name, tpl = cands[0]
 
 meta = dict(tpl.get('metadata') or {})
+
+# A live Pod with a CONTROLLER owner (ReplicaSet, Rollout, Job, StatefulSet) is
+# not a stable identity: its name is generated, and applying a policy is itself
+# what makes the controller replace it with a differently-named pod. Two things
+# below depend on knowing that -- hostname pinning, and the service-account
+# volume.
+_owners = meta.get('ownerReferences') or []
+_ctrl = next((o for o in _owners if o.get('controller')), None)
+ctrl_owner = '%s/%s' % (_ctrl.get('kind', '?'), _ctrl.get('name', '?')) if _ctrl else ''
+
 annotations = dict(meta.get('annotations') or {})
 # Drop any policy already attached. Leaving it would feed the previous
 # generation's output back in; harmless for the pinning (which covers container
 # fields, not annotations) but it makes the diff between two runs unreadable.
 annotations.pop('sandbox.amazonaws.com/policy', None)
+
+spec = dict(tpl['spec'])
+
+# THE KUBELET'S SERVICE-ACCOUNT VOLUME IS NAMED PER POD, AND THE POLICY PINS
+# MOUNTS AS AN EXACT LIST.
+#
+# A live pod materialises the projected token volume the kubelet injected, with a
+# random suffix: kube-api-access-6kcpd. genpolicy writes that literal name into
+#
+#   context.mounts == [ ... "<pod-uid>/volumes/kubernetes.io~projected/kube-api-access-6kcpd" ]
+#
+# while ALSO emitting its own generic <sa-token-volume-name> entry for the same
+# destination, because the pod has a service account. So the list both
+# double-counts the mount and hard-codes a name no other pod will ever have: the
+# next pod the controller creates gets kube-api-access-n9glw and is denied
+#
+#   policy denied Agent::Action::"CreateContainer"
+#
+# which names no mount and sends you hunting through env vars. Measured on the
+# hub exactly this way.
+#
+# Dropping the materialised volume leaves genpolicy's generic placeholder, which
+# matches any pod. A pod with NO controller keeps its name for its whole life, so
+# there is nothing to generalise -- and stripping it there would wrongly drop a
+# volume for a pod that really does only ever have the one name.
+if ctrl_owner:
+    vols = spec.get('volumes') or []
+    drop = {v['name'] for v in vols if v.get('name', '').startswith('kube-api-access-')}
+    if drop:
+        spec['volumes'] = [v for v in vols if v['name'] not in drop] or None
+        if spec['volumes'] is None:
+            del spec['volumes']
+        for key in ('containers', 'initContainers'):
+            for c in spec.get(key) or []:
+                mounts = [m for m in (c.get('volumeMounts') or []) if m.get('name') not in drop]
+                if mounts:
+                    c['volumeMounts'] = mounts
+                elif 'volumeMounts' in c:
+                    del c['volumeMounts']
+        sys.stderr.write(
+            '==> dropped the kubelet-injected %s volume (%s): its name is generated per\n'
+            '    pod, and genpolicy emits a generic placeholder for it from the service\n'
+            '    account. Pinning the literal name denies every later pod.\n'
+            % ('service-account token', ', '.join(sorted(drop))))
 
 pod = {
     'apiVersion': 'v1',
@@ -309,17 +363,18 @@ pod = {
         **({'labels': meta['labels']} if meta.get('labels') else {}),
         **({'annotations': annotations} if annotations else {}),
     },
-    'spec': tpl['spec'],
+    'spec': spec,
 }
 yaml.safe_dump(pod, open(out, 'w'), default_flow_style=False, width=100000)
-# Tab-separated, because the shell reads field 2 to decide on --with-pod-identity.
-spec = tpl['spec']
+# Tab-separated, because the shell reads field 2 to decide on --with-pod-identity
+# and field 3 to decide on --no-pin-hostname.
 sa = spec.get('serviceAccountName') or spec.get('serviceAccount') or ''
-print('%s/%s\t%s' % (kind, name, sa))
+print('%s/%s\t%s\t%s' % (kind, name, sa, ctrl_owner))
 PY
 )"
 printf '%s\n' "$EXTRACTED" | cut -f1
 POD_SA="$(printf '%s' "$EXTRACTED" | cut -f2)"
+POD_OWNER="$(printf '%s' "$EXTRACTED" | cut -f3)"
 
 echo "==> pod manifest: $WORK/pod.yaml"
 
@@ -396,26 +451,58 @@ fi
 # Measured on a live cluster: a confidential warm pool denied every pod until
 # this flag was added, then came up immediately.
 #
-# Only a live Pod source has the name the policy will actually be matched
-# against, so that is the one case where pinning is correct.
-if [ "$PIN_HOSTNAME" = auto ] && [ "${EXTRACTED%%/*}" != "Pod" ] &&
+# A live Pod source looks like the exception -- it has the very name the policy
+# will be matched against -- but only a pod NOBODY CONTROLS really is. A pod
+# owned by a ReplicaSet, Rollout, Job or StatefulSet has a generated name, and
+# applying the policy is itself what makes the controller replace it with a
+# differently-named pod. Pinning there admits exactly one pod: the one being
+# deleted. Measured on the hub: a Rollout-owned pod, policy generated from the
+# live pod, next pod denied at SetupSandbox on the first rollout.
+_pin_src=""
+if [ "${EXTRACTED%%/*}" != "Pod" ]; then
+  _pin_src="template source (${EXTRACTED%%/*})"
+elif [ -n "$POD_OWNER" ]; then
+  _pin_src="pod controlled by $POD_OWNER"
+fi
+if [ "$PIN_HOSTNAME" = auto ] && [ -n "$_pin_src" ] &&
    ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qE -- '^--(no-)?pin-hostname'; then
   ARGS+=(--no-pin-hostname)
-  echo "==> template source (${EXTRACTED%%/*}) -- adding --no-pin-hostname, because pods"
-  echo "    built from a template get generated names and a pinned hostname denies them all"
+  echo "==> $_pin_src -- adding --no-pin-hostname, because its pods get"
+  echo "    generated names and a pinned hostname denies all but one of them"
 fi
 
 ARGS+=(${EXTRA[@]+"${EXTRA[@]}"} pod.yaml)
 
 set +e
 if [ "$USE_DOCKER" -eq 1 ]; then
-  command -v docker >/dev/null || { echo "missing: docker (needed for --docker)" >&2; exit 1; }
+  # Podman is a first-class option here, not a fallback: on macOS it is the
+  # runtime most of us actually have, and `docker` being on PATH says nothing
+  # about a daemon being reachable (Docker Desktop installs the CLI and leaves a
+  # dead socket behind). Probe for a runtime that ANSWERS, and let
+  # CONTAINER_RUNTIME override.
+  RUNTIME="${CONTAINER_RUNTIME:-}"
+  if [ -z "$RUNTIME" ]; then
+    for c in docker podman; do
+      command -v "$c" >/dev/null || continue
+      "$c" info >/dev/null 2>&1 || continue
+      RUNTIME="$c"; break
+    done
+  fi
+  if [ -z "$RUNTIME" ]; then
+    echo "no working container runtime for --docker." >&2
+    echo "Install or start one, then re-run:" >&2
+    echo "  docker:  start Docker Desktop" >&2
+    echo "  podman:  podman machine start" >&2
+    echo "Override the choice with CONTAINER_RUNTIME=<docker|podman|nerdctl>." >&2
+    exit 1
+  fi
+  echo "==> generator runtime: $RUNTIME"
   cp "$GENPOLICY" "$WORK/genpolicy"
   chmod +x "$WORK/genpolicy"
   # AL2023 for glibc 2.34+, which the binaries require. No --platform: the
   # container has to match the binary's architecture, and the default (the
   # host's) is what the download script selected.
-  docker run --rm -v "$WORK:/w" -w /w public.ecr.aws/amazonlinux/amazonlinux:2023 \
+  "$RUNTIME" run --rm -v "$WORK:/w" -w /w public.ecr.aws/amazonlinux/amazonlinux:2023 \
     ./genpolicy "${ARGS[@]}" \
     > "$WORK/out.txt" 2> "$WORK/err.txt"
 else
