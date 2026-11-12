@@ -941,7 +941,43 @@ plus the predicted **PCR17**. Both auto-added flags matter: without
 injects, and `--deny-exec --deny-logs` is what actually closes the two ways to
 read a confidential pod from outside it.
 
-Paste the base64 into the example's `cedarPolicy` and apply:
+**IGNORE the script's "2. pin it on the KMS key policy" for 3.3.** The script
+prints the full attestation story every time, but this example pulls an ordinary
+public image — nothing fetches a layer key, so nothing calls `kms:Decrypt`, so
+there is no key policy to pin. Keep the PCR17 it printed if you like; you do not
+need it here.
+
+PCR17 matters when a secret is gated on the measurement: an **encrypted image**
+(3.5) or a workload that calls KMS itself (Part 4). Pinning this agent's PCR17 on
+the key you built for 3.5 would in fact *break* 3.5, because a key pins one
+measurement and that is the attested pod's.
+
+What confidential mode gives you *without* KMS, and what 3.3 verifies: memory the
+node operator cannot read, and `exec`/`logs` denied by the policy. The attested
+secret release on top of that is Part 4.
+
+Put the base64 into the example's `cedarPolicy`. It is thousands of characters,
+so do it with a command rather than by hand — a truncated paste renders fine and
+is rejected at pod start with `parse policy envelope`:
+
+```bash
+EX=platform/oam/examples/example-agent-sandbox-confidential.yaml
+POL=$(tr -d '\n\r ' < regulated-assistant-cedar-policy.b64)
+python3 - "$EX" "$POL" <<'PY'
+import sys, pathlib, re
+f, pol = sys.argv[1], sys.argv[2]
+p = pathlib.Path(f); t = p.read_text()
+t2 = re.sub(r'cedarPolicy: "[^"]*"', 'cedarPolicy: "%s"' % pol, t, count=1)
+assert t2 != t, 'no cedarPolicy field found'
+p.write_text(t2)
+print('cedarPolicy set, %d chars' % len(pol))
+PY
+
+# confirm the placeholder is gone -- it base64-decodes to "REPLACE THIS..."
+grep -o 'cedarPolicy: "....................' "$EX"
+```
+
+Then apply:
 
 ```bash
 kubectl apply -f platform/oam/examples/example-agent-sandbox-confidential.yaml
