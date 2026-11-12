@@ -94,7 +94,11 @@ Step by step, with the code that does it:
    harness loop (`harness_loop.py`, every `harness.intervalSeconds`, default
    60 s) lists ConfigMaps with the `harness.oap.io/agent` label in every
    namespace and reads the agent's `rollouts.argoproj.io` object in that
-   cluster. It cannot see another cluster's agents.
+   cluster. It cannot see another cluster's agents. The selector is
+   `harness.oap.io/agent,!harness.oap.io/result`: the runner's result
+   ConfigMaps also carry `harness.oap.io/agent`, so anything labelled
+   `harness.oap.io/result` is excluded. Results are never read as
+   declarations and never get declaration Events.
 3. **Trigger.** The revision is the Rollout's `status.currentPodHash`. A run
    starts only when `status.blueGreen.previewSelector` equals it, meaning
    `<agent>-preview` already selects the newest ReplicaSet. The first revision
@@ -671,6 +675,22 @@ Commands per check and what each mismatch means are in
 | A spoke did not register with the hub | A `<cluster>/config` Secrets Manager secret from an earlier install still existed in "scheduled for deletion" state, so the new install could not recreate it | Either restore the old secret or delete it without a recovery window, then rerun the install for that cluster |
 | Harness traces tagged `source:chat`, not `source:harness` | The published agent image predates the harness marking change in `strands-agent-base` | Not a harness defect: the `sessionId does not contain oap-harness-` clause still excludes them (0 scores in every pass). Publish an agent image with the change to make both clauses effective |
 | Alerts never fired, even while the condition was true | PF-1: nothing evaluates the PrometheusRule | See 4.6 |
+
+### Where the harness Events are
+
+Every harness Event is recorded on the agent's declaration ConfigMap
+`<agent>-harness` in the agent's namespace. That covers the refusals
+(`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`)
+and the run lifecycle (`HarnessRunStarted`, `HarnessRunCompleted`,
+`HarnessRunFailed`, `HarnessRunSuperseded`). List them with:
+
+```bash
+kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
+```
+
+The `oap-harness-*-result` ConfigMaps in `agent-evaluation` never get these
+Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
+("dataset None is missing") means the reconciler image predates the DEF-3 fix.
 
 ### Common checks per symptom
 

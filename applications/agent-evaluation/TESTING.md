@@ -774,6 +774,18 @@ What to expect, and what each mismatch means:
   reconciler restart start nothing more for A. No re-run is expected when B
   left no retained Job (B's run never started, was stopped before A's re-run
   could start, or was pruned); the series then keep A's earlier run.
+- Result ConfigMaps are not declarations (DEF-3): step 1 lists the
+  `oap-harness-*-result` ConfigMaps too, because they carry
+  `harness.oap.io/agent`, but the reconciler excludes them with
+  `!harness.oap.io/result`. Confirm that only `<agent>-harness` gets Events
+  and that no `InvalidHarnessDeclaration` Event names a result ConfigMap:
+
+  ```bash
+  kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
+  kubectl get events -n agent-evaluation --field-selector reason=InvalidHarnessDeclaration
+  # expect nothing from the second command (Events older than the fix age out
+  # after the cluster's event TTL, 1 h by default)
+  ```
 
 ## Re-verifying the Langfuse API after an upgrade
 
