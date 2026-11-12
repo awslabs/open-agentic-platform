@@ -41,6 +41,17 @@ on:
 permissions:
   contents: read
 
+# One run per ref. awslabs shares a GitHub-hosted runner pool across a very
+# large org, so a job can sit queued for tens of minutes -- and without this,
+# every push while one is waiting ADDS a run rather than replacing it. Three
+# runs for three successive commits then compete for the same scarce runner and
+# the two obsolete ones get there first. The repo's own `PR #151` workflow
+# already does this, which is why its stale runs cancel themselves and this
+# one's did not.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   matrix:
     runs-on: ubuntu-latest
