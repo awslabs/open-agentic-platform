@@ -318,8 +318,9 @@ errored run publishes only `info{status="error"}`, `threshold` and
 the rendered panels in a browser (the dashboard object synced; nobody logged in
 to look).
 
-**Langfuse.** Harness traces have session id `oap-harness-<revision>-<caseId>`.
-Filter traces by that session prefix to see exactly what the agent did for a
+**Langfuse.** Harness traces have session id `oap-harness-<revision>-<caseId>`
+(run n >= 2, a rollback re-run: `oap-harness-<revision>-r<n>-<caseId>`).
+Filter traces by the `oap-harness-` session prefix to see exactly what the agent did for a
 case. They carry tag `source:harness` on images built with the marking change,
 and `source:chat` on older images (section 7). They never get an online score.
 

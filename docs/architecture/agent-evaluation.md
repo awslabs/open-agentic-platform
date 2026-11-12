@@ -1257,6 +1257,16 @@ reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
 run starts, while the agent's finished runs and series stay; history is
 removed only when the ConfigMap itself goes away.
 
+Every harness Event is recorded on this ConfigMap, prefixed `[<cluster>]`, so
+a team reads its runs in its own namespace: `HarnessRunStarted` (with the
+trigger `first-revision`, `new-revision` or `rollback`), `HarnessRunCompleted`,
+`HarnessRunFailed` and `HarnessRunSuperseded`, plus the refusals
+`UnknownDataset`, `InvalidHarnessDeclaration` and `HarnessJudgeKeyUnavailable`.
+The runner's `<job>-result` ConfigMaps also carry `harness.oap.io/agent`, so
+the reconciler lists declarations with
+`harness.oap.io/agent,!harness.oap.io/result` and never reads a result as a
+declaration.
+
 ### Contract 4: the dataset schema
 
 A dataset is a chart file `gitops/addons/charts/agent-evaluation/files/harness/datasets/<name>.yaml`,
@@ -1335,7 +1345,8 @@ A harness case must not be scored again by the online evaluators, or read as
 live traffic. The marker is the A2A `contextId`, which the platform base image
 already maps to the trace's `session.id`:
 
-- the runner sends `contextId = oap-harness-<revision>-<caseId>` on every case;
+- the runner sends `contextId = oap-harness-<revision>-<caseId>` on every case
+  (`oap-harness-<revision>-r<n>-<caseId>` for run n >= 2, see "Rollback");
 - `strands-agent-base` tags such traces `source:harness` instead of
   `source:chat`, the same transport-agnostic rule as `incident-` to `source:rca`;
 - every online rule the reconciler writes carries two extra filter clauses,
