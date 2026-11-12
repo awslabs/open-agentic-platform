@@ -421,9 +421,46 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 | **3.3a** confidential without OAM | **PASS end to end.** Real generator, real policy + PCR17, pod Running 1/1, `exec` denied, `verify-isolation.sh` 5 PASS / 0 FAIL |
 | **3.5** session isolation | **PASS (platform half).** All four env vars exact; agent front door correctly **not** sandboxed; RBAC exactly right; pool at 3. Two claims → **two distinct sandboxes**, each with its own kernel, and a cross-session filesystem probe confirms one cannot read the other's `/workspace`. Driving two real users through the gateway was not run — see the box below |
 | `download-runtime-binaries.sh` | **PASS.** Signature verified, all 8 files, both arches |
-| **3.4** confidential pool | **Not run.** Same mechanism as 3.3 + 3.3a |
-| **3.6** attested pod, **Part 4** KMS | **Not run.** Needs an encrypted image and a billable KMS key |
-| **3.7** Kata | **Not run.** No Kata nodes on this cluster |
+| **3.4** confidential pool | **PASS end to end.** Render + card correct; placeholder policy refused; with a REAL policy the warm pods run and `exec` is denied (`policy denied Agent::Action::"Exec"`); `verify-isolation.sh` 5 PASS / 0 FAIL. Needed `--no-pin-hostname` — see the box below |
+| **3.7** Kata | **PASS (render half).** The SAME Application, unchanged, renders `kata-clh` and the scheduler demands `katacontainers.io/kata-runtime=true`; confidential is **rejected by the real webhook** with both guards firing. Pods stay Pending because this cluster has no Kata nodes — which is the finding-1 symptom, deliberately observed |
+| **3.6** attested pod | **Blocked on Part 4.** The split-manifest fix is verified (one `kind:` per file, and the generator accepts a Pod-only manifest in 3.3a and 3.4), but the pod itself needs an **encrypted image** and a KMS key whose policy pins PCR17 |
+| **Part 4** KMS attestation | **Not run.** Creates a billable KMS key with a 7–30 day deletion window |
+
+### 3.4's trap: a confidential policy pins the pod's HOSTNAME
+
+Worth its own box because the error message points nowhere near the cause, and
+it cost several iterations here.
+
+A confidential policy pins `context.hostname`, and the hostname **is the pod's
+name**. A warm pool's pods have generated names (`regulated-session-h7wmt`), so a
+policy generated from the *template* pins a name no pool pod will ever have, and
+every single one is denied:
+
+```
+FailedCreatePodSandBox ... policy denied SetupSandbox
+```
+
+`SetupSandbox` says nothing about hostnames — it sends you looking at mounts,
+volumes and env. The fix is `--no-pin-hostname`, and
+`scripts/nitro/gen-cedar-policy.sh` now adds it automatically for any **template**
+source (SandboxTemplate, Rollout), because pods built from a template always have
+generated names. Only a live `--from pod/<name>` source has the name the policy
+will be matched against, so that is the one case where pinning is right. Pass
+`--pin-hostname` to override.
+
+Two more things 3.4 showed, both operational:
+
+- **Changing `cedarPolicy` does not recycle existing warm pods.** The Application
+  and the SandboxTemplate pick up the new policy immediately; the pods keep the
+  old one. A policy rotation needs the pool drained —
+  `kubectl delete sandbox -n <ns> --all` — or the pool serves sandboxes under a
+  policy you have replaced.
+- **`--with-pod-identity` is wrong for this pool.** Its pods set
+  `automountServiceAccountToken: false` and get no injected env, so the flag makes
+  the policy expect credentials that never arrive. That denial surfaces as
+  `CreateContainer`, not `SetupSandbox` — a different message for a different
+  mistake.
+
 
 ### Two things that look like failures and are not
 

@@ -96,6 +96,10 @@
 #   --allow-exec-logs                            do NOT pass --deny-exec --deny-logs, which
 #                                                this script adds by default in confidential
 #                                                mode. See WHAT CONFIDENTIAL DOES NOT PROTECT.
+#   --pin-hostname                               DO pin context.hostname even for a template
+#                                                source. Only correct if every pod built from
+#                                                it will have exactly the template's name --
+#                                                which a warm pool's pods never do.
 #   --                                           pass everything after this to genpolicy,
 #                                                e.g. -- --deny-exec --require-any-signer <arn>
 set -euo pipefail
@@ -111,6 +115,7 @@ GENPOLICY=""
 USE_DOCKER=0
 POD_IDENTITY=auto
 DENY_EXEC_LOGS=auto
+PIN_HOSTNAME=auto
 # Declared, but never expanded as a bare "${EXTRA[@]}": bash 3.2 (the /bin/bash
 # every macOS ships) treats an EMPTY array as unset under `set -u`, so that
 # expansion aborts the script whenever nothing was passed after `--`. The
@@ -129,6 +134,7 @@ while [ $# -gt 0 ]; do
     --docker)    USE_DOCKER=1; shift ;;
     --no-pod-identity) POD_IDENTITY=off; shift ;;
     --allow-exec-logs) DENY_EXEC_LOGS=off; shift ;;
+    --pin-hostname)    PIN_HOSTNAME=on; shift ;;
     --)          shift; EXTRA=("$@"); break ;;
     -h|--help)   sed -n '/^# usage:/,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -370,6 +376,26 @@ if [ "$DENY_EXEC_LOGS" = auto ] && [ "$PROFILE" = confidential ] &&
   echo "==> confidential profile -- adding --deny-exec --deny-logs (--allow-exec-logs to keep them)"
 fi
 
+# A confidential policy pins context.hostname, and the hostname IS the pod's
+# name. Anything generated from a TEMPLATE -- a SandboxTemplate, a Rollout --
+# produces pods with generated suffixes, so a pinned hostname matches none of
+# them and every pod is denied at sandbox setup:
+#
+#   FailedCreatePodSandBox ... policy denied SetupSandbox
+#
+# which says nothing about hostnames and sends you looking at mounts and env.
+# Measured on a live cluster: a confidential warm pool denied every pod until
+# this flag was added, then came up immediately.
+#
+# Only a live Pod source has the name the policy will actually be matched
+# against, so that is the one case where pinning is correct.
+if [ "$PIN_HOSTNAME" = auto ] && [ "${EXTRACTED%%/*}" != "Pod" ] &&
+   ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qE -- '^--(no-)?pin-hostname'; then
+  ARGS+=(--no-pin-hostname)
+  echo "==> template source (${EXTRACTED%%/*}) -- adding --no-pin-hostname, because pods"
+  echo "    built from a template get generated names and a pinned hostname denies them all"
+fi
+
 ARGS+=(${EXTRA[@]+"${EXTRA[@]}"} pod.yaml)
 
 set +e
@@ -393,6 +419,13 @@ set -e
 if [ "$RC" -ne 0 ]; then
   echo "genpolicy failed (exit $RC):" >&2
   cat "$WORK/err.txt" >&2
+  if grep -q 'SetupSandbox' "$WORK/err.txt" 2>/dev/null; then
+    echo >&2
+    echo "'policy denied SetupSandbox' is usually the HOSTNAME. A confidential policy" >&2
+    echo "pins context.hostname, which is the pod's name, so a policy generated from a" >&2
+    echo "template denies every pod the template produces. Regenerate with" >&2
+    echo "--no-pin-hostname (this script adds it for template sources automatically)." >&2
+  fi
   if grep -q 'enableServiceLinks' "$WORK/err.txt" 2>/dev/null; then
     echo >&2
     echo "The pod template is missing 'enableServiceLinks: false'. OAP emits it for" >&2
