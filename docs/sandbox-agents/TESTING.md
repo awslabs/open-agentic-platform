@@ -868,10 +868,31 @@ digest in a repo goes stale. Confidential mode pins the image *in the policy*, s
 a mismatch is a denied pod:
 
 ```bash
-docker buildx imagetools inspect public.ecr.aws/z0a4o2j5/strands-agent:v1.6.0 \
-  | grep Digest
-# put that value in the example's `image:` field if it differs
+IMG=public.ecr.aws/z0a4o2j5/strands-agent:v1.6.0
+
+# any ONE of these -- use what you have:
+skopeo inspect --format '{{.Digest}}' "docker://$IMG"          # skopeo
+crane digest "$IMG"                                            # crane
+docker buildx imagetools inspect "$IMG" | grep Digest          # docker only
+podman run --rm quay.io/skopeo/stable inspect \
+  --format '{{.Digest}}' "docker://$IMG"                       # podman (no skopeo installed)
 ```
+
+**Use the manifest-list digest, not a per-platform one.** `podman manifest
+inspect` is tempting — it needs nothing extra — but on a multi-arch image it
+prints one digest *per platform*:
+
+```
+linux arm64 -> sha256:7d65a571...
+linux amd64 -> sha256:11066fce...
+```
+
+while the four commands above print the **list** digest (`sha256:996e1c19...`).
+Pin the list digest: the generator resolves every platform ref beneath it, and
+the runtime picks the one matching the node. Pin a platform digest instead and
+the policy pins an image the node may not be able to run.
+
+Put that value in the example's `image:` field if it differs.
 
 **Step 4 — generate the policy from the rendered pod spec.** Not from the
 Application: what runs is a pod template rendered from CUE by KubeVela and
@@ -1046,7 +1067,8 @@ covered the mechanics.
 | Asks for | `mode: confidential` + `cedarPolicy`, `warmPool: 2`, `idleTimeout: 5m` |
 
 ```bash
-docker buildx imagetools inspect public.ecr.aws/docker/library/python:3.12-slim | grep Digest
+# same digest lookup as 3.3 -- skopeo / crane / docker / podman+skopeo
+skopeo inspect --format '{{.Digest}}' docker://public.ecr.aws/docker/library/python:3.12-slim
 # update `image:` if it differs, then:
 ./scripts/nitro/gen-cedar-policy.sh \
   --app platform/oam/examples/example-sandbox-confidential.yaml \

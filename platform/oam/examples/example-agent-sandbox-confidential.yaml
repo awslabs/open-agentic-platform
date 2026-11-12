@@ -95,7 +95,9 @@ spec:
         # image and a tag that moves under you is a denied pod, not a new
         # version. This was the digest at the time of writing; re-resolve it for
         # your own build and regenerate the policy in the same change:
-        #   docker buildx imagetools inspect <image:tag>   (or: crane digest)
+        #   skopeo inspect --format '{{.Digest}}' docker://<image:tag>
+        #   (or `crane digest`, or `docker buildx imagetools inspect`). Use the
+        #   MANIFEST LIST digest, not a per-platform one.
         image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:996e1c19489b0515887fa55f86ae12907d8da03c8e7c7488fcb28fac3fabd5e0
 
         # One replica, deliberately. Each replica is a separate microVM with its

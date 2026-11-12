@@ -107,7 +107,7 @@ template: {
 	// confidential mode wants a digest rather than a tag. Copied unchanged it is
 	// an ImagePullBackOff several minutes after apply, nowhere near the cause.
 	if regexp.Match("@sha256:0{64}$", parameter.image) {
-		_imageDigestPlaceholder: "set" & "image ends in @sha256:000...0, which is the placeholder digest from the confidential examples, not a real one. Pin the digest you actually built -- `docker buildx imagetools inspect <image:tag>` prints it, as does `crane digest <image:tag>`. Confidential mode wants a digest rather than a tag because the Cedar policy pins it, so a tag is not the fix either."
+		_imageDigestPlaceholder: "set" & "image ends in @sha256:000...0, which is the placeholder digest from the confidential examples, not a real one. Pin the digest you actually built: `skopeo inspect --format '{{.Digest}}' docker://<image:tag>` prints it, as do `crane digest` and (docker only) `docker buildx imagetools inspect`. Use the MANIFEST LIST digest, not a per-platform one -- `podman manifest inspect` prints the latter. Confidential mode wants a digest rather than a tag because the Cedar policy pins it, so a tag is not the fix either."
 	}
 
 	// FAIL CLOSED. If the platform never configured an isolation runtime and a
