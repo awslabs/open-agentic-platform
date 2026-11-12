@@ -1,0 +1,20 @@
+# agent-sandbox, hub overlay.
+#
+# WHY THIS EXISTS. `enable_agent_sandbox` gates two different things with one
+# label: the OPERATOR, which is the only source of the Sandbox* CRDs
+# (SandboxTemplate / SandboxWarmPool / SandboxClaim), and the CAPABILITY CHART,
+# which renders the Dark Factory coder warm pool.
+#
+# OAP needs the first and not the second. `type: sandbox` components and
+# their OWN pools from the OAM Application. The coder warm pool belongs to Dark
+# Factory (`dark_factory`), which is off on this cluster — so left on, it is a
+# pool nobody claims from, holding real nodes.
+#
+# It is also the thing that made agent-sandbox-hub go Degraded here: the pool
+# schedules a coder pod, and with runtime=nitro that pod wants a sandbox-capable
+# node for a workload no one asked for.
+warmPool:
+  enabled: false
+
+# No `runtime:` here any more -- nitro is the chart default. A cluster that needs
+# Kata sets the sandbox_runtime annotation instead of editing this file.

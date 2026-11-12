@@ -1,0 +1,128 @@
+# The attested pod: a confidential Nitro Sandbox running an image whose layers
+# only AWS KMS can unwrap, and only after the attestation measurements match.
+#
+# WHAT "RUNNING" PROVES HERE. The parent instance transfers encrypted layer blobs
+# into the sandbox. The sandbox calls kms:Decrypt through EKS Pod Identity,
+# attaching the attestation document the Nitro Secure Module signed, and KMS
+# compares the measurements against the key policy before releasing the layer
+# key. No match, no key, no image, no pod. So this pod reaching Running is not
+# evidence that isolation is configured -- it is evidence that an external
+# service verified what booted.
+#
+# FILL IN THREE THINGS BEFORE APPLYING
+#   1. image:           your encrypted tag (examples/nitro-sandbox/encrypt-image.sh)
+#   2. the policy       the base64 from eks-nitro-sandbox-genpolicy, below
+#   3. serviceAccountName + a Pod Identity association granting kms:Decrypt
+#
+# Generate the policy from THIS file, after the image is final:
+#   eks-nitro-sandbox-genpolicy --profile confidential --with-pod-identity \
+#     examples/nitro-sandbox/pod-attested.yaml
+#
+# --with-pod-identity is not optional. The guest needs the Pod Identity token to
+# call KMS for the layer key, and a policy generated without it DENIES that very
+# call -- the pod then fails to pull its own image.
+#
+# See examples/nitro-sandbox/README.md for the whole sequence, including the
+# negative control: change one byte of the policy, leave the old PCR17 in the key
+# policy, and watch KMS return AccessDeniedException on the pull.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attested-demo
+  labels:
+    app.kubernetes.io/name: attested-demo
+  annotations:
+    # Base64 Cedar policy. In confidential mode this pins image digest, args,
+    # environment, mounts, capabilities and security settings, and its SHA-384 IS
+    # the PCR17 value the KMS key policy requires.
+    #
+    # REGENERATE AND REPIN TOGETHER. Any change to a pinned field changes PCR17,
+    # and the key stops releasing the layer key. A stale policy does not degrade
+    # into something weaker -- the pod is denied.
+    sandbox.amazonaws.com/policy: "UkVQTEFDRSBUSElTLiBHZW5lcmF0ZSB0aGUgcmVhbCBwb2xpY3kgd2l0aCBzY3JpcHRzL25pdHJvL2dlbi1jZWRhci1wb2xpY3kuc2ggLS1hcHAgPHRoaXMgZmlsZT4gLS1jb21wb25lbnQgPG5hbWU+IC0tcHJvZmlsZSBjb25maWRlbnRpYWw="
+spec:
+  # confidential, not isolated: the parent instance is outside the trust
+  # boundary. Memory is unreadable from the node, the overlay is encrypted, and
+  # exec, stdin and process listing are DENIED from the host -- which is why
+  # there is no exec-based debugging step in the README for this pod.
+  runtimeClassName: confidential-sandbox
+  restartPolicy: Never
+
+  # The identity the sandbox uses to call KMS. Associate it with a role that has
+  # kms:Decrypt on the key, through EKS POD IDENTITY:
+  #
+  #   aws eks create-pod-identity-association --cluster-name <cluster> \
+  #     --namespace default --service-account attested-demo \
+  #     --role-arn arn:aws:iam::<account>:role/<role>
+  #
+  # IRSA IS NOT USED for image decryption, and IMDS inside a sandbox serves only
+  # placement metadata -- placement/region, availability-zone, services/domain,
+  # services/partition -- with everything else returning 404. There are no IAM
+  # credentials to be had there.
+  serviceAccountName: attested-demo
+  # REQUIRED by eks-nitro-sandbox-genpolicy --profile confidential, which
+  # refuses a manifest that leaves this unset: the kubelet injects a
+  # <SVC>_PORT variable per Service in the namespace, so the env set the
+  # policy pins is not knowable at generation time.
+  enableServiceLinks: false
+
+  # REQUIRED for an encrypted image, not hardening. genpolicy cannot read
+  # /etc/passwd out of encrypted layers, so a non-numeric USER directive (the
+  # usual `USER appuser`) makes POLICY GENERATION FAIL outright. Supplying the
+  # numeric uid and gid in the pod spec is the documented workaround.
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    # Tells the runtime to ignore the image's /etc/group and attach only the
+    # groups this spec names, which lets the policy pin the group set exactly
+    # even though it cannot read the image's. Without it the group set is
+    # whatever the image says, and unpinned.
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+
+  containers:
+    - name: main
+      # Your encrypted image. The digest here is pinned by the Cedar policy, so
+      # a rebuild means a new policy and a new PCR17.
+      image: 111122223333.dkr.ecr.us-west-2.amazonaws.com/attested-demo:encrypted
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "running inside a confidential Nitro Sandbox"
+          echo "product: $(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unreadable)"
+          echo "kernel:  $(uname -r)"
+          echo "the image layers were decrypted in here, never on the node"
+          sleep 3600
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      resources:
+        # confidential-sandbox charges 512Mi of RuntimeClass overhead against the
+        # node on top of this, plus one eks.amazonaws.com/nitro-sandbox slot.
+        # Above 1GiB, usable memory also runs about 1-2% below the request,
+        # because the guest kernel uses that share for page tables and its own
+        # bookkeeping.
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+  volumes:
+    # emptyDir rather than a PVC: an EBS volume attaches to one sandbox at a
+    # time, and ephemeral usage inside a sandbox reports as ZERO from the node,
+    # so a sizeLimit enforced by the guest kernel is the only working bound.
+    - name: tmp
+      emptyDir:
+        sizeLimit: 256Mi

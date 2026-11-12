@@ -16,6 +16,7 @@ spec:
         	"encoding/hex"
         	"strings"
         )
+
         // AWS memory name. It must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ and must be one-to-one
         // with (install, namespace, component): the IAM policy grants memory/<name>-*, so two
         // triples sharing a name would share a memory. AgentCore requires the name to be

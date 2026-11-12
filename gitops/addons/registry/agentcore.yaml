@@ -61,13 +61,65 @@ oam-agent-components:
       # Ported from gitops/addons/bootstrap/default/addons.yaml, which this registry
       # layer replaced — that file's edit on main has nowhere else to land.
       awsAccountId: '{{.metadata.annotations.aws_account_id}}'
-      # Kata RuntimeClass a sandboxed agent selects (agent component,
-      # properties.sandbox: true). Pinned here rather than left to the chart
-      # default so the class a cluster hands out is visible in the GitOps layer
-      # alongside its other ambient values, not only in chart defaults.
+      # RuntimeClass a sandboxed agent selects (agent component,
+      # properties.sandbox: true) for each trust model. Pinned here rather than
+      # left to the chart default so the class a cluster hands out is visible in
+      # the GitOps layer alongside its other ambient values.
       #
-      # Matches the chart default. Change it ONLY for a cluster whose matching
-      # node layer is provisioned: kata-qemu needs nothing extra (same pool as
-      # clh), kata-fc needs kata-nodepool kataFc.enabled plus the
-      # agent_sandbox_kata_fc addon, or sandboxed pods stay Pending.
-      sandboxRuntimeClass: kata-clh
+      # PER-CLUSTER, not per-fleet: this is read from the cluster secret, the same
+      # way aws_region and aws_cluster_name are, so a Nitro hub and a Kata spoke
+      # can disagree without either one overriding the chart. The defaults are the
+      # Nitro classes, which EKS Auto Mode provisions on demand (k8s >= 1.36) --
+      # no node layer of ours, no addon to enable.
+      #
+      # TO PUT A CLUSTER BACK ON KATA, annotate its cluster secret:
+      #   sandbox_runtime_class: kata-clh
+      # and leave confidential_sandbox_runtime_class empty (Kata cannot attest, so
+      # confidential must fail the render there rather than hand out a clh pod).
+      # kata-qemu needs nothing extra (same pool as clh); kata-fc needs
+      # kata-nodepool kataFc.enabled plus the agent_sandbox_kata_fc addon, or
+      # sandboxed pods stay Pending.
+      #
+      # A cluster BELOW k8s 1.36, or one not on Auto Mode and without a Nitro
+      # Sandbox AMI, has no isolated-sandbox class: sandboxed pods there stay
+      # Pending (the Rollout reports not-Ready, never fake-green). Annotate such a
+      # cluster onto Kata, or leave sandbox_runtime_class empty to reject
+      # sandbox: true at admission instead.
+      #
+      # A SENTINEL, NOT `| default`: sprig's `default` treats "" as unset, so
+      # `default "isolated-sandbox" (index ... )` turned an annotation that was
+      # PRESENT AND EMPTY back into the Nitro class -- which made the paragraph
+      # above false, and left a Kata cluster annotated only with
+      # sandbox_runtime_class still being handed confidential-sandbox for
+      # sandboxMode: confidential.
+      #
+      # So "leave it empty to reject sandbox: true" is NOT how you do it: write
+      # `none`. With map[string]string there is no way to tell an absent key from
+      # a present-but-empty one -- `index` returns "" for both -- so the empty
+      # string cannot carry that meaning and an explicit word has to.
+      # `index` is still used for the read (see _defaults.yaml: missingkey=error
+      # makes a field access on an absent key fail before anything else runs).
+      #
+      # AND NOT hasKey, WHICH DOES NOT WORK HERE. sprig's hasKey/get/dig all
+      # require map[string]interface{}; ArgoCD types annotations as
+      # map[string]string, so hasKey fails with "wrong type for value" and the
+      # appset then generates NO parameters -- every child Application silently
+      # keeps its previous values. Verified on a live cluster; no offline test
+      # can catch it, because the ApplicationSet controller is what evaluates
+      # these templates.
+      #
+      # `none` IS THE SENTINEL, not the empty string. With map[string]string,
+      # `index` returns "" for both an absent key and a present-but-empty one,
+      # so "" cannot mean "this cluster has no class". Spell it `none` and the
+      # template emits "" for the component's fail-closed guard to reject:
+      #
+      #   absent  -> the platform default
+      #   none    -> "", so sandbox: true / sandboxMode: confidential is rejected
+      #   <value> -> that class
+      sandboxRuntimeClass: '{{ $v := index .metadata.annotations "sandbox_runtime_class" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}isolated-sandbox{{ end }}'
+      confidentialSandboxRuntimeClass: '{{ $v := index .metadata.annotations "confidential_sandbox_runtime_class" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}confidential-sandbox{{ end }}'
+      # Which of those class names are Nitro. See the chart's values.yaml:
+      # the Nitro-only fields (networkIsolated, cedarPolicy, confidential mode)
+      # are REJECTED on a class that is not in this list, because Kata ignores
+      # them silently. Present-and-empty disables them all on this cluster.
+      nitroSandboxRuntimeClasses: '{{ $v := index .metadata.annotations "nitro_sandbox_runtime_classes" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}isolated-sandbox,confidential-sandbox{{ end }}'

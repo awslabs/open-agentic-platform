@@ -25,12 +25,16 @@ platform/oam/
 │   └── components/
 │       ├── agent.cue
 │       ├── mcp-server.cue
+│       ├── sandbox.cue
 │       └── agentcore-memory.cue
 └── examples/
     ├── example-agent-minimal.yaml          Minimal agent
     ├── example-agent-simple.yaml           Agent + LLM gateway
-    ├── example-agent-sandbox.yaml          Agent isolated in a Kata microVM (sandbox: true)
-    ├── example-agent-with-mcp.yaml         Agent integrated with an MCP server
+    ├── example-agent-sandbox.yaml          Agent in a hardware-isolated microVM (sandbox: true)
+    ├── example-agent-sandbox-confidential.yaml  ... with the node operator outside the trust boundary
+    ├── example-sandbox-isolated.yaml        Claimable warm pool of microVMs, isolated mode (type: sandbox)
+    ├── example-sandbox-confidential.yaml    Claimable warm pool, confidential mode + attestation
+    ├── example-agent-with-mcp.yaml          Agent integrated with an MCP server
     ├── example-agent-agentcore-memory.yaml Agent backed by Bedrock AgentCore Memory
     ├── example-agent-milvus-memory.yaml    Agent backed by Milvus vector store
     ├── example-mcp-local.yaml              MCP server

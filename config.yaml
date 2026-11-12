@@ -54,6 +54,44 @@ agenticRepo:
 # Without it, one hub can pick up another hub's spokes.
 # fleetScopeByPrefix: true
 
+# Agent sandbox (hardware isolation for agents and per-session sandboxes)
+#
+# Turns on the agent_sandbox addon for the HUB. The addon is the only source of
+# the Sandbox* CRDs (SandboxTemplate / SandboxWarmPool / SandboxClaim), so it is
+# required for `type: sandbox` components. `sandbox: true` on an agent needs only
+# the RuntimeClasses, not this addon.
+sandbox:
+  enabled: true
+
+  # Which isolation technology the warm pool runs on. This is the one setting
+  # that decides whether you need a node layer of your own.
+  #
+  #   nitro  AWS Nitro Sandboxes (RuntimeClasses isolated-sandbox /
+  #          confidential-sandbox). NO NODE LAYER NEEDED on EKS Auto Mode with
+  #          Kubernetes 1.36+: the class and a sandbox-capable node are
+  #          provisioned on demand when the first pod asks. Verified on a 1.37
+  #          Auto Mode cluster — a c8a.large sandbox node appeared in ~2 min and
+  #          the pod ran its own kernel.
+  #
+  #   kata   Kata Containers (kata-clh / kata-qemu / kata-fc). Needs the
+  #          self-managed nested-virt node layer as well: set `karpenter`,
+  #          `kata_nodepool` and `agent_sandbox_kata` in the environment overlay
+  #          (gitops/overlays/environments/<env>/enabled-addons.yaml). Without
+  #          those the warm pool sits Pending forever, because no node can take
+  #          a kata pod.
+  #
+  # KATA IS NOT REQUIRED FOR NITRO and nothing here turns it on. The Kata flags
+  # stay false unless you deliberately enable them; they exist for clusters that
+  # cannot run Nitro (Kubernetes < 1.36, a non-US-commercial region, or no Auto
+  # Mode).
+  #
+  # This matches the chart's own default, so leaving it unset gives you Nitro
+  # too. It is spelled out here because it is the one value that decides whether
+  # you need infrastructure of your own, and because a KATA cluster must set it:
+  # inheriting the Nitro default there recreates the warm pool on a class its
+  # nodes do not have, and every warm pod goes Pending.
+  runtime: "nitro"
+
 # Spoke clusters (optional — hub-only by default)
 # Each entry is applied by `task spokes:install` as a Crossplane PlatformCluster claim, so it
 # only takes effect with platform.clusterProvider: kind-crossplane. With kind-kro-ack, declare

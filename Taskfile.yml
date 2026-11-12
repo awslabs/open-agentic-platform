@@ -62,6 +62,16 @@ vars:
     sh: yq -r '.identityCenter.adminGroupId' {{.CONFIG_FILE}}
   K8S_VERSION:
     sh: yq -r '.hub.kubernetesVersion // "1.37"' {{.CONFIG_FILE}}
+  # Agent sandbox. Default false so an existing config.local.yaml without a
+  # `sandbox:` block behaves exactly as before.
+  SANDBOX_ENABLED:
+    sh: yq -r '.sandbox.enabled // false' {{.CONFIG_FILE}}
+  # No `// "kata"` fallback on purpose: the task refuses an unknown value rather
+  # than quietly choosing a runtime, because choosing wrong means either a pool
+  # of Pending pods (kata with no kata nodes) or a pool recreated on a class the
+  # nodes do not have.
+  SANDBOX_RUNTIME:
+    sh: yq -r '.sandbox.runtime // "nitro"' {{.CONFIG_FILE}}
   AGENTIC_REPO_URL:
     sh: yq -r '.agenticRepo.url' {{.CONFIG_FILE}}
   AGENTIC_REPO_REVISION:
@@ -364,6 +374,59 @@ tasks:
           eks_oidc_provider="${ISSUER}"
         printf '✓ Hub cluster secret annotated: eks_oidc_provider=%s\n' "${ISSUER}"
 
+  agentic:hub-sandbox:
+    desc: Enable the agent sandbox addon on the hub from config.yaml's `sandbox:` block (CRDs + warm pool, Nitro by default)
+    deps: [agentic:ensure-kubeconfig]
+    cmds:
+      - |
+        set -euo pipefail
+        ENABLED='{{.SANDBOX_ENABLED}}'
+        RUNTIME='{{.SANDBOX_RUNTIME}}'
+
+        if [ "$ENABLED" != "true" ]; then
+          printf '• agent sandbox disabled (sandbox.enabled is %s) — skipping\n' "${ENABLED:-unset}"
+          exit 0
+        fi
+
+        # Fail on an unknown runtime rather than passing it through. The chart
+        # also rejects it, but that failure surfaces as an ArgoCD sync error on
+        # a template nobody is looking at, minutes later.
+        case "$RUNTIME" in
+          nitro|kata) ;;
+          *) printf 'sandbox.runtime=%s is not valid; use "nitro" or "kata"\n' "$RUNTIME" >&2; exit 1 ;;
+        esac
+
+        # WHY THE SECRET AND NOT enabled-addons.yaml. The hub's enable_<addon>
+        # labels come from the environment overlay
+        # (gitops/overlays/environments/control-plane/enabled-addons.yaml), which
+        # EVERY control-plane cluster shares — so enabling it there turns the
+        # addon on for other people's hubs. Applied here instead, the same way
+        # eks_oidc_provider is. Idempotent, re-applied on every install/upgrade.
+        kubectl --context {{.HUB_CLUSTER_NAME}} label secret {{.HUB_CLUSTER_NAME}} -n argocd --overwrite \
+          enable_agent_sandbox=true
+
+        # The runtime is an ANNOTATION, read by the agent-sandbox registry entry
+        # (gitops/addons/registry/sandbox.yaml). It is required for nitro: the
+        # chart's own default is kata, because the warm pool has a live Kata
+        # consumer and a silent flip would recreate its pool on a class its
+        # nodes may not have.
+        kubectl --context {{.HUB_CLUSTER_NAME}} annotate secret {{.HUB_CLUSTER_NAME}} -n argocd --overwrite \
+          sandbox_runtime="${RUNTIME}"
+
+        printf '✓ agent sandbox enabled on {{.HUB_CLUSTER_NAME}} (runtime=%s)\n' "$RUNTIME"
+
+        if [ "$RUNTIME" = nitro ]; then
+          printf '  Nitro needs no node layer on EKS Auto Mode (k8s >= 1.36): the class and a\n'
+          printf '  sandbox-capable node are provisioned on demand. Confirm the classes exist:\n'
+          printf '    kubectl get runtimeclass isolated-sandbox confidential-sandbox\n'
+          printf '  Kata is NOT required and is left off.\n'
+        else
+          printf '  Kata ALSO needs the nested-virt node layer. Set karpenter, kata_nodepool and\n'
+          printf '  agent_sandbox_kata to true in the environment overlay, or the warm pool stays\n'
+          printf '  Pending because no node can take a kata pod.\n'
+        fi
+        printf '  The addon installs the Sandbox* CRDs; ArgoCD applies it on the next sync.\n'
+
   agentic:bootstrap:
     desc: Apply the agentic platform bootstrap Application to ArgoCD
     deps: [agentic:ensure-kubeconfig]
@@ -379,6 +442,10 @@ tasks:
       PLATFORM_REPO_REVISION: "{{.PLATFORM_REF}}"
     cmds:
       - task: agentic:hub-oidc-annotation
+      # Applied here rather than in enabled-addons.yaml, which every
+      # control-plane cluster shares. Skips itself when sandbox.enabled is not
+      # true, so a config without a `sandbox:` block is unchanged.
+      - task: agentic:hub-sandbox
       - |
         # Option A overlay coordinates (empty OVERLAY_REPO_URL → overlay source omitted).
         # Config wins; otherwise inherit what the platform wired on the hub cluster

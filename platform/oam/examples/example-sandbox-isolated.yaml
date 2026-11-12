@@ -1,0 +1,210 @@
+# Per-session sandbox, isolated mode — the DEFAULT isolation on this platform.
+#
+# A developer declares ONE sandbox. The platform hands out one instance per user
+# session, claimed from the warm pool and released on idle. No user ever submits
+# OAM, and no agent definition is duplicated per tenant.
+#
+# `isolated` means: the NODE is trusted, the WORKLOAD is not. Each instance is a
+# Nitro Sandbox — a Firecracker microVM with its own kernel, whose memory and
+# CPU the Nitro hypervisor isolates in hardware from the parent instance and from
+# every other sandbox on it. A container escape inside one instance reaches
+# nothing: not the node, not another session.
+#
+# This is the right mode for running code a model wrote. It is NOT the mode for
+# hiding data from your own cluster administrators — that is
+# example-sandbox-confidential.yaml.
+#
+# PRECONDITIONS
+#   1. The agent-sandbox operator, which is the only source of the
+#      SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs:
+#        enable_agent_sandbox: true on the cluster
+#      Without it this Application fails to render with a missing-CRD error.
+#   2. A cluster that can run Nitro Sandboxes: Kubernetes 1.36+ in a US
+#      commercial region. On EKS Auto Mode nothing else is needed — the
+#      isolated-sandbox RuntimeClass is already there and a sandbox-capable node
+#      is provisioned on demand. Outside Auto Mode you need a Nitro Sandbox AMI
+#      and nodes launched with EnclaveOptions.Enabled=true.
+#        kubectl get runtimeclass isolated-sandbox
+#   3. Nothing Kata-related. This path uses no nested-virt node pool, no
+#      kata-deploy and no kata_nodepool addon. A cluster annotated onto Kata
+#      (sandbox_runtime_class: kata-clh) renders this same file against the Kata
+#      class instead, with no change here.
+#
+# The RuntimeClass is NOT in this file and cannot be: which isolation runtime a
+# cluster offers is ambient environment config. `mode` states the trust model,
+# which is a property of the workload. See docs/sandbox-agents/NITRO-DESIGN.md.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: session-code-sandbox
+  namespace: default
+spec:
+  components:
+    # The component name IS the sandbox's identity: it names the SandboxWarmPool,
+    # the SandboxTemplate (<name>-template), the ServiceAccount, the container
+    # and the sandbox card ConfigMap (<name>-sandbox). An agent claims from it by
+    # this pool by name. A consumer creates the SandboxClaim itself.
+    - name: code-session
+      type: sandbox
+      properties:
+        description: "Per-session Python execution for data-analyst agents"
+
+        # Required, with no platform default: a sandbox image IS the workload.
+        # Replace this with your interpreter image. It must run as a NUMERIC
+        # non-root uid or accept the runAsUser below — runAsNonRoot makes the
+        # kubelet PROVE non-rootness, and it cannot prove that from a named USER.
+        image: public.ecr.aws/docker/library/python:3.12-slim
+
+        # A warm instance starts BEFORE any claim injects its per-session env, so
+        # it must idle until the claim arrives rather than run at boot. The
+        # claimer execs the real entrypoint once it binds.
+        command: ["sleep", "infinity"]
+
+        # ── Trust model ────────────────────────────────────────────────────────
+        # Omitted, because `isolated` is the default. Written out here once for
+        # the sake of the example:
+        mode: isolated
+
+        # ── Cold start vs standing cost ───────────────────────────────────────
+        # Two pre-booted instances. A claim against a non-empty pool binds an
+        # instance that is already running; an empty pool makes the first request
+        # of a session wait for a microVM boot, and on a cluster with no spare
+        # sandbox-capable node, for a node to be provisioned first.
+        #
+        # Every warm instance occupies memory, a nitro-sandbox slot and its share
+        # of the node whether or not anyone claims it. 0 is valid and means pure
+        # on-demand.
+        warmPool: 2
+
+        # ── Lifecycle ─────────────────────────────────────────────────────────
+        # PUBLISHED, NOT ENFORCED HERE. The TTL lives on the per-session
+        # SandboxClaim, which the claimer creates at request time, so this
+        # component states the contract on the sandbox card and the claimer
+        # applies it. A claimer that ignores these leaks instances.
+        idleTimeout: 15m
+        maxLifetime: 4h
+
+        # ── Network ───────────────────────────────────────────────────────────
+        # NOT network-isolated, because this sandbox is driven over HTTP by the
+        # agent that claims it, and `service: true` needs a reachable pod.
+        #
+        # For a sandbox that runs model-written code with no business calling
+        # out, set networkIsolated: true and service: false instead: the instance
+        # then boots with no network device at all — no DNS, no NTP, no IMDS, no
+        # Pod Identity, nothing routable in either direction — and the claimer
+        # drives it over exec/stdin, which keep working over vsock. Because the
+        # device is ABSENT rather than filtered, it is not a policy a compromised
+        # workload can talk its way around.
+        service: true
+        ports:
+          - name: http
+            containerPort: 8080
+
+        # ── Sizing ────────────────────────────────────────────────────────────
+        # Two Nitro notes that change what to write here.
+        #
+        # 1. The RuntimeClass adds overhead ON TOP of these requests — 256Mi for
+        #    isolated-sandbox, plus one eks.amazonaws.com/nitro-sandbox slot —
+        #    charged for scheduling and kubelet accounting both.
+        # 2. On SMT instance types, core scheduling keeps two different sandboxes
+        #    off the sibling threads of one core. Requesting CPU in multiples of
+        #    two vCPUs lets an instance own whole cores instead of stranding a
+        #    sibling. Graviton has one thread per core and is unaffected.
+        #
+        # Density ceiling, for pool sizing: total sandbox vCPUs on a node cannot
+        # exceed 5x the node's vCPUs, and neither can the instance count (halved
+        # on CPU-overcommit types). Memory usually binds first.
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+
+        # ── Storage ───────────────────────────────────────────────────────────
+        # Per-instance and ephemeral, deliberately not a PVC: each instance is its
+        # own microVM and an EBS volume attaches to one sandbox at a time, so two
+        # sessions could not share one anyway — and sharing would defeat the
+        # filesystem isolation this component exists to provide.
+        #
+        # The size limit is enforced by the guest kernel, not the kubelet: from
+        # the node, emptyDir and writable-layer usage inside a sandbox report as
+        # ZERO, so eviction never fires on an instance that fills its disk.
+        workspacePath: /workspace
+        workspaceSizeGi: 4
+
+# -----------------------------------------------------------------------------
+# HOW A SESSION GETS AN INSTANCE - the pattern that works today, with nothing
+# else built
+#
+# This is worth reading before the `isolation:` tiers on the agent component,
+# because it is the sandbox used directly and it needs NO MCP server, NO code
+# interpreter and NO change to any agent image. A caller creates a SandboxClaim;
+# the operator binds a warm instance; the caller drives it and deletes the
+# claim. The Dark Factory has run exactly this shape on this platform since V2 -
+# an Argo Workflows `resource` step creates the claim, the coder runs
+# autonomously inside, and an `onExit` step releases it.
+#
+# One claim per session, task, or whatever your unit of isolation is:
+#
+#   apiVersion: extensions.agents.x-k8s.io/v1beta1
+#   kind: SandboxClaim
+#   metadata:
+#     # Name it after the thing being isolated. This IS the idempotency key:
+#     # the same session re-claiming finds its own instance instead of a second
+#     # one, which is what makes a retry safe.
+#     name: session-7f3a9c
+#     namespace: default
+#     labels:
+#       # Label whatever your reaper selects on. The DF reaper CronJob finds
+#       # abandoned claims this way, because a claim whose caller died is the
+#       # one leak this model has.
+#       app.kubernetes.io/name: code-session
+#   spec:
+#     # The POOL, not the template. warmPoolRef is the claim's only required
+#     # field - which is why the sandbox component renders a pool even at
+#     # warmPool: 0.
+#     warmPoolRef:
+#       name: code-session
+#     lifecycle:
+#       # The TTL this component DECLARED on its sandbox card, applied here.
+#       # The card exists so a claimer reads one value instead of hardcoding it:
+#       #   kubectl get cm code-session-sandbox -o jsonpath='{.data.idleTimeout}'
+#       ttlSecondsAfterFinished: 900
+#     # Per-session input. The template must opt in - envVarsInjection: Allowed
+#     # (the component default) lets a claim ADD variables but not overwrite the
+#     # template's own, so a claim cannot repoint the model gateway. With the
+#     # operator default of Disallowed the claim fails with
+#     # reason=EnvVarsInjectionRejected.
+#     env:
+#       - { containerName: code-session, name: SESSION_ID, value: "7f3a9c" }
+#       - { containerName: code-session, name: USER_SUBJECT, value: "alice@example.com" }
+#
+# Then wait for the binding and read where it landed:
+#
+#   kubectl wait --for=jsonpath='{.status.conditions[0].status}'=True \
+#     sandboxclaim/session-7f3a9c
+#   kubectl get sandboxclaim session-7f3a9c -o jsonpath='{.status.sandbox.name}'
+#
+# ...drive the instance over its Service (service: true above) or with
+# `kubectl exec`, and release it when the session ends:
+#
+#   kubectl delete sandboxclaim session-7f3a9c
+#
+# RELEASE EXPLICITLY RATHER THAN WAITING OUT THE TTL. The idle timeout is the
+# backstop for a caller that died, not the normal path. Waiting for it on every
+# finished session is the difference between a warm pool that recycles and one
+# that is permanently exhausted.
+#
+# WHO THE CALLER IS, in practice:
+#   - An orchestrator. Argo Workflows for the Dark Factory; any controller,
+#     CronJob or job runner for batch work. Works today.
+#   - A service of your own that fronts users and holds the session map.
+#     Works today.
+#     does the above on each session is not written yet, which is why that tier
+#     a consumer that creates SandboxClaims against this pool.
+#   - An MCP server, to give an agent per-session code execution without a VM
+#     per user. This is where that belongs rather than on the agent -- see
+#     docs/sandbox-agents/NITRO-DESIGN.md §2.2 -- and the on-EKS backend for
+#     code-interpreter-mcp is not written yet either.

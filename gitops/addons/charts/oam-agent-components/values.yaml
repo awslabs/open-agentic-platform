@@ -35,20 +35,62 @@ global:
     # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
-  # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
-  # properties.sandbox: true). Platform-owned: an application developer cannot set
-  # this from their OAM, because the VMM is ambient environment config.
+  # RuntimeClass a sandboxed agent's pod selects for the DEFAULT trust model
+  # (agent component, properties.sandbox: true, sandboxMode: isolated).
+  # Platform-owned: an application developer cannot set this from their OAM,
+  # because which isolation technology a cluster runs is ambient environment
+  # config. The developer chooses the TRUST MODEL (sandboxMode), never the class.
   #
-  # kata-clh is the platform's verified, default-on VMM. kata-qemu is a one-line
-  # change -- it shares clh's node pool, taint and kata-deploy release. kata-fc
-  # needs its node layer enabled FIRST (kata-nodepool kataFc.enabled plus the
-  # agent_sandbox_kata_fc addon), or every sandboxed pod sits Pending forever
-  # because no node carries katacontainers.io/kata-runtime-fc.
+  # isolated-sandbox is AWS Nitro Sandboxes: a Firecracker microVM per pod,
+  # hardware-isolated by the Nitro hypervisor. It is the default because it needs
+  # NO node layer of our own -- on EKS Auto Mode (k8s >= 1.36) the class and a
+  # sandbox-capable node are provisioned on demand, where every Kata class needs
+  # the self-managed nested-virt pool (kata_nodepool) plus kata-deploy first.
+  #
+  # KATA IS STILL FULLY SUPPORTED and is one value away. Set this to kata-clh,
+  # kata-qemu or kata-fc for a cluster whose Kata node layer is provisioned; the
+  # agent component's rendering is identical either way, because the RuntimeClass
+  # admission controller supplies the nodeSelector, tolerations and overhead for
+  # whichever class is named. Prefer the per-cluster route: the
+  # sandbox_runtime_class annotation on the cluster secret (see
+  # gitops/addons/registry/agentcore.yaml), so a Nitro hub and a Kata spoke can
+  # disagree without either overriding the chart.
   #
   # Leaving this EMPTY makes the agent component fail the render on sandbox: true,
   # rather than silently scheduling an unisolated runc pod.
-  # See docs/sandbox-agents/DESIGN.md.
-  sandboxRuntimeClass: kata-clh
+  # See docs/sandbox-agents/NITRO-DESIGN.md.
+  sandboxRuntimeClass: isolated-sandbox
+  # RuntimeClass for sandboxMode: confidential -- the trust model where the PARENT
+  # INSTANCE is untrusted, so a cluster administrator cannot read the pod's memory
+  # and the guest attests to AWS KMS before any secret is released.
+  #
+  # Separate from sandboxRuntimeClass because the two are different security
+  # boundaries, not two spellings of one: confidential-sandbox additionally
+  # encrypts the overlay, denies exec and stdin from the host, and measures the
+  # pod's Cedar policy into PCR17.
+  #
+  # Kata HAS NO EQUIVALENT. On a Kata-only cluster leave this empty: the agent
+  # component then fails the render on sandboxMode: confidential, rather than
+  # quietly handing out a kata-clh pod that cannot attest anything.
+  confidentialSandboxRuntimeClass: confidential-sandbox
+  # Which RuntimeClass names are AWS Nitro Sandboxes classes.
+  #
+  # networkIsolated, cedarPolicy / PCR17 attestation and confidential mode are
+  # all features of the NITRO runtime. A Kata class accepts a pod carrying them
+  # and IGNORES them: the sandbox.amazonaws.com/policy annotation means nothing
+  # to kata-clh, and a "network-isolated" Kata pod has an ordinary network
+  # device. That is the worst failure shape available -- the Application renders,
+  # the agent card advertises the guarantee, and the guarantee is absent.
+  #
+  # So the components check the class they are about to emit against this list
+  # and REJECT those fields when it is not here, rather than rendering a pod that
+  # lies about its own isolation.
+  #
+  # A cluster that names its Nitro classes something else adds those names here;
+  # the list is comma-separated, platform-owned (no Application can set it), and
+  # per-cluster via the nitro_sandbox_runtime_classes annotation on the cluster
+  # secret. Emptying it disables every Nitro-only field on this cluster.
+  nitroSandboxRuntimeClasses: "isolated-sandbox,confidential-sandbox"
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using

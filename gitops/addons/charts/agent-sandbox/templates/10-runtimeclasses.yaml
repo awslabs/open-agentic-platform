@@ -24,6 +24,20 @@ that is not reproduced here, since this chart cannot know what the node has.)
 
 The runtime binaries and containerd handlers are installed on the node by
 kata-deploy (wave 1); this chart only declares the classes that select them.
+
+KATA ONLY, AND NOT BY OMISSION. The Nitro classes (isolated-sandbox,
+confidential-sandbox) are deliberately absent here and must stay absent: they
+are owned by EKS — Auto Mode ships them with the cluster, and outside Auto Mode
+they come from the Nitro Sandbox AMI procedure. Rendering our own copies would
+put this chart in a permanent OutOfSync fight with the cluster over those two
+object names, which is the same failure the OWNERSHIP note above records against
+kata-deploy. The Nitro path (runtime: nitro) therefore SELECTS classes it does
+not create; `kubectl get runtimeclass isolated-sandbox` is how you confirm the
+cluster has them.
+
+These Kata classes are still rendered on the Nitro path, as they always were:
+they are declarations, an ad-hoc pod may select any of them, and a class whose
+node pool does not exist is inert rather than harmful.
 */ -}}
 {{- range $vmm, $rc := .Values.kata.runtimeClasses }}
 ---

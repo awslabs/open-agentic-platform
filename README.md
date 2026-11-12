@@ -8,6 +8,7 @@ Amazon EKS — installed with one command.**
 [![License](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
 [![EKS](https://img.shields.io/badge/Amazon-EKS-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/eks/)
 [![Bedrock](https://img.shields.io/badge/Amazon-Bedrock-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/bedrock/)
+[![Nitro Sandboxes](https://img.shields.io/badge/AWS_Nitro-Sandboxes-FF9900?logo=amazonaws&logoColor=white)](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)
 [![Kata](https://img.shields.io/badge/Kata-micro--VM-1e88e5)](https://katacontainers.io/)
 [![Lambda MicroVM](https://img.shields.io/badge/AWS_Lambda-MicroVM-FF9900?logo=awslambda&logoColor=white)](https://aws.amazon.com/lambda/)
 [![ArgoCD](https://img.shields.io/badge/GitOps-ArgoCD-EF7B4D?logo=argo&logoColor=white)](https://argo-cd.readthedocs.io/)
@@ -119,7 +120,7 @@ ApplicationSets. Status reflects the current reference deployment.
 | **Agent Memory** | `crossplane-agentcore` | ⚠️ CRD ready | `memories.*` CRDs registered; wire an instance for persistent memory. |
 | **Agent Browser** | `crossplane-agentcore` | ⚠️ CRD ready | Managed headless browser resource for agents that browse. |
 | **Agent Code Interpreter** | `crossplane-agentcore` / sandbox | ⚠️ CRD ready | Sandboxed code execution for agents. |
-| **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code. |
+| **Agent Isolation** | `agent-sandbox` | ✅ (V2) | **AWS Nitro Sandboxes** (default) or **Kata + Cloud Hypervisor micro-VMs** — hardware-isolated, credential-less sandboxes for untrusted agent code, with a `confidential` mode that puts the node operator outside the trust boundary — [design](docs/sandbox-agents/NITRO-DESIGN.md), [attestation example](examples/nitro-sandbox/). |
 | **Agent Evaluation** | `agent-evaluation` | ✅ (Phase 1) | Online LLM-as-a-judge on agent traces, turned on from the agent's OAM `evaluation` block; pass ratios in Grafana — [design](docs/architecture/agent-evaluation.md), [example](platform/oam/examples/example-agent-evaluation.yaml). |
 
 **Gateway note:** the platform ships **Bifrost** as the enabled AI gateway (per-workload virtual
@@ -324,10 +325,23 @@ The Dark Factory turns a **GitHub issue into a reviewed, merged PR, autonomously
 It is the platform's proof that you can run untrusted, code-writing agents safely alongside a control
 plane. See [`docs/dark-factory/`](docs/dark-factory/) and [`examples/dark-factory/`](examples/dark-factory/).
 
-The same Kata isolation substrate is available to **any** agent, not only the Dark Factory coder, via
-a single opt-in on the OAM `agent` component: `sandbox: true` runs the agent inside a Kata microVM
-with a hardened `securityContext`, while keeping blue-green delivery, `replicas`, Services and gateway
-routing unchanged. See [`docs/sandbox-agents/DESIGN.md`](docs/sandbox-agents/DESIGN.md).
+The same isolation substrate is available to **any** agent, not only the Dark Factory coder, via a
+single opt-in on the OAM `agent` component: `sandbox: true` runs the agent inside a hardware-isolated
+microVM with a hardened `securityContext`, while keeping blue-green delivery, `replicas`, Services and
+gateway routing unchanged.
+
+By default that microVM is an **AWS Nitro Sandbox** — a Firecracker guest the Nitro hypervisor
+isolates in hardware, which on EKS Auto Mode needs no node layer of its own. Two further opt-ins
+build on it, each one word:
+
+| | What it gives you |
+|---|---|
+| `sandboxMode: confidential` | The **node operator is outside the trust boundary**: memory unreadable from the node, encrypted overlay, `exec` denied from the host, and the guest attesting its measurements to AWS KMS before a secret is released |
+
+Kata remains fully supported and is one cluster annotation away. See
+[`docs/sandbox-agents/NITRO-DESIGN.md`](docs/sandbox-agents/NITRO-DESIGN.md) for the design,
+[`docs/sandbox-agents/DESIGN.md`](docs/sandbox-agents/DESIGN.md) for the Kata path, and
+[`examples/nitro-sandbox/`](examples/nitro-sandbox/) for attestation end to end.
 
 ---
 
@@ -352,7 +366,7 @@ ACK · OpenTofu) resolves your choice at deploy time.
 | `crossplane-agentcore` | Runtime, Memory, Browser, Code Interpreter (Bedrock AgentCore) |
 | `oam-agent-components` | Agent lifecycle (KubeVela OAM components) |
 | `otel-collector`, `langfuse` | Observability (traces + LLM analytics) |
-| `agent-sandbox` | Agent isolation (Kata + Cloud Hypervisor micro-VMs) |
+| `agent-sandbox` | Agent isolation (AWS Nitro Sandboxes by default; Kata + Cloud Hypervisor supported) |
 | `dark-factory` | Autonomous coding pipeline (Argo Workflows + agents) |
 | `application-sets` | ArgoCD ApplicationSet wiring |
 

@@ -287,6 +287,42 @@ agent-sandbox:
         operator: In
         values: ['true']
   valuesObject:
+    # PER-CLUSTER warm-pool runtime, read from the cluster secret the same way
+    # sandbox_runtime_class is (agentcore.yaml). Without this the chart default
+    # applied fleet-wide: every cluster with enable_agent_sandbox: true had its
+    # SandboxTemplate recreated with runtimeClassName: isolated-sandbox and LOST
+    # the Kata nodeSelector/toleration, so on a Kata cluster -- or any cluster
+    # below k8s 1.36 -- the warm pool refilled onto a class that does not exist
+    # and the Dark Factory coder pods sat Pending. The PR claimed Kata was
+    # "selected per cluster"; that was true of the OAM component only.
+    #
+    # Defaults to NITRO, since it was validated on a real Nitro node
+    # (2026-11-11: own guest kernel, verify-isolation.sh 7 PASS / 0 FAIL) and
+    # because Nitro is the only option that needs no node layer of ours. The
+    # Dark Factory coder flow, which claims from this pool, pins
+    # sandbox_runtime: kata on any cluster whose nodes are Kata. Note this is a
+    # SEPARATE knob from sandbox_runtime_class, which governs `sandbox: true`
+    # and `type: sandbox` at the OAM layer and has always defaulted to Nitro.
+    #
+    #   sandbox_runtime: nitro    -> isolated-sandbox / confidential-sandbox
+    #   sandbox_runtime: kata     -> kata-clh (+ Kata nodeSelector/toleration)
+    #   absent                    -> nitro
+    #
+    # ABSENT MEANS NITRO, matching the chart default. Nitro needs no node layer
+    # on EKS Auto Mode (k8s 1.36+), where a Kata class needs kata_nodepool plus
+    # agent_sandbox_kata -- both off by default -- so a cluster that has said
+    # nothing is far likelier to be able to run Nitro than Kata.
+    #
+    # A KATA CLUSTER MUST SAY SO: set sandbox_runtime: kata, or its pool is
+    # recreated on a Nitro class, loses the Kata nodeSelector and toleration, and
+    # every warm pod goes Pending.
+    #
+    # NOT hasKey: sprig's hasKey needs map[string]interface{} and ArgoCD types
+    # annotations as map[string]string, so it fails with "wrong type for value"
+    # and the appset generates NO parameters at all. Verified on a live cluster.
+    # `none` is the sentinel for "no runtime"; the empty string cannot be, because
+    # `index` returns "" for an absent key too.
+    runtime: '{{ $v := index .metadata.annotations "sandbox_runtime" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}nitro{{ end }}'
     coderTemplate:
       # Bifrost gateway the IN-VM coder reaches. Defaults to the PINNED ClusterIP
       # (bifrost chart staticService.clusterIP), NOT the svc DNS name, because a

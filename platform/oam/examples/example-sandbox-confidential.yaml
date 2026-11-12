@@ -1,0 +1,149 @@
+# Per-session sandbox, CONFIDENTIAL mode — the node operator is outside the trust
+# boundary.
+#
+# `isolated` (example-sandbox-isolated.yaml) protects the node from the workload.
+# `confidential` also protects the workload from the node:
+#
+#   - Cluster administrators cannot read the sandbox's memory. Neither can a
+#     compromised parent instance.
+#   - The overlay filesystem is encrypted.
+#   - `kubectl exec`, stdin and process listing are DENIED from the host. This is
+#     a feature and a constraint: a claimer that drives its sandbox by exec'ing
+#     into it does not work in this mode. Logs still work.
+#   - Container admission is PINNED by the Cedar policy: image digest, args,
+#     environment variables, mounts, capabilities and security settings. Nothing
+#     else starts.
+#   - The guest measures itself into the Nitro Secure Module's PCRs and attests
+#     to AWS KMS, so a secret is released only to the exact image and policy you
+#     expect.
+#
+# THE LAST POINT IS THE WHOLE FEATURE, AND IT IS NOT AUTOMATIC. Confidential mode
+# gives you memory isolation from the node by itself, but the confidentiality
+# guarantee is only complete once something VERIFIES the attestation. That
+# something is a KMS key policy with kms:RecipientAttestation conditions. Without
+# it the measurements are recorded and never checked. See
+# examples/nitro-sandbox/README.md for the end-to-end walkthrough, including the
+# key policy and how to get the PCR17 value before anything is deployed.
+#
+# PRECONDITIONS, on top of the isolated example's
+#   1. A cluster whose confidential class exists:
+#        kubectl get runtimeclass confidential-sandbox
+#      A Kata cluster has no equivalent, and this Application is REJECTED at
+#      admission there rather than quietly handed an ordinary microVM.
+#   2. A Cedar policy generated from THIS Application's rendered pod template:
+#        scripts/nitro/gen-cedar-policy.sh \
+#          --app platform/oam/examples/example-sandbox-confidential.yaml \
+#          --component regulated-session --profile confidential
+#      Paste the base64 into cedarPolicy below and the printed PCR17 into the KMS
+#      key policy. Omitting cedarPolicy is rejected at admission -- and that
+#      rejection is a convenience, not the security boundary: the Nitro runtime
+#      itself enforces DEFAULT-DENY, so an unpolicied confidential pod never
+#      starts. Verified on a live node: containerd returns
+#      "confidential-sandbox requires the sandbox.amazonaws.com/policy
+#      annotation; a policy is required in confidential mode (default-deny is
+#      enforced)" and the pod loops in ContainerCreating indefinitely. Catching
+#      it at admission just means you read the reason immediately instead of
+#      digging it out of kubelet events.
+#   3. EKS Pod Identity for the sandbox's ServiceAccount, so the guest can reach
+#      KMS. IMDS inside a sandbox serves only placement metadata — IAM
+#      credentials are NOT available through it.
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: confidential-session-sandbox
+  namespace: default
+spec:
+  components:
+    # NOT `analyst-session`: another example used that name in this namespace, and
+    # declares a sandbox component by that name in this namespace, and two
+    # Applications emitting the same (kind, namespace, name) both apply --
+    # whichever syncs last owns a SandboxWarmPool, SandboxTemplate,
+    # ServiceAccount and ConfigMap the other still believes it manages.
+    # scripts/test-isolation-matrix.sh section D exists to catch exactly this.
+    - name: regulated-session
+      type: sandbox
+      properties:
+        description: "Per-session analysis of regulated data, node operator untrusted"
+
+        # PIN THE DIGEST, not a tag. Two reasons, and the first is not optional:
+        # a confidential Cedar policy pins the image by digest, so a tag that
+        # moves produces a policy mismatch and the instance is denied. The second
+        # is that a mutable tag is exactly the substitution confidential mode
+        # exists to prevent.
+        #
+        # Replace with your own image and digest.
+        # PINNED BY DIGEST, because confidential mode's Cedar policy pins the
+        # image and a tag that moves under you is a denied pod, not a new
+        # version. This was the digest at the time of writing; re-resolve it for
+        # your own build and regenerate the policy in the same change:
+        #   skopeo inspect --format '{{.Digest}}' docker://<image:tag>
+        #   (or `crane digest`, or `docker buildx imagetools inspect`). Use the
+        #   MANIFEST LIST digest, not a per-platform one.
+        image: public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+        command: ["sleep", "infinity"]
+
+        # ── Trust model ───────────────────────────────────────────────────────
+        mode: confidential
+
+        # ── The policy that makes it confidential ─────────────────────────────
+        # Base64 Cedar policy, attached as sandbox.amazonaws.com/policy and
+        # measured into PCR17. REGENERATE IT whenever anything it pins changes —
+        # image digest, args, env, mounts, capabilities, security settings — and
+        # update the PCR17 condition on the KMS key policy in the same change.
+        # Build that into the pipeline that produces these manifests; doing it by
+        # hand is how a deploy ends up denied at 3am.
+        #
+        # The placeholder below is NOT a working policy. Generate yours.
+        # PLACEHOLDER WITH THE RIGHT SHAPE. The components shape-check both
+        # of these, so an unreplaced REPLACE_ME string or an all-zero digest
+        # now fails the render instead of failing at pod start. This value
+        # base64-decodes to the instruction for replacing it.
+        cedarPolicy: "UkVQTEFDRSBUSElTLiBHZW5lcmF0ZSB0aGUgcmVhbCBwb2xpY3kgd2l0aCBzY3JpcHRzL25pdHJvL2dlbi1jZWRhci1wb2xpY3kuc2ggLS1hcHAgPHRoaXMgZmlsZT4gLS1jb21wb25lbnQgPG5hbWU+IC0tcHJvZmlsZSBjb25maWRlbnRpYWw="
+
+        # ── Network ───────────────────────────────────────────────────────────
+        # Confidential mode NEEDS the network: the guest calls AWS KMS to have
+        # its attestation verified, which needs Pod Identity credentials and
+        # region metadata. networkIsolated: true is therefore rejected at
+        # admission here rather than failing at the first kms:Decrypt.
+        #
+        # Reach for `isolated` + networkIsolated when what you want is "this code
+        # must not phone home". Reach for `confidential` when what you want is
+        # "my data must survive an untrusted node operator". They are different
+        # asks and this platform will not pretend one is the other.
+        #
+        # service: false because a confidential sandbox cannot be driven by exec
+        # and this one is driven by its own API over HTTP... which needs the
+        # Service. Keep service: true here and route to it.
+        service: true
+        ports:
+          - name: https
+            containerPort: 8443
+
+        # ── Cost of the trust boundary ────────────────────────────────────────
+        # confidential-sandbox charges 512Mi of RuntimeClass overhead against the
+        # node, versus 256Mi for isolated-sandbox, plus the same single
+        # eks.amazonaws.com/nitro-sandbox slot. The encrypted overlay also makes
+        # pod start measurably slower than isolated, which is the trade for the
+        # node operator being outside the boundary.
+        #
+        # Two warm instances, because in this mode cold start includes the
+        # encrypted overlay and the attestation round trip, and the first request
+        # of a session is the worst place to pay it.
+        warmPool: 2
+
+        # Shorter than the isolated example on purpose: an instance that holds
+        # decrypted regulated data in memory should not outlive the session that
+        # needed it.
+        idleTimeout: 5m
+        maxLifetime: 1h
+
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+
+        workspaceSizeGi: 4

@@ -1,0 +1,690 @@
+// Sandbox ComponentDefinition — a per-session, hardware-isolated execution
+// environment, declared ONCE by a developer and instantiated per (agent, user,
+// session) on demand.
+//
+// WHY THIS IS A SEPARATE COMPONENT TYPE, when docs/sandbox-agents/DESIGN.md §6
+// option D rejected "a separate agent-sandbox component type". That rejection
+// still stands and this does not reopen it: option D was a SECOND WAY TO DECLARE
+// AN AGENT, which would duplicate every agent concern (blue-green, replicas,
+// routing, memory, evaluation) and drift from it. Changing an agent's isolation
+// must never mean changing its component type, and it does not -- that is still
+// one boolean on `type: agent`.
+//
+// This component declares something an agent is NOT: a short-lived, claimable
+// execution environment with no Service identity of its own, no blue-green, no
+// gateway route and no conversation. One agent process serves many users; a
+// sandbox instance serves exactly one session and is destroyed on idle. Those
+// are different lifecycles, so they are different objects. It shares no fields
+// with the agent beyond the isolation primitives both sit on.
+//
+// The shape follows the Kubernetes SIG agent-sandbox model, which the platform
+// already runs for the Dark Factory coder:
+//   SandboxTemplate   the pod template an instance is cloned from (this + image)
+//   SandboxWarmPool   pre-booted instances that absorb cold start
+//   SandboxClaim      one session's hold on an instance, with a lifecycle TTL
+// A claim is created per session by the caller (gateway, agent or orchestrator),
+// never by this component -- a claim is runtime state, not a declaration.
+import (
+	"strings"
+	"list"
+	"regexp"
+)
+
+sandbox: {
+	alias: ""
+	annotations: {}
+	attributes: {
+		// autodetect, NOT an explicit workload.definition naming SandboxWarmPool.
+		// Verified the hard way: with the explicit form, applying this
+		// ComponentDefinition to a cluster that has no agent-sandbox operator is
+		// REJECTED by KubeVela's own mutating webhook --
+		//   no matches for kind "SandboxWarmPool" in version
+		//   "extensions.agents.x-k8s.io/v1beta1"
+		// -- because the webhook resolves the workload kind at definition-apply
+		// time. This chart ships to every cluster, and agent_sandbox is off by
+		// default on all of them, so the explicit form would leave the whole
+		// oam-agent-components Application unable to sync: every component and
+		// trait in it lost, not just this one.
+		//
+		// autodetect defers the kind to render time, which is also where the error
+		// belongs. On a cluster without the CRDs the definition installs
+		// harmlessly and an Application that USES it fails with a message about
+		// the missing CRD -- one Application's problem, visible to the person who
+		// wrote it. Same pattern as agentcore-browser and eks-read-access, which
+		// emit Crossplane CRs for the same reason.
+		workload: type: "autodetects.core.oam.dev"
+		// THE WARM POOL IS THE WORKLOAD, not the SandboxTemplate, because only the
+		// pool has a status to be honest about. A SandboxTemplate always applies
+		// cleanly -- it is a template -- so an Application whose workload was the
+		// template would report Healthy on a cluster with no sandbox-capable node,
+		// where every instance it ever hands out would sit Pending. Gating health
+		// on readyReplicas makes "the pool cannot fill" visible where a developer
+		// looks.
+		//
+		// warmPool: 0 is still Healthy (0 >= 0): a pool that was asked for nothing
+		// and holds nothing is correct. It means on-demand claims with full cold
+		// start, not a broken pool.
+		status: healthPolicy: "isHealth: *( context.output.status.readyReplicas >= context.output.spec.replicas ) | false"
+	}
+	description: "Per-session hardware-isolated sandbox (AWS Nitro Sandboxes by default, Kata supported): a SandboxTemplate plus a SandboxWarmPool, claimed per user session and destroyed on idle"
+	labels: {}
+	type: "component"
+}
+
+template: {
+	// PLATFORM-OWNED isolation runtimes, identical in mechanism and in reasoning
+	// to agent.cue: CUE locals, so they are structurally unreachable from a
+	// developer's `properties`, carrying Helm placeholders that Argo substitutes
+	// when the oam-agent-components chart renders. See agent.cue's own comment for
+	// why a local rather than the overridable default steering §1 prescribes, and
+	// for the rule about never writing a literal Helm action inside a comment in
+	// this file.
+	_sandboxRuntimeClass:             "{{ .Values.global.sandboxRuntimeClass }}"
+	_confidentialSandboxRuntimeClass: "{{ .Values.global.confidentialSandboxRuntimeClass }}"
+
+	// Indexed list, not two `if` blocks on one field: two branches writing one
+	// field would unify, and on any cluster where the two classes differ -- every
+	// cluster -- that is bottom.
+	_isolationClass: [
+		if parameter.mode == "confidential" {_confidentialSandboxRuntimeClass},
+		_sandboxRuntimeClass,
+	][0]
+
+	// PLATFORM-OWNED list of the RuntimeClass names that are AWS Nitro Sandboxes.
+	// Same mechanism and same reasoning as the two class locals above: a Helm
+	// placeholder substituted before KubeVela parses this CUE, and a local so no
+	// Application can reach it.
+	//
+	// It exists because the Nitro-only fields below are silently IGNORED by a Kata
+	// class rather than rejected by it. Checking the emitted class against this
+	// list is what turns "the guarantee quietly does not apply" into a render
+	// error. See the chart's values.yaml for the per-cluster annotation.
+	_nitroSandboxRuntimeClasses: "{{ .Values.global.nitroSandboxRuntimeClasses }}"
+
+	// Split and trimmed, dropping empties, so an empty or trailing-comma list
+	// yields [] rather than [""] -- which would otherwise match an empty class.
+	_nitroClasses: [
+		for _c in strings.Split(_nitroSandboxRuntimeClasses, ",")
+		if strings.TrimSpace(_c) != "" {strings.TrimSpace(_c)},
+	]
+
+	_isolationClassIsNitro: list.Contains(_nitroClasses, _isolationClass)
+
+	// SHAPE CHECK on cedarPolicy. The value is base64 and opaque, so a wrong one
+	// cannot be detected -- but a value that is not base64 at all can be, and
+	// that is the one that actually happens: the placeholder from an example,
+	// copied and never replaced. It renders, deploys, and the sandbox agent then
+	// rejects the policy at pod start, with an error that says nothing about
+	// which manifest supplied it.
+	//
+	// 64 characters is a floor, not a guess at the real length: a generated
+	// policy is thousands of characters, so anything shorter is a stand-in.
+	if parameter.cedarPolicy != "" && !regexp.Match("^[A-Za-z0-9+/]{64,}={0,2}$", parameter.cedarPolicy) {
+		_cedarPolicyShape: "set" & "cedarPolicy does not look like a base64 Cedar policy. Expected 64+ characters of base64 (A-Z a-z 0-9 + /, optionally = padded) -- this looks like an unreplaced placeholder from an example. Generate the real value with scripts/nitro/gen-cedar-policy.sh, which prints it and the PCR17 your KMS key policy has to pin."
+	}
+
+	// SHAPE CHECK on an all-zero image digest. sha256:000...0 is a well-formed
+	// digest that cannot exist, and it is in the confidential examples because
+	// confidential mode wants a digest rather than a tag. Copied unchanged it is
+	// an ImagePullBackOff several minutes after apply, nowhere near the cause.
+	if regexp.Match("@sha256:0{64}$", parameter.image) {
+		_imageDigestPlaceholder: "set" & "image ends in @sha256:000...0, which is the placeholder digest from the confidential examples, not a real one. Pin the digest you actually built: `skopeo inspect --format '{{.Digest}}' docker://<image:tag>` prints it, as do `crane digest` and (docker only) `docker buildx imagetools inspect`. Use the MANIFEST LIST digest, not a per-platform one -- `podman manifest inspect` prints the latter. Confidential mode wants a digest rather than a tag because the Cedar policy pins it, so a tag is not the fix either."
+	}
+
+	// FAIL CLOSED with no isolation runtime configured. A sandbox with no
+	// runtimeClassName is an ordinary shared-kernel container: a component whose
+	// entire purpose is the isolation boundary would deliver none, and nothing
+	// would report a problem. This component has no unisolated mode to fall back
+	// to, which is why the guard has no `sandbox: true` equivalent to test.
+	if _isolationClass == "" {
+		_isolationRuntimeRequired: "set" & "no isolation runtime is configured on this cluster: set global.sandboxRuntimeClass (isolated) or global.confidentialSandboxRuntimeClass (confidential) on the oam-agent-components chart, via the cluster-secret annotations sandbox_runtime_class / confidential_sandbox_runtime_class. A sandbox component cannot render without one, because an unisolated sandbox is not a sandbox."
+	}
+
+	// FAIL CLOSED on the NITRO-ONLY fields when the class is not a Nitro class.
+	//
+	// These three are not "better on Nitro" -- they do not exist off it. A Kata
+	// class ADMITS a pod carrying them and ignores them: the sandbox policy
+	// annotation is a string kata-clh never reads, and a pod marked
+	// networkIsolated gets an ordinary network device. Without these guards the
+	// component renders, the agent card advertises the guarantee, and the
+	// guarantee is absent -- which is strictly worse than not offering it.
+	//
+	// The remedy is never "use it anyway": either run the sandbox on a Nitro
+	// class, or drop the field and get the isolation Kata does give you (a
+	// separate kernel per pod).
+	if !_isolationClassIsNitro && parameter.networkIsolated {
+		_networkIsolatedNeedsNitro: "set" & "networkIsolated: true requires an AWS Nitro Sandboxes runtime class, and this cluster's class for mode: \(parameter.mode) is not one of global.nitroSandboxRuntimeClasses. A Kata class admits this pod and gives it a normal network device, so the sandbox would report networkIsolated while having full egress. Run this sandbox on a Nitro class, or set networkIsolated: false."
+	}
+
+	// Narrowed to NON-confidential modes on purpose. Confidential REQUIRES a
+	// cedarPolicy, so on a non-Nitro confidential class both this guard and the
+	// one below would fire -- and KubeVela reports only the first conflict it
+	// reaches, which would hand the developer "remove cedarPolicy" when the real
+	// remedy is "this class cannot do confidential at all". Let the more specific
+	// guard own that case.
+	if !_isolationClassIsNitro && parameter.mode != "confidential" && parameter.cedarPolicy != "" {
+		_cedarPolicyNeedsNitro: "set" & "cedarPolicy requires an AWS Nitro Sandboxes runtime class, and this cluster's class for mode: \(parameter.mode) is not one of global.nitroSandboxRuntimeClasses. The policy is enforced by the Nitro sandbox agent and measured into PCR17; a Kata class ignores the annotation entirely, so the pod would admit any container and attest nothing. Run this sandbox on a Nitro class, or remove cedarPolicy."
+	}
+
+	// mode: confidential on a non-Nitro class. Normally unreachable, because a
+	// Kata-only cluster leaves confidentialSandboxRuntimeClass empty and the guard
+	// above fires first. It is reachable by pointing
+	// confidential_sandbox_runtime_class at a Kata class, which is exactly the
+	// mistake that would otherwise produce a pod claiming memory encryption and
+	// attested secret release while having neither.
+	if !_isolationClassIsNitro && parameter.mode == "confidential" {
+		_confidentialNeedsNitro: "set" & "mode: confidential requires an AWS Nitro Sandboxes runtime class, and this cluster's global.confidentialSandboxRuntimeClass is not one of global.nitroSandboxRuntimeClasses. Kata has no confidential equivalent: there is no attestation document, nothing measures the Cedar policy into PCR17, and the parent instance can read guest memory. Point confidential_sandbox_runtime_class at a Nitro class, or use mode: isolated."
+	}
+
+	// FAIL CLOSED on confidential without a Cedar policy. Same reasoning as
+	// agent.cue, and it bites harder here: this component exists to run code
+	// nobody has reviewed, so the policy IS the admission control. With no policy
+	// the Nitro runtime refuses to create the sandbox at all (default-deny, verified on a live node).
+	if parameter.mode == "confidential" && parameter.cedarPolicy == "" {
+		_cedarPolicyRequired: "set" & "mode: confidential requires cedarPolicy: a base64 Cedar policy generated from this sandbox's rendered pod template. The Nitro runtime ENFORCES DEFAULT-DENY: with no policy annotation containerd refuses to create the sandbox (verified on a live node), so every warm pod loops in ContainerCreating rather than starting unprotected. This guard turns that into an immediate error here. Generate it with scripts/nitro/gen-cedar-policy.sh, or use mode: isolated."
+	}
+
+	// FAIL CLOSED on confidential + networkIsolated. This is an OAP judgement, not
+	// an AWS restriction: both settings are individually supported and the
+	// combination boots. It is rejected because confidential mode's value is
+	// ATTESTED SECRET RELEASE -- the guest proves its measurements to AWS KMS and
+	// KMS then decrypts -- and a network-isolated sandbox has no route to KMS, no
+	// Pod Identity credentials and no IMDS. The pod would run, memory would be
+	// protected from the parent instance, and every KMS call would fail at the
+	// moment the workload needed a secret.
+	//
+	// The two real shapes, both reachable:
+	//   isolated + networkIsolated  run untrusted generated code with no exfil path
+	//   confidential                protect data from the node operator, with
+	//                               secrets released only after attestation
+	if parameter.mode == "confidential" && parameter.networkIsolated {
+		_confidentialNeedsNetwork: "set" & "mode: confidential cannot be combined with networkIsolated: true. Confidential mode exists to release secrets only after the guest attests to AWS KMS, and a network-isolated sandbox has no route to KMS, no Pod Identity credentials and no IMDS -- so every call that needed a secret would fail at runtime rather than here. Use isolated + networkIsolated to run untrusted code with no exfil path, or confidential on its own."
+	}
+
+	// FAIL CLOSED on networkIsolated + service. A network-isolated sandbox boots
+	// with no network device at all, so a Service that selects it can never reach
+	// the workload -- connections are refused, not dropped, because the pod IP is
+	// still configured in the pod network namespace. Rendering the Service anyway
+	// would publish an endpoint that is guaranteed to fail.
+	//
+	// A network-isolated sandbox is still fully usable: logs, exec, stdin and
+	// stats all work over the vsock channel, which is how a claimer drives it.
+	if parameter.networkIsolated && parameter.service {
+		_networkIsolatedHasNoService: "set" & "networkIsolated: true cannot be combined with service: true. A network-isolated sandbox boots with no network device, so a Service that selects it refuses every connection. Set service: false and drive the sandbox over exec/stdin, which keep working over vsock."
+	}
+
+	// Hardening applied inside the guest, at both levels. The microVM bounds what
+	// a compromised workload reaches on the HOST; it does nothing about privileges
+	// INSIDE the guest, and this component runs code that is assumed hostile.
+	//
+	// Both levels are set because different things enforce them: Pod Security
+	// admission reads the POD context when deciding whether a `restricted`
+	// namespace admits the pod at all, while the container context governs the
+	// running process.
+	//
+	// Every field here is also a HARDEN hint that eks-nitro-sandbox-genpolicy acts
+	// on: runAsNonRoot lets the generated policy pin a non-root user,
+	// allowPrivilegeEscalation: false pins no_new_privileges, dropping ALL
+	// capabilities pins an empty capability set, and readOnlyRootFilesystem pins a
+	// read-only root. So setting them does not just harden the pod, it tightens
+	// the Cedar policy generated from it -- and therefore PCR17.
+	_podSecurityContext: {
+		runAsNonRoot: true
+		runAsUser:    parameter.runAsUser
+		runAsGroup:   parameter.runAsUser
+		fsGroup:      parameter.runAsUser
+		seccompProfile: type: "RuntimeDefault"
+	}
+
+	_containerSecurityContext: {
+		allowPrivilegeEscalation: false
+		runAsNonRoot:             true
+		runAsUser:                parameter.runAsUser
+		capabilities: drop: ["ALL"]
+		seccompProfile: type: "RuntimeDefault"
+		// Enforceable here, unlike on the agent component: a sandbox image is
+		// chosen for this purpose and writes to the two mounted volumes below,
+		// where an agent image writes to /tmp for SDK caches, OTel buffers and
+		// Python bytecode and would need per-image verification first.
+		readOnlyRootFilesystem: parameter.readOnlyRootFilesystem
+	}
+
+	output: {
+		apiVersion: "extensions.agents.x-k8s.io/v1beta1"
+		kind:       "SandboxWarmPool"
+		metadata: {
+			name:      context.name
+			namespace: context.namespace
+			labels: {
+				"app.kubernetes.io/name":      context.name
+				"app.kubernetes.io/component": "agent-sandbox"
+			}
+		}
+		spec: {
+			replicas: parameter.warmPool
+			// The pool clones the template below. A SandboxClaim references the
+			// POOL, not the template (warmPoolRef is the claim's only required
+			// field), which is why the pool is rendered even at replicas: 0 --
+			// without it there is nothing for a session to claim.
+			sandboxTemplateRef: name: context.name + "-template"
+		}
+	}
+
+	outputs: {
+		// The template every instance is cloned from.
+		sandboxTemplate: {
+			apiVersion: "extensions.agents.x-k8s.io/v1beta1"
+			kind:       "SandboxTemplate"
+			metadata: {
+				name:      context.name + "-template"
+				namespace: context.namespace
+				labels: "app.kubernetes.io/name": context.name
+			}
+			spec: {
+				// Per-session input arrives as env on the CLAIM, which the operator
+				// rejects unless the template opts in -- the default is Disallowed
+				// and a claim then fails with reason=EnvVarsInjectionRejected.
+				// `Allowed` lets a claim ADD variables but not override the
+				// template's own; `Overrides` lets it replace them too.
+				//
+				// Allowed is the default here because per-session identity (the
+				// session key, the caller's subject, a scoped token) is the whole
+				// point of a per-session sandbox, and it is the safe half: a claim
+				// cannot rewrite the platform's own env, so it cannot repoint the
+				// model gateway or the tracing endpoint.
+				envVarsInjectionPolicy: parameter.envVarsInjection
+
+				// A Service in front of the claimed instance. Needed when the
+				// claimer talks to the sandbox over HTTP; unnecessary (and
+				// rejected above) for one driven over exec/stdin.
+				service: parameter.service
+
+				podTemplate: {
+					metadata: {
+						labels: {
+							"app.kubernetes.io/name": context.name
+							// Deliberately NOT agent-sandbox.io/role: coder. That label
+							// selects the Dark Factory coder egress regime
+							// (agent-sandbox/templates/30-networkpolicy.yaml), which
+							// would silently apply its allowlist to an unrelated
+							// workload. Network policy for this sandbox is declared
+							// here, through networkIsolated, or by the namespace.
+							"agent-sandbox.io/role": "session"
+						}
+						if parameter.cedarPolicy != "" {
+							annotations: "sandbox.amazonaws.com/policy": parameter.cedarPolicy
+						}
+						// No network device at all: no TAP, no virtio-net, no DNS, no
+						// NTP, no IMDS, no Pod Identity. Because the device is ABSENT
+						// rather than filtered, this is not a policy a compromised
+						// workload can talk its way around -- which is the point when
+						// the code being run was written by a model.
+						//
+						// Not absolute: the vsock channel inside the guest remains
+						// reachable, and any process on the parent instance holding
+						// the Firecracker vsock socket can bind guest ports. That is a
+						// parent-instance capability, so it matters for a confidential
+						// threat model, where this combination is rejected anyway.
+						if parameter.networkIsolated {
+							annotations: "sandbox.amazonaws.com/network-isolated": "true"
+						}
+						if parameter.conntrackLimit != _|_ {
+							annotations: "sandbox.amazonaws.com/conntrack-limit": "\(parameter.conntrackLimit)"
+						}
+						if parameter.dnsQueriesPerSecond != _|_ {
+							annotations: "sandbox.amazonaws.com/dns-packets-per-second": "\(parameter.dnsQueriesPerSecond)"
+						}
+					}
+					spec: {
+						// The whole isolation mechanism, in one field. The RuntimeClass
+						// admission controller force-merges the class's nodeSelector and
+						// tolerations and applies its overhead, so this spec names
+						// neither the Nitro node label nor the Kata taint.
+						runtimeClassName: _isolationClass
+
+						// enableServiceLinks: false is REQUIRED on the confidential path,
+						// not hardening. The real generator
+						// (eks-nitro-sandbox-genpolicy --profile confidential) refuses a
+						// manifest that leaves it unset:
+						//   "manifest does not set enableServiceLinks: false ... break
+						//    exact env matching"
+						// because the kubelet injects a <SVC>_PORT variable per Service in
+						// the namespace, so the env set the policy pins is not knowable at
+						// generation time. Without this, gen-cedar-policy.sh --profile
+						// confidential exits 1 for every rendered pod, and the only way
+						// past it is --allow-additional-env, which is exactly the env
+						// pinning confidential mode is for.
+						if parameter.mode == "confidential" {
+							enableServiceLinks: false
+						}
+
+						serviceAccountName: context.name
+
+						// Off by default: a sandbox running unreviewed code has no
+						// business holding in-cluster API credentials. Turn it on only
+						// for a sandbox that genuinely calls the API server, and scope
+						// the ServiceAccount's RBAC when you do.
+						automountServiceAccountToken: parameter.automountServiceAccountToken
+
+						securityContext: _podSecurityContext
+
+						containers: [{
+							name:  context.name
+							image: parameter.image
+							if parameter.command != _|_ {
+								command: parameter.command
+							}
+							if parameter.args != _|_ {
+								args: parameter.args
+							}
+							if len(parameter.ports) > 0 {
+								ports: [for p in parameter.ports {
+									name:          p.name
+									containerPort: p.containerPort
+									protocol:      "TCP"
+								}]
+							}
+							env: [for e in parameter.env {e}]
+							if parameter.resources != _|_ {
+								resources: parameter.resources
+							}
+							securityContext: _containerSecurityContext
+							volumeMounts: [{
+								name:      "workspace"
+								mountPath: parameter.workspacePath
+							}, {
+								name:      "tmp"
+								mountPath: "/tmp"
+							}]
+						}]
+
+						// Ephemeral per-instance storage, deliberately not a PVC.
+						//
+						// SandboxTemplate.spec has no volumeClaimTemplates that applies
+						// to pool members, and EBS cannot be shared: each instance is
+						// its own microVM and a block device attaches to one sandbox at
+						// a time. Two sessions sharing a volume would also defeat the
+						// filesystem isolation this component promises.
+						//
+						// sizeLimit is set because the kubelet cannot see inside the
+						// sandbox: emptyDir and writable-layer usage report as ZERO
+						// from the node, so eviction never fires on a sandbox that
+						// fills its disk. The limit is enforced by the guest kernel
+						// instead, where the data actually lives.
+						volumes: [{
+							name: "workspace"
+							emptyDir: sizeLimit: "\(parameter.workspaceSizeGi)Gi"
+						}, {
+							name: "tmp"
+							emptyDir: sizeLimit: "1Gi"
+						}]
+					}
+				}
+			}
+		}
+
+		// The sandbox's identity anchor, named context.name like every other
+		// workload component's, so the gateway-identity and aws-service-identity
+		// traits attach with no extra wiring. It exists even when
+		// automountServiceAccountToken is false: Pod Identity binds to the
+		// ServiceAccount, not to a mounted token, so a sandbox that needs AWS
+		// credentials (a confidential one calling KMS, for instance) gets them
+		// without ever holding a Kubernetes API token.
+		serviceAccount: {
+			apiVersion: "v1"
+			kind:       "ServiceAccount"
+			metadata: {
+				name:      context.name
+				namespace: context.namespace
+				labels: "app.kubernetes.io/name": context.name
+			}
+		}
+
+		// Discovery for whoever creates the claims. A claimer -- the gateway, an
+		// agent, the Dark Factory orchestrator -- needs the pool name and the
+		// lifecycle the developer declared, and must not have to parse this
+		// component's rendered objects or hardcode a naming convention. Same role
+		// as the agent's Agent Card ConfigMap, and the same cleanup story: it is a
+		// KubeVela output, so deleting the Application deletes it.
+		//
+		// idleTimeout and maxLifetime are PUBLISHED HERE RATHER THAN ENFORCED,
+		// because the TTL lives on the SandboxClaim (lifecycle.shutdownTime,
+		// ttlSecondsAfterFinished) and a claim is created per session at runtime.
+		// A claimer that ignores these values leaks instances; the values being
+		// declared in one place is what makes that a bug with an owner rather than
+		// an unwritten convention.
+		sandboxCard: {
+			apiVersion: "v1"
+			kind:       "ConfigMap"
+			metadata: {
+				name:      context.name + "-sandbox"
+				namespace: context.namespace
+				labels: {
+					"app.kubernetes.io/name": context.name
+					"agent.dev/type":         "sandbox-card"
+				}
+			}
+			data: {
+				name:         context.name
+				description:  parameter.description
+				warmPool:     context.name
+				template:     context.name + "-template"
+				mode:         parameter.mode
+				runtimeClass: _isolationClass
+				idleTimeout:  parameter.idleTimeout
+				maxLifetime:  parameter.maxLifetime
+				service:      "\(parameter.service)"
+				networkIsolated: "\(parameter.networkIsolated)"
+				warmReplicas:    "\(parameter.warmPool)"
+			}
+		}
+	}
+
+	// NAME THIS COMPONENT SOMETHING NO OTHER COMPONENT IN THE APPLICATION USES,
+	// and in particular not the same as the agent that claims from it.
+	//
+	// KubeVela resolves a component's TYPE by name. Two components sharing a name
+	// do not conflict and are not rejected -- the second definition wins for
+	// both. An Application with an `agent` and a `sandbox` both called `foo`
+	// renders a SandboxWarmPool where the agent's Rollout should be, keeps the
+	// agent's Services, Agent Card and HTTPRoute pointing at a workload that does
+	// not exist, and emits ServiceAccount/foo twice. Nothing errors, at render or
+	// at apply.
+	//
+	// This component cannot guard against it: KubeVela renders components
+	// independently, so CUE here cannot see the other one. What catches it is
+	// scripts/test-isolation-matrix.sh (row D1), which counts emitted
+	// (kind, name) pairs across the whole Application.
+	//
+	// Note that <name>-template and <name>-sandbox are DERIVED from this name, so
+	// also avoid naming one pool after another's template -- though that case is
+	// harmless today, because those collide only on kind+name together and
+	// Kubernetes allows one name across two kinds (matrix row D2).
+	parameter: {
+		// Required fields
+		// +usage=What this sandbox is for. Published on the sandbox card so an
+		// operator reading the cluster can tell two pools apart.
+		description: string
+
+		// +usage=Container image every instance runs. Required and deliberately
+		// without a platform default: unlike an agent, where the platform ships a
+		// known-good image, a sandbox image is the workload itself -- a code
+		// interpreter, a browser, a coder -- and there is no sensible default.
+		//
+		// PRECONDITION: it must run as a NUMERIC non-root uid, or supply one via
+		// runAsUser. runAsNonRoot asks the kubelet to PROVE non-rootness, and it
+		// cannot prove that from a named USER: an already-non-root image still
+		// fails with "image has non-numeric user (...), cannot verify user is
+		// non-root".
+		image: string
+
+		// +usage=Override the image entrypoint. A warm instance starts BEFORE any
+		// claim injects env, so an image whose entrypoint needs per-session input
+		// must idle here and exec the real entrypoint once the claim arrives,
+		// exactly as the Dark Factory coder template does.
+		command?: [...string]
+
+		// +usage=Arguments for the entrypoint.
+		args?: [...string]
+
+		// +usage=Environment every instance gets. Per-session values do NOT belong
+		// here -- they are injected by the SandboxClaim, which envVarsInjection
+		// governs.
+		env: *[] | [...{
+			name:  string
+			value: string
+		}]
+
+		// +usage=Ports to expose on the claimed instance. Only meaningful with
+		// service: true.
+		ports: *[] | [...{
+			name:          string
+			containerPort: int
+		}]
+
+		// +usage=Trust model for the sandbox.
+		//
+		//   isolated     (default) The node is TRUSTED; the workload is not.
+		//                Protects the node and every other pod from whatever runs
+		//                inside. exec, stdin, logs and stats all work, which is
+		//                what lets a claimer drive the instance.
+		//   confidential The NODE is untrusted too. A cluster administrator cannot
+		//                read the instance's memory, the overlay is encrypted, and
+		//                exec and stdin are DENIED from the host. Requires
+		//                cedarPolicy, and a claimer that does not need exec.
+		//
+		// Which RuntimeClass delivers each is a PLATFORM choice (Nitro
+		// isolated-sandbox / confidential-sandbox by default, Kata where a cluster
+		// is configured for it) and is deliberately not expressible here: the
+		// runtime is ambient environment config (.kiro/steering/oam-authoring.md
+		// §1). The trust model is a property of the WORKLOAD, so it is.
+		mode: *"isolated" | "confidential"
+
+		// +usage=Base64-encoded Cedar policy, attached as the
+		// sandbox.amazonaws.com/policy annotation. REQUIRED for confidential,
+		// optional for isolated.
+		//
+		// The policy is enforced from INSIDE the guest -- which images may load,
+		// which containers may run, whether exec, stdin and log reads are
+		// permitted, which mounts are allowed -- so it holds even when the parent
+		// instance is compromised, and in confidential mode it is measured into
+		// attestation register PCR17.
+		//
+		// Generate it from the FINAL rendered pod template with
+		// scripts/nitro/gen-cedar-policy.sh, and regenerate whenever a pinned
+		// field changes. A new image digest alone is enough. A stale policy does
+		// not degrade quietly: the instance is denied.
+		cedarPolicy: *"" | string
+
+		// +usage=Boot the sandbox with NO network device: no DNS, no NTP, no IMDS,
+		// no Pod Identity, no routable interface, in either direction. The right
+		// default for running model-generated code that has no business calling
+		// out.
+		//
+		// Requires service: false (a Service cannot reach it) and is incompatible
+		// with mode: confidential (no route to AWS KMS); both are rejected at
+		// render time rather than at runtime. logs, exec, stdin and stats keep
+		// working over vsock, so a claimer can still drive the instance.
+		networkIsolated: *false | bool
+
+		// +usage=Maximum simultaneous outbound connections per IP family
+		// (default 4096, range 64-65536). Per instance.
+		conntrackLimit?: int & >=64 & <=65536
+
+		// +usage=Maximum DNS queries per second (default 100, maximum 512). Per
+		// instance.
+		dnsQueriesPerSecond?: int & >=1 & <=512
+
+		// +usage=Pre-booted instances held ready to be claimed. This is the
+		// cold-start dial: a claim against a non-empty pool binds an instance that
+		// is already running, while an empty pool makes the first request wait for
+		// a microVM boot and, on a cluster with no spare sandbox-capable node, for
+		// a node to be provisioned first.
+		//
+		// It is also the standing cost: every warm instance occupies memory, a
+		// nitro-sandbox slot and its own share of the node whether or not anyone
+		// claims it. 0 is valid and means pure on-demand.
+		//
+		// Note the per-node ceiling: total sandbox vCPUs cannot exceed 5x the
+		// node's vCPUs, and the instance COUNT cannot either (halved on
+		// CPU-overcommit instance types). Memory is usually the binding
+		// constraint first.
+		warmPool: *1 | int & >=0
+
+		// +usage=How long an idle instance is kept before it is reclaimed, e.g.
+		// 15m. PUBLISHED, NOT ENFORCED: the TTL lives on the per-session
+		// SandboxClaim, which a claimer creates at runtime, so this component can
+		// only state the contract. A claimer that ignores it leaks instances.
+		idleTimeout: *"15m" | string
+
+		// +usage=Hard ceiling on one instance's lifetime regardless of activity,
+		// e.g. 4h. The backstop for a session that never goes idle. Published, not
+		// enforced, for the same reason as idleTimeout.
+		maxLifetime: *"4h" | string
+
+		// +usage=Whether a claim may ADD environment variables to the instance it
+		// binds. Allowed (default) lets a claim add but not override the
+		// template's own, which is what per-session input needs while keeping the
+		// platform's own env -- the model gateway, the tracing endpoint --
+		// immutable. Overrides lets a claim replace those too. Disallowed rejects
+		// injection entirely, and a claim that tries fails with
+		// reason=EnvVarsInjectionRejected.
+		envVarsInjection: *"Allowed" | "Overrides" | "Disallowed"
+
+		// +usage=Put a Service in front of the claimed instance, for a claimer
+		// that talks to it over HTTP. Set false for a sandbox driven over
+		// exec/stdin, and required false when networkIsolated is true.
+		service: *true | bool
+
+		// +usage=Numeric UID every instance runs as, also used for the group and
+		// fsGroup so the workspace volume is writable. REQUIRED rather than
+		// cosmetic: runAsNonRoot makes the kubelet VERIFY non-rootness, and it
+		// cannot verify that from a named USER. Cannot be used to gain root --
+		// runAsNonRoot stays on and rejects uid 0 at admission, so this only
+		// selects WHICH non-root user.
+		runAsUser: *1000 | int
+
+		// +usage=Mount the container root filesystem read-only. On by default,
+		// which is stricter than the agent component manages: a sandbox image is
+		// chosen for this purpose and writes to the workspace and /tmp mounts
+		// below. Turn it off only for an image that genuinely writes elsewhere in
+		// its root, and know that doing so also loosens the generated Cedar
+		// policy, because a read-only root is one of the fields it pins.
+		readOnlyRootFilesystem: *true | bool
+
+		// +usage=Where the per-instance workspace volume is mounted.
+		workspacePath: *"/workspace" | string
+
+		// +usage=Size limit of the per-instance workspace volume, in GiB. Enforced
+		// by the guest kernel, not by the kubelet, which cannot see inside the
+		// sandbox -- emptyDir usage reports as zero from the node, so eviction
+		// never fires on an instance that fills its disk.
+		workspaceSizeGi: *2 | int
+
+		// +usage=Mount a ServiceAccount token into the instance. Off by default: a
+		// sandbox running unreviewed code has no business holding in-cluster API
+		// credentials. AWS access through Pod Identity does NOT need this -- it
+		// binds to the ServiceAccount, not to a mounted token.
+		automountServiceAccountToken: *false | bool
+
+		// +usage=CPU and memory per instance.
+		//
+		// Two Nitro-specific notes. The RuntimeClass adds its own overhead ON TOP
+		// of these (256Mi for isolated-sandbox, 512Mi for confidential-sandbox,
+		// plus one nitro-sandbox slot), charged for scheduling and kubelet
+		// accounting. And on SMT instance types, core scheduling keeps two
+		// different sandboxes off the sibling threads of one core, so requesting
+		// CPU in multiples of two vCPUs lets an instance own whole cores instead
+		// of stranding a sibling.
+		resources?: {
+			requests?: {
+				cpu?:    string
+				memory?: string
+			}
+			limits?: {
+				cpu?:    string
+				memory?: string
+			}
+		}
+	}
+}

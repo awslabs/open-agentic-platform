@@ -1,10 +1,20 @@
-# Sandbox-isolated agent — the same agent as example-agent-simple.yaml, but running
-# inside a Kata microVM instead of a shared-kernel container.
+# Sandbox-isolated agent — the same agent as example-agent-simple.yaml, but each
+# pod running inside its own hardware-isolated microVM instead of a shared-kernel
+# container.
 #
 # The ONLY difference from the non-sandboxed example is one line: `sandbox: true`.
 # Everything else — blue-green, replicas, the Agent Card, gateway registration,
 # the identity trait — behaves exactly as it does without the flag, because the
 # workload is still an Argo Rollout in both paths.
+#
+# WHICH microVM runtime delivers the isolation is NOT in this file and cannot be.
+# By default it is AWS Nitro Sandboxes (`isolated-sandbox`): a Firecracker
+# microVM per pod, hardware-isolated by the Nitro hypervisor, which on EKS Auto
+# Mode needs no node layer of our own. A cluster annotated onto Kata
+# (sandbox_runtime_class: kata-clh) renders this same file against the Kata class
+# instead, with nothing to change here. The runtime is ambient environment config;
+# the developer-facing choice is the TRUST MODEL, via sandboxMode — see
+# example-agent-sandbox-confidential.yaml.
 #
 # PRECONDITIONS
 #   1. The container needs a NUMERIC uid. sandbox: true sets runAsNonRoot, which makes the
@@ -15,13 +25,19 @@
 #      sandboxRunAsUser supplies the uid and defaults to 1000, matching that image, so
 #      nothing extra is needed here. Override it for an image on a different uid. An image
 #      whose USER really is root still fails, as intended.
-#   2. The cluster needs the Kata RuntimeClasses and a matching node pool:
+#   2. The cluster needs the isolation runtime the platform selected.
+#      On the Nitro default: Kubernetes 1.36+ in a US commercial region, with
+#        kubectl get runtimeclass isolated-sandbox
+#      returning the class. EKS Auto Mode provisions a sandbox-capable node on
+#      demand and needs nothing else; outside Auto Mode you need a Nitro Sandbox
+#      AMI and nodes launched with EnclaveOptions.Enabled=true.
+#      On Kata: the Kata RuntimeClasses and a matching node pool —
 #      agent_sandbox + agent_sandbox_kata + kata_nodepool (kataNested.enabled).
-#      Without them the pod stays Pending and the Rollout reports not-Ready.
+#      Without either, the pod stays Pending and the Rollout reports not-Ready.
+#      That is the designed failure: not-Ready, never fake-green.
 #
-# The Kata VMM itself is NOT set here. It is a platform choice, carried by
-# global.sandboxRuntimeClass on the oam-agent-components chart (default kata-clh).
-# See docs/sandbox-agents/DESIGN.md.
+# See docs/sandbox-agents/NITRO-DESIGN.md (Nitro, the default) and
+# docs/sandbox-agents/DESIGN.md (the Kata path this feature started as).
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
@@ -38,7 +54,18 @@ spec:
         # ── Isolation opt-in: the whole feature ──────────────────────────────────
         sandbox: true
 
-        description: "General purpose AI assistant, running in a Kata microVM"
+        # Trust model. isolated is the default and is written out here only for
+        # the sake of the example: the NODE is trusted, the WORKLOAD is not, so
+        # this protects the node and every other pod from a compromised agent.
+        # The platform keeps full observability — kubectl exec, logs and stats
+        # all work.
+        #
+        # Use confidential when the node operator is also outside your trust
+        # boundary. That is a bigger change than one word: see
+        # example-agent-sandbox-confidential.yaml.
+        sandboxMode: isolated
+
+        description: "General purpose AI assistant, running in an isolated microVM"
         systemMessage: |
           You are a helpful AI assistant with access to various tools.
           Always be clear, concise, and helpful. When asked about time, use the tools.
@@ -49,15 +76,28 @@ spec:
         # blue-green promotion works as usual. The existing multi-replica guidance
         # still applies — use a memory provider, because the in-pod session cache
         # has no A2A affinity.
+        #
+        # Note what this does NOT give you: two replicas are two microVMs shared
+        # by every caller, not one per user. For per-user or per-session
+        # a claimable pool of microVMs, see example-sandbox-isolated.yaml.
         replicas: 2
 
         registerWithGateway: true
         mcpServers:
           - name: mcp-time
 
-        # The Kata RuntimeClass adds overhead.podFixed (130Mi/250m for kata-clh,
-        # 320Mi for kata-qemu) ON TOP of these requests, for both scheduling and
-        # kubelet accounting. Size the Kata node pool accordingly.
+        # The RuntimeClass adds overhead.podFixed ON TOP of these requests, for
+        # both scheduling and kubelet accounting: 256Mi plus one
+        # eks.amazonaws.com/nitro-sandbox slot for isolated-sandbox (512Mi for
+        # confidential-sandbox), or 130Mi/250m for kata-clh and 320Mi for
+        # kata-qemu. Size the sandbox-capable nodes accordingly.
+        #
+        # On Nitro there are two more sizing facts worth knowing: a pod asking
+        # for more than 1GiB sees usable memory about 1-2% below its request,
+        # because the guest kernel uses that share for its own bookkeeping, and
+        # on SMT instance types compute available to sandboxes is bounded by
+        # PHYSICAL cores — requesting CPU in multiples of two vCPUs lets a
+        # sandbox own whole cores.
         resources:
           requests:
             cpu: 500m
@@ -67,6 +107,6 @@ spec:
             memory: 1Gi
       traits:
         # Identity is unchanged by sandboxing: the trait attaches a projected SA
-        # token (audience agentgateway) to the same ServiceAccount, which the Kata
-        # pod mounts like any other pod.
+        # token (audience agentgateway) to the same ServiceAccount, which the
+        # sandboxed pod mounts like any other pod.
         - type: gateway-identity
