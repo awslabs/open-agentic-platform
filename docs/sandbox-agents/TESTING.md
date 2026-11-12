@@ -673,6 +673,8 @@ The point of a warm pool is that the pods are **already there**:
 
 ```bash
 kubectl get pods -l agent-sandbox.io/role=session -o wide     # expect 2, Running
+# 2 because nothing has claimed yet. Once you claim one it becomes 3 --
+# warmPool: 2 means two AVAILABLE, so the buffer refills behind a claim.
 ```
 
 > **Mind the label.** An OAM `type: sandbox` pool labels its pods
@@ -745,15 +747,39 @@ Confirm the claimed sandbox is a real microVM, and that the pool refilled:
 SBX=$(kubectl get sandboxclaim probe-session-7f3a9c -o jsonpath='{.status.sandbox.name}')
 # The Sandbox name IS the pod name for this operator, so pass it straight in.
 bash scripts/nitro/verify-isolation.sh "$SBX" -n default
-kubectl get pods -l agent-sandbox.io/role=session            # back to 2
+kubectl get pods -l agent-sandbox.io/role=session
 ```
 
-Then idle it out — `idleTimeout: 15m` — and confirm the sandbox is destroyed
-rather than lingering:
+**Expect THREE pods, not two, and that is correct.** `warmPool: 2` means *two
+available*, so the operator refills the buffer the moment your claim takes one:
+
+```
+code-session-g7rrv   Running   2m11s    <- the one your claim took
+code-session-tsjpp   Running   2m11s    <- still warm
+code-session-vxb6p   Running     26s    <- the refill, created by your claim
+```
+
+The ages are the giveaway: two pods the age of the pool, and one much younger.
+If the count had stayed at 2 the pool would NOT be refilling, and the next
+claimant would wait for a cold start — which is the whole point of a warm pool.
+
+The arithmetic, so no count surprises you: **total pods = `warmPool` + claims
+currently held.**
+
+Then release the claim:
 
 ```bash
 kubectl delete sandboxclaim probe-session-7f3a9c
 kubectl get sandbox,pods -l agent-sandbox.io/role=session
+```
+
+**The count does not drop straight away, and that is also correct.** Releasing a
+claim does not reap the sandbox — `idleTimeout` (15m in this example) does. So
+immediately after the delete you still see 3; it returns to 2 once the timer
+fires. Counting right after releasing and concluding there is a leak is the easy
+mistake here.
+
+```bash
 kubectl delete -f platform/oam/examples/example-sandbox-isolated.yaml
 ```
 
