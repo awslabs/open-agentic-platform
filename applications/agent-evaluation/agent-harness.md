@@ -26,7 +26,7 @@ publishes the result as `oap_agent_harness_*` metrics.
 | | Online evaluation (Phase 1, `evaluation` block) | Harness (Phase 3, `harness` block) |
 |---|---|---|
 | Input | sampled live traffic, after the fact | a fixed dataset of cases you control |
-| When | continuously | once per new revision |
+| When | continuously | once per new revision, and again when a revision becomes current after a rollback |
 | Question answered | how is the agent doing for users? | did this revision regress on known cases? |
 | Judge | Langfuse evaluators through Bifrost (hub-owned key) | `expected-answer` check through this cluster's Bifrost (per-cluster harness key) |
 | Output | `oap_agent_eval_*` | `oap_agent_harness_*` |
@@ -99,12 +99,17 @@ Step by step, with the code that does it:
    starts only when `status.blueGreen.previewSelector` equals it, meaning
    `<agent>-preview` already selects the newest ReplicaSet. The first revision
    the harness sees for an agent runs as a baseline (`trigger=first-revision`);
-   later ones are `new-revision`.
-4. **One Job per (namespace, agent, revision, dataset).** The Job is named
-   `oap-harness-<first 12 hex of sha256("<namespace>/<agent>/<revision>/<dataset>")>`
-   (`naming.py`) and created in the reconciler's own namespace
-   (`agent-evaluation`), never in the agent's. The Job object is the "already
-   ran" record. `backoffLimit: 0`, so a failed run is reported and never
+   later ones are `new-revision`. A revision that ran before and becomes
+   current again after another revision was current (a rollback) runs again as
+   `trigger=rollback` (see §5 for the limits).
+4. **One Job per (namespace, agent, revision, dataset) each time the revision
+   becomes current.** The first run is named
+   `oap-harness-<first 12 hex of sha256("<namespace>/<agent>/<revision>/<dataset>")>`;
+   run n >= 2 (a rollback) hashes `"<namespace>/<agent>/<revision>/<dataset>/<n>"`
+   (`naming.py`). Every Job and its pod carry `harness.oap.io/run-number`
+   (a Job without it counts as run 1). Jobs are created in the reconciler's own
+   namespace (`agent-evaluation`), never in the agent's. The Job objects are
+   the "already ran" record. `backoffLimit: 0`, so a failed run is reported and never
    retried. At most `harness.maxConcurrentJobs` (default 2) run at once; a new
    revision waits for a slot.
 5. **Cases.** The Job runs the reconciler image as `python -m app.harness_runner`
@@ -112,8 +117,10 @@ Step by step, with the code that does it:
    `harness.readyTimeoutSeconds` (600 s) for the preview's A2A agent card, then
    sends each case as an A2A `message/send` to
    `http://<agent>-preview.<namespace>.svc.cluster.local:8083/` with
-   `contextId = oap-harness-<revision>-<caseId>` and no caller identity, so
-   every case is a fresh session (`a2a_client.py`).
+   `contextId = oap-harness-<revision>-<caseId>` (run n >= 2:
+   `oap-harness-<revision>-r<n>-<caseId>`) and no caller identity, so every
+   case is a fresh session (`a2a_client.py`). Every form starts with
+   `oap-harness-`, the marker online evaluation excludes.
 6. **Judge.** Each answer goes to the `expected-answer` check: one
    OpenAI-compatible call to this cluster's Bifrost
    (`http://bifrost.bifrost.svc.cluster.local:8080/v1/chat/completions`) with
@@ -256,7 +263,7 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 
 | Reason | Type | Meaning |
 |---|---|---|
-| `HarnessRunStarted` | Normal | a run started for a revision (`first-revision` or `new-revision`) |
+| `HarnessRunStarted` | Normal | a run started for a revision (`first-revision`, `new-revision` or `rollback`; a re-run says `run <n>`) |
 | `HarnessRunCompleted` | Normal | `revision <hash>: <passed>/<cases> passed on <dataset> (<errors> errors)` |
 | `HarnessRunFailed` | Warning | the run errored (preview unreachable, dataset invalid, every case errored, timeout) |
 | `HarnessRunSuperseded` | Normal | the revision moved during the run; the result was discarded |
@@ -504,7 +511,8 @@ marked otherwise. Ids (D1 to D5, O-1, O-2) refer to the test report.
 | Behaviour | Detail |
 |---|---|
 | First-revision baseline | When no Job exists for the agent, the current revision runs once as `trigger=first-revision`. On a first deploy `-preview` and `-stable` select the same pods, so the baseline exercises pods that also serve users |
-| One run per revision | A new pod hash creates exactly one Job (`new-revision`); older revisions are not re-run |
+| One run per time a revision becomes current | A new pod hash creates exactly one Job (`new-revision`). A revision that stays current is never re-run, not on later passes and not after a restart |
+| Rollback re-runs | A revision that ran before and becomes current again runs again as `trigger=rollback`, run n+1 (label `harness.oap.io/run-number`). It counts as having come back when a retained Job of another revision of the agent was created after its newest run. Once that run finishes, the series show it. Limits: if the in-between revision left no retained Job (it never started a run, its run was stopped or discarded before the re-run could start, for example while all job slots were busy, or it was pruned), there is no re-run and the series keep the revision's own earlier run. If all of the revision's runs were pruned, it runs as `new-revision`, run 1 |
 | Restart is safe | A reconciler restart creates or deletes no Job, re-mints no key and does not reset its budget; gauges come back from the retained results. `runs_total` and completion Events are counted again once after a restart (by design) |
 | Superseded runs are discarded (D5) | If the revision moves while a run is active, the Job is stopped. If a run the reconciler saw active finishes after `-preview` moved to another revision, it is discarded. Both delete the Job and its result, record `HarnessRunSuperseded` and increment `runs_total{result="superseded"}`; nothing is published for it. Accepted trade-off: a valid run that ended just before a rollout within one pass interval is discarded too. After a restart, an already finished run is taken as it is |
 | Invalid declaration keeps history (D1) | A hand-edited or otherwise invalid `<agent>-harness` gets `InvalidHarnessDeclaration`, starts no run, and keeps the agent's Jobs, results and series. KubeVela restores a rendered ConfigMap on its next reconcile, with no re-run |
@@ -514,7 +522,7 @@ marked otherwise. Ids (D1 to D5, O-1, O-2) refer to the test report.
 | History limit | Finished runs are pruned to `historyLimit` (default 3) per agent, newest by finish time, with no orphan result ConfigMaps |
 | Validation | 14 hostile hand-written ConfigMaps (agent names with `../` or capitals, `previewService` set to an external host, an IP, a dotted name or a URL, `mode: gate`, out-of-range ports and thresholds, unknown checks) were each refused with the field named; no Job was created and the loop kept running |
 | O-1 | A block without `dataset` passes admission and fails at render; nothing renders |
-| O-2 | After a rollback to an older revision whose run is still retained, the series show the latest finished run on the declared dataset, which can belong to another revision. The `revision` label stays accurate |
+| O-2 | Fixed (DEF-2): a rollback now starts a `rollback` run, and the series show it once it finishes. Until then they show the latest finished run on the declared dataset, which can belong to another revision; the `revision` label stays accurate. See "Rollback re-runs" for when no re-run starts |
 
 ## 6. Worked example: our tested hub setup
 

@@ -1305,7 +1305,7 @@ series.
 | `oap_agent_harness_threshold` | | the agent's declared threshold |
 | `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold` (the declared threshold). Informational only |
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
-| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status` | always 1; `trigger` is `first-revision` or `new-revision`, `status` `completed` or `error` |
+| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status` | always 1; `trigger` is `first-revision`, `new-revision` or `rollback`, `status` `completed` or `error` |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
 | `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `error`, `superseded` |
 
@@ -1378,10 +1378,25 @@ Limitation: an agent image that is not the platform base image and does not map
   them, and writes one `<job>-result` ConfigMap (`result.json`) in the same
   namespace. The reconciler reads it and publishes the metrics.
 - The Job name is deterministic,
-  `oap-harness-<sha256(namespace/agent/revision/dataset)[:12]>`, so the Jobs
-  themselves are the "already ran" state: a reconciler restart re-publishes from
-  existing results and never re-runs a revision. `backoffLimit: 0`: a failed run
-  is reported, never retried, because a retry would drive the agent again.
+  `oap-harness-<sha256(namespace/agent/revision/dataset)[:12]>` for a
+  revision's first run and `oap-harness-<sha256(namespace/agent/revision/dataset/n)[:12]>`
+  for run n >= 2, with the ordinal in the `harness.oap.io/run-number` label
+  (absent means 1). The Jobs themselves are the "already ran" state: a
+  reconciler restart re-publishes from existing results and never re-runs a
+  revision that stayed current. `backoffLimit: 0`: a failed run is reported,
+  never retried, because a retry would drive the agent again.
+- **Rollback:** a revision that ran before runs again (`trigger="rollback"`,
+  run n+1) when it is current and previewed and a retained Job of another
+  revision of the agent was created after its newest run on the declared
+  dataset. The check runs before other revisions' active runs are stopped. The
+  re-run is then the revision's newest Job, so later passes and restarts start
+  nothing; creation timestamps come from the API server, so no extra state or
+  RBAC is needed. Its cases use `contextId = oap-harness-<revision>-r<n>-<caseId>`,
+  which keeps the `oap-harness-` exclusion marker. Accepted limits: without a
+  retained Job of the in-between revision (none started, stopped before the
+  re-run could start, or pruned) there is no re-run and the series keep the
+  revision's earlier run; if all of the revision's runs were pruned it runs as
+  `new-revision`, run 1.
 - **Superseded:** a run is superseded if the revision moved before the
   reconciler saw it finish: either the Job is still active when a newer
   revision is selected by `-preview`, or the reconciler last saw it active and,
@@ -1525,7 +1540,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A spoke whose catalog has an evaluator the hub lacks records an Event on that agent's ConfigMap and skips only that evaluator
 - [x] A successful-but-empty evaluator catalog leaves this cluster's rules untouched and fails the pass, instead of deleting and recreating every rule
 - [x] Harness (§4b): every online rule carries the `source:harness` and `oap-harness-` exclusion clauses, and existing rules converge with one PATCH
-- [x] Harness: one Job per (agent, revision, dataset) with a deterministic name, a first revision runs as a baseline, nothing re-runs after a restart, a superseded run is deleted and publishes nothing, history is pruned
+- [x] Harness: one Job per (agent, revision, dataset) each time the revision becomes current, with a deterministic name, a first revision runs as a baseline, a rollback (A -> B -> A) starts a `rollback` run that the series then show, nothing re-runs for a revision that stays current or after a restart, a superseded run is deleted and publishes nothing, history is pruned
 - [x] Harness: no Job starts while a required judge key is unavailable; the key is minted with a config-hash name and stale keys are deleted
 - [x] Harness: a dataset with zero cases or too many cases, an unparseable judge reply and a failed A2A call are run or case errors, never passes; an errored run publishes no counts
 - [x] Harness: the dataset and check prompt the chart ships load through the reconciler's own loaders, including the `checks.yaml` rendered by `helm template` (`tests/test_harness_chart_files.py`)

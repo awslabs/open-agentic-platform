@@ -765,6 +765,15 @@ What to expect, and what each mismatch means:
   accepted cost in report mode. Gate mode needs the exact per-reply revision
   check in the §4b follow-up (the agent exposes its pod-template-hash through
   the downward API, the runner checks it on every reply).
+- Rollback (A -> B -> A): once `-preview` selects A again, a new Job for A
+  appears with `trigger=rollback` and a higher run number, and after it
+  finishes `oap_agent_harness_info` shows `revision=<A>,trigger="rollback"`.
+  List the runs per revision with
+  `kubectl get jobs -n agent-evaluation -l harness.oap.io/agent=<agent> -L harness.oap.io/revision,harness.oap.io/run-number`.
+  Its sessions are `oap-harness-<A>-r<n>-<caseId>`. Later passes and a
+  reconciler restart start nothing more for A. No re-run is expected when B
+  left no retained Job (B's run never started, was stopped before A's re-run
+  could start, or was pruned); the series then keep A's earlier run.
 
 ## Re-verifying the Langfuse API after an upgrade
 
