@@ -40,6 +40,7 @@ except ImportError:
 from .config import config
 from .delegation import delegation_tools, prompt_addendum
 from .delegation import generation as delegation_generation
+from .tool_executor import BoundedToolExecutor
 from .identity import (
     CALLER_IDENTITY_HEADER,
     WORKLOAD_KEY,
@@ -593,6 +594,14 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 def _trace_attributes(session_id: str, actor_id: str) -> dict:
     source = "rca" if (session_id or "").startswith("incident-") else "chat"
     tags = [f"source:{source}", config.AGENT_NAME]
+    # Cluster-scoped identity for continuous agent evaluation: the evaluation
+    # rules filter on this tag, and the reports group by it. Added ALONGSIDE the
+    # bare agent name, which stays so existing Langfuse filters and dashboards
+    # keep working. None outside the platform (a local run has no cluster), so
+    # nothing here depends on the platform being present.
+    scoped = config.scoped_agent_tag()
+    if scoped:
+        tags.append(scoped)
     return {
         # Raw session id (what we echo back as contextId) so the Langfuse
         # Session groups by conversation/incident. Langfuse has no AgentCore
@@ -692,6 +701,7 @@ def _construct_agent(session_id: str, actor_id: str) -> Agent:
         model=_get_model(),
         system_prompt=config.SYSTEM_PROMPT + prompt_addendum(available, unavailable),
         tools=tools or None,
+        tool_executor=BoundedToolExecutor(config.TOOL_MAX_CONCURRENCY),
         agent_id=config.AGENT_NAME,
         name=config.AGENT_NAME,
         description=config.AGENT_DESCRIPTION,

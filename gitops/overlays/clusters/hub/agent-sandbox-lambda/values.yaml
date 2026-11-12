@@ -7,7 +7,8 @@
 # ACTIVE on the hub. The ARNs below are public identifiers (not secrets).
 microvm:
   enabled: true
-  region: us-west-2
+  # region is INTENTIONALLY NOT SET HERE: the registry entry injects it from this
+  # cluster's aws_region annotation (valuesObject wins over this overlay anyway).
   # MUST be kro.run — EKS Managed KRO only watches the kro.run group (see chart values.yaml).
   apiGroup: kro.run
   # aws-cli v2 (has the pre-GA lambda-microvms service; alpine/k8s's aws-cli 1.34 does NOT,
@@ -22,8 +23,8 @@ microvm:
     clusterName: hub
     controllerNamespace: ack-system
     controllerServiceAccount: ack-lambdamicrovms-controller
-  # AWS-published base MicroVM image (ARM_64 — the only arch Lambda MicroVM supports).
-  baseImageARN: "arn:aws:lambda:us-west-2:aws:microvm-image:al2023-1"
+  # baseImageARN is INTENTIONALLY NOT SET HERE: the chart derives the AWS-published
+  # ARM_64 base image (al2023-1) in microvm.region, so it follows the cluster's region.
   # Lambda MicroVM codeArtifact.uri is S3-ONLY (a zip with the coder app + a Dockerfile);
   # it is NOT an ECR image reference. The Dockerfile inside MAY pull the arm64
   # dark-factory-coder from ECR as a base layer (the build role keeps ecr:Get*).

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: agent-evaluation
+description: >-
+  Continuous agent evaluation: turns the agent component's evaluation block into
+  Langfuse online LLM-as-a-judge evaluators and rules, and reports pass ratios to
+  Grafana. See docs/architecture/agent-evaluation.md.
+type: application
+# TWO INDEPENDENT VERSION LINES. Conflating them is what produced the drift this
+# PR was reviewed for, so they are spelled out:
+#
+#   version    - the CHART. Bumped when the templates change. The registry
+#                entry's `defaultVersion` must track this one.
+#   appVersion - the reconciler IMAGE tag. Must match image.tag in values.yaml,
+#                the version in applications/agent-evaluation/pyproject.toml and
+#                the VERSION default in that package's build.sh.
+#
+# The published image line is 0.2.x (0.2.1-0.2.3 exist); an earlier pass in this
+# PR wrongly aligned the build script and README down to 0.1.0, which is the
+# CHART version, not the image's.
+version: 0.1.0
+appVersion: "0.2.4"

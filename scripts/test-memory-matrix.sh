@@ -17,7 +17,11 @@ SPOKE_KUBECONFIG="${SPOKE_KUBECONFIG:-${KUBECONFIG:?set SPOKE_KUBECONFIG or KUBE
 HUB_KUBECONFIG="${HUB_KUBECONFIG:-$SPOKE_KUBECONFIG}"
 ks() { KUBECONFIG="$SPOKE_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
 kh() { KUBECONFIG="$HUB_KUBECONFIG" kubectl --request-timeout=30s "$@"; }
-NS=agents; AGENT=my-agent; MEM=agents.agentcore-short-memory  # <namespace>.<component>
+NS=agents; AGENT=my-agent
+# Memory object: <namespace>.<component>, plus .<8 hex> on a cluster that passes
+# global.clusterName (agentcore-memory.cue, _objName). Exactly one must exist.
+MEM=$(ks get memories.bedrockagentcore.aws.upbound.io -o name | sed 's|.*/||' | grep -E '^agents\.agentcore-short-memory(\.[0-9a-f]{8})?$')
+[ "$(printf '%s\n' "$MEM" | grep -c .)" = 1 ] || { echo "expected exactly one agentcore-short-memory Memory object, found: ${MEM:-none}" >&2; exit 1; }
 GW=http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
 STATE="${STATE:-${TMPDIR:-/tmp}/memory-matrix.env}"; FAILS=0
 row() { if [ "$3" = "$4" ]; then printf 'PASS  %-4s %-66s %s\n' "$1" "$2" "$3"; else printf 'FAIL  %-4s %-66s expected=%s actual=%s\n' "$1" "$2" "$3" "$4"; FAILS=$((FAILS+1)); fi; }
@@ -89,7 +93,8 @@ print(max(t) if len(t)==2 else "")')
   echo "      strategies Ready at $STRAT_READY, pod created at $POD_CREATED"
   POL=$(ks get policies.iam.aws.upbound.io -o json | python3 -c 'import json,sys
 for i in json.load(sys.stdin)["items"]:
-    if i["metadata"]["name"].endswith("-agentcore-short-memory-iam-policy"): print(i["spec"]["forProvider"]["policy"])')
+    import re
+    if re.search(r"-agentcore-short-memory(-[0-9a-f]{8})?-iam-policy$", i["metadata"]["name"]): print(i["spec"]["forProvider"]["policy"])')
   row P7 "memory IAM policy: AgentCore actions only, no bedrock:InvokeModel" "yes no" "$(yn "$(echo "$POL" | grep RetrieveMemoryRecords)") $(yn "$(echo "$POL" | grep InvokeModel)")"
   echo "=== no caller identity (bypassing the gateway) ==="
   # Through a port-forward, not the probe pod: agents admit ingress only from the gateway

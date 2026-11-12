@@ -1,0 +1,104 @@
+{{- /*
+Alerts for the Langfuse datastores.
+
+WHY DISK, AND WHY HERE. A full ClickHouse volume is the worst failure this stack
+has, because every component an operator would check reports success: the OTel
+Collector gets its 200 from Langfuse's web tier and reports zero send failures,
+the worker pod stays Running, the reconciler stays Ready, and every
+oap_agent_eval_* gauge reads a believable 0. The only evidence is
+`NOT_ENOUGH_SPACE` in the worker's own log. On the hub that went unnoticed for
+three days.
+
+The evaluation metrics CANNOT detect it, by design: the reconciler is reading
+Langfuse successfully and Langfuse is honestly reporting that no scores exist. A
+full database and an idle agent are the same number. So the signal has to come
+from the volume, not from the feature -- which is what this rule is.
+
+It also has to fire with ROOM TO ACT, not at 100%: past full, ClickHouse cannot
+even TRUNCATE its own logs (that needs ~1 MiB of metadata space), so recovery
+escalates from "delete some rows" to "DROP TABLE". 20% free is the threshold
+because the recovery path needs space to merge.
+
+Uses kubelet volume stats rather than a ClickHouse exporter, so it works without
+adding scrape configuration to ClickHouse itself.
+
+ONLY WHEN THE CRD EXISTS. PrometheusRule is a prometheus-operator kind. On a
+cluster without the monitoring.coreos.com/v1 CRDs (they come from the
+prometheus-operator-crds addon, i.e. enable_monitoring), Argo CD rejects the
+WHOLE sync ("one or more synchronization tasks are not valid"), so nothing in
+this chart lands, including the push-otel-keys hook the OTel Collector depends
+on. Argo CD passes the destination cluster's API versions to Helm, so the
+Capabilities check skips the rule there and renders it where the CRD exists.
+*/ -}}
+{{- if and .Values.alerts.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: langfuse-storage
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: langfuse
+    app.kubernetes.io/component: langfuse-storage
+    app.kubernetes.io/part-of: agent-platform
+spec:
+  groups:
+    - name: langfuse-storage
+      rules:
+        - alert: LangfuseClickHouseDiskFillingUp
+          # 20% free, for 15m. Deliberately not tighter: ClickHouse merges make
+          # usage sawtooth, and a momentary dip is not an incident.
+          expr: >-
+            (
+              kubelet_volume_stats_available_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"clickhouse-data-.*"}
+              /
+              kubelet_volume_stats_capacity_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"clickhouse-data-.*"}
+            ) < 0.20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: ClickHouse volume under 20% free; Langfuse will start dropping traces
+            description: >-
+              {{ `{{ $labels.persistentvolumeclaim }}` }} has
+              {{ `{{ $value | humanizePercentage }}` }} free. When it fills, the
+              Langfuse worker drops every trace and score with NOT_ENOUGH_SPACE
+              while the OTel Collector still reports zero send failures and all
+              oap_agent_eval_* gauges read 0 -- so nothing else will tell you.
+              Usually ClickHouse's own system log tables rather than real data:
+              check `system.parts` by table. Recovery and prevention are in
+              applications/agent-evaluation/TESTING.md section 5a. Act now:
+              below ~1 MiB free, TRUNCATE itself fails and recovery needs DROP
+              TABLE.
+
+        - alert: LangfuseClickHouseDiskCritical
+          expr: >-
+            (
+              kubelet_volume_stats_available_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"clickhouse-data-.*"}
+              /
+              kubelet_volume_stats_capacity_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"clickhouse-data-.*"}
+            ) < 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: ClickHouse volume nearly full; trace and score loss is imminent or happening
+            description: >-
+              {{ `{{ $labels.persistentvolumeclaim }}` }} has
+              {{ `{{ $value | humanizePercentage }}` }} free. Confirm with
+              `kubectl logs -n {{ .Release.Namespace }} deploy/langfuse-worker | grep NOT_ENOUGH_SPACE`.
+              Dropped records are NOT recoverable.
+
+        # The direct signal, for when the above was missed. Needs the worker's
+        # log-derived metrics if present; harmless when the series is absent.
+        - alert: LangfuseWorkerDroppingRecords
+          expr: increase(langfuse_ingestion_dropped_records_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Langfuse worker is dropping ingestion records
+            description: >-
+              Traces and scores are being lost. Most often a full ClickHouse
+              volume -- see LangfuseClickHouseDiskCritical and
+              applications/agent-evaluation/TESTING.md section 5a.
+{{- end }}
