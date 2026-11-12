@@ -85,7 +85,6 @@ file, not a follow-up.
 
 ### Known violations (fix when touched)
 
-- `decentralized-observability-identity.yaml` has no CUE source.
 - `agent.yaml` contains a `command: ["opentelemetry-instrument", "python", ...]`
   block that is absent from `agent.cue`, so regenerating drops it and breaks
   tracing. Tracked in issue #50, which also covers moving auto-instrumentation
