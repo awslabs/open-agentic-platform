@@ -337,7 +337,6 @@ build on it, each one word:
 | | What it gives you |
 |---|---|
 | `sandboxMode: confidential` | The **node operator is outside the trust boundary**: memory unreadable from the node, encrypted overlay, `exec` denied from the host, and the guest attesting its measurements to AWS KMS before a secret is released |
-| `isolation: session` | **One isolated sandbox per user session**, claimed from a warm pool and destroyed on idle. The developer declares the agent once; users never submit OAM |
 
 Kata remains fully supported and is one cluster annotation away. See
 [`docs/sandbox-agents/NITRO-DESIGN.md`](docs/sandbox-agents/NITRO-DESIGN.md) for the design,

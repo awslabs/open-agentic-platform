@@ -161,9 +161,8 @@ AGENT_MIN='        description: "m"
 
 echo "== definitions =="
 D_NITRO="$(defs_for nitro)" || die_defs nitro
-D_SESSION="$(defs_for session --set global.sessionIsolationEnabled=true)" || die_defs session
 D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass= --set global.nitroSandboxRuntimeClasses=)" || die_defs kata
-printf 'rendered 3 definition sets (nitro default, session-enabled, kata-only)\n\n'
+printf 'rendered 2 definition sets (nitro default, kata-only)\n\n'
 
 # A correctly shaped stub policy: the components shape-check cedarPolicy.
 POLICY='cGVybWl0KHByaW5jaXBhbCwgYWN0aW9uLCByZXNvdXJjZSk7IC8vIGZlYXR1cmUtdGVzdCBzdHViLCBsb25nIGVub3VnaCBmb3IgdGhlIHNoYXBlIGNoZWNr'
@@ -243,23 +242,14 @@ render "$f_iso" "$D_KATA" "$WORK/o-f10.yaml" || { echo "FAIL F: kata agent did n
 row F10 "the SAME Application on a Kata cluster selects kata-clh" \
   "kata-clh" "$(q "$WORK/o-f10.yaml" "podspec('Rollout','f1-agent')['runtimeClassName']")"
 
-# =============================================================== G. isolation: session
+# =============================================================== H. type: sandbox
 echo
-echo "== G. type: agent -- isolation: session (the per-session front door) =="
-
-f_sess="$(app g <<YAML
+f_pool="$(app h <<YAML
 apiVersion: core.oam.dev/v1beta1
 kind: Application
-metadata: {name: g, namespace: default}
+metadata: {name: h, namespace: default}
 spec:
   components:
-    - name: analyst
-      type: agent
-      properties:
-$AGENT_MIN
-        isolation: session
-        sandboxTemplate: analyst-pool
-        sessionKey: subject
     - name: analyst-pool
       type: sandbox
       properties:
@@ -268,32 +258,8 @@ $AGENT_MIN
         warmPool: 3
 YAML
 )"
-render "$f_sess" "$D_SESSION" "$WORK/o-g.yaml" || { echo "FAIL G: session app did not render"; FAILS=$((FAILS+1)); }
+render "$f_pool" "$D_NITRO" "$WORK/o-g.yaml" || { echo "FAIL H: pool did not render"; FAILS=$((FAILS+1)); }
 
-# These four env vars ARE the contract with the agent image: it reads them to
-# claim a sandbox per session. A rename here is silent -- the agent falls back to
-# running tools in-process, which is the shared behaviour under an isolated name.
-row G1 "AGENT_ISOLATION tells the image which mode it is in" \
-  "session" "$(q "$WORK/o-g.yaml" "env('Rollout','analyst','AGENT_ISOLATION')")"
-row G2 "SANDBOX_WARM_POOL names the pool to claim from" \
-  "analyst-pool" "$(q "$WORK/o-g.yaml" "env('Rollout','analyst','SANDBOX_WARM_POOL')")"
-row G3 "SANDBOX_NAMESPACE is the Application's namespace" \
-  "default" "$(q "$WORK/o-g.yaml" "env('Rollout','analyst','SANDBOX_NAMESPACE')")"
-row G4 "AGENT_SESSION_KEY carries the chosen key strategy" \
-  "subject" "$(q "$WORK/o-g.yaml" "env('Rollout','analyst','AGENT_SESSION_KEY')")"
-
-# Without this RBAC the env vars are decoration: the claim is a 403 at runtime.
-row G5 "claimer Role can create sandboxclaims" \
-  "True" "$(q "$WORK/o-g.yaml" "any(r.get('resources')==['sandboxclaims'] and 'create' in r.get('verbs',[]) for r in obj('Role','analyst-sandbox-claimer')['rules'])")"
-row G6 "claimer Role can read sandboxes but NOT create them" \
-  "True" "$(q "$WORK/o-g.yaml" "any(r.get('resources')==['sandboxes'] and 'create' not in r.get('verbs',[]) for r in obj('Role','analyst-sandbox-claimer')['rules'])")"
-row G7 "RoleBinding targets the agent's own ServiceAccount" \
-  "analyst" "$(q "$WORK/o-g.yaml" "obj('RoleBinding','analyst-sandbox-claimer')['subjects'][0]['name']")"
-row G8 "the agent front door is still a Rollout (blue-green kept)" \
-  "True" "$(q "$WORK/o-g.yaml" "'Rollout/analyst' in kinds()")"
-
-# =============================================================== H. type: sandbox
-echo
 echo "== H. type: sandbox -- the pool itself =="
 row H1 "a warm pool is emitted" \
   "True" "$(q "$WORK/o-g.yaml" "'SandboxWarmPool/analyst-pool' in kinds()")"

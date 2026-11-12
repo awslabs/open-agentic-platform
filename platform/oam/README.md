@@ -32,9 +32,8 @@ platform/oam/
     ├── example-agent-simple.yaml           Agent + LLM gateway
     ├── example-agent-sandbox.yaml          Agent in a hardware-isolated microVM (sandbox: true)
     ├── example-agent-sandbox-confidential.yaml  ... with the node operator outside the trust boundary
-    ├── example-agent-session-isolation.yaml     One isolated sandbox per user session (isolation: session)
-    ├── example-sandbox-isolated.yaml        Per-session sandbox, isolated mode (type: sandbox)
-    ├── example-sandbox-confidential.yaml    Per-session sandbox, confidential + attestation
+    ├── example-sandbox-isolated.yaml        Claimable warm pool of microVMs, isolated mode (type: sandbox)
+    ├── example-sandbox-confidential.yaml    Claimable warm pool, confidential mode + attestation
     ├── example-agent-with-mcp.yaml          Agent integrated with an MCP server
     ├── example-agent-agentcore-memory.yaml Agent backed by Bedrock AgentCore Memory
     ├── example-agent-milvus-memory.yaml    Agent backed by Milvus vector store

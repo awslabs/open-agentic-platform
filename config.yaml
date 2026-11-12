@@ -58,9 +58,8 @@ agenticRepo:
 #
 # Turns on the agent_sandbox addon for the HUB. The addon is the only source of
 # the Sandbox* CRDs (SandboxTemplate / SandboxWarmPool / SandboxClaim), so it is
-# required for `type: sandbox` components and for `isolation: session` on
-# `type: agent`. `sandbox: true` on an agent needs only the RuntimeClasses, not
-# this addon.
+# required for `type: sandbox` components. `sandbox: true` on an agent needs only
+# the RuntimeClasses, not this addon.
 sandbox:
   enabled: true
 

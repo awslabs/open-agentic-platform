@@ -54,7 +54,7 @@ metadata:
   namespace: default
 spec:
   components:
-    # NOT `analyst-session`: example-agent-session-isolation.yaml already
+    # NOT `analyst-session`: another example used that name in this namespace, and
     # declares a sandbox component by that name in this namespace, and two
     # Applications emitting the same (kind, namespace, name) both apply --
     # whichever syncs last owns a SandboxWarmPool, SandboxTemplate,

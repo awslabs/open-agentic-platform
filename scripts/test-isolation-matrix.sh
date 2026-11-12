@@ -191,7 +191,6 @@ die_defs() { echo "cannot build definition set '$1' -- see the render error abov
 echo "== definitions =="
 # nitro: the shipped defaults. session: per-session isolation switched on.
 D_NITRO="$(defs_for nitro)" || die_defs nitro
-D_SESSION="$(defs_for session --set global.sessionIsolationEnabled=true)" || die_defs session
 D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)" || die_defs kata
 D_NORUNTIME="$(defs_for noruntime --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)" || die_defs noruntime
 # A MISCONFIGURED cluster: confidential_sandbox_runtime_class pointed at a Kata
@@ -200,7 +199,7 @@ D_NORUNTIME="$(defs_for noruntime --set global.sandboxRuntimeClass= --set global
 # confidential-needs-Nitro guards, since the ordinary Kata cluster leaves the
 # confidential class empty and trips the empty-class guard first.
 D_KATACONF="$(defs_for kataconf --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=kata-clh)" || die_defs kataconf
-printf 'rendered 5 definition sets (nitro default, session-enabled, kata-only, no-runtime, kata-as-confidential)\n\n'
+printf 'rendered 4 definition sets (nitro default, kata-only, no-runtime, kata-as-confidential)\n\n'
 
 # ---------------------------------------------------------------- A. examples
 echo "== A. every shipped example renders =="
@@ -209,9 +208,7 @@ for f in "$OAP"/platform/oam/examples/example-*.yaml; do
   # Applications are the only thing dry-run takes; skip raw manifests.
   kind="$(python3 -c 'import sys,yaml;d=next(yaml.safe_load_all(open(sys.argv[1])));print((d or {}).get("kind",""))' "$f")"
   [ "$kind" = "Application" ] || continue
-  # The per-session tiers need the platform switch; everything else uses defaults.
   d="$D_NITRO"
-  grep -qE '^\s+isolation:\s+(session|tools)\s*$' "$f" && d="$D_SESSION"
   # The confidential examples ship placeholder policies on purpose; they still
   # have to RENDER, which is what this checks.
   rc="$(render "$f" "$d" "$WORK/out-$b.yaml")"
@@ -326,7 +323,7 @@ YAML
 )"
 row B5 "confidential + memory + evaluation + MCP + identity" ok "$(render "$b_conf_all" "$D_NITRO" "$WORK/o-b5.yaml")"
 
-b_session_full="$(app b6 <<YAML
+b_agent_plus_pool="$(app b6 <<YAML
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata: {name: b6, namespace: default}
@@ -336,9 +333,6 @@ spec:
       type: agent
       properties:
 $AGENT_MIN
-        isolation: session
-        sandboxTemplate: b6-pool
-        sessionKey: subject
         memory: {provider: agentcore, config: {memoryId: "m-1", region: us-west-2}}
         evaluation: {enabled: true, evaluators: ["goal-completion"]}
         mcpServers: [{name: mcp-time}]
@@ -353,7 +347,7 @@ $AGENT_MIN
         warmPool: 2
 YAML
 )"
-row B6 "isolation:session + memory + evaluation + MCP + identity" ok "$(render "$b_session_full" "$D_SESSION" "$WORK/o-b6.yaml")"
+row B6 "isolation:pool + memory + evaluation + MCP + identity" ok "$(render "$b_agent_plus_pool" "$D_NITRO" "$WORK/o-b6.yaml")"
 
 b_session_sandbox="$(app b7 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -368,8 +362,6 @@ $AGENT_MIN
         sandbox: true
         sandboxMode: confidential
         cedarPolicy: "$POLICY_STUB"
-        isolation: session
-        sandboxTemplate: b7-pool
     - name: b7-pool
       type: sandbox
       properties:
@@ -380,7 +372,7 @@ $AGENT_MIN
         warmPool: 1
 YAML
 )"
-row B7 "confidential front door + confidential per-session pool" ok "$(render "$b_session_sandbox" "$D_SESSION" "$WORK/o-b7.yaml")"
+row B7 "confidential front door + confidential per-pool pool" ok "$(render "$b_session_sandbox" "$D_NITRO" "$WORK/o-b7.yaml")"
 
 b_sandbox_netiso="$(app b8 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -434,14 +426,10 @@ spec:
       type: agent
       properties:
 $AGENT_MIN
-        isolation: session
-        sandboxTemplate: b10-pool
     - name: b10-b
       type: agent
       properties:
 $AGENT_MIN
-        isolation: session
-        sandboxTemplate: b10-pool
     - name: b10-pool
       type: sandbox
       properties:
@@ -450,7 +438,7 @@ $AGENT_MIN
         warmPool: 3
 YAML
 )"
-row B10 "two agents sharing ONE sandbox pool" ok "$(render "$b_two_agents" "$D_SESSION" "$WORK/o-b10.yaml")"
+row B10 "two agents sharing ONE sandbox pool" ok "$(render "$b_two_agents" "$D_NITRO" "$WORK/o-b10.yaml")"
 
 # ---------------------------------------------------- C. guards still fire
 echo
@@ -488,52 +476,8 @@ YAML
 )"
 row C3 "sandbox:true with no runtime class configured" _isolationRuntimeRequired "$(guard "$c_sandbox_noclass" "$D_NORUNTIME" "$WORK/o-c3.yaml" _isolationRuntimeRequired)"
 
-c_session_gate="$(app c4 <<YAML
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata: {name: c4, namespace: default}
-spec:
-  components:
-    - name: c4-agent
-      type: agent
-      properties:
-$AGENT_MIN
-        isolation: session
-        sandboxTemplate: c4-pool
-YAML
-)"
-row C4 "isolation:session without sessionIsolationEnabled" _sessionIsolationUnavailable "$(guard "$c_session_gate" "$D_NITRO" "$WORK/o-c4.yaml" _sessionIsolationUnavailable)"
 
-c_session_notpl="$(app c5 <<YAML
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata: {name: c5, namespace: default}
-spec:
-  components:
-    - name: c5-agent
-      type: agent
-      properties:
-$AGENT_MIN
-        isolation: session
-YAML
-)"
-row C5 "isolation:session without sandboxTemplate" _sandboxTemplateRequired "$(guard "$c_session_notpl" "$D_SESSION" "$WORK/o-c5.yaml" _sandboxTemplateRequired)"
 
-c_tools="$(app c6 <<YAML
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata: {name: c6, namespace: default}
-spec:
-  components:
-    - name: c6-agent
-      type: agent
-      properties:
-$AGENT_MIN
-        isolation: tools
-        sandboxTemplate: c6-pool
-YAML
-)"
-row C6 "isolation:tools (refused by design)" _toolsTierNotSupported "$(guard "$c_tools" "$D_SESSION" "$WORK/o-c6.yaml" _toolsTierNotSupported)"
 
 c_netiso_svc="$(app c7 <<YAML
 apiVersion: core.oam.dev/v1beta1
@@ -860,7 +804,7 @@ render "$d_app_a" "$D_NITRO" "$WORK/o-d3a.yaml" >/dev/null
 render "$d_app_b" "$D_NITRO" "$WORK/o-d3b.yaml" >/dev/null
 
 # A realistic healthy pairing, to prove the detector is not just saying "yes".
-render "$b_session_full" "$D_SESSION" "$WORK/o-b6.yaml" >/dev/null
+render "$b_agent_plus_pool" "$D_NITRO" "$WORK/o-b6.yaml" >/dev/null
 
 dupes() { # dupes <rendered.yaml>... -> prints colliding "kind/ns/name", or nothing
   python3 - "$@" <<'PY'
@@ -952,7 +896,7 @@ row D4 "agent + its own pool emit no shared object (control)" clean \
 
 # D5. THE SHIPPED EXAMPLES, against each other. D1-D3 prove the detection works
 # on inputs built to collide; this asks whether anything we actually ship does.
-# It did: example-sandbox-confidential and example-agent-session-isolation both
+# It did: two shipped examples both
 # declared a sandbox component named analyst-session in namespace default.
 #
 # A reader's first move is `kubectl apply -f` on two examples that look

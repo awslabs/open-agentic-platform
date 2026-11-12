@@ -54,7 +54,7 @@ git checkout feat/nitro-sandbox-isolation
 bash scripts/test-isolation-features.sh
 ```
 
-**Expect:** `all feature rows passed` — 33 rows, exit 0.
+**Expect:** `all feature rows passed` — exit 0.
 
 This asserts *content*, not acceptance: the four env vars a session-isolated
 agent's image reads in order to claim a sandbox, the RBAC without which those
@@ -66,8 +66,6 @@ Nitro runtime reads, and the card an operator reads back. Spot-check a few:
 | F1 / F6 | `sandbox: true` → `isolated-sandbox`; `sandboxMode: confidential` → `confidential-sandbox` |
 | F8 / H14 | confidential pods set `enableServiceLinks: false` — a **generator requirement**, see 1.3 |
 | F10 | the *same* Application on a Kata cluster selects `kata-clh` — one annotation, no manifest change |
-| G1–G4 | `AGENT_ISOLATION`, `SANDBOX_WARM_POOL`, `SANDBOX_NAMESPACE`, `AGENT_SESSION_KEY` |
-| G5–G7 | the claimer `Role` can `create` sandboxclaims, can only *read* sandboxes, and is bound to the agent's own SA |
 | H9–H10 | `networkIsolated` reaches both the template annotation and the card |
 
 ### 1.2 Guards — does every forbidden combination still fail?
@@ -419,7 +417,6 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 | **3.2** isolated pool | **PASS.** `warmPool: 2` → 2 pods pre-warmed and Running; claim adopted a warm sandbox in **<60s**; claimed pod verified 7 PASS / 0 FAIL (`c6a.enclave`); pool refilled to 3 while claimed |
 | **3.3** confidential agent | **RENDER + NEGATIVE CONTROL PASS.** `confidential-sandbox`, `enableServiceLinks: false`, policy annotation emitted; the **placeholder policy is refused** and the pod never starts. Generating a real policy through the OAM path was not run — 3.3a proves that mechanism |
 | **3.3a** confidential without OAM | **PASS end to end.** Real generator, real policy + PCR17, pod Running 1/1, `exec` denied, `verify-isolation.sh` 5 PASS / 0 FAIL |
-| **3.5** session isolation | **PASS (platform half).** All four env vars exact; agent front door correctly **not** sandboxed; RBAC exactly right; pool at 3. Two claims → **two distinct sandboxes**, each with its own kernel, and a cross-session filesystem probe confirms one cannot read the other's `/workspace`. Driving two real users through the gateway was not run — see the box below |
 | `download-runtime-binaries.sh` | **PASS.** Signature verified, all 8 files, both arches |
 | **3.4** confidential pool | **PASS end to end.** Render + card correct; placeholder policy refused; with a REAL policy the warm pods run and `exec` is denied (`policy denied Agent::Action::"Exec"`); `verify-isolation.sh` 5 PASS / 0 FAIL. Needed `--no-pin-hostname` — see the box below |
 | **3.7** Kata | **PASS (render half).** The SAME Application, unchanged, renders `kata-clh` and the scheduler demands `katacontainers.io/kata-runtime=true`; confidential is **rejected by the real webhook** with both guards firing. Pods stay Pending because this cluster has no Kata nodes — which is the finding-1 symptom, deliberately observed |
@@ -459,13 +456,9 @@ kubectl annotate secret <cluster> -n argocd --overwrite \
   confidential_sandbox_runtime_class=confidential-sandbox \
   nitro_sandbox_runtime_classes=isolated-sandbox,confidential-sandbox \
   sandbox_runtime=nitro \
-  session_isolation=true          # NOTE: session_isolation, not session_isolation_enabled
 kubectl label secret <cluster> -n argocd --overwrite enable_agent_sandbox=true
 ```
 
-Without `session_isolation=true` the agent component rejects `isolation: session`
-by design (guard `_sessionIsolationUnavailable`), which is 3.5's own negative
-control — worth seeing once before you turn it on.
 
 Three things block 3.1–3.5 on `hub` right now, all of which you fix before
 testing rather than by changing the PR:
@@ -574,7 +567,7 @@ kubectl delete -f examples/nitro-sandbox/pod-hello-sandbox.yaml
 
 **1. Two examples used to collide, and your namespace choice still matters.**
 `example-sandbox-confidential.yaml` declared a sandbox component named
-`analyst-session` — the same name `example-agent-session-isolation.yaml` uses —
+`analyst-session` — the same name another example used —
 both in `default`. Applied together, the two Applications each believed they
 owned one warm pool, both reconciled, neither errored, and whichever synced last
 won. That is fixed (it is now `regulated-session`, and matrix row D5 checks the
@@ -1093,141 +1086,7 @@ Two more things 3.4 showed, both operational:
   mistake.
 
 
-### 3.5 `example-agent-session-isolation.yaml` — per-session isolation
-
-The feature issue #99 asked for: one microVM per (agent, user, session), rather
-than one agent process shared by everyone.
-
-| | |
-|---|---|
-| Application | `data-analyst-isolated` |
-| Components | `data-analyst` (`type: agent`) + `analyst-session` (`type: sandbox`) |
-| Asks for | `isolation: session`, `sandboxTemplate: analyst-session`, `sessionKey: subject+context` |
-| Needs | `sessionIsolationEnabled: "true"` **and** the `agent_sandbox` addon |
-
-**Step 1 — confirm the platform switch is on**, or the Application is rejected
-with a message naming the prerequisite (which you can verify in Part 2):
-
-```bash
-kubectl get cm -n argocd -o yaml | grep -i sessionIsolationEnabled
-kubectl get crd sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io
-```
-
-**Step 2 — apply, and check both halves came up.** The agent is still a Rollout,
-so blue-green survives; the pool is separate:
-
-```bash
-kubectl apply -f platform/oam/examples/example-agent-session-isolation.yaml
-kubectl get rollout data-analyst
-kubectl get sandboxwarmpool analyst-session \
-  -o jsonpath='{.spec.replicas}'; echo                      # 3
-kubectl get pods -l agent-sandbox.io/role=session             # 3, Running, pre-warmed
-```
-
-Note what the agent pods are **not**: the front door is an ordinary pod. The
-microVM is the *session*, not the agent.
-
-```bash
-kubectl get pods -l app.kubernetes.io/name=data-analyst \
-  -o jsonpath='{.items[0].spec.runtimeClassName}'; echo     # empty -- correct
-```
-
-**Step 3 — the four env vars are the contract with the image.** If the image
-does not read these, nothing claims anything:
-
-```bash
-kubectl get rollout data-analyst -o jsonpath=\
-'{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \
-  | grep -E 'AGENT_ISOLATION|SANDBOX_WARM_POOL|SANDBOX_NAMESPACE|AGENT_SESSION_KEY'
-```
-
-```
-AGENT_ISOLATION=session
-SANDBOX_WARM_POOL=analyst-session
-SANDBOX_NAMESPACE=default
-AGENT_SESSION_KEY=subject+context
-```
-
-**Step 4 — the RBAC, without which those vars are decoration.** A missing
-RoleBinding is a 403 at claim time, long after deploy:
-
-```bash
-kubectl auth can-i create sandboxclaims \
-  --as=system:serviceaccount:default:data-analyst         # yes
-kubectl auth can-i create sandboxes \
-  --as=system:serviceaccount:default:data-analyst         # no -- read-only by design
-```
-
-**Step 5 — the actual test: two users, two sandboxes.** Drive prompts through
-the gateway as **two different authenticated subjects**, then:
-
-```bash
-kubectl get sandboxclaims -o custom-columns=\
-'NAME:.metadata.name,PHASE:.status.phase,SANDBOX:.status.sandboxRef.name,AGE:.metadata.creationTimestamp'
-```
-
-Expect **two distinct claims**, each bound to a **different** sandbox. One claim
-for two users means sessions are being shared — and see the limitation below
-before blaming the platform.
-
-**Verified on the hub by making the claims directly**, which is what the image
-does and which separates the platform's half from the image's:
-
-```
-alice -> analyst-session-2v44d
-bob   -> analyst-session-4xfj5     DISTINCT: YES
-both kernels 6.18.54, node 6.18.56
-
-alice: echo secret-from-alice > /workspace/probe.txt   -> secret-from-alice
-bob:   cat /workspace/probe.txt                        -> No such file or directory
-```
-
-That last pair is the guarantee, not the object count: separate kernels mean
-separate filesystems, and bob cannot read alice's workspace.
-
-Then confirm the isolation is real, not just two objects:
-
-```bash
-for s in $(kubectl get sandboxclaims -o jsonpath='{range .items[*]}{.status.sandboxRef.name}{" "}{end}'); do
-  pod=$(kubectl get sandbox "$s" -o jsonpath='{.status.podRef.name}')
-  echo "$s -> $pod  kernel: $(kubectl exec "$pod" -- uname -r 2>/dev/null)"
-done
-```
-
-Write a file in one session and confirm it is **not** visible in the other —
-separate kernels mean separate filesystems:
-
-```bash
-kubectl exec <pod-a> -- sh -c 'echo secret-a > /workspace/probe.txt'
-kubectl exec <pod-b> -- cat /workspace/probe.txt      # must fail: No such file
-```
-
-**Step 6 — `sessionKey` semantics.** `subject+context` means the same user in a
-*new* conversation gets a *new* sandbox. Drive the same user through two
-conversations and expect two claims; switch the example to
-`sessionKey: subject`, re-apply, and the same user should reuse one.
-
-**Step 7 — idle teardown.** `idleTimeout: 15m`, `maxLifetime: 2h`. Leave a
-session alone and confirm the sandbox is destroyed and the pool refills to 3 —
-sandboxes that never get reclaimed are a capacity leak that only shows up under
-load.
-
-```bash
-kubectl get sandbox,sandboxclaim
-kubectl get pods -l agent-sandbox.io/role=session
-kubectl delete -f platform/oam/examples/example-agent-session-isolation.yaml
-```
-
-> **Limitation, and the first thing to check if step 5 gives you one sandbox.**
-> `sessionIsolationEnabled` is a *declarative* switch. It asserts the cluster has
-> the addon **and** an agent image that claims a sandbox per session. Nothing
-> verifies the second half — an agent on an image that never calls `SandboxClaim`
-> renders, deploys, serves traffic and shares one process between every user,
-> which is the exact failure #99 exists to remove. If you see one sandbox for two
-> users, check the image before the platform. This is recorded as open in
-> NITRO-DESIGN §9.4.
-
-### 3.6 `examples/nitro-sandbox/pod-attested.yaml` — raw, no OAM
+### 3.5 `examples/nitro-sandbox/pod-attested.yaml` — raw, no OAM
 
 The attestation example, as a plain Pod. Covered by Part 4, because without the
 KMS key policy there is nothing checking the measurements. Two things specific to
@@ -1254,7 +1113,7 @@ A difference is your admission chain mutating the pod — Pod Identity's injecte
 env and token volume are the usual cause — and in confidential mode that
 difference is the gap between a pod that starts and a pod that is denied.
 
-### 3.6 + Part 4, as actually run — and the two refusals
+### 3.5 + Part 4, as actually run — and the two refusals
 
 This is the whole chain, executed. On a Mac the Linux-only steps run in a
 container; `skopeo` has to exec the keyprovider, so both live in the same one.
@@ -1394,9 +1253,9 @@ as above.
 > before the refusal could be read — a bare Pod is not rescheduled when its node
 > goes, so the evidence disappears with it.
 
-### Tearing 3.6 down
+### Tearing 3.5 down
 
-Everything 3.6 creates, in the order that works (the role policy before the role,
+Everything 3.5 creates, in the order that works (the role policy before the role,
 the association before the role it points at):
 
 ```bash
@@ -1427,7 +1286,7 @@ aws kms schedule-key-deletion --key-id <key-arn> --pending-window-in-days 7 --re
 > else above is free and deletes instantly.
 
 
-### 3.7 Kata, on the same examples — OPTIONAL, skip unless you run Kata
+### 3.6 Kata, on the same examples — OPTIONAL, skip unless you run Kata
 
 **Skip this section if your clusters are Nitro.** Nothing else in Section 3
 depends on it, and it needs a nested-virt Karpenter node pool
@@ -1526,11 +1385,9 @@ Read the **error**, not the failure:
 | ☐ | `verify-isolation.sh` on a confidential pod → 5 PASS, exec-denial reported as the guarantee | 3.3a |
 | ☐ | confidential agent: exec denied; a spec change without regen is denied | 3.3 |
 | ☐ | confidential pool: `enableServiceLinks: false`, exec denied | 3.4 |
-| ☐ | session: 4 env vars, RBAC `can-i`, **two users → two sandboxes, separate FS** | 3.5 |
-| ☐ | session: `sessionKey` semantics, idle teardown, pool refill | 3.5 |
-| ☐ | `--app` vs `--from pod/` policies diffed | 3.6 |
+| ☐ | `--app` vs `--from pod/` policies diffed | 3.5 |
 | ☐ | *(optional, Kata only)* same Applications unchanged → `kata-clh` | 3.7 |
-| ☐ | attested pod Running from the encrypted image | 3.6 |
-| ☐ | wrong guest denied (`kms:Decrypt` AccessDenied) | 3.6 |
+| ☐ | attested pod Running from the encrypted image | 3.5 |
+| ☐ | wrong guest denied (`kms:Decrypt` AccessDenied) | 3.5 |
 | ☐ | **administrator denied** (explicit deny) | 4 |
-| ☐ | teardown: pod, SA, association, role, ECR, KMS key scheduled | 3.6 |
+| ☐ | teardown: pod, SA, association, role, ECR, KMS key scheduled | 3.5 |

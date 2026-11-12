@@ -43,7 +43,7 @@ spec:
     # The component name IS the sandbox's identity: it names the SandboxWarmPool,
     # the SandboxTemplate (<name>-template), the ServiceAccount, the container
     # and the sandbox card ConfigMap (<name>-sandbox). An agent claims from it by
-    # this name, via `sandboxTemplate` — see example-agent-session-isolation.yaml.
+    # this pool by name. A consumer creates the SandboxClaim itself.
     - name: code-session
       type: sandbox
       properties:
@@ -202,11 +202,8 @@ spec:
 #     CronJob or job runner for batch work. Works today.
 #   - A service of your own that fronts users and holds the session map.
 #     Works today.
-#   - The OAP agent component, via `isolation: session`. The declaration, the
-#     claim RBAC and the SANDBOX_* env are rendered; the agent-side router that
 #     does the above on each session is not written yet, which is why that tier
-#     is gated off by default (global.sessionIsolationEnabled). See
-#     example-agent-session-isolation.yaml.
+#     a consumer that creates SandboxClaims against this pool.
 #   - An MCP server, to give an agent per-session code execution without a VM
 #     per user. This is where that belongs rather than on the agent -- see
 #     docs/sandbox-agents/NITRO-DESIGN.md §2.2 -- and the on-EKS backend for

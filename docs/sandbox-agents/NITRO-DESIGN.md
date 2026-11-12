@@ -1,23 +1,4 @@
-# Nitro Sandboxes as the default isolation runtime, and per-user isolation for agents
-
-> **Status:** implemented; rendering and admission behaviour verified offline and against a live
-> EKS 1.37 Auto Mode hub. Runtime verification on a sandbox-capable node is the outstanding item
-> (§9).
->
-> **Two changes in one design**, because they share a mechanism and would otherwise be written
-> twice:
->
-> 1. **The isolation runtime becomes AWS Nitro Sandboxes** (`isolated-sandbox`) instead of Kata,
->    and a second trust model (`confidential-sandbox`) becomes available to developers. Kata stays
->    fully supported, selected per cluster.
-> 2. **Isolation becomes expressible per user session** (`isolation: shared | tools | session`),
->    which is [issue #99](https://github.com/awslabs/open-agentic-platform/issues/99) — a developer
->    declares an agent once and the platform hands out per-session instances.
->
-> This builds on [`DESIGN.md`](DESIGN.md), the Kata design that introduced `sandbox: true`. Nothing
-> in that document is retracted: its mechanism (one field on the pod template, the RuntimeClass
-> admission controller doing the placement) is exactly what made swapping the runtime a
-> one-value change.
+# AWS Nitro Sandboxes: default isolation runtime, and confidential mode for agents
 
 ## 1. Why change the default at all
 
@@ -52,15 +33,12 @@ Three fields, all opt-in, all declared once per agent. The first already existed
   properties:
     sandbox: true                 # hardware isolation, as before
     sandboxMode: confidential     # NEW: trust model. isolated (default) | confidential
-    isolation: session            # NEW: scope.      shared (default) | session
-    sandboxTemplate: analyst-sbx  # NEW: which sandbox the per-session tiers claim from
 ```
 
 | Field | What it answers | Who owns it |
 |---|---|---|
 | `sandbox` | Is there a hardware boundary at all? | developer |
 | `sandboxMode` | **Who is inside** the boundary — is the node trusted? | developer |
-| `isolation` | **How many** boundaries — one per agent, or one per user session? | developer |
 | *(the RuntimeClass)* | Which technology implements the boundary | **platform**, per cluster |
 
 That last row is the line this design holds. `.kiro/steering/oam-authoring.md` §1 forbids ambient
@@ -89,41 +67,6 @@ Application could deploy to. So the developer states the model and the platform 
 | Per-session sandbox | none | a dedicated instance per `(agent, user, session)` |
 | Cost | lowest | highest |
 | Good for | Q&A, retrieval, read-only tools | regulated or multi-tenant work, long-lived per-user state, an AgentCore-Runtime-equivalent guarantee on EKS |
-
-### 2.2 Why there is no `tools` tier
-
-#99 proposes three tiers, with `tools` — "shared agent loop, per-session code execution" — as the
-recommended first step. **This design implements two**, and the omission is deliberate rather than
-deferred work.
-
-The capability is real and wanted. The objection is that the agent component is the wrong place to
-express it. `shared` and `session` answer *how many agent instances exist per user*, which is a
-property of the agent, so this component owns it. "Where does code execution run" is a property of
-the **tool server**: an agent just has an MCP server wired, and whether that server executes code in
-AgentCore or in a claimed sandbox is the server's own configuration. A field here would duplicate a
-decision that belongs one layer down — the same leak steering §1 forbids for region and account.
-
-It is also redundant either way it could be wired:
-
-| Tool backend | What `isolation: tools` would add |
-|---|---|
-| AgentCore Code Interpreter (`code-interpreter-mcp` today) | Nothing. AgentCore already isolates each session, off-cluster |
-| An on-EKS sandbox backend | Nothing new to declare. The per-session sandbox *is* the tool backend, so the "tier" is `code-interpreter-mcp` pointed at a `type: sandbox` pool — one config value there, plus a pool the developer declares anyway |
-
-So per-session tool isolation is delivered by **declaring a `type: sandbox` pool and pointing an MCP
-server at it, with the agent left on `shared`** — which is one more component and no new agent
-surface. Earlier drafts of this design shipped the tier and called it the recommended first step.
-That was wrong twice over: it was the only tier that could not work with what ships here, and
-recommending it made the whole feature look dependent on a code interpreter it does not need.
-
-If the one-word shortcut is later asked for, it can return as sugar over that wiring — once the
-backend exists. Raising it on #99 rather than narrowing the issue silently is part of this change.
-
-**What works today, with nothing else built, is the sandbox claimed directly** — a caller creates a
-`SandboxClaim`, the operator binds a warm instance, the caller drives it and deletes the claim. That
-needs no MCP server, no code interpreter and no agent image change, and the Dark Factory has run
-exactly that shape on this platform since V2. Order of adoption, therefore: `type: sandbox` claimed
-by an orchestrator or your own service first; `isolation: session` when its agent-side router lands.
 
 ## 3. Mechanism
 
@@ -256,118 +199,28 @@ into the CUE), extracts the pod template from the Rollout or SandboxTemplate, an
 policy plus the KMS condition block. `--from rollout/<name>` reads the live object instead, which is
 the post-webhook spec and therefore the one that matters once anything mutates pods.
 
-## 5. Per-user isolation (#99)
+## 5. `type: sandbox` — a claimable warm pool
 
-### 5.1 The pattern
+A component type for a pool of hardware-isolated execution environments: a
+`SandboxWarmPool` (the workload) over a `SandboxTemplate` (the pod template its
+instances are cloned from), plus a ServiceAccount and a card ConfigMap reporting
+what the cluster actually gave you.
 
-The agent definition is a template; a session is a claim against it; a warm pool absorbs cold start;
-a TTL reclaims the instance. That is how AgentCore Runtime, the Kubernetes SIG `agent-sandbox`
-project, and hosted sandboxes like E2B and Modal all model it, and the platform already runs the
-primitives for the Dark Factory coder.
+A consumer creates a `SandboxClaim` naming the pool; the operator binds a
+pre-warmed instance and refills the buffer behind it. Verified on a live Nitro
+cluster: a claim bound in under a minute to a sandbox with its own guest kernel,
+and the pool refilled while it was held.
 
-```
-  type: agent                            type: sandbox
-  isolation: session                     ("declared once")
-  sandboxTemplate: analyst-sbx
-        │                                      │
-        │  Rollout (FRONT DOOR)                ├─ SandboxTemplate   the pod template
-        │   resolves the session key            ├─ SandboxWarmPool   pre-booted instances
-        │   claims / routes / releases          └─ ConfigMap         the "sandbox card"
-        │                                      │
-        └──── SandboxClaim per (agent, user, session) ────► one instance, one session
-                                                            destroyed on idle or TTL
-```
+**The pool is the workload, deliberately.** The warm pool is what KubeVela
+tracks, not the template, so `kubectl get application` reflects whether the pool
+is actually at its desired replica count — a template is inert and would always
+look healthy.
 
-### 5.2 Why a new component type, when `DESIGN.md` §6 option D rejected one
+**What claims from it is out of scope here.** A consumer creates the
+`SandboxClaim` — an orchestrator, a workflow step, or a tool server. The open
+question is the **in-sandbox execution contract**: what runs inside, and how a
+caller talks to it.
 
-Option D was *a second way to declare an agent* — an `agent-sandbox` component duplicating
-blue-green, replicas, routing, memory and evaluation, which would drift from `agent` immediately.
-That rejection stands, and this design honours its principle: **changing an agent's isolation never
-means changing its component type.** It is still one boolean and one word on `type: agent`.
-
-`type: sandbox` declares something an agent is not. It has no Service identity of its own, no
-blue-green, no gateway route, no conversation and no Agent Card; one instance serves exactly one
-session and is then destroyed. It shares no fields with `agent` beyond the isolation primitives both
-sit on. Different lifecycle, different object.
-
-### 5.3 The warm pool is the workload
-
-`output` is the `SandboxWarmPool`, not the `SandboxTemplate`, with health gated on
-`readyReplicas >= spec.replicas`.
-
-A template always applies cleanly — it is a template — so an Application fronted by it would report
-**Healthy on a cluster with no sandbox-capable node**, while every instance it ever handed out sat
-`Pending`. The pool is the only object here with a status worth believing. `warmPool: 0` is still
-Healthy (`0 >= 0`): a pool asked for nothing and holding nothing is correct, and means on-demand
-claims with full cold start.
-
-The pool is rendered even at `replicas: 0` because `SandboxClaim`'s only required field is
-`warmPoolRef` — with no pool there is nothing for a session to claim.
-
-### 5.4 What the agent component renders for the per-session tiers
-
-- **Four env vars** carrying the declaration: `AGENT_ISOLATION`, `SANDBOX_WARM_POOL`,
-  `SANDBOX_NAMESPACE`, `AGENT_SESSION_KEY`.
-- **A Role and RoleBinding** on the agent's own ServiceAccount: `create`, `get`, `list`, `watch`,
-  `delete` on `sandboxclaims`, and read-only on `sandboxes`.
-
-A Role rather than a ClusterRole, so a claim outside the agent's namespace is denied — that is what
-stops one tenant's agent claiming instances out of another namespace's pool. No write verb on
-`sandboxes`: an agent that could delete a Sandbox could destroy another session's instance, and
-`update` on a claim would let it extend its own TTL past the declared lifecycle. `delete` on claims
-**is** granted, because releasing on session end rather than waiting out the idle TTL is the
-difference between a warm pool that recycles and one that stays exhausted.
-
-### 5.5 Session key
-
-`sessionKey: subject+context | subject | context` answers #99's open question 1 as a **declaration**
-rather than a platform convention, because the right answer depends on what the agent's tenants are
-and only its developer knows that. The default, `subject+context`, is the gateway subject plus the
-A2A `contextId`, falling back to the subject alone when a client sends no context — so an
-unconfigured client gets its own sandbox per user rather than sharing with another user.
-
-### 5.6 Two fail-closed gates
-
-`isolation: session` is rejected at admission unless **both** hold:
-
-1. `global.sessionIsolationEnabled == "true"` (cluster-secret annotation `session_isolation`), and
-2. `sandboxTemplate` names a sandbox.
-
-Deliberately separate from `enable_agent_sandbox`: having the CRDs is necessary but not sufficient,
-because the agent **image** has to claim per session. Without the gate, an agent asking for
-`isolation: session` on an unprepared cluster would render, deploy, serve traffic and silently share
-one process between every user — the exact failure #99 exists to remove, and invisible precisely
-because the agent still works.
-
-### 5.7 What is NOT implemented
-
-**The session router inside the agent.** This design delivers the declaration, the claim RBAC, the
-env and the sandbox to claim from. What is not written is the agent-side half: resolving the session
-key from the JWT `sub` and the A2A `contextId`, creating the `SandboxClaim`, pinning subsequent
-requests to the bound instance, and releasing on session end. That is
-`applications/strands-agent-base` work, tracked as the follow-up to this change.
-
-Until it exists, `sessionIsolationEnabled` stays `"false"` and `isolation: session` is rejected
-rather than half-delivered. That is why the gate is a separate switch from the `agent_sandbox`
-addon: having the CRDs says nothing about whether anything can consume them.
-
-**The on-EKS code-execution backend**, which §2.2 identifies as the right home for per-session tool
-isolation, is also not written. The shape is small and needs no new component: a `sandbox.js` backend
-beside `applications/code-interpreter-mcp`'s `src/agentcore.js`, selected by a config value, creating
-a `SandboxClaim` keyed on the session instead of calling `StartCodeInterpreterSession`. `server.js`,
-`tools.js` and `session.js` are unchanged, so the agent sees the identical tool surface either way —
-this platform's own "managed or open source, per capability" split, applied to code execution. It is
-independent of the router above and can land first.
-
-**What does work today, with nothing else built, is the sandbox claimed directly** — see
-`platform/oam/examples/example-sandbox-isolated.yaml`, which carries the `SandboxClaim` shape, and
-the Dark Factory, which has run that pattern on this platform since V2 with Argo Workflows as the
-claimer. An orchestrator, a batch runner, or a service of your own that fronts users and holds the
-session map all work now. That is the adoption order this design recommends.
-
-Also not implemented: `SandboxClaim` lifecycle TTLs are **published** on the sandbox card, not
-enforced by this component, because a claim is created per session at runtime. A claimer that
-ignores them leaks instances; declaring them in one place is what makes that a bug with an owner.
 
 ## 6. Decisions worth stating, with the reasoning
 
@@ -440,7 +293,7 @@ and the Application reports healthy.
 Neither component can guard against it: KubeVela renders components independently, so CUE in one
 cannot see the other. Three things mitigate it instead: the matrix row, which counts emitted
 `(kind, name)` pairs across the whole Application; comments in `sandbox.cue` and
-`example-agent-session-isolation.yaml`; and the examples themselves naming the pair distinctly
+the per-session example that has since been removed; and the examples themselves naming the pair distinctly
 (`data-analyst` / `analyst-session`).
 
 Not a collision, and asserted as such so a future rename does not quietly make it one: a sandbox
@@ -469,43 +322,6 @@ Verified as a property of the render, not an intention:
 A Kata cluster is one annotation: `sandbox_runtime_class: kata-clh`, and leave
 `confidential_sandbox_runtime_class` empty so confidential fails closed there.
 
-
-### 7.2 The default moved to Nitro, and what a Kata cluster must do
-
-Review finding 1 objected to a Nitro default on two grounds. Both are now
-settled, in opposite ways:
-
-- **"No per-cluster knob"** — the real defect, and fixed: the registry entry
-  reads a `sandbox_runtime` annotation off the cluster secret, so a Kata cluster
-  pins Kata without overriding the chart. That knob did not exist when the
-  finding was written, which is what made a default flip dangerous.
-- **"Until Nitro is validated live"** — done, 2026-11-11, on a k8s v1.37.1 EKS
-  Auto Mode cluster. A `c8a.large` sandbox node was provisioned on demand in
-  ~2 min; the pod reported kernel `6.18.54` against the node's `6.18.56`, DMI
-  `c8a.enclave`, virtio disks; `verify-isolation.sh` gave 7 PASS / 0 FAIL. A
-  confidential pod with a real Cedar policy ran too, with `exec` denied.
-
-So the default is `nitro`, for the reason it was proposed: it needs **no node
-layer of ours**. Both Kata prerequisites (`kata_nodepool`, `agent_sandbox_kata`)
-ship `false` in every overlay here, so a cluster that enables this chart and
-nothing else gets a pool that cannot place a single pod on the Kata default —
-whereas Auto Mode provisions a sandbox node for the Nitro default on demand.
-
-**A cluster whose nodes are Kata must set `sandbox_runtime: kata`** before this
-reaches it. Otherwise its SandboxTemplate is recreated on a Nitro class, the Kata
-nodeSelector and toleration vanish with it, and every warm pod goes Pending. No
-cluster in this repo is affected — `dark_factory` is `false` everywhere, so
-nothing claims from this pool — but a consumer's cluster can be, which is why the
-migration note sits in `values.yaml` next to the value rather than only here.
-
-**Dark Factory stays on Kata by pinning, not by default.** Its coder flow claims
-from this pool, and a cluster running it on nested-virt nodes sets the annotation.
-That is the right shape: the consumer that needs Kata says so, instead of every
-other cluster inheriting a default it cannot schedule.
-
-**The OAM layer is a separate knob and did not move.** `sandbox: true` and
-`type: sandbox` on an Application are governed by `oam-agent-components`'
-`global.sandboxRuntimeClass`, which has always defaulted to the Nitro classes.
 
 ### 7.1 The one difference, and why it is not a regression from this work
 
@@ -546,6 +362,44 @@ reverted or landed separately from the isolation work, and so this document's
 zero-regression claim stays honest about which files it covers.
 
 
+### 7.2 The default moved to Nitro, and what a Kata cluster must do
+
+Review finding 1 objected to a Nitro default on two grounds. Both are now
+settled, in opposite ways:
+
+- **"No per-cluster knob"** — the real defect, and fixed: the registry entry
+  reads a `sandbox_runtime` annotation off the cluster secret, so a Kata cluster
+  pins Kata without overriding the chart. That knob did not exist when the
+  finding was written, which is what made a default flip dangerous.
+- **"Until Nitro is validated live"** — done, 2026-11-11, on a k8s v1.37.1 EKS
+  Auto Mode cluster. A `c8a.large` sandbox node was provisioned on demand in
+  ~2 min; the pod reported kernel `6.18.54` against the node's `6.18.56`, DMI
+  `c8a.enclave`, virtio disks; `verify-isolation.sh` gave 7 PASS / 0 FAIL. A
+  confidential pod with a real Cedar policy ran too, with `exec` denied.
+
+So the default is `nitro`, for the reason it was proposed: it needs **no node
+layer of ours**. Both Kata prerequisites (`kata_nodepool`, `agent_sandbox_kata`)
+ship `false` in every overlay here, so a cluster that enables this chart and
+nothing else gets a pool that cannot place a single pod on the Kata default —
+whereas Auto Mode provisions a sandbox node for the Nitro default on demand.
+
+**A cluster whose nodes are Kata must set `sandbox_runtime: kata`** before this
+reaches it. Otherwise its SandboxTemplate is recreated on a Nitro class, the Kata
+nodeSelector and toleration vanish with it, and every warm pod goes Pending. No
+cluster in this repo is affected — `dark_factory` is `false` everywhere, so
+nothing claims from this pool — but a consumer's cluster can be, which is why the
+migration note sits in `values.yaml` next to the value rather than only here.
+
+**Dark Factory stays on Kata by pinning, not by default.** Its coder flow claims
+from this pool, and a cluster running it on nested-virt nodes sets the annotation.
+That is the right shape: the consumer that needs Kata says so, instead of every
+other cluster inheriting a default it cannot schedule.
+
+**The OAM layer is a separate knob and did not move.** `sandbox: true` and
+`type: sandbox` on an Application are governed by `oam-agent-components`'
+`global.sandboxRuntimeClass`, which has always defaulted to the Nitro classes.
+
+
 ## 8. Alternatives considered
 
 | Option | Verdict |
@@ -555,7 +409,6 @@ zero-regression claim stays honest about which files it covers.
 | **C. One field conflating runtime and trust model** (`sandbox: nitro \| nitro-confidential \| kata`) | Rejected. Collapses a portable property (trust model) with a non-portable one (technology), so every confidential Application becomes cluster-specific |
 | **D. Keep Kata as the default, make Nitro opt-in** | Rejected. The default that cannot schedule a pod on a stock cluster is the wrong default. Nitro needs no node layer on Auto Mode; Kata needs two addons and a node pool, all off today |
 | **E. Render the Nitro RuntimeClasses from this repo** | Rejected. EKS owns them; a second owner means both apps permanently OutOfSync |
-| **F. `isolation: session` by rendering SandboxTemplate *instead of* a Rollout from `agent`** | Rejected. `attributes.workload.definition` is static per ComponentDefinition, so a component cannot change its workload kind on a parameter — and it would forfeit blue-green, replicas and the health gate the Rollout provides. Splitting the front door (`agent`) from the instance (`sandbox`) keeps all of them |
 | **G. Enforce session TTLs in the component** | Not possible. The TTL lives on the `SandboxClaim`, created per session at runtime. Published on the sandbox card instead |
 | **H. Emit an IAM policy for `kms:Decrypt` from the sandbox component** | Deferred. A KMS **key policy** can grant the Pod Identity role directly, which the attestation example does, and it keeps the PCR conditions and the grant in one document. Adding a fifth IAM-policy-emitting component also means extending `scripts/check-iam-names.sh`; worth doing when a second consumer needs it |
 
@@ -575,8 +428,6 @@ value check uses a non-default.
 | `--set global.confidentialSandboxRuntimeClass=` + confidential | render **rejected**, message names the value and the annotation |
 | `sandboxMode: confidential` with no `cedarPolicy` | render **rejected**, message names the script that generates one |
 | `sandboxConntrackLimit` / `sandboxDnsQueriesPerSecond` | both annotations rendered, as strings |
-| `isolation: session` on a default cluster | render **rejected**, message names the addon and the value |
-| `isolation: session` + `sessionIsolationEnabled=true` | four env vars, claim Role and RoleBinding, warm pool of 3 on `isolated-sandbox` |
 | `networkIsolated: true` with default `service: true` | render **rejected** |
 | `type: sandbox` default | SandboxWarmPool, SandboxTemplate, ServiceAccount, sandbox card; `runtimeClassName: isolated-sandbox`; no nodeSelector |
 | **Zero regression:** the 8 non-sandbox examples other than the evaluation four, vs `origin/main` | **byte-identical** |
@@ -658,14 +509,7 @@ could reasonably assume was verified.
   refused, this is the first thing to look at: compare the operator-created
   policy against the Service's selector and port. Needs a cluster with the
   sandbox operator to settle.
-- **`sessionIsolationEnabled` is a declarative switch.** It asserts that the
-  cluster has the `agent_sandbox` addon AND an agent image that claims a sandbox
-  per session. The first half is a real prerequisite the guard names; the second
-  cannot be checked from a render — nothing verifies the image actually calls
-  `SandboxClaim`. An agent on an image that does not will render, deploy, serve
-  traffic and share one process, which is the failure the switch exists to
-  prevent. A readiness probe or a startup assertion in the image is the real
-  answer; the switch is the honest interim.
+
 - **No Nitro node was available for this work.** Guest kernel and DMI,
   Pod Identity from inside the microVM, blue-green through a sandboxed Rollout,
   warm-pool fill behaviour, density, and end-to-end attestation with an encrypted
@@ -677,9 +521,9 @@ could reasonably assume was verified.
 
 | # | File | Change |
 |---|---|---|
-| 1 | `platform/oam/definitions/components/agent.cue` | `sandboxMode`, `cedarPolicy`, throttle knobs, `isolation` / `sandboxTemplate` / `sessionKey`, five fail-closed guards, claim RBAC, card fields |
+| 1 | `platform/oam/definitions/components/agent.cue` | `sandboxMode`, `cedarPolicy`, throttle knobs, the Nitro-class guards and the shape checks |
 | 2 | `platform/oam/definitions/components/sandbox.cue` | **New.** `type: sandbox` |
-| 3 | `gitops/addons/charts/oam-agent-components/values.yaml` | `sandboxRuntimeClass` default → `isolated-sandbox`; `confidentialSandboxRuntimeClass`; `sessionIsolationEnabled` |
+| 3 | `gitops/addons/charts/oam-agent-components/values.yaml` | `sandboxRuntimeClass` default → `isolated-sandbox`, plus `confidentialSandboxRuntimeClass` and `nitroSandboxRuntimeClasses` |
 | 4 | `gitops/addons/registry/agentcore.yaml` | all three sourced from cluster-secret annotations |
 | 5 | `gitops/addons/charts/oam-agent-components/templates/{agent,sandbox}.yaml` | regenerated by `generate.sh` |
 | 6 | `gitops/addons/charts/agent-sandbox/values.yaml`, `templates/20-sandboxtemplate.yaml` | `runtime: nitro \| kata` for the warm pool; `nitro.*` |

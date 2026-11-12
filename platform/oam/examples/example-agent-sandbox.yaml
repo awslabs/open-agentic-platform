@@ -79,7 +79,7 @@ spec:
         #
         # Note what this does NOT give you: two replicas are two microVMs shared
         # by every caller, not one per user. For per-user or per-session
-        # isolation, see example-agent-session-isolation.yaml.
+        # a claimable pool of microVMs, see example-sandbox-isolated.yaml.
         replicas: 2
 
         registerWithGateway: true

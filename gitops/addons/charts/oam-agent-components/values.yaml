@@ -87,21 +87,6 @@ global:
   # per-cluster via the nitro_sandbox_runtime_classes annotation on the cluster
   # secret. Emptying it disables every Nitro-only field on this cluster.
   nitroSandboxRuntimeClasses: "isolated-sandbox,confidential-sandbox"
-  # Whether this cluster can run the per-session isolation tiers
-  # (agent component, properties.isolation: session). A string, because it
-  # is substituted into CUE as text.
-  #
-  # "false" by default, and that default is load-bearing. Both tiers need two
-  # things this chart cannot see: the agent_sandbox addon, which is the ONLY
-  # source of the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs, and an
-  # agent image that claims a sandbox per session. Without them an agent asking
-  # for isolation: session renders perfectly, deploys, serves traffic and
-  # silently shares one process between every user -- the exact failure #99
-  # exists to remove, and invisible because the agent still works. "false" turns
-  # that into an admission error naming the prerequisite.
-  #
-  # Set it to "true" on a cluster where agent_sandbox is enabled.
-  sessionIsolationEnabled: "false"
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using

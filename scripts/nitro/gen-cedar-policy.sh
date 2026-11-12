@@ -283,7 +283,8 @@ if mode == 'render':
         sys.exit('no pod template found for component %r. Objects seen: %s' %
                  (component, ', '.join('%s/%s' % (k, n) for k, n, _ in cands) or 'none'))
     if len(want) > 1:
-        # An agent with isolation: session renders both. Prefer the SandboxTemplate,
+        # An Application declaring both an agent and a pool renders both. Prefer
+        # the SandboxTemplate,
         # since that is the per-session instance a confidential policy is for;
         # name the other explicitly to get it.
         want.sort(key=lambda c: 0 if c[0] == 'SandboxTemplate' else 1)
