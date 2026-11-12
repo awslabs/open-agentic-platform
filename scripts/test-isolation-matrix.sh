@@ -101,7 +101,15 @@ defs_for() { # defs_for <tag> [--set k=v ...] -> prints the definitions dir
       cat "$chart/vela-$src.log" >&2
       exit 1; }
   done
-  helm template oap-matrix "$chart" "$@" > "$chart/rendered.yaml" 2>"$chart/helm.err" || {
+  # global.clusterName IS AMBIENT ON EVERY REAL CLUSTER -- the ApplicationSet
+  # feeds it from the cluster secret's aws_cluster_name annotation, and traits
+  # are entitled to require it (decentralized-observability-identity rejects an
+  # empty one on purpose, so a per-cluster IAM role is never given a shared
+  # name). Rendering the matrix with the chart's empty default therefore models
+  # a cluster that does not exist, and turns that deliberate guard into a
+  # spurious FAIL on an unrelated example. Any non-empty name does.
+  helm template oap-matrix "$chart" --set global.clusterName=matrix-cluster \
+    "$@" > "$chart/rendered.yaml" 2>"$chart/helm.err" || {
     echo "helm template failed for $tag:" >&2; cat "$chart/helm.err" >&2; exit 1; }
   python3 - "$chart/rendered.yaml" "$dir" <<'PY'
 import sys, yaml, os

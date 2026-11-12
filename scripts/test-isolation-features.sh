@@ -63,7 +63,11 @@ defs_for() { # defs_for <tag> [--set k=v ...] -> prints the definitions dir
       echo "vela def render failed for $src ($tag):" >&2
       cat "$chart/vela-$src.log" >&2; exit 1; }
   done
-  helm template oap-features "$chart" "$@" > "$chart/rendered.yaml" 2>"$chart/helm.err" || {
+  # See the note in test-isolation-matrix.sh: global.clusterName is ambient on
+  # every real cluster (from the cluster secret's aws_cluster_name), and a trait
+  # may legitimately reject an empty one.
+  helm template oap-features "$chart" --set global.clusterName=matrix-cluster \
+    "$@" > "$chart/rendered.yaml" 2>"$chart/helm.err" || {
     echo "helm template failed for $tag:" >&2; cat "$chart/helm.err" >&2; exit 1; }
   python3 - "$chart/rendered.yaml" "$dir" <<'PY'
 import sys, yaml, os
