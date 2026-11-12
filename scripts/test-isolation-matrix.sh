@@ -46,8 +46,14 @@ python3 -c 'import yaml' 2>/dev/null || { echo "missing: python3 PyYAML" >&2; ex
 # no readable kubeconfig. Inside this script that failure is indistinguishable
 # from a guard firing, so all 11 C rows would pass and the rest would fail.
 # Catch it here, where the message can say what is wrong.
-if ! vela dry-run --offline -d /dev/null -f /dev/null >/dev/null 2>"$TMPDIR/vela-probe.err" &&
-   grep -qi 'kubeconfig\|connection refused\|no configuration has been provided' "$TMPDIR/vela-probe.err" 2>/dev/null; then
+# mktemp, NOT "$TMPDIR": TMPDIR is set on macOS and UNSET on a Linux CI runner,
+# and `set -u` turns that into an immediate "TMPDIR: unbound variable" abort
+# before a single row runs. This preflight shipped broken for exactly that
+# reason -- every local run had TMPDIR exported, so the Linux path was never
+# exercised until CI ran it.
+_vela_probe="$(mktemp)"
+if ! vela dry-run --offline -d /dev/null -f /dev/null >/dev/null 2>"$_vela_probe" &&
+   grep -qi 'kubeconfig\|connection refused\|no configuration has been provided' "$_vela_probe" 2>/dev/null; then
   echo "vela cannot start: no usable kubeconfig." >&2
   echo >&2
   echo "Despite --offline, vela builds a client before rendering. It never contacts" >&2
@@ -55,6 +61,7 @@ if ! vela dry-run --offline -d /dev/null -f /dev/null >/dev/null 2>"$TMPDIR/vela
   echo "already have, then re-run." >&2
   exit 1
 fi
+rm -f "$_vela_probe"
 
 OAP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
