@@ -73,7 +73,9 @@ def error_result(
 def _run_case(case: Case, checks: list[Check], settings, agent_client_fn, judge_fn, clock):
     started = clock()
     try:
-        reply = agent_client_fn(case.input, context_id_for(settings.revision, case.id))
+        reply = agent_client_fn(
+            case.input, context_id_for(settings.revision, case.id, settings.run_number)
+        )
     except AgentCallError as exc:
         return CaseResult(
             id=case.id,

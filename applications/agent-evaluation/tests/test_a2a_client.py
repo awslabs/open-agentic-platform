@@ -148,6 +148,19 @@ def test_request_is_message_send_with_the_harness_context():
     assert "X-Forwarded-User" not in route.calls.last.request.headers
 
 
+def test_rerun_context_ids_keep_the_harness_session_marker():
+    # Online evaluation excludes harness traffic by this marker, so a re-run's
+    # sessions must carry it too.
+    from app.cluster_loop import HARNESS_SESSION_MARKER
+
+    first = context_id_for("abc123", "one")
+    second = context_id_for("abc123", "one", run=2)
+    assert first == "oap-harness-abc123-one" == context_id_for("abc123", "one", run=1)
+    assert second == "oap-harness-abc123-r2-one"
+    assert first.startswith(HARNESS_SESSION_MARKER)
+    assert second.startswith(HARNESS_SESSION_MARKER)
+
+
 @respx.mock
 def test_wait_until_reachable_falls_back_to_the_legacy_card():
     respx.get(URL + ".well-known/agent-card.json").mock(return_value=httpx.Response(404))

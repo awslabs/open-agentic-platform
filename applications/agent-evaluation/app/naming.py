@@ -56,13 +56,20 @@ HARNESS_JOB_PREFIX = "oap-harness-"
 _HARNESS_JOB_HASH_LEN = 12
 
 
-def harness_job_name(namespace: str, agent: str, revision: str, dataset: str) -> str:
-    """Deterministic Job name for one (agent, revision, dataset) run.
+def harness_job_name(
+    namespace: str, agent: str, revision: str, dataset: str, run: int = 1
+) -> str:
+    """Deterministic Job name for run `run` of one (agent, revision, dataset).
 
     The Job object IS the "already ran" record: a restarted reconciler that
-    finds a Job with this name creates nothing, so a revision runs once.
+    finds a Job with this name creates nothing. Run 1 keeps the name it had
+    before re-runs existed, so Jobs created by an older reconciler still
+    count; run n >= 2 (the revision became current again, a rollback) adds
+    the ordinal to the hash.
     """
     payload = f"{namespace}/{agent}/{revision}/{dataset}"
+    if run != 1:
+        payload += f"/{run}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return HARNESS_JOB_PREFIX + digest[:_HARNESS_JOB_HASH_LEN]
 

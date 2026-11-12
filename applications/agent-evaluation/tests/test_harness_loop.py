@@ -149,6 +149,9 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert env["HARNESS_TARGET_URL"] == "http://assistant-preview.team-a.svc.cluster.local:8083/"
     assert env["HARNESS_JUDGE_MODEL"] == "us.amazon.nova-pro-v1:0"
     assert env["HARNESS_TRIGGER"] == "first-revision"
+    assert env["HARNESS_RUN_NUMBER"] == "1"
+    assert body["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
+    assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert env["POD_NAMESPACE"] == {"fieldRef": {"fieldPath": "metadata.namespace"}}
     assert not any(k.startswith("LANGFUSE") for k in env)
     secret_vol = next(v for v in pod["volumes"] if v["name"] == "judge-key")
@@ -668,3 +671,251 @@ def test_mint_disabled_uses_an_existing_secret(settings, harness_settings, catal
     assert loop.run_once()
     assert len(f.batch.created) == 1
     assert bifrost.calls == []
+
+
+# ── rollback re-runs (DEF-2) ─────────────────────────────────────────────
+
+
+def info_labels(metrics):
+    return [
+        s.labels
+        for m in metrics.registry.collect()
+        if m.name == "oap_agent_harness_info"
+        for s in m.samples
+    ]
+
+
+def score_last(f, d, revision, outcomes, finished_at):
+    """Write a result for the newest created Job and mark it finished."""
+    body = f.batch.created[-1]
+    name = body["metadata"]["name"]
+    trigger = body["metadata"]["annotations"]["harness.oap.io/trigger"]
+    write_result(f.core, name, d, revision, outcomes, finished_at=finished_at, trigger=trigger)
+    f.batch.finish(name, at=finished_at)
+    return name
+
+
+def settle(loop, f, d, revision, outcomes, finished_at):
+    """Finish the newest Job and let the reconciler see it finished."""
+    name = score_last(f, d, revision, outcomes, finished_at)
+    loop.run_once()
+    return name
+
+
+def go_to(loop, f, revision, agent="assistant"):
+    f.custom.set_rollout("team-a", agent, revision)
+    loop.run_once()
+
+
+def test_revision_that_becomes_current_again_gets_a_fresh_run(
+    settings, harness_settings, catalog, metrics
+):
+    # Live finding DEF-2: after A -> B -> A the dashboard kept showing B's run
+    # as the current result because A's Job already existed.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    first = score_last(f, d, "rev1", ["passed", "failed"], 3_000.0)
+    loop.run_once()
+    go_to(loop, f, "rev2")
+    score_last(f, d, "rev2", ["failed", "failed"], 4_000.0)
+    loop.run_once()
+    assert [l["revision"] for l in info_labels(metrics)] == ["rev2"]
+
+    go_to(loop, f, "rev1")
+
+    assert len(f.batch.created) == 3
+    rerun = f.batch.created[-1]
+    name = rerun["metadata"]["name"]
+    assert name == harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1", run=2)
+    assert name != first
+    assert rerun["metadata"]["annotations"]["harness.oap.io/trigger"] == "rollback"
+    assert rerun["metadata"]["labels"]["harness.oap.io/run-number"] == "2"
+    assert rerun["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "2"
+    env = env_of(rerun)
+    assert env["HARNESS_RUN_NUMBER"] == "2"
+    assert env["HARNESS_TRIGGER"] == "rollback"
+    assert env["HARNESS_REVISION"] == "rev1"
+    assert env["HARNESS_RESULT_CONFIGMAP"] == result_configmap_name(name)
+    started = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_STARTED]
+    assert "revision rev1 run 2" in started[-1] and "rollback" in started[-1]
+    # Both earlier runs are kept as history.
+    assert first in f.batch.jobs
+
+    score_last(f, d, "rev1", ["passed", "passed"], 5_000.0)
+    loop.run_once()
+
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_info",
+        {
+            "cluster": "dev",
+            "namespace": "team-a",
+            "agent": "assistant",
+            "dataset": "example-smoke-v1",
+            "revision": "rev1",
+            "mode": "report",
+            "judge_model": "us.amazon.nova-pro-v1:0",
+            "trigger": "rollback",
+            "status": "completed",
+        },
+    ) == 1
+    assert len(info_labels(metrics)) == 1
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
+    assert sample(metrics, "oap_agent_harness_last_run_timestamp_seconds") == 5_000.0
+    assert len(f.batch.created) == 3
+
+
+def test_continuously_current_revision_never_reruns(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    settle(loop, f, d, "rev2", ["passed"], 4_000.0)
+    go_to(loop, f, "rev1")
+    assert len(f.batch.created) == 3
+    for _ in range(5):  # the re-run is active
+        loop.run_once()
+    score_last(f, d, "rev1", ["passed"], 5_000.0)
+    for _ in range(5):  # the re-run is finished
+        loop.run_once()
+    assert len(f.batch.created) == 3
+    assert [n[2] for n in f.events.normals].count(REASON_HARNESS_RUN_STARTED) == 3
+
+
+def test_restart_does_not_rerun_a_rolled_back_revision(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    settle(loop, f, d, "rev2", ["passed"], 4_000.0)
+    go_to(loop, f, "rev1")
+    assert len(f.batch.created) == 3
+
+    restarted, _ = build(settings, harness_settings, catalog, metrics, [d], fakes=f)
+    restarted.run_once()  # the re-run is still active
+    assert len(f.batch.created) == 3
+
+    score_last(f, d, "rev1", ["passed", "failed"], 5_000.0)
+    again, _ = build(settings, harness_settings, catalog, metrics, [d], fakes=f)
+    again.run_once()
+    again.run_once()
+    assert len(f.batch.created) == 3
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 0.5
+    assert {l["trigger"] for l in info_labels(metrics)} == {"rollback"}
+
+
+def test_rollback_history_limit_prunes_per_agent(settings, harness_settings, catalog, metrics):
+    hs = dataclasses.replace(harness_settings, history_limit=2)
+    d, other = decl(), decl(agent="other")
+    loop, f = build(settings, hs, catalog, metrics, [d, other])
+    go_to(loop, f, "o1", agent="other")
+    other_job = settle(loop, f, other, "o1", ["passed"], 2_500.0)
+    go_to(loop, f, "rev1")
+    first = settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    second = settle(loop, f, d, "rev2", ["passed"], 4_000.0)
+    go_to(loop, f, "rev1")
+    rerun = score_last(f, d, "rev1", ["failed"], 5_000.0)
+    loop.run_once()
+    loop.run_once()
+
+    assert set(f.batch.jobs) == {other_job, second, rerun}
+    assert first in f.batch.deleted
+    # No result ConfigMap is left without its Job.
+    assert {name for (_, name) in f.core.configmaps} == {
+        result_configmap_name(j) for j in (other_job, second, rerun)
+    }
+    # The pruned first run does not make the re-run look stale: nothing reruns.
+    assert len(f.batch.created) == 4
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 0.0
+    assert sample(metrics, "oap_agent_harness_pass_ratio", agent="other") == 1.0
+    assert {(l["agent"], l["revision"], l["trigger"]) for l in info_labels(metrics)} == {
+        ("assistant", "rev1", "rollback"),
+        ("other", "o1", "first-revision"),
+    }
+
+
+def test_second_rollback_gets_the_next_run_number(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    for i, rev in enumerate(("rev1", "rev2", "rev1", "rev2", "rev1")):
+        go_to(loop, f, rev)
+        score_last(f, d, rev, ["passed"], 3_000.0 + i)
+        loop.run_once()
+
+    runs = [
+        (env_of(b)["HARNESS_REVISION"], b["metadata"]["labels"]["harness.oap.io/run-number"],
+         b["metadata"]["annotations"]["harness.oap.io/trigger"])
+        for b in f.batch.created
+    ]
+    assert runs == [
+        ("rev1", "1", "first-revision"),
+        ("rev2", "1", "new-revision"),
+        ("rev1", "2", "rollback"),
+        ("rev2", "2", "rollback"),
+        ("rev1", "3", "rollback"),
+    ]
+    assert f.batch.created[-1]["metadata"]["name"] == harness_job_name(
+        "team-a", "assistant", "rev1", "example-smoke-v1", run=3
+    )
+
+
+def test_rerun_is_stopped_when_the_preview_moves_while_active(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    settle(loop, f, d, "rev2", ["passed"], 4_000.0)
+    go_to(loop, f, "rev1")
+    rerun = f.batch.created[-1]["metadata"]["name"]
+
+    go_to(loop, f, "rev2")  # D5: the active re-run is stopped
+
+    assert rerun in f.batch.deleted
+    superseded = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_SUPERSEDED]
+    assert len(superseded) == 1 and "rev1" in superseded[0] and "rev2" in superseded[0]
+    # rev2 came back after rev1's re-run started, so it is re-run too.
+    assert env_of(f.batch.created[-1])["HARNESS_REVISION"] == "rev2"
+    assert f.batch.created[-1]["metadata"]["annotations"]["harness.oap.io/trigger"] == "rollback"
+
+
+def test_rerun_that_finished_after_the_preview_moved_is_discarded(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    settle(loop, f, d, "rev2", ["failed"], 4_000.0)
+    go_to(loop, f, "rev1")
+    rerun = score_last(f, d, "rev1", ["passed"], 5_000.0)
+
+    go_to(loop, f, "rev2")  # D5: finished unseen after the preview moved
+
+    assert rerun in f.batch.deleted
+    assert (PLATFORM_NS, result_configmap_name(rerun)) not in f.core.configmaps
+    assert REASON_HARNESS_RUN_SUPERSEDED in [n[2] for n in f.events.normals]
+    assert not [l for l in info_labels(metrics) if l["revision"] == "rev1"]
+
+
+def test_job_without_run_number_label_counts_as_run_one(settings, harness_settings, catalog, metrics):
+    # Jobs created by a reconciler from before re-runs carry no run-number label.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    first = settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    del f.batch.jobs[first].metadata.labels["harness.oap.io/run-number"]
+    go_to(loop, f, "rev2")
+    settle(loop, f, d, "rev2", ["passed"], 4_000.0)
+    go_to(loop, f, "rev1")
+
+    assert f.batch.created[-1]["metadata"]["name"] == harness_job_name(
+        "team-a", "assistant", "rev1", "example-smoke-v1", run=2
+    )
+    assert f.batch.created[-1]["metadata"]["labels"]["harness.oap.io/run-number"] == "2"

@@ -109,6 +109,14 @@ def test_pass_fail_error_aggregation():
     assert all(c.startswith("oap-harness-abc123-") for c in agent.seen)
 
 
+def test_rerun_sends_its_own_context_ids():
+    agent = agent_fn({"input a": "good", "input b": "good"})
+    run_cases(
+        dataset("a", "b"), CHECKS, runner_settings(run_number=2), agent, judge_fn({"good": 0.9})
+    )
+    assert sorted(agent.seen) == ["oap-harness-abc123-r2-a", "oap-harness-abc123-r2-b"]
+
+
 def test_every_case_errored_is_a_run_error():
     # Live finding (campaign S1): with the judge failing every call the run was
     # published as completed with pass_ratio 0, so an outage read as a 0% revision.

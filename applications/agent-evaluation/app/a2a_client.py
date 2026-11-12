@@ -36,7 +36,11 @@ class AgentReply:
     raw_state: str | None
 
 
-def context_id_for(revision: str, case_id: str) -> str:
+def context_id_for(revision: str, case_id: str, run: int = 1) -> str:
+    # A re-run (run >= 2) gets its own sessions so its traces do not merge with
+    # the first run's; every form keeps the marker online evaluation excludes.
+    if run != 1:
+        return f"{HARNESS_SESSION_MARKER}{revision}-r{run}-{case_id}"
     return f"{HARNESS_SESSION_MARKER}{revision}-{case_id}"
 
 

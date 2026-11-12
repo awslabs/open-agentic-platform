@@ -18,8 +18,12 @@ Per pass:
 5. Prune history.
 
 The Job objects ARE the state. Job names are deterministic per (namespace,
-agent, revision, dataset), so a second pass or a restarted reconciler that
-finds the Job creates nothing: a revision runs once. Jobs always live in the
+agent, revision, dataset, run number), so a second pass or a restarted
+reconciler that finds the Job creates nothing: a revision runs once each time
+it becomes current. A revision that ran before runs again (`trigger=rollback`,
+run number n+1) when a retained Job of another revision of the agent was
+created after its newest run; with no such Job (none started, or it was
+stopped or pruned) there is no re-run. Jobs always live in the
 reconciler's own namespace, never in the agent's, so a team namespace never
 holds platform credentials or platform Jobs.
 
@@ -63,6 +67,9 @@ LABEL_AGENT_NS = "harness.oap.io/agent-namespace"
 LABEL_AGENT = "harness.oap.io/agent"
 LABEL_REVISION = "harness.oap.io/revision"
 LABEL_DATASET = "harness.oap.io/dataset"
+# Ordinal of the run of one (agent, revision, dataset). Absent means 1, so
+# Jobs created before re-runs existed count as first runs.
+LABEL_RUN_NUMBER = "harness.oap.io/run-number"
 ANN_TRIGGER = "harness.oap.io/trigger"
 ANN_THRESHOLD = "harness.oap.io/threshold"
 ANN_CHECKS = "harness.oap.io/checks"
@@ -73,6 +80,8 @@ ANN_JUDGE_KEY_NAME = "harness.oap.io/judge-key-name"
 
 TRIGGER_FIRST = "first-revision"
 TRIGGER_NEW = "new-revision"
+# A revision that ran before became current again after another revision was.
+TRIGGER_ROLLBACK = "rollback"
 
 
 @dataclass
@@ -93,6 +102,18 @@ def _annotations(job) -> dict:
 def _agent_key(job) -> str:
     labels = _labels(job)
     return f"{labels.get(LABEL_AGENT_NS, '')}/{labels.get(LABEL_AGENT, '')}"
+
+
+def _run_number(job) -> int:
+    try:
+        return max(1, int(_labels(job).get(LABEL_RUN_NUMBER, "1")))
+    except ValueError:
+        return 1
+
+
+def _created(job) -> float:
+    # Set by the API server, so it orders Jobs across reconciler restarts.
+    return _ts(getattr(job.metadata, "creation_timestamp", None)) or 0.0
 
 
 def _finished_condition(job):
@@ -347,12 +368,36 @@ class HarnessLoop:
         if not revision or preview != revision:
             return  # the preview Service does not select the newest ReplicaSet yet
 
-        name = harness_job_name(decl.namespace, decl.agent, revision, decl.dataset)
-        if any(j.metadata.name == name for j in jobs):
-            return  # this revision already ran or is running
-
         agent_jobs = [j for j in jobs if _agent_key(j) == decl.key]
-        for job in agent_jobs:
+        same = [
+            j
+            for j in agent_jobs
+            if _labels(j).get(LABEL_REVISION) == revision
+            and _labels(j).get(LABEL_DATASET) == decl.dataset
+        ]
+        if not same:
+            run_number = 1
+            trigger = TRIGGER_FIRST if not agent_jobs else TRIGGER_NEW
+        else:
+            # The revision ran before. It runs again only if it came back: a
+            # Job of another revision of this agent was created after its
+            # newest run (the "another revision was current" record). Once the
+            # re-run exists it is the newest, so later passes and a restarted
+            # reconciler start nothing. Decided before other revisions' active
+            # runs are stopped below, which deletes their Jobs.
+            newest = max(_created(j) for j in same)
+            if not any(
+                _labels(j).get(LABEL_REVISION) != revision and _created(j) > newest
+                for j in agent_jobs
+            ):
+                return  # this revision already ran or is running
+            run_number = max(_run_number(j) for j in same) + 1
+            trigger = TRIGGER_ROLLBACK
+        name = harness_job_name(
+            decl.namespace, decl.agent, revision, decl.dataset, run=run_number
+        )
+
+        for job in list(agent_jobs):
             state, _ = _finished_condition(job)
             if state is None and _labels(job).get(LABEL_REVISION) != revision:
                 self._batch.delete_namespaced_job(
@@ -374,19 +419,26 @@ class HarnessLoop:
             )
             return
 
-        trigger = TRIGGER_FIRST if not agent_jobs else TRIGGER_NEW
-        body = self.job_body(decl, revision, name, trigger)
+        body = self.job_body(decl, revision, name, trigger, run_number)
         created = self._batch.create_namespaced_job(namespace=self._s.namespace, body=body)
         jobs.append(created)
+        run_text = f" run {run_number}" if run_number != 1 else ""
         self._recorder.normal(
             decl.namespace,
             decl.configmap,
             events.REASON_HARNESS_RUN_STARTED,
-            f"harness run {name} started for revision {revision} on dataset "
+            f"harness run {name} started for revision {revision}{run_text} on dataset "
             f"{decl.dataset} ({trigger}, report mode: promotion not affected)",
         )
 
-    def job_body(self, decl: HarnessDeclaration, revision: str, name: str, trigger: str) -> dict:
+    def job_body(
+        self,
+        decl: HarnessDeclaration,
+        revision: str,
+        name: str,
+        trigger: str,
+        run_number: int = 1,
+    ) -> dict:
         h = self._h
         checks = json.dumps(list(decl.checks))
         target = (
@@ -403,6 +455,7 @@ class HarnessLoop:
             "HARNESS_THRESHOLD": str(decl.threshold),
             "HARNESS_MODE": decl.mode,
             "HARNESS_TRIGGER": trigger,
+            "HARNESS_RUN_NUMBER": str(run_number),
             "HARNESS_RESULT_CONFIGMAP": result_configmap_name(name),
             "CLUSTER_NAME": self._s.cluster,
             "BIFROST_URL": self._s.bifrost_url,
@@ -428,6 +481,7 @@ class HarnessLoop:
             LABEL_AGENT: decl.agent,
             LABEL_REVISION: revision,
             LABEL_DATASET: decl.dataset,
+            LABEL_RUN_NUMBER: str(run_number),
             "app.kubernetes.io/managed-by": MANAGED_BY,
         }
         return {

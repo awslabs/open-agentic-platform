@@ -221,6 +221,8 @@ class RunnerSettings:
     checks_path: str
     datasets_dir: str
     credentials_dir: str
+    # 1 for a revision's first run; n >= 2 when it became current again.
+    run_number: int = 1
     # Never printed: repr=False keeps it out of any accidental log of settings.
     judge_virtual_key: str = field(default="", repr=False)
 
@@ -269,6 +271,7 @@ def load_runner_settings() -> RunnerSettings:
         checks_path=_env("HARNESS_CHECKS_PATH", f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}"),
         datasets_dir=_env("HARNESS_DATASETS_DIR", JOB_DATASETS_DIR),
         credentials_dir=credentials_dir,
+        run_number=_positive("HARNESS_RUN_NUMBER", _env_int("HARNESS_RUN_NUMBER", 1)),
         judge_virtual_key=_read_secret_file(f"{credentials_dir}/{JUDGE_KEY_FILE}"),
     )
 

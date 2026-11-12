@@ -3,6 +3,7 @@
 from app.naming import (
     config_hash,
     evaluator_name,
+    harness_job_name,
     is_platform_rule,
     owner_token,
     owns,
@@ -81,3 +82,21 @@ def test_evaluator_object_name_carries_a_non_default_judge():
         evaluator_name("safety", "judge-strong", "judge-default")
         == "safety--judge-strong"
     )
+
+
+def test_harness_job_name_run_one_keeps_the_original_name():
+    import hashlib
+
+    digest = hashlib.sha256(b"team-a/assistant/rev1/example-smoke-v1").hexdigest()
+    expected = "oap-harness-" + digest[:12]
+    assert harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1") == expected
+    assert harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1", run=1) == expected
+
+
+def test_harness_job_name_rerun_is_distinct_and_deterministic():
+    first = harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1")
+    second = harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1", run=2)
+    third = harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1", run=3)
+    assert len({first, second, third}) == 3
+    assert second == harness_job_name("team-a", "assistant", "rev1", "example-smoke-v1", run=2)
+    assert second.startswith("oap-harness-") and len(second) == len(first)
