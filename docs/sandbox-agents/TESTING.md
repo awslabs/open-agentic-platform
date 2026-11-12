@@ -43,6 +43,10 @@ kubectl config current-context    # anything that prints is enough
 
 ## Part 1 — offline, no cluster (~5 min)
 
+> These are the same checks CI runs on every PR touching the sandbox paths.
+> What that workflow covers, and the things it deliberately cannot tell you,
+> are in [`CI-CHECKS.md`](CI-CHECKS.md).
+
 ```bash
 git fetch origin feat/nitro-sandbox-isolation
 git checkout feat/nitro-sandbox-isolation

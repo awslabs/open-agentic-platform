@@ -1,6 +1,12 @@
 # Sandbox / isolation render matrix — the guard catalogue, on every PR that
 # touches it.
 #
+# WHAT THIS CHECKS, AND WHAT IT CANNOT:
+#   docs/sandbox-agents/CI-CHECKS.md
+# Short version: it checks the manifests the platform GENERATES are right and
+# that the guardrails still reject. It never starts a pod, so it cannot tell you
+# whether a microVM is real -- that is TESTING.md Part 3, on Nitro nodes.
+#
 # WHY THIS EXISTS AS CI. The matrix's section C asserts that ~20 combinations
 # still FAIL to render. A guard that stops firing is worse than one that never
 # existed: the Application renders, deploys, and the isolation it asked for is
@@ -20,6 +26,7 @@ on:
       - 'gitops/addons/charts/oam-agent-components/**'
       - 'gitops/addons/charts/agent-sandbox/**'
       - 'scripts/test-isolation-matrix.sh'
+      - 'scripts/test-isolation-features.sh'
       - '.github/workflows/isolation-matrix.yml'
   push:
     branches: [main]
@@ -27,6 +34,8 @@ on:
       - 'platform/oam/definitions/**'
       - 'gitops/addons/charts/oam-agent-components/**'
       - 'gitops/addons/charts/agent-sandbox/**'
+      - 'scripts/test-isolation-matrix.sh'
+      - 'scripts/test-isolation-features.sh'
   workflow_dispatch:
 
 permissions:
