@@ -464,10 +464,23 @@ the dashboard. The harness loop is not part of `/readyz`, so `AgentHarnessStale`
 is how a stuck loop shows.
 
 **PF-1: nothing evaluates this PrometheusRule on the hub today.** The rule is
-rendered and both expressions return the expected results when queried in AMP,
-but there is no Prometheus operator or ruler, and the rule is not synced into an
-AMP rule-groups namespace, so neither alert can fire. Until that is fixed (sync
-PrometheusRules to AMP, or ship the alerts as Grafana alert rules), watch
+rendered, and both expressions return the expected results when queried in AMP,
+but neither alert can fire:
+
+- The hub runs no Prometheus, prometheus-operator or Thanos Ruler. The
+  `monitoring.coreos.com/v1` CRDs are installed (so the rule renders), but no
+  component loads PrometheusRule objects.
+- Metrics go to AMP through the managed scraper, and nothing copies
+  PrometheusRules into AMP. The AMP ruler holds only the rule groups the
+  platform's `observability-aws` addon creates as Crossplane
+  `RuleGroupNamespace` resources.
+- The AMP workspace has no `AlertManagerDefinition`, so even the rules AMP does
+  evaluate only produce `ALERTS` series, not notifications.
+
+This is a platform-level gap, not specific to the harness: the Langfuse
+`langfuse-storage` PrometheusRule has the same problem. It is out of scope for
+issue #137 and deferred. Until the platform decides how addon alerts are
+evaluated (AMP rule groups or Grafana alert rules, design Q7), watch
 `oap_agent_harness_judge_key_present` and
 `oap_agent_eval_last_success_timestamp_seconds{loop="harness"}` on the
 dashboard or with your own alerting.
@@ -680,8 +693,10 @@ Commands per check and what each mismatch means are in
 - **Team-owned datasets.** The `<namespace>/<name>` dataset form is reserved and
   rejected today; datasets are platform chart files.
 - **`expectTools`.** Accepted and ignored; there is no tool-call capture yet.
-- **Alert evaluation (PF-1).** Sync PrometheusRules into AMP or ship the two
-  alerts as Grafana alert rules.
+- **Alert evaluation (PF-1).** Platform-level and deferred: choose how addon
+  alerts are evaluated (AMP rule groups, a PrometheusRule-to-AMP sync, or
+  Grafana alert rules) and add an `AlertManagerDefinition` for notifications.
+  See 4.6.
 - **O-1.** Make `dataset` a concrete required constraint so admission rejects a
   block without it.
 - **O-2.** Optionally prefer the current revision's run when one is retained
