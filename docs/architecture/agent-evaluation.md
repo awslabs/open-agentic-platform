@@ -1339,6 +1339,14 @@ as complete, so `AgentHarnessStale` also follows a missing key; fix the key firs
 Like the rest of the chart's alerts these are
 pipeline alerts; there is no alert on the pass ratio.
 
+**PF-1 (deferred, platform gap):** the PrometheusRule renders where the CRD
+exists, but nothing evaluates it today. Metrics reach AMP through the managed
+scraper, no Prometheus or ruler loads PrometheusRule objects, and nothing
+copies them into AMP rule groups; the workspace also has no Alertmanager
+definition. The same holds for every addon PrometheusRule, so it is out of
+scope for #137 and waits on Q7. Until then watch the two expressions on the
+dashboard ([guide §4.6](../../applications/agent-evaluation/agent-harness.md#46-alerts-and-the-pf-1-caveat)).
+
 ### Harness traffic is marked and excluded from online evaluation
 
 A harness case must not be scored again by the online evaluators, or read as
@@ -1360,9 +1368,10 @@ by `InMemoryFilterService.evaluateFilter`, which ANDs every clause; `none of` on
 an `arrayOptions` column is "no element in the list"; `does not contain` on a
 string is `!String(field ?? "").includes(value)`, so a trace with no session id
 is **not** excluded; `tags` and `sessionId` are observation-eval filter columns
-mapped to the trace's tags and session id. **Unverified on a live project:** that
-the public rule API accepts and persists the two clauses unchanged, and that a
-live harness trace gets no score. Both are read-only checks in TESTING.md.
+mapped to the trace's tags and session id. **Verified on a live hub:** the public
+rule API persisted both clauses on every `oap-*` rule, harness traces got no
+score and normal traffic was still scored. Both are read-only checks in
+TESTING.md.
 
 Why not the Langfuse `environment`: it is set per resource (one value per pod)
 or per span. The resource form cannot separate harness requests, because the
@@ -1373,6 +1382,12 @@ which is the follow-up if the platform moves to Langfuse experiments.
 
 Limitation: an agent image that is not the platform base image and does not map
 `contextId` to `session.id` is not excluded.
+
+**PF-2 (known limitation):** the published `strands-agent` image predates the
+marking change, so harness traces from it are tagged `source:chat`, not
+`source:harness`. Exclusion then relies on the `sessionId` clause alone, which
+held in every test pass (no harness trace was scored). Publishing a base image
+with the change and bumping its pin makes both clauses effective.
 
 ### Execution: a Job in the platform namespace
 

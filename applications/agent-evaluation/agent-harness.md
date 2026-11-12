@@ -674,7 +674,7 @@ Commands per check and what each mismatch means are in
 | Every judge call returned HTTP 400, 0 cases scored | The minted key had no provider config `key_ids`, which Bifrost treats as "no provider keys allowed" | Fixed in code: keys are minted with `key_ids: ["*"]` (still limited by `allowed_models`), and `key_ids` is part of the name hash so an old key is replaced automatically. Use an image with this fix |
 | Keycloak or Langfuse sign-in timed out for in-cluster callers | Traffic from inside the cluster to the platform's public endpoint leaves through the cluster's NAT gateway and comes back to the load balancer, which did not allow those source IPs | Allow the clusters' NAT gateway egress IPs on the platform load balancer (the platform install records them as `nat_egress_cidrs` in the hub's `<hub>/config` secret) |
 | A spoke did not register with the hub | A `<cluster>/config` Secrets Manager secret from an earlier install still existed in "scheduled for deletion" state, so the new install could not recreate it | Either restore the old secret or delete it without a recovery window, then rerun the install for that cluster |
-| Harness traces tagged `source:chat`, not `source:harness` | The published agent image predates the harness marking change in `strands-agent-base` | Not a harness defect: the `sessionId does not contain oap-harness-` clause still excludes them (0 scores in every pass). Publish an agent image with the change to make both clauses effective |
+| Harness traces tagged `source:chat`, not `source:harness` (PF-2) | The published agent image predates the harness marking change in `strands-agent-base` | Not a harness defect: the `sessionId does not contain oap-harness-` clause still excludes them (0 scores in every pass). Publish an agent image with the change to make both clauses effective |
 | Alerts never fired, even while the condition was true | PF-1: nothing evaluates the PrometheusRule | See 4.6 |
 
 ### Where the harness Events are
@@ -727,6 +727,12 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
   alerts are evaluated (AMP rule groups, a PrometheusRule-to-AMP sync, or
   Grafana alert rules) and add an `AlertManagerDefinition` for notifications.
   See 4.6.
+- **PF-2, `source:chat` on harness traces.** The published `strands-agent`
+  image predates the marking change, so its harness traces are tagged
+  `source:chat` and the exclusion from online scoring relies on the
+  `sessionId does not contain oap-harness-` clause alone. Known limitation
+  until a base image with the change is published and its pin bumped (see
+  "Publishing images and bumping pins").
 - **O-1.** Make `dataset` a concrete required constraint so admission rejects a
   block without it.
 - **O-2.** Optionally prefer the current revision's run when one is retained
