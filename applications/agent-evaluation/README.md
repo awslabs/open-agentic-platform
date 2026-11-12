@@ -6,6 +6,7 @@ rules, and reports pass ratios as Prometheus metrics.
 
 Design: [`docs/architecture/agent-evaluation.md`](../../docs/architecture/agent-evaluation.md).
 Addon that deploys it: `gitops/addons/charts/agent-evaluation/`.
+Setting up the agent harness for your agent or cluster: [`agent-harness.md`](agent-harness.md).
 
 ```
 agent --traces--> Langfuse --sampled--> judge (Bifrost) --score--> Langfuse

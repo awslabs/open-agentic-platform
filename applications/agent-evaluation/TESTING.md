@@ -689,6 +689,8 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 ## Harness (report mode)
 
+Setup, behaviour and the tested hub example: [agent-harness.md](agent-harness.md).
+
 **None of this has been run.** The harness (issue #137,
 [§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode))
 is covered by unit tests and by `helm template` only; no cluster with image

@@ -1201,6 +1201,9 @@ component CUE plus the `strands-agent` base image, e.g. in the A2A reply or
 card), and the runner should check it on every reply and treat a reply from
 another revision as superseding the run.
 
+User guide (setup, operation, tested example):
+[`applications/agent-evaluation/agent-harness.md`](../../applications/agent-evaluation/agent-harness.md).
+
 A developer turns it on in the `agent` component
 ([example](../../platform/oam/examples/example-agent-harness.yaml)):
 
