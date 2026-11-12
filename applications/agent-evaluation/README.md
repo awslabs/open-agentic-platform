@@ -55,6 +55,9 @@ Bifrost and writes one `<job>-result` ConfigMap. The `harness` loop is not one o
 the loops `/readyz` waits for; its health is
 `oap_agent_eval_last_success_timestamp_seconds{loop="harness"}`. See
 [§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
+The harness runs in report mode only: it scores each new revision and promotion
+goes ahead regardless of the score. `mode: gate` is reserved for a later phase
+and is rejected at admission today.
 
 Each pass is a full diff, so a restart loses nothing and an error is recovered by
 the next pass rather than by a retry.

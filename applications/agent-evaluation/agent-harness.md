@@ -35,11 +35,12 @@ Use the harness when you have a set of questions your agent must keep answering
 correctly (past failures, core tasks, safety refusals) and you want each new
 revision measured against them before you rely on it.
 
-**Report mode only.** The score is published next to your threshold and the
-promotion goes ahead anyway. Nothing reads the result back into the Rollout, so
-the harness never blocks or delays a promotion. Gate mode (hold promotion below
-the threshold) is not built: `mode: gate` is rejected at admission by the
-`agent` component CUE, and the reconciler also refuses any mode other than
+**Report mode only.** The harness scores each new revision and promotion goes
+ahead regardless of the score. `mode: gate` is reserved for a later phase and is
+rejected at admission today. The score is published next to your threshold;
+nothing reads it back into the Rollout, so the harness never blocks or delays a
+promotion. Gate mode (hold promotion below the threshold) is not built: the
+`agent` component CUE rejects `mode: gate`, and the reconciler also refuses any mode other than
 `report` in a hand-written declaration (`harness_declarations.py`, `VALID_MODES`).
 
 ## 2. How it works end to end
