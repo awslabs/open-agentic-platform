@@ -143,6 +143,15 @@ bash scripts/test-isolation-matrix.sh -v   # with each rejection's message
 
 Needs a readable kubeconfig for the reason above — any valid file will do.
 
+> **A green local run does not mean a green CI run, and twice now the reason
+> was the tree, not the test.** On a pull request, `actions/checkout` renders the
+> **merge** of your branch into `main` — so a definition `main` added after you
+> forked is present in CI and absent locally, and a row that FAILs there reports
+> SKIP here. Before trusting a local pass, merge `main`:
+> ```bash
+> git fetch origin main && git merge origin/main
+> ```
+>
 > **If you change these scripts, test them with `TMPDIR` unset.** The preflight
 > originally wrote to `"$TMPDIR/..."`, which is set on macOS and **unset on a
 > Linux runner**; under `set -u` that aborted the whole suite before a single row
