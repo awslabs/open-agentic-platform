@@ -267,7 +267,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "expr": "max by (gen_ai_request_model, eval_ai_request_model, strictness, coverage) (oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -281,12 +281,13 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "namespace": true,
-              "agent": true
+              "Value": true
+            },
+            "indexByName": {
+              "gen_ai_request_model": 0,
+              "eval_ai_request_model": 1,
+              "strictness": 2,
+              "coverage": 3
             },
             "renameByName": {
               "gen_ai_request_model": "Agent model",
@@ -487,7 +488,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sort(oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",window=\"$window\"})",
+          "expr": "sort(max by (cluster, namespace, agent, evaluator) (oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",window=\"$window\"}))",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -500,20 +501,18 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "window": true
+              "Time": true
             },
             "indexByName": {
-              "namespace": 0,
-              "agent": 1,
-              "evaluator": 2,
-              "Value": 3
+              "cluster": 0,
+              "namespace": 1,
+              "agent": 2,
+              "evaluator": 3,
+              "Value": 4
             },
             "renameByName": {
               "Value": "Pass rate",
+              "cluster": "Cluster",
               "namespace": "Namespace",
               "agent": "Agent",
               "evaluator": "Evaluator"
@@ -997,7 +996,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "expr": "max by (dataset, revision, trigger, status, mode, judge_model) (oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1011,13 +1010,15 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "cluster": true,
-              "namespace": true,
-              "agent": true
+              "Value": true
+            },
+            "indexByName": {
+              "dataset": 0,
+              "revision": 1,
+              "trigger": 2,
+              "status": 3,
+              "mode": 4,
+              "judge_model": 5
             },
             "renameByName": {
               "dataset": "Dataset",

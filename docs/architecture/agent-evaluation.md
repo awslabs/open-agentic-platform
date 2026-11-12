@@ -939,14 +939,21 @@ change.
 |---|---|---|
 | **Agent** | Pass rate per evaluator (stat; red below 80%, amber below the 90% pass-rate target) | `oap_agent_eval_pass_ratio{agent="$agent",window="$window"}` |
 | | Scored traces, which answers *"of how many?"* | `max(oap_agent_eval_scores{agent="$agent",window="$window"})` |
-| | Evaluation settings: levels, agent model and judge (table) | `oap_agent_eval_info{agent="$agent"}` |
+| | Evaluation settings: levels, agent model and judge (table) | `max by (gen_ai_request_model, eval_ai_request_model, strictness, coverage) (oap_agent_eval_info{agent="$agent"})` |
 | | Pass rate over time, with the 90% target as a dashed line | `oap_agent_eval_pass_ratio{agent="$agent",window="24h"}` |
 | | Average score next to the threshold for this agent's strictness | `oap_agent_eval_score_avg{agent="$agent",window="$window"}` and `oap_agent_eval_pass_threshold{agent="$agent"}` |
-| **Fleet** | Every agent and evaluator, lowest pass rate first (table) | `sort(oap_agent_eval_pass_ratio{window="$window"})` |
+| **Fleet** | Every agent and evaluator, lowest pass rate first (table) | `sort(max by (cluster, namespace, agent, evaluator) (oap_agent_eval_pass_ratio{window="$window"}))` |
 | | Pass rate by agent model, for cheaper-model decisions | `avg by (gen_ai_request_model, evaluator) (oap_agent_eval_pass_ratio{window="7d"} * on (cluster, namespace, agent) group_left (gen_ai_request_model) oap_agent_eval_info)` |
 | **Evaluation health** | Rules used of 50, across all clusters | `sum(oap_agent_eval_rules_active)` |
 | | Data age per cluster; stale data shows amber, not as a quality drop | `time() - oap_agent_eval_last_success_timestamp_seconds{cluster=~"$cluster",loop="metrics"}` |
 | | Reconciler errors per cluster | `sum by (cluster, loop) (rate(oap_agent_eval_errors_total{cluster=~"$cluster"}[15m]))` |
+
+The table panels project their labels with `max by (...)` in PromQL rather
+than hiding columns in Grafana. AMP's scraper adds labels that a direct read of
+`/metrics` never shows (`account_id`, `region`, `app_kubernetes_io_*`,
+`kubernetes_*`), and an exclude list cannot know them in advance. The stat and
+time-series panels name their series with `legendFormat`, so extra labels do not
+show there.
 
 A dashboard link opens Langfuse filtered to the agent's scoped
 `agent:<cluster>/<namespace>/<name>` tag, where a reviewer reads the judge's
