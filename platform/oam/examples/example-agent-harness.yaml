@@ -3,8 +3,9 @@
 # Adding the `harness` block is the whole change. The platform runs a fixed
 # dataset of cases against every new revision of this agent, including the
 # first one as a baseline and a revision that becomes current again after a
-# rollback, on the blue-green preview Service (<agent>-preview). Each case is judged and the pass ratio is published as
-# oap_agent_harness_* metrics next to the threshold.
+# rollback, on the blue-green preview Service (<agent>-preview). Each case is
+# judged and the pass ratio is published as oap_agent_harness_* metrics next to
+# the threshold.
 #
 # Report mode only: the harness scores the revision and promotion goes ahead
 # anyway. It never blocks or delays a rollout. Gate mode (hold promotion below
