@@ -1,0 +1,84 @@
+{{- $roleName := include "oam-agent-components.cwObservabilityRoleName" . }}
+{{- /*
+Hand-written Helm (no CUE source): the Role and the default/default association are platform
+resources, not OAM definitions. The decentralized-observability-identity TraitDefinition is
+generated from platform/oam/definitions/traits/decentralized-observability-identity.cue into
+decentralized-observability-identity.yaml, and takes the same role name from the helper.
+
+FAIL CLOSED without global.clusterName: the Role and its association are not rendered, and
+the decentralized-observability-identity trait fails the render of every Application
+that uses it. A role named without the cluster is shared by every install of the account
+(#92), so deleting one install's object deletes the role the others still use. The chart
+itself still renders, so its other definitions install; only what needs the cluster fails.
+*/}}
+{{- if and .Values.decentralizedObservability.enabled .Values.global.clusterName }}
+# IAM Role for agents using decentralized observability (CloudWatch GenAI)
+# Grants CW Logs, X-Ray, and CW Metrics write access.
+# One role per cluster, named after the cluster and tagged with the install prefix
+# (templates/_helpers.tpl): IAM names are account-wide, so a fixed name was shared by
+# every cluster and install in the account and was invisible to a prefix-based teardown.
+apiVersion: iam.aws.upbound.io/v1beta1
+kind: Role
+metadata:
+  name: {{ $roleName }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    crossplane.io/external-name: {{ $roleName }}
+spec:
+  forProvider:
+    tags:
+      {{- include "oam-agent-components.awsTags" . | nindent 6 }}
+    assumeRolePolicy: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "pods.eks.amazonaws.com"},
+          "Action": ["sts:AssumeRole", "sts:TagSession"]
+        }]
+      }
+    inlinePolicy:
+      - name: cloudwatch-xray-write
+        policy: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "logs:PutLogEvents",
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:DescribeLogGroups",
+                "logs:DescribeLogStreams",
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords",
+                "xray:GetSamplingRules",
+                "xray:GetSamplingTargets",
+                "cloudwatch:PutMetricData"
+              ],
+              "Resource": "*"
+            }]
+          }
+---
+# Pod Identity Association — binds default SA in default namespace to CW role
+apiVersion: eks.aws.upbound.io/v1beta1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ include "oam-agent-components.cwObservabilityAssociationName" . }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  forProvider:
+    clusterName: "{{ .Values.global.clusterName }}"
+    namespace: {{ .Values.decentralizedObservability.namespace }}
+    region: "{{ .Values.global.awsRegion | default "us-west-2" }}"
+    # resolve: Always re-resolves the ARN on every reconcile. The default (IfNotPresent)
+    # keeps an already-set forProvider.roleArn, so on an upgrade that renames the role this
+    # existing association would stay on the old role while Argo CD prunes it. role_arn is
+    # updated in place (UpdatePodIdentityAssociation).
+    roleArnRef:
+      name: {{ $roleName }}
+      policy:
+        resolve: Always
+    serviceAccount: {{ .Values.decentralizedObservability.serviceAccount }}
+{{- end }}
