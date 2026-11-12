@@ -352,7 +352,15 @@ if [ "$POD_IDENTITY" = auto ] && [ -n "$POD_SA" ] &&
    [ "${EXTRACTED%%/*}" != "Pod" ] &&
    ! printf '%s\n' ${EXTRA[@]+"${EXTRA[@]}"} | grep -qx -- '--with-pod-identity'; then
   ARGS+=(--with-pod-identity)
-  echo "==> serviceAccountName=$POD_SA -- adding --with-pod-identity (--no-pod-identity to skip)"
+  echo "==> serviceAccountName=$POD_SA -- adding --with-pod-identity"
+  echo "    ⚠ ONLY CORRECT IF A PodIdentityAssociation EXISTS FOR THAT SERVICE ACCOUNT."
+  echo "      Every pod has a service account; the AWS_CONTAINER_* env and token volume"
+  echo "      are injected only when an association is in place, and this script cannot"
+  echo "      see that from a manifest. Pinned without them, the policy denies the pod:"
+  echo "        policy denied Agent::Action::\"CreateContainer\""
+  echo "      Check, and re-run with --no-pod-identity if it returns nothing:"
+  echo "        aws eks list-pod-identity-associations --cluster-name <cluster> \\"
+  echo "          --namespace ${POD_NS:-<ns>} --service-account $POD_SA"
 fi
 
 # exec and logs are the two ways to read a confidential pod from outside it. See
@@ -420,6 +428,14 @@ set -e
 if [ "$RC" -ne 0 ]; then
   echo "genpolicy failed (exit $RC):" >&2
   cat "$WORK/err.txt" >&2
+  if grep -q 'CreateContainer' "$WORK/err.txt" 2>/dev/null; then
+    echo >&2
+    echo "'policy denied CreateContainer' is usually POD IDENTITY. The policy pins the" >&2
+    echo "env set exactly; if it was generated --with-pod-identity but no" >&2
+    echo "PodIdentityAssociation exists for the pod's service account, the injected" >&2
+    echo "AWS_CONTAINER_* vars never arrive and the pod is denied. Regenerate with" >&2
+    echo "--no-pod-identity, or create the association." >&2
+  fi
   if grep -q 'SetupSandbox' "$WORK/err.txt" 2>/dev/null; then
     echo >&2
     echo "'policy denied SetupSandbox' is usually the HOSTNAME. A confidential policy" >&2

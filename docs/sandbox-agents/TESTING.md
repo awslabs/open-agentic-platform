@@ -927,6 +927,23 @@ Without `--docker` on a Mac the script stops with
 `is a Linux ELF binary and this is Darwin` rather than letting it fail mid-run —
 and `podman machine start` first, or the socket is not there.
 
+**Check Pod Identity before you generate, or the pod will be denied.** The
+script adds `--with-pod-identity` whenever the pod has a `serviceAccountName`,
+which every pod does — but the `AWS_CONTAINER_*` env and token volume it pins are
+injected only when a **PodIdentityAssociation exists** for that service account.
+Pinned without them the pod dies with `policy denied CreateContainer`, which
+names neither Pod Identity nor env.
+
+```bash
+aws eks list-pod-identity-associations --cluster-name <cluster> --region <region> \
+  --namespace default --service-account regulated-assistant
+```
+
+Nothing back → add `--no-pod-identity` to the command above. The shipped example
+has no association, so **`--no-pod-identity` is the right choice for 3.3 as-is**;
+you need the flag off only once the agent genuinely uses Pod Identity for AWS
+calls.
+
 Expect, and read each line:
 
 ```
