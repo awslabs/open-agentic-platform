@@ -423,8 +423,38 @@ Executed on the **`hub`** cluster (EKS Auto Mode, k8s v1.37.1, us-west-2).
 | `download-runtime-binaries.sh` | **PASS.** Signature verified, all 8 files, both arches |
 | **3.4** confidential pool | **PASS end to end.** Render + card correct; placeholder policy refused; with a REAL policy the warm pods run and `exec` is denied (`policy denied Agent::Action::"Exec"`); `verify-isolation.sh` 5 PASS / 0 FAIL. Needed `--no-pin-hostname` — see the box below |
 | **3.7** Kata | **PASS (render half).** The SAME Application, unchanged, renders `kata-clh` and the scheduler demands `katacontainers.io/kata-runtime=true`; confidential is **rejected by the real webhook** with both guards firing. Pods stay Pending because this cluster has no Kata nodes — which is the finding-1 symptom, deliberately observed |
-| **3.6** attested pod | **Blocked on Part 4.** The split-manifest fix is verified (one `kind:` per file, and the generator accepts a Pod-only manifest in 3.3a and 3.4), but the pod itself needs an **encrypted image** and a KMS key whose policy pins PCR17 |
-| **Part 4** KMS attestation | **Not run.** Creates a billable KMS key with a 7–30 day deletion window |
+| **Part 4** KMS key policy | **PASS on the control that matters.** Real key created from `pod-attested.yaml`'s own PCR17; `kms:Encrypt` as the build principal succeeds; `kms:Decrypt` as the **key administrator** is denied — `with an explicit deny in a resource-based policy`. That is review finding 8's statement doing its job against the actor the old `kms:*`-to-root policy allowed |
+| **3.6** attested pull | **Not run.** The split-manifest fix is verified (one `kind:` per file; the real generator accepts a Pod-only confidential manifest in 3.3a, 3.4 and here), and the policy + PCR17 generate cleanly. The *pull* additionally needs an encrypted image — `skopeo` on a **Linux** host (it has to exec the keyprovider) — an ECR repo, and an IAM role + PodIdentityAssociation so the guest can reach KMS |
+
+### Part 4, as actually run
+
+```console
+$ podman run --rm -v "$PWD:/w" -v "<runtime>:/rt:ro" -w /w \
+    public.ecr.aws/amazonlinux/amazonlinux:2023 \
+    /rt/eks-nitro-sandbox-genpolicy --profile confidential --with-pod-identity pod.yaml
+  -> PCR17 040ede6619d5ad56f0cc2c4771bc128b880bc150bbf4e643172ce2da0611b0e8f431b1c3c5fbe1a43c4edd9439bd4959
+
+$ examples/nitro-sandbox/create-attested-key.sh --pcr17 <that> \
+    --role-arn <pod role> --alias alias/nitro-sandbox-attested-test --region us-west-2 --yes
+  -> created: arn:aws:kms:us-west-2:<acct>:key/<id>
+
+$ aws kms encrypt --key-id <arn> --plaintext "$(printf probe | base64)" ...   # build principal: OK
+$ aws kms decrypt --key-id <arn> --ciphertext-blob fileb://probe.bin           # administrator:
+  AccessDeniedException ... kms:Decrypt ... with an explicit deny in a resource-based policy
+```
+
+**On a Mac, generate the policy with a container.** The binaries are Linux ELF;
+`podman`/`docker` runs them, and the arch must match the binaries you downloaded
+(`--arch` defaults to the HOST's). `gen-cedar-policy.sh --docker` does this for an
+OAM component; for a raw pod manifest, call the generator in a container directly
+as above.
+
+> **The key is billable and cannot be deleted immediately.** Schedule it when
+> you are done:
+> ```
+> aws kms schedule-key-deletion --key-id <arn> --pending-window-in-days 7 --region us-west-2
+> ```
+
 
 ### 3.4's trap: a confidential policy pins the pod's HOSTNAME
 

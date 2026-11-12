@@ -69,7 +69,24 @@ fi
 CALLER_JSON="$(aws sts get-caller-identity --output json)"
 ACCOUNT_ID="$(printf '%s' "$CALLER_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["Account"])')"
 CALLER_ARN="$(printf '%s' "$CALLER_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["Arn"])')"
-BUILD_PRINCIPAL="${BUILD_PRINCIPAL:-$CALLER_ARN}"
+# NORMALISE AN ASSUMED-ROLE SESSION TO ITS ROLE. sts:get-caller-identity returns
+#   arn:aws:sts::<acct>:assumed-role/<role>/<session>
+# for anyone using Isengard, SSO or a CI role -- i.e. almost everyone -- and a KMS
+# key policy rejects a session ARN as a principal. Left as-is, the default
+# produced a MalformedPolicyDocumentException AFTER the plan had been printed and
+# confirmed. The role ARN is what the policy needs, and it is what the session is
+# a session of.
+if [ -z "${BUILD_PRINCIPAL:-}" ]; then
+  case "$CALLER_ARN" in
+    arn:aws:sts::*:assumed-role/*)
+      _role="${CALLER_ARN#*:assumed-role/}"; _role="${_role%%/*}"
+      BUILD_PRINCIPAL="arn:aws:iam::$ACCOUNT_ID:role/$_role"
+      echo "note: caller is an assumed-role session; using the role ARN as the build" >&2
+      echo "      principal ($BUILD_PRINCIPAL). A key policy cannot name a session." >&2
+      ;;
+    *) BUILD_PRINCIPAL="$CALLER_ARN" ;;
+  esac
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$HERE/kms-key-policy.json"
