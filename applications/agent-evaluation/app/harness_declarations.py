@@ -5,6 +5,11 @@ when the agent declares a `harness` block. Like the evaluation declaration it is
 a KubeVela output, so removing the block or the Application deletes it and the
 reconciler then prunes that agent's runs. Reading is by label selector only
 (same reasoning as declarations.py).
+
+The harness runner's `oap-harness-*-result` ConfigMaps carry
+`harness.oap.io/agent` as well, so the selector excludes anything labelled
+`harness.oap.io/result`. Results are never parsed as declarations and never get
+an InvalidHarnessDeclaration Event.
 """
 
 from __future__ import annotations
@@ -23,6 +28,10 @@ from .harness_config import KNOWN_CHECKS
 logger = logging.getLogger(__name__)
 
 LABEL_SELECTOR = "harness.oap.io/agent"
+# Set by the harness runner on its result ConfigMaps (harness_runner._write_result).
+LABEL_RESULT = "harness.oap.io/result"
+# "key" means the label exists, "!key" that it does not (Kubernetes set-based selector).
+DECLARATION_SELECTOR = f"{LABEL_SELECTOR},!{LABEL_RESULT}"
 
 # Report mode only. `gate` is rejected by the CUE already; checking again here
 # means a hand-written ConfigMap cannot turn a report into a gate.
@@ -157,7 +166,7 @@ class HarnessDeclarationReader:
         """Return (declarations, [(configmap, error)]); a bad one never stops the pass."""
         try:
             listing = self._core.list_config_map_for_all_namespaces(
-                label_selector=LABEL_SELECTOR
+                label_selector=DECLARATION_SELECTOR
             )
         except ApiException as exc:
             raise HarnessDeclarationError(

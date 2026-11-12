@@ -7,6 +7,7 @@ import pytest
 from app.harness_declarations import (
     LABEL_SELECTOR,
     HarnessDeclarationError,
+    HarnessDeclarationReader,
     parse_harness_declaration,
 )
 from tests.conftest import make_configmap
@@ -97,3 +98,52 @@ def test_derived_preview_service_too_long_is_rejected():
     # 60 characters is a valid agent name, but `<agent>-preview` is not a Service name.
     with pytest.raises(HarnessDeclarationError, match="previewService"):
         parse_harness_declaration(cm(agent="a" * 60, previewService=None))
+
+
+def _selects(labels: dict, selector: str) -> bool:
+    """Evaluate the selector forms the reader uses: `key`, `!key` and `key=value`."""
+    for clause in filter(None, selector.split(",")):
+        if clause.startswith("!"):
+            if clause[1:] in labels:
+                return False
+        elif "=" in clause:
+            key, _, value = clause.partition("=")
+            if labels.get(key) != value:
+                return False
+        elif clause not in labels:
+            return False
+    return True
+
+
+def test_result_configmaps_are_not_declarations():
+    declaration = cm()
+    # Labelled the way harness_runner._write_result labels its result ConfigMap.
+    result = make_configmap(
+        "agent-evaluation",
+        "oap-harness-0123456789ab-result",
+        {"passRatio": "1.0"},
+        labels={
+            "harness.oap.io/result": "true",
+            "harness.oap.io/job": "oap-harness-0123456789ab",
+            "harness.oap.io/agent-namespace": "team-a",
+            "harness.oap.io/agent": "assistant",
+            "harness.oap.io/revision": "rev1",
+            "harness.oap.io/dataset": "example-smoke-v1",
+            "app.kubernetes.io/managed-by": "agent-evaluation-reconciler",
+        },
+    )
+
+    class FakeCore:
+        def list_config_map_for_all_namespaces(self, label_selector):
+            class Listing:
+                items = [
+                    c for c in (declaration, result)
+                    if _selects(c.metadata.labels or {}, label_selector)
+                ]
+
+            return Listing()
+
+    good, bad = HarnessDeclarationReader(FakeCore()).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    # No parse error means no InvalidHarnessDeclaration Event for the result.
+    assert bad == []
