@@ -691,11 +691,11 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 Setup, behaviour and the tested hub example: [agent-harness.md](agent-harness.md).
 
-**None of this has been run.** The harness (issue #137,
+The harness (issue #137,
 [§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode))
-is covered by unit tests and by `helm template` only; no cluster with image
-`0.3.0` and `harness.enabled: true` exists yet. Every command below is
-read-only. Prerequisites: the addon with `harness.enabled: true` in
+is covered by unit tests and `helm template`, and was run end to end on a hub
+cluster (setup in [agent-harness.md §6](agent-harness.md)). Every command
+below is read-only. Prerequisites: the addon with `harness.enabled: true` in
 `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`, an image that
 contains the harness, and an agent with a `harness` block such as
 `platform/oam/examples/example-agent-harness.yaml`.

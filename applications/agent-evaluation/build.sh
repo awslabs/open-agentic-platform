@@ -11,7 +11,7 @@
 #
 #   ./build.sh                                  # build both arches, no push
 #   ./build.sh --push                           # build + push to $REGISTRY
-#   REGISTRY=<acct>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+#   REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com ./build.sh --push
 #   ./build.sh --push --tag "$(git rev-parse --short HEAD)"
 #
 # Environment (flags win over env):
@@ -26,7 +26,7 @@
 # Registries:
 #   public.ecr.aws/<alias>   the platform's published images. Needs credentials
 #                            for the account that owns that alias.
-#   <acct>.dkr.ecr.<region>.amazonaws.com   a private repo, for testing in your
+#   <account>.dkr.ecr.<region>.amazonaws.com   a private repo, for testing in your
 #                            own account before publishing.
 # With ECR_LOGIN=auto and --push, the script logs docker in to either kind of
 # ECR host using the current AWS credentials. Other registries are left alone:

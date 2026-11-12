@@ -12,8 +12,8 @@ The worked example in section 6 is the setup we tested end to end on a hub
 cluster. Design and contracts: [§4b of the design doc](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
 Reconciler internals: [README](README.md). Read-only checks: [TESTING.md](TESTING.md#harness-report-mode).
 
-Everything here describes code on the `feature/agent-harness-hub` branch
-(issue #137). Statements marked **Not verified** were not exercised on a cluster.
+Everything here describes the harness on `main` (issue #137). Statements
+marked **Not verified** were not exercised on a cluster.
 
 ## 1. What the harness is and when to use it
 
@@ -324,9 +324,9 @@ Two switches, both per cluster or environment:
    deploys the chart `gitops/addons/charts/agent-evaluation` into namespace
    `agent-evaluation` on every cluster whose cluster secret carries
    `enable_agent_evaluation: 'true'` (sync wave 7, after Langfuse and the OTel
-   collector). `dev` and `prod` set it to `false`, and `control-plane` is `true`
-   only on this test branch, because the chart's default image is not
-   published yet (4.2).
+   collector). The addon is `false` in every environment by default, because
+   the chart's default image is not published yet (4.2). Turn it on per
+   environment, together with an image override.
 2. **The harness.** `harness.enabled: true` in the chart values. It is off by
    default and nothing harness-specific (RBAC, ConfigMaps, env, alerts) renders
    without it. Set it in a per-cluster or per-environment values overlay, which
@@ -509,8 +509,9 @@ Placeholders: `<registry>` for the image registry, `<tag>` for the image tag,
 
 ### 6.1 Enablement (hub only)
 
-On the test branch the harness was enabled on the hub only; `dev` and `prod`
-stayed off.
+We enabled the harness on the hub only; `dev` and `prod` stayed off. We set
+these two files locally and did not commit them; on `main` the addon is off
+and the hub overlay only pins an image:
 
 - `gitops/overlays/environments/control-plane/enabled-addons.yaml`:
   `agent_evaluation: true`.
@@ -533,19 +534,42 @@ pull it.
 
 ### 6.2 The test agent
 
-`examples/agent-harness-hub-test/harness-assistant.yaml` deploys agent
-`harness-assistant` in namespace `default` with:
+The test agent is [`platform/oam/examples/example-agent-harness.yaml`](../../platform/oam/examples/example-agent-harness.yaml)
+(agent `harness-assistant` in namespace `default`, `harness: {enabled: true,
+dataset: example-smoke-v1, checks: [expected-answer], threshold: 0.8, mode:
+report}`) plus a time tool, because the `utc-time-now` case in
+`example-smoke-v1` needs one. Without the tool that case fails, as expected.
 
-- `harness: {enabled: true, dataset: example-smoke-v1, checks: [expected-answer], threshold: 0.8, mode: report}`;
-- an MCP server `time-server` (published on AgentGateway, `allowedAgents:
-  [harness-assistant]`) and the `gateway-identity` trait, because the
-  `utc-time-now` case needs a time tool.
+We added to the agent component:
 
-No Argo CD application syncs OAM Applications onto the hub from this repo, so it
-was applied by hand once the hub addons were Healthy:
+```yaml
+        mcpServers:
+          - name: time-server
+      traits:
+        - type: gateway-identity   # secretless identity for AgentGateway
+```
+
+and a second component, the server from
+`workshop/applications/agents/deployment/templates/time-server.yaml`:
+
+```yaml
+    - name: time-server
+      type: mcp-server
+      properties:
+        image: <time-server-image>   # pin by digest
+        port: 8000
+        registerWithGateway: true
+        allowedAgents: [harness-assistant]
+        env:
+          - name: LOCAL_TIMEZONE
+            value: UTC
+```
+
+No Argo CD application syncs OAM Applications onto the hub from this repo, so
+apply it by hand once the hub addons are Healthy:
 
 ```bash
-kubectl --context <hub-context> apply -f examples/agent-harness-hub-test/harness-assistant.yaml
+kubectl --context <hub-context> apply -f <harness-assistant.yaml>
 kubectl --context <hub-context> get application.core.oam.dev harness-assistant -n default
 ```
 

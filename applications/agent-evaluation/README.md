@@ -256,12 +256,12 @@ Publishing makes an image fetchable by anyone, so validate from a private
 repository in your own account before publishing:
 
 ```bash
-aws ecr create-repository --repository-name agent-evaluation --region us-west-2
-aws ecr get-login-password --region us-west-2 \
+aws ecr create-repository --repository-name agent-evaluation --region <region>
+aws ecr get-login-password --region <region> \
   | podman login --username AWS --password-stdin \
-      <account>.dkr.ecr.us-west-2.amazonaws.com
+      <account>.dkr.ecr.<region>.amazonaws.com
 
-VERSION=0.3.0 REGISTRY=<account>.dkr.ecr.us-west-2.amazonaws.com ./build.sh --push
+VERSION=<tag> REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com ./build.sh --push
 ```
 
 Point the addon at it with a values override rather than editing the chart
@@ -270,8 +270,8 @@ default, so the test registry never lands in git:
 ```bash
 helm upgrade --install agent-evaluation \
   gitops/addons/charts/agent-evaluation -n agent-evaluation \
-  --set image.repository=<account>.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation \
-  --set image.tag=0.3.0 \
+  --set image.repository=<account>.dkr.ecr.<region>.amazonaws.com/agent-evaluation \
+  --set image.tag=<tag> \
   --set global.clusterName=<cluster> --set role=hub \
   --set langfuse.url=http://langfuse.langfuse.svc.cluster.local:3000 \
   --set langfuse.secretManagerKey=<prefix>-hub/langfuse-otel
