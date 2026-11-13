@@ -10,10 +10,12 @@ from types import SimpleNamespace
 from app.bifrost_admin import BifrostAdminError
 from app.events import (
     REASON_HARNESS_JUDGE_KEY_UNAVAILABLE,
+    REASON_HARNESS_PREVIEW_UNSUPPORTED,
     REASON_HARNESS_RUN_COMPLETED,
     REASON_HARNESS_RUN_FAILED,
     REASON_HARNESS_RUN_STARTED,
     REASON_HARNESS_RUN_SUPERSEDED,
+    REASON_HARNESS_WAITING_FOR_PREVIEW,
     REASON_INVALID_HARNESS_DECLARATION,
     REASON_UNKNOWN_DATASET,
 )
@@ -289,6 +291,36 @@ def test_agent_not_deployed_creates_no_job(settings, harness_settings, catalog, 
     loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
     assert loop.run_once()
     assert f.batch.created == []
+    waiting = [n for n in f.events.normals if n[2] == REASON_HARNESS_WAITING_FOR_PREVIEW]
+    assert waiting and "no Rollout named assistant" in waiting[0][3]
+    assert waiting[0][:2] == ("team-a", "assistant-harness")
+
+
+def test_preview_selector_not_set_yet_says_so(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1", preview="")
+    assert loop.run_once()
+    assert f.batch.created == []
+    waiting = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_WAITING_FOR_PREVIEW]
+    assert waiting and "previewSelector" in waiting[0]
+
+
+def test_canary_rollout_is_reported_as_unsupported(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1", strategy="canary")
+    loop.run_once()
+    assert f.batch.created == []
+    unsupported = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_PREVIEW_UNSUPPORTED]
+    assert unsupported and "previewService" in unsupported[0]
+
+
+def test_preview_not_switched_yet_records_no_event(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev2", preview="rev1")
+    loop.run_once()
+    assert f.batch.created == []
+    assert f.events.warnings == []
+    assert REASON_HARNESS_WAITING_FOR_PREVIEW not in [n[2] for n in f.events.normals]
 
 
 def test_same_revision_and_restart_create_no_new_job(settings, harness_settings, catalog, metrics):

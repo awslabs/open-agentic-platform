@@ -471,8 +471,26 @@ class HarnessLoop:
             )
         except ApiException as exc:
             if exc.status == 404:
-                return  # not deployed yet
+                self._recorder.normal(
+                    decl.namespace,
+                    decl.configmap,
+                    events.REASON_HARNESS_WAITING_FOR_PREVIEW,
+                    f"no Rollout named {decl.agent} in {decl.namespace} yet: the harness "
+                    "runs once it exists (report mode: promotion not affected)",
+                )
+                return
             raise
+        strategy = ((rollout or {}).get("spec") or {}).get("strategy") or {}
+        if not (strategy.get("blueGreen") or {}).get("previewService"):
+            self._recorder.warn(
+                decl.namespace,
+                decl.configmap,
+                events.REASON_HARNESS_PREVIEW_UNSUPPORTED,
+                f"Rollout {decl.agent} has no spec.strategy.blueGreen.previewService "
+                "(for example a canary strategy): the harness needs a blueGreen preview "
+                "Service and starts no run",
+            )
+            return
         if _aborted(rollout):
             # The revision under preview was aborted: a run of it measures
             # pods that are going away. Stop this agent's active runs, start
@@ -487,6 +505,16 @@ class HarnessLoop:
         status = (rollout or {}).get("status") or {}
         revision = status.get("currentPodHash")
         preview = _preview_of(rollout)
+        if revision and not preview:
+            self._recorder.normal(
+                decl.namespace,
+                decl.configmap,
+                events.REASON_HARNESS_WAITING_FOR_PREVIEW,
+                f"Rollout {decl.agent} has no status.blueGreen.previewSelector yet: the "
+                "harness runs once the preview Service selects a revision",
+            )
+            return
+        # Not switched to the newest ReplicaSet yet: transient, so no Event.
         if not revision or preview != revision:
             return  # the preview Service does not select the newest ReplicaSet yet
 

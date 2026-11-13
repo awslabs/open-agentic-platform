@@ -291,6 +291,8 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 | `UnknownDataset` | Warning | the dataset name is not in the platform catalog |
 | `InvalidHarnessDeclaration` | Warning | a field in the ConfigMap is invalid (the message names it) |
 | `HarnessJudgeKeyUnavailable` | Warning | no run starts because the judge key is missing (platform issue) |
+| `HarnessWaitingForPreview` | Normal | no run yet: no Rollout named `<agent>` in the namespace, or its `status.blueGreen.previewSelector` is not set yet. A preview that simply has not switched to the newest revision yet records nothing |
+| `HarnessPreviewUnsupported` | Warning | the Rollout has no `spec.strategy.blueGreen.previewService` (for example a canary strategy), so no run starts |
 
 Every message starts with `[<cluster>]`.
 
@@ -716,8 +718,8 @@ Commands per check and what each mismatch means are in
 
 Every harness Event is recorded on the agent's declaration ConfigMap
 `<agent>-harness` in the agent's namespace. That covers the refusals
-(`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`)
-and the run lifecycle (`HarnessRunStarted`, `HarnessRunCompleted`,
+(`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`,
+`HarnessWaitingForPreview`, `HarnessPreviewUnsupported`) and the run lifecycle (`HarnessRunStarted`, `HarnessRunCompleted`,
 `HarnessRunFailed`, `HarnessRunSuperseded`). List them with:
 
 ```bash
@@ -733,7 +735,7 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
 | Symptom | Check |
 |---|---|
 | No `<agent>-harness` ConfigMap | `enabled: true` set? `dataset` set (O-1)? Application status and render errors: `kubectl get application.core.oam.dev <app> -n <ns> -o yaml` |
-| ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`); Rollout `currentPodHash` equals `blueGreen.previewSelector`?; `harness.enabled` on this cluster's addon?; `maxConcurrentJobs` slots busy (reconciler log "waits")? |
+| ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`, `HarnessWaitingForPreview`, `HarnessPreviewUnsupported`); Rollout `currentPodHash` equals `blueGreen.previewSelector`?; `harness.enabled` on this cluster's addon?; `maxConcurrentJobs` slots busy (reconciler log "waits")? |
 | `HarnessJudgeKeyUnavailable`, `judge_key_present` 0 | Reconciler log "harness judge key unavailable"; Bifrost reachable at `harness.judge.virtualKey.bifrostAdminUrl`; governance auth on (4.4)? |
 | `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, preview path refusing or answering 4xx), or the Job killed at `runTimeoutSeconds` before it wrote a result (the runner normally stops 60 s earlier with a partial result). An agent answering with errors is not this: it shows as a completed run with failed cases |
 | Many case errors with reason `expected-answer: judge returned HTTP 4xx` | Judge key scope (`allowedModels`), budget exhausted, or Bedrock access to the judge model |

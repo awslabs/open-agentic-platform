@@ -1261,7 +1261,13 @@ Every harness Event is recorded on this ConfigMap, prefixed `[<cluster>]`, so
 a team reads its runs in its own namespace: `HarnessRunStarted` (with the
 trigger `first-revision`, `new-revision` or `rollback`), `HarnessRunCompleted`,
 `HarnessRunFailed` and `HarnessRunSuperseded`, plus the refusals
-`UnknownDataset`, `InvalidHarnessDeclaration` and `HarnessJudgeKeyUnavailable`.
+`UnknownDataset`, `InvalidHarnessDeclaration` and `HarnessJudgeKeyUnavailable`,
+and why a run cannot start: `HarnessWaitingForPreview` (Normal: no Rollout
+named `<agent>` yet, or its `blueGreen.previewSelector` is not set yet) and
+`HarnessPreviewUnsupported` (Warning: the Rollout has no
+`spec.strategy.blueGreen.previewService`, for example a canary strategy). A
+preview that does not select the newest revision yet records nothing: that is
+the normal, short wait before every run.
 The runner's `<job>-result` ConfigMaps also carry `harness.oap.io/agent`, so
 the reconciler lists declarations with
 `harness.oap.io/agent,!harness.oap.io/result` and never reads a result as a

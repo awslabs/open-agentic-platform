@@ -338,14 +338,27 @@ class FakeCustomObjects:
     def __init__(self):
         self.rollouts: dict[tuple[str, str], dict] = {}
 
-    def set_rollout(self, namespace, name, current, preview=None, abort=False):
-        status = {
-            "currentPodHash": current,
-            "blueGreen": {"previewSelector": current if preview is None else preview},
-        }
+    def set_rollout(
+        self, namespace, name, current, preview=None, abort=False, strategy="blueGreen"
+    ):
+        """preview=None selects `current`; preview="" leaves previewSelector unset."""
+        status = {"currentPodHash": current, "blueGreen": {}}
+        if preview != "":
+            status["blueGreen"]["previewSelector"] = current if preview is None else preview
         if abort:
             status["abort"] = True
-        self.rollouts[(namespace, name)] = {"status": status}
+        if strategy == "blueGreen":
+            spec = {
+                "strategy": {
+                    "blueGreen": {
+                        "activeService": f"{name}-stable",
+                        "previewService": f"{name}-preview",
+                    }
+                }
+            }
+        else:
+            spec = {"strategy": {strategy: {"steps": []}}}
+        self.rollouts[(namespace, name)] = {"spec": spec, "status": status}
 
     def get_namespaced_custom_object(self, group, version, namespace, plural, name):
         assert (group, version, plural) == ("argoproj.io", "v1alpha1", "rollouts")

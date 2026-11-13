@@ -41,6 +41,11 @@ REASON_HARNESS_RUN_SUPERSEDED = "HarnessRunSuperseded"
 REASON_UNKNOWN_DATASET = "UnknownDataset"
 REASON_INVALID_HARNESS_DECLARATION = "InvalidHarnessDeclaration"
 REASON_HARNESS_JUDGE_KEY_UNAVAILABLE = "HarnessJudgeKeyUnavailable"
+# Why a run cannot start yet (Normal: no Rollout named <agent>, or its
+# blueGreen.previewSelector is not set yet) or at all (Warning: the Rollout has
+# no blueGreen previewService, e.g. a canary strategy).
+REASON_HARNESS_WAITING_FOR_PREVIEW = "HarnessWaitingForPreview"
+REASON_HARNESS_PREVIEW_UNSUPPORTED = "HarnessPreviewUnsupported"
 
 
 class EventRecorder:
