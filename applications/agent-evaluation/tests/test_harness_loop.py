@@ -946,6 +946,8 @@ def test_invalid_declaration_is_skipped_and_keeps_history(settings, harness_sett
     # Live finding (campaign S7c): hand-editing a rendered <agent>-harness
     # ConfigMap to a hostile previewService pruned the agent's Jobs, results
     # and series, and the re-rendered ConfigMap re-ran the same revision.
+    # previewService is no longer read, so the edit here is one the reader
+    # still refuses (mode: gate).
     d = decl()
     loop, f = build(settings, harness_settings, catalog, metrics, [d])
     f.custom.set_rollout("team-a", "assistant", "rev1")
@@ -957,12 +959,12 @@ def test_invalid_declaration_is_skipped_and_keeps_history(settings, harness_sett
     assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
 
     edited = make_configmap(
-        "team-a", "assistant-harness", {"previewService": "evil.example.com"},
+        "team-a", "assistant-harness", {"mode": "gate"},
         labels={"harness.oap.io/agent": "assistant"},
     )
     invalid, _ = build(
         settings, harness_settings, catalog, metrics, [], fakes=f,
-        malformed=[(edited, "previewService 'evil.example.com' is not a Service name")],
+        malformed=[(edited, "mode 'gate' is not supported")],
     )
     invalid.run_once()
     assert REASON_INVALID_HARNESS_DECLARATION in f.events.reasons()
