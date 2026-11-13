@@ -82,7 +82,9 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
     return loop, fakes
 
 
-def write_result(core, job_name, d, revision, outcomes, finished_at=3_000.0, trigger="first-revision"):
+def write_result(
+    core, job_name, d, revision, outcomes, finished_at=3_000.0, trigger="first-revision", **extra
+):
     cases = [
         CaseResult(id=f"c{i}", status=s, score=None, reason="", latency_ms=1, tags=())
         for i, s in enumerate(outcomes)
@@ -101,6 +103,7 @@ def write_result(core, job_name, d, revision, outcomes, finished_at=3_000.0, tri
         started_at=finished_at - 10,
         finished_at=finished_at,
         case_results=cases,
+        **extra,
     )
     core.create_namespaced_config_map(
         PLATFORM_NS,
@@ -150,6 +153,7 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert env["HARNESS_JUDGE_MODEL"] == "us.amazon.nova-pro-v1:0"
     assert env["HARNESS_TRIGGER"] == "first-revision"
     assert env["HARNESS_RUN_NUMBER"] == "1"
+    assert env["HARNESS_RUN_TIMEOUT_SECONDS"] == str(harness_settings.run_timeout)
     assert body["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert env["POD_NAMESPACE"] == {"fieldRef": {"fieldPath": "metadata.namespace"}}
@@ -341,6 +345,23 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     assert len(completed) == 1
     assert "2/4 passed" in completed[0][3]
     assert "promotion not affected" in completed[0][3]
+
+
+def test_run_cut_short_by_the_deadline_says_so_in_the_event(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(
+        f.core, name, d, "rev1", ["passed", "error"],
+        error="run deadline reached: 1 of 2 cases not run",
+    )
+    f.batch.finish(name)
+    loop.run_once()
+    completed = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_COMPLETED]
+    assert len(completed) == 1
+    assert "run deadline reached: 1 of 2 cases not run" in completed[0]
 
 
 def test_run_where_every_case_errored_publishes_no_counts(settings, harness_settings, catalog, metrics):

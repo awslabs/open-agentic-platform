@@ -132,9 +132,9 @@ with no harness.
 | `harness.maxConcurrentJobs` | `2` | Harness Jobs at once on this cluster |
 | `harness.historyLimit` | `3` | Finished runs kept per agent |
 | `harness.caseConcurrency` | `2` | Cases in flight within one run |
-| `harness.caseTimeoutSeconds` | `120` | Per case |
+| `harness.caseTimeoutSeconds` | `120` | Per call (agent call, each judge call) |
 | `harness.readyTimeoutSeconds` | `600` | Wait for the preview's agent card |
-| `harness.runTimeoutSeconds` | `1800` | Whole run |
+| `harness.runTimeoutSeconds` | `1800` | Whole run; the runner stops 60 s before it with a partial result |
 | `harness.maxCases` | `50` | Larger datasets are a run error |
 | `harness.judge.alias` | `""` | Judge alias; empty is `judge.defaultAlias` |
 | `harness.judge.virtualKey.*` | see `values.yaml` | The harness judge key: `mint`, `required`, `secretRef`, `bifrostAdminUrl`, `allowedModels`, `budget`, `rateLimit` |

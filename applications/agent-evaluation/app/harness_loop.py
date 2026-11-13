@@ -463,6 +463,8 @@ class HarnessLoop:
             "HARNESS_CASE_CONCURRENCY": str(h.case_concurrency),
             "HARNESS_CASE_TIMEOUT_SECONDS": str(h.case_timeout),
             "HARNESS_READY_TIMEOUT_SECONDS": str(h.ready_timeout),
+            # Same value as activeDeadlineSeconds, so the runner can stop first.
+            "HARNESS_RUN_TIMEOUT_SECONDS": str(h.run_timeout),
             "HARNESS_MAX_CASES": str(h.max_cases),
             "HARNESS_CHECKS_PATH": f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}",
             "HARNESS_DATASETS_DIR": JOB_DATASETS_DIR,
@@ -705,7 +707,11 @@ class HarnessLoop:
                 decl.configmap,
                 events.REASON_HARNESS_RUN_COMPLETED,
                 f"revision {run.revision}: {run.passed}/{run.cases} passed on "
-                f"{run.dataset} ({run.errors} errors), report mode: promotion not affected",
+                f"{run.dataset} ({run.errors} errors)"
+                # A completed run carries an error only when the run deadline
+                # cut it short: say so, the ratio covers the judged cases only.
+                + (f"; {run.error}" if run.error else "")
+                + ", report mode: promotion not affected",
             )
         else:
             self._recorder.warn(

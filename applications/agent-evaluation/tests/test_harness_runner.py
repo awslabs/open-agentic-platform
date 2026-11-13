@@ -64,7 +64,7 @@ def agent_fn(behaviour: dict):
     """behaviour: case input -> reply text, or an AgentCallError to raise."""
     seen = []
 
-    def fn(text, context_id):
+    def fn(text, context_id, timeout):
         seen.append(context_id)
         outcome = behaviour[text]
         if isinstance(outcome, Exception):
@@ -78,7 +78,7 @@ def agent_fn(behaviour: dict):
 def judge_fn(scores: dict):
     """scores: reply text appearing in the prompt -> score, or a JudgeError."""
 
-    def fn(prompt):
+    def fn(prompt, timeout):
         for text, outcome in scores.items():
             if f"O={text}" in prompt:
                 if isinstance(outcome, Exception):
@@ -159,7 +159,7 @@ def flaky_judge(failures: dict, error=lambda: JudgeError("judge returned HTTP 42
     """failures: reply text -> how many calls fail before the judge answers 1.0."""
     calls = {}
 
-    def fn(prompt):
+    def fn(prompt, timeout):
         for text, count in failures.items():
             if f"O={text}" in prompt:
                 calls[text] = calls.get(text, 0) + 1
@@ -211,7 +211,7 @@ def test_every_judge_call_failing_is_a_run_error():
 def test_non_retryable_judge_error_is_not_retried():
     calls = []
 
-    def judge(prompt):
+    def judge(prompt, timeout):
         calls.append(prompt)
         raise JudgeError("judge returned HTTP 400", retryable=False)
 
@@ -223,7 +223,7 @@ def test_non_retryable_judge_error_is_not_retried():
 def test_judge_retry_never_sleeps_past_the_deadline():
     calls = []
 
-    def judge(prompt):
+    def judge(prompt, timeout):
         calls.append(prompt)
         raise JudgeError("judge returned HTTP 503", retryable=True)
 
@@ -283,7 +283,7 @@ def test_now_time_case_passes_the_right_time_and_fails_an_invented_one():
     }
     prompts = []
 
-    def judge(prompt):
+    def judge(prompt, timeout):
         prompts.append(prompt)
         reference, answer = prompt.split(" O=", 1)
         ok = "2026-01-02T12:00:00Z" in reference and "2026-01-02T12:00:00Z" in answer
@@ -293,13 +293,66 @@ def test_now_time_case_passes_the_right_time_and_fails_an_invented_one():
         Dataset("t", "", cases),
         checks,
         runner_settings(case_concurrency=1),
-        lambda text, ctx: AgentReply(replies[text], "completed"),
+        lambda text, ctx, timeout: AgentReply(replies[text], "completed"),
         judge,
         clock=clock,
     )
     assert [c.status for c in result.case_results] == ["passed", "failed", "failed"]
     # The agent's literal {{now}} was not substituted.
     assert prompts[2].endswith("O={{now}}")
+
+
+def test_run_deadline_stops_the_run_and_writes_a_partial_result():
+    # Review C4: the Job's activeDeadlineSeconds would kill the pod with no
+    # result. With run_timeout 400 the runner stops at 400 - 60 = 340 s.
+    now = [0.0]
+    timeouts = []
+
+    def agent(text, context_id, timeout):
+        timeouts.append(timeout)
+        if timeout < 100:
+            # The clamped call runs out: the agent was not given its full time.
+            now[0] += timeout
+            raise AgentCallError("timeout", "ReadTimeout", agent_side=True)
+        now[0] += 100
+        return AgentReply("good", "completed")
+
+    settings = runner_settings(case_concurrency=1, case_timeout=120, run_timeout=400)
+    result = run_cases(
+        dataset(*"abcdef"),
+        CHECKS,
+        settings,
+        agent,
+        judge_fn({"good": 1.0}),
+        clock=lambda: now[0],
+        started_at=0.0,
+        sleep=no_sleep,
+    )
+    assert result.status == "completed"
+    assert [c.status for c in result.case_results] == [
+        "passed", "passed", "passed", "error", "error", "error"
+    ]
+    # The fourth call got only the 40 s left, and its timeout is not the agent's fault.
+    assert timeouts == [120, 120, 120, 40]
+    assert result.case_results[3].reason.startswith("run deadline: agent timeout")
+    assert result.case_results[4].reason == "not run: run deadline reached"
+    assert result.pass_ratio == 1.0
+    assert result.error == "run deadline reached: 2 of 6 cases not run"
+    assert parse_result(to_configmap_data(result)) == result
+
+
+def test_ready_wait_is_clamped_to_the_run_deadline(harness_dirs):
+    waited = []
+    result = run(
+        runner_settings(datasets_dir=harness_dirs.datasets, ready_timeout=600, run_timeout=300),
+        CHECKS,
+        agent_fn({}),
+        judge_fn({}),
+        reachable_fn=lambda timeout: waited.append(timeout) or False,
+        clock=lambda: 0.0,
+    )
+    assert waited == [240]
+    assert result.status == "error"
 
 
 def test_threshold_met_when_ratio_reaches_it():
@@ -317,7 +370,7 @@ def test_zero_case_dataset_is_a_run_error(tmp_path):
         CHECKS,
         agent_fn({}),
         judge_fn({}),
-        reachable_fn=lambda: True,
+        reachable_fn=lambda timeout: True,
     )
     assert result.status == "error"
     assert "no cases" in result.error
@@ -331,7 +384,7 @@ def test_unreachable_preview_is_a_run_error(harness_dirs):
         CHECKS,
         agent_fn({}),
         judge_fn({}),
-        reachable_fn=lambda: False,
+        reachable_fn=lambda timeout: False,
     )
     assert result.status == "error"
     assert "not reachable" in result.error
@@ -344,7 +397,7 @@ def test_unknown_check_is_a_run_error(harness_dirs):
         CHECKS,
         agent_fn({}),
         judge_fn({}),
-        reachable_fn=lambda: True,
+        reachable_fn=lambda timeout: True,
     )
     assert result.status == "error"
     assert result.pass_ratio is None
@@ -354,16 +407,16 @@ def test_end_to_end_with_the_mounted_files(harness_dirs):
     checks = load_checks(str(harness_dirs.checks))
     seen_prompts = []
 
-    def judge(prompt):
+    def judge(prompt, timeout):
         seen_prompts.append(prompt)
         return JudgeVerdict(0.8, "fine")
 
     result = run(
         runner_settings(datasets_dir=harness_dirs.datasets),
         checks,
-        lambda text, ctx: AgentReply("an answer", "completed"),
+        lambda text, ctx, timeout: AgentReply("an answer", "completed"),
         judge,
-        reachable_fn=lambda: True,
+        reachable_fn=lambda timeout: True,
     )
     assert result.status == "completed"
     assert result.passed == 2

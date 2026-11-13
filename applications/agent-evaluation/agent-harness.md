@@ -377,9 +377,9 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `maxConcurrentJobs` | 2 | Jobs at once per cluster |
 | `historyLimit` | 3 | finished runs kept per agent |
 | `caseConcurrency` | 2 | cases in flight per run |
-| `caseTimeoutSeconds` | 120 | per case (agent answer, then judge) |
+| `caseTimeoutSeconds` | 120 | per call: the agent call and each judge call |
 | `readyTimeoutSeconds` | 600 | wait for the preview agent card |
-| `runTimeoutSeconds` | 1800 | Job `activeDeadlineSeconds` |
+| `runTimeoutSeconds` | 1800 | Job `activeDeadlineSeconds`. The runner stops 60 s before it, clamps every call to the time left and writes a partial result: a completed run over the judged cases, cases not run are errors, and `error` (and the `HarnessRunCompleted` Event) says "run deadline reached: K of N cases not run" |
 | `maxCases` | 50 | a larger dataset is a run error |
 | `judge.alias` | `""` (= `judge.defaultAlias`) | judge model alias from `judge.models` |
 | `judge.virtualKey.*` | see 4.4 | key minting, budget, rate limit |
@@ -709,7 +709,7 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
 | No `<agent>-harness` ConfigMap | `enabled: true` set? `dataset` set (O-1)? Application status and render errors: `kubectl get application.core.oam.dev <app> -n <ns> -o yaml` |
 | ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`); Rollout `currentPodHash` equals `blueGreen.previewSelector`?; `harness.enabled` on this cluster's addon?; `maxConcurrentJobs` slots busy (reconciler log "waits")? |
 | `HarnessJudgeKeyUnavailable`, `judge_key_present` 0 | Reconciler log "harness judge key unavailable"; Bifrost reachable at `harness.judge.virtualKey.bifrostAdminUrl`; governance auth on (4.4)? |
-| `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, preview path refusing or answering 4xx), or `runTimeoutSeconds` hit. An agent answering with errors is not this: it shows as a completed run with failed cases |
+| `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, preview path refusing or answering 4xx), or the Job killed at `runTimeoutSeconds` before it wrote a result (the runner normally stops 60 s earlier with a partial result). An agent answering with errors is not this: it shows as a completed run with failed cases |
 | Many case errors with reason `expected-answer: judge returned HTTP 4xx` | Judge key scope (`allowedModels`), budget exhausted, or Bedrock access to the judge model |
 | Run discarded with `HarnessRunSuperseded` | The revision moved during the run; the new revision gets its own run (5, D5) |
 | Series missing | Absent means no finished run on the declared dataset yet, the last run errored (no counts), or the harness was disabled. `oap_agent_eval_last_success_timestamp_seconds{loop="harness"}` advancing? |

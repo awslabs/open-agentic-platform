@@ -263,11 +263,14 @@ harness:
   historyLimit: 3
   # Cases sent to the agent at once within one run.
   caseConcurrency: 2
-  # Per-case limit for the agent's answer plus the judge's verdict.
+  # Per call: the agent call and each judge call get this timeout (a judge
+  # call is retried up to 3 times on transient errors).
   caseTimeoutSeconds: 120
   # How long a Job waits for the preview Service to answer the A2A agent card.
   readyTimeoutSeconds: 600
-  # Hard limit for a whole run (the Job's activeDeadlineSeconds).
+  # Hard limit for a whole run (the Job's activeDeadlineSeconds). The runner
+  # stops 60 s before it and writes a partial result: cases not run by then are
+  # errors and the run's error says how many.
   runTimeoutSeconds: 1800
   # A dataset with more cases than this is a run error. Cases are never
   # truncated, so a partial run cannot read as a result.
