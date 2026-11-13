@@ -77,6 +77,8 @@ ANN_MODE = "harness.oap.io/mode"
 ANN_JUDGE_MODEL = "harness.oap.io/judge-model"
 # On the judge-key Secret: the Bifrost key name its value belongs to.
 ANN_JUDGE_KEY_NAME = "harness.oap.io/judge-key-name"
+# Set by the Job controller on every pod of a Job, value = the Job's uid.
+JOB_CONTROLLER_UID_LABEL = "batch.kubernetes.io/controller-uid"
 
 TRIGGER_FIRST = "first-revision"
 TRIGGER_NEW = "new-revision"
@@ -123,6 +125,18 @@ def _finished_condition(job):
         if cond.type in ("Complete", "Failed") and str(cond.status) == "True":
             return cond.type, cond
     return None, None
+
+
+def _owned_by(obj, job) -> bool:
+    """True when one of obj's ownerReferences carries the Job's uid.
+
+    Fails closed: a Job or an object without a uid never matches.
+    """
+    uid = getattr(job.metadata, "uid", None)
+    if not uid:
+        return False
+    refs = getattr(obj.metadata, "owner_references", None) or []
+    return any(getattr(ref, "uid", None) == uid for ref in refs)
 
 
 MAX_EVENT_MESSAGE_CHARS = 1000
@@ -341,7 +355,7 @@ class HarnessLoop:
                 )
                 continue
             try:
-                self._maybe_start(decl, jobs, available)
+                self._maybe_start(decl, jobs, results, available)
             except ApiException as exc:
                 ok = False
                 logger.error(
@@ -370,7 +384,9 @@ class HarnessLoop:
         }
         return ok
 
-    def _maybe_start(self, decl: HarnessDeclaration, jobs: list, available: set) -> None:
+    def _maybe_start(
+        self, decl: HarnessDeclaration, jobs: list, results: dict, available: set
+    ) -> None:
         if decl.dataset not in available:
             self._recorder.warn(
                 decl.namespace,
@@ -445,8 +461,18 @@ class HarnessLoop:
             )
             return
 
+        # A result left under this name by an earlier Job of the same name (the
+        # Job was deleted by hand and is now recreated): delete it first, so the
+        # new run's runner can create its own (the runner Role is create-only).
+        stale = result_configmap_name(name)
+        if stale in results:
+            self._delete_result(stale)
+            results.pop(stale, None)
         body = self.job_body(decl, revision, name, trigger, run_number)
         created = self._batch.create_namespaced_job(namespace=self._s.namespace, body=body)
+        # A new Job object under a name an earlier Job may have had: its
+        # completion has not been announced yet.
+        self._reported.discard(name)
         jobs.append(created)
         run_text = f" run {run_number}" if run_number != 1 else ""
         self._recorder.normal(
@@ -501,6 +527,18 @@ class HarnessLoop:
             {
                 "name": "POD_NAMESPACE",
                 "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}},
+            }
+        )
+        # The Job's uid, from the label the Job controller puts on its pods:
+        # the runner makes its result owned by this Job object (see _collect).
+        env_list.append(
+            {
+                "name": "HARNESS_JOB_UID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": f"metadata.labels['{JOB_CONTROLLER_UID_LABEL}']"
+                    }
+                },
             }
         )
         labels = {
@@ -705,9 +743,19 @@ class HarnessLoop:
                 or self._clock()
             )
             cm = results.get(result_configmap_name(job.metadata.name))
-            if cm is None:
+            foreign = cm is not None and not _owned_by(cm, job)
+            if cm is None or foreign:
+                # Job names repeat when a Job is deleted and recreated; only a
+                # result owned by THIS Job object (same uid) is its result.
                 run = self._error_run(
-                    job, finished_at, f"the Job finished ({state}) without writing a result"
+                    job,
+                    finished_at,
+                    f"the Job finished ({state}) without writing a result"
+                    + (
+                        "; a result ConfigMap from another Job with this name was ignored"
+                        if foreign
+                        else ""
+                    ),
                 )
             else:
                 try:

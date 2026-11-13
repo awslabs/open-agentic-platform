@@ -339,40 +339,54 @@ def run(
     )
 
 
+def result_body(settings: RunnerSettings, result: RunResult) -> dict:
+    """The result ConfigMap, owned by this run's Job when its uid is known.
+
+    The ownerReference ties the result to this Job object, not to its name: a
+    Job deleted and recreated under the same name gets a new uid, so the
+    reconciler can tell a leftover result from the new run's, and the garbage
+    collector removes the result with its Job. `blockOwnerDeletion` is left
+    out because setting it needs update rights on the Job.
+    """
+    job = settings.result_configmap.removesuffix("-result")
+    metadata = {
+        "name": settings.result_configmap,
+        "namespace": settings.pod_namespace,
+        "labels": {
+            "harness.oap.io/result": "true",
+            "harness.oap.io/job": job,
+            "harness.oap.io/agent-namespace": settings.agent_namespace,
+            "harness.oap.io/agent": settings.agent,
+            "harness.oap.io/revision": settings.revision,
+            "harness.oap.io/dataset": settings.dataset,
+            "app.kubernetes.io/managed-by": "agent-evaluation-reconciler",
+        },
+    }
+    if settings.job_uid:
+        metadata["ownerReferences"] = [
+            {"apiVersion": "batch/v1", "kind": "Job", "name": job, "uid": settings.job_uid}
+        ]
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": metadata,
+        "data": to_configmap_data(result),
+    }
+
+
 def _write_result(settings: RunnerSettings, result: RunResult) -> None:
     from kubernetes import client as k8s_client
     from kubernetes import config as k8s_config
-    from kubernetes.client.rest import ApiException
 
     k8s_config.load_incluster_config()
     core = k8s_client.CoreV1Api()
-    job = settings.result_configmap.removesuffix("-result")
-    body = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {
-            "name": settings.result_configmap,
-            "namespace": settings.pod_namespace,
-            "labels": {
-                "harness.oap.io/result": "true",
-                "harness.oap.io/job": job,
-                "harness.oap.io/agent-namespace": settings.agent_namespace,
-                "harness.oap.io/agent": settings.agent,
-                "harness.oap.io/revision": settings.revision,
-                "harness.oap.io/dataset": settings.dataset,
-                "app.kubernetes.io/managed-by": "agent-evaluation-reconciler",
-            },
-        },
-        "data": to_configmap_data(result),
-    }
-    try:
-        core.create_namespaced_config_map(namespace=settings.pod_namespace, body=body)
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
-        core.replace_namespaced_config_map(
-            name=settings.result_configmap, namespace=settings.pod_namespace, body=body
-        )
+    # Create only. A 409 means a result with this name already exists, from an
+    # earlier Job of the same name the reconciler has not cleaned up yet; the
+    # runner Role cannot replace it (and must not: the reconciler decides
+    # which result belongs to which Job). The error reaches main(): exit 1.
+    core.create_namespaced_config_map(
+        namespace=settings.pod_namespace, body=result_body(settings, result)
+    )
 
 
 def main() -> int:

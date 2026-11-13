@@ -84,8 +84,20 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
 
 
 def write_result(
-    core, job_name, d, revision, outcomes, finished_at=3_000.0, trigger="first-revision", **extra
+    core,
+    job_name,
+    d,
+    revision,
+    outcomes,
+    finished_at=3_000.0,
+    trigger="first-revision",
+    owner_uid=None,
+    **extra,
 ):
+    """Write a result the way the runner does, owned by the Job's uid.
+
+    owner_uid defaults to the uid of the first Job created under job_name.
+    """
     cases = [
         CaseResult(id=f"c{i}", status=s, score=None, reason="", latency_ms=1, tags=())
         for i, s in enumerate(outcomes)
@@ -113,6 +125,14 @@ def write_result(
                 "name": result_configmap_name(job_name),
                 "namespace": PLATFORM_NS,
                 "labels": {"harness.oap.io/result": "true", "harness.oap.io/job": job_name},
+                "ownerReferences": [
+                    {
+                        "apiVersion": "batch/v1",
+                        "kind": "Job",
+                        "name": job_name,
+                        "uid": owner_uid or FakeBatch.uid_for(job_name),
+                    }
+                ],
             },
             "data": to_configmap_data(run),
         },
@@ -158,6 +178,9 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert body["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert env["POD_NAMESPACE"] == {"fieldRef": {"fieldPath": "metadata.namespace"}}
+    assert env["HARNESS_JOB_UID"] == {
+        "fieldRef": {"fieldPath": "metadata.labels['batch.kubernetes.io/controller-uid']"}
+    }
     assert not any(k.startswith("LANGFUSE") for k in env)
     secret_vol = next(v for v in pod["volumes"] if v["name"] == "judge-key")
     assert secret_vol["secret"]["secretName"] == "agent-evaluation-harness-judge-key"
@@ -554,6 +577,7 @@ def test_result_with_unknown_schema_is_a_run_error(settings, harness_settings, c
                 "name": result_configmap_name(name),
                 "namespace": PLATFORM_NS,
                 "labels": {"harness.oap.io/result": "true", "harness.oap.io/job": name},
+                "ownerReferences": [{"uid": FakeBatch.uid_for(name)}],
             },
             "data": {"result.json": '{"schema": "something/v9"}'},
         },
@@ -561,7 +585,56 @@ def test_result_with_unknown_schema_is_a_run_error(settings, harness_settings, c
     f.batch.finish(name)
     loop.run_once()
     assert sample(metrics, "oap_agent_harness_pass_ratio") is None
-    assert REASON_HARNESS_RUN_FAILED in f.events.reasons()
+    failed = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_RUN_FAILED]
+    assert failed and "result not understood" in failed[0]
+
+
+def test_recreated_job_never_publishes_the_old_jobs_result(
+    settings, harness_settings, catalog, metrics
+):
+    # Reviewer repro (C1): a run finishes with a result; the Job is deleted by
+    # hand and the next pass recreates it under the same name. The old result
+    # must not be taken as the new run's.
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed", "passed"])
+    f.batch.finish(name)
+    loop.run_once()
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 1.0
+
+    del f.batch.jobs[name]  # kubectl delete job
+    loop.run_once()
+
+    assert [b["metadata"]["name"] for b in f.batch.created] == [name, name]
+    # Deleted before the create, so the new runner can write its own result.
+    assert (PLATFORM_NS, result_configmap_name(name)) not in f.core.configmaps
+    f.batch.finish(name, at=4_000.0)
+    loop.run_once()
+    failed = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_RUN_FAILED]
+    assert failed and "without writing a result" in failed[-1]
+
+
+def test_result_owned_by_another_job_is_an_errored_run(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed", "passed"], owner_uid="uid-of-an-older-job")
+    f.batch.finish(name)
+    loop.run_once()
+
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+    assert REASON_HARNESS_RUN_COMPLETED not in [n[2] for n in f.events.normals]
+    failed = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_RUN_FAILED]
+    assert failed and "from another Job with this name was ignored" in failed[0]
+    info = [s for s in metrics.registry.collect() if s.name == "oap_agent_harness_info"][0]
+    assert [s.labels["status"] for s in info.samples] == ["error"]
 
 
 def test_result_with_a_wrong_typed_field_is_an_errored_run_and_pruned(

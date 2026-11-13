@@ -17,7 +17,7 @@ from app.harness_results import (
     parse_result,
     to_configmap_data,
 )
-from app.harness_runner import judge_with_retry, run, run_cases
+from app.harness_runner import judge_with_retry, result_body, run, run_cases
 from app.judge import JudgeError, JudgeVerdict, judge
 
 CHECKS = {"expected-answer": Check("expected-answer", "I={{input}} O={{output}}", 0.7)}
@@ -433,6 +433,69 @@ def test_result_round_trips_through_the_configmap():
     assert raw["schema"] == RESULT_SCHEMA
     assert "passRatio" in raw and "expectToolsIgnored" in raw
     assert parse_result(data) == result
+
+
+def test_result_configmap_is_owned_by_the_job_uid():
+    agent = agent_fn({"input a": "good"})
+    result = run_cases(dataset("a"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    body = result_body(runner_settings(job_uid="1234-abcd"), result)
+    assert body["metadata"]["ownerReferences"] == [
+        {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "oap-harness-0123456789ab",
+            "uid": "1234-abcd",
+        }
+    ]
+    # Without a uid there is nothing to own it: the reconciler ignores it.
+    assert "ownerReferences" not in result_body(runner_settings(), result)["metadata"]
+
+
+def test_write_result_never_replaces_an_existing_result(monkeypatch):
+    from kubernetes import client as k8s_client
+    from kubernetes import config as k8s_config
+    from kubernetes.client.rest import ApiException
+
+    from app import harness_runner
+
+    calls = []
+
+    class Core:
+        def create_namespaced_config_map(self, namespace, body):
+            calls.append("create")
+            raise ApiException(status=409, reason="AlreadyExists")
+
+        def replace_namespaced_config_map(self, *args, **kwargs):  # pragma: no cover
+            calls.append("replace")
+
+    monkeypatch.setattr(k8s_config, "load_incluster_config", lambda: None)
+    monkeypatch.setattr(k8s_client, "CoreV1Api", Core)
+    agent = agent_fn({"input a": "good"})
+    result = run_cases(dataset("a"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    with pytest.raises(ApiException):
+        harness_runner._write_result(runner_settings(job_uid="u1"), result)
+    assert calls == ["create"]
+
+
+def test_runner_settings_read_the_job_uid(monkeypatch, tmp_path):
+    from app.harness_config import load_runner_settings
+
+    for name, value in {
+        "HARNESS_TARGET_URL": "http://assistant-preview.team-a.svc.cluster.local:8083",
+        "HARNESS_AGENT_NAMESPACE": "team-a",
+        "HARNESS_AGENT": "assistant",
+        "HARNESS_REVISION": "abc123",
+        "HARNESS_DATASET": "example-smoke-v1",
+        "HARNESS_RESULT_CONFIGMAP": "oap-harness-0123456789ab-result",
+        "POD_NAMESPACE": "agent-evaluation",
+        "HARNESS_JUDGE_MODEL": "m",
+        "CREDENTIALS_DIR": str(tmp_path),
+        "HARNESS_JOB_UID": "1234-abcd",
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert load_runner_settings().job_uid == "1234-abcd"
+    monkeypatch.delenv("HARNESS_JOB_UID")
+    assert load_runner_settings().job_uid == ""
 
 
 def test_parse_result_rejects_a_wrong_schema():

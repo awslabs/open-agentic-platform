@@ -271,14 +271,23 @@ class FakeBatch:
         self.created: list[dict] = []
         self.deleted: list[str] = []
         self._tick = 0
+        self._generation: dict[str, int] = {}
+
+    @staticmethod
+    def uid_for(name: str, generation: int = 1) -> str:
+        """The uid the API server gives the n-th Job created under this name."""
+        return f"uid-{name}" if generation == 1 else f"uid-{name}-{generation}"
 
     def _ns(self, body: dict) -> SimpleNamespace:
         self._tick += 1
         meta = body["metadata"]
+        generation = self._generation.get(meta["name"], 0) + 1
+        self._generation[meta["name"]] = generation
         return SimpleNamespace(
             metadata=SimpleNamespace(
                 name=meta["name"],
                 namespace=meta["namespace"],
+                uid=self.uid_for(meta["name"], generation),
                 labels=dict(meta.get("labels") or {}),
                 annotations=dict(meta.get("annotations") or {}),
                 creation_timestamp=datetime.fromtimestamp(1_000 + self._tick, timezone.utc),
@@ -362,6 +371,16 @@ class FakeCore:
                 namespace=meta["namespace"],
                 labels=dict(meta.get("labels") or {}),
                 annotations=dict(meta.get("annotations") or {}),
+                owner_references=[
+                    SimpleNamespace(
+                        api_version=ref.get("apiVersion"),
+                        kind=ref.get("kind"),
+                        name=ref.get("name"),
+                        uid=ref.get("uid"),
+                    )
+                    for ref in meta.get("ownerReferences") or []
+                ]
+                or None,
             ),
             data=dict(body.get("data") or {}),
         )

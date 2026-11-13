@@ -227,6 +227,9 @@ class RunnerSettings:
     # The Job's activeDeadlineSeconds: the runner stops before it and writes a
     # partial result instead of being killed with none.
     run_timeout: int = 1800
+    # The Job's uid (downward API, the Job controller's controller-uid pod
+    # label): the result ConfigMap's ownerReference. Empty when unknown.
+    job_uid: str = ""
     # Never printed: repr=False keeps it out of any accidental log of settings.
     judge_virtual_key: str = field(default="", repr=False)
 
@@ -279,6 +282,7 @@ def load_runner_settings() -> RunnerSettings:
         run_timeout=_positive(
             "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
         ),
+        job_uid=_env("HARNESS_JOB_UID"),
         judge_virtual_key=_read_secret_file(f"{credentials_dir}/{JUDGE_KEY_FILE}"),
     )
 

@@ -144,7 +144,10 @@ metadata:
 rules:
   # Write its own <job>-result ConfigMap. create only: no read, no update, so
   # a Job cannot read or overwrite the catalog or another run's result. Jobs run
-  # with backoffLimit 0, so a second write for the same run does not happen.
+  # with backoffLimit 0, so a second write for the same run does not happen; a
+  # result left by an earlier Job of the same name is deleted by the reconciler
+  # before it recreates the Job, never replaced by the runner. The result's
+  # ownerReference to its Job needs no extra verb (blockOwnerDeletion unset).
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["create"]

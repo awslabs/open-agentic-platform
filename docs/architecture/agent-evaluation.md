@@ -1424,6 +1424,17 @@ with the change and bumping its pin makes both clauses effective.
   (`message/send`, no caller identity, so each case gets a fresh session), judges
   them, and writes one `<job>-result` ConfigMap (`result.json`) in the same
   namespace. The reconciler reads it and publishes the metrics.
+- **Result ownership:** the runner gives its result ConfigMap an
+  `ownerReference` to its Job (the Job's uid comes from the pod label
+  `batch.kubernetes.io/controller-uid` through the downward API;
+  `blockOwnerDeletion` is not set, so the runner needs no Job rights). The
+  reconciler accepts a result only when one of its ownerReferences carries the
+  finished Job's uid; any other result under that name is ignored and the run
+  is an errored run ("a result ConfigMap from another Job with this name was
+  ignored"). Before it creates a Job it deletes a result ConfigMap left under
+  the Job's name, so a Job deleted by hand and recreated under the same name
+  never publishes the old run's result. The runner only creates: if a result
+  already exists it exits 1 and does not replace it.
 - The Job name is deterministic,
   `oap-harness-<sha256(namespace/agent/revision/dataset)[:12]>` for a
   revision's first run and `oap-harness-<sha256(namespace/agent/revision/dataset/n)[:12]>`
