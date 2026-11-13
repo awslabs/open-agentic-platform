@@ -139,3 +139,42 @@ def test_result_configmaps_are_not_declarations():
     assert [d.configmap for d in good] == ["assistant-harness"]
     # No parse error means no InvalidHarnessDeclaration Event for the result.
     assert bad == []
+
+
+def _harness_reader_over(*configmaps):
+    class FakeCore:
+        def list_config_map_for_all_namespaces(self, label_selector):
+            return type("Listing", (), {"items": list(configmaps)})()
+
+    return HarnessDeclarationReader(FakeCore())
+
+
+def test_deeply_nested_checks_are_malformed_not_a_crash():
+    # Reviewer repro (C2): "[" * 100000 raised RecursionError out of the pass.
+    deep = make_configmap(
+        "team-b",
+        "deep-harness",
+        {**BASE, "agent": "deep", "checks": "[" * 100000},
+        labels={LABEL_SELECTOR: "deep"},
+    )
+    good, bad = _harness_reader_over(cm(), deep).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    assert [c.metadata.name for c, _ in bad] == ["deep-harness"]
+    assert "checks" in bad[0][1]
+
+
+def test_an_unexpected_parser_crash_is_isolated_per_configmap(monkeypatch):
+    from app import harness_declarations
+
+    real = harness_declarations.parse_harness_declaration
+
+    def crashy(c):
+        if c.metadata.name == "boom-harness":
+            raise KeyError("surprise")
+        return real(c)
+
+    monkeypatch.setattr(harness_declarations, "parse_harness_declaration", crashy)
+    boom = make_configmap("team-b", "boom-harness", dict(BASE), labels={LABEL_SELECTOR: "boom"})
+    good, bad = _harness_reader_over(cm(), boom).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    assert bad[0][0].metadata.name == "boom-harness" and "KeyError" in bad[0][1]
