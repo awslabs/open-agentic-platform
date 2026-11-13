@@ -1200,6 +1200,19 @@ promotion. `mode: gate` is rejected at admission; gate mode and an Argo Rollouts
 `AnalysisTemplate` are deferred, and no decision is taken here on the channel a
 future gate reads.
 
+**Why the existing reconciler, not a separate addon (#137 Q5).** The harness
+needs what this reconciler already has on every cluster that runs agents: the
+judge model catalog and its aliases (`judge.models`, so harness and online
+scores name the same judge), the `/metrics` Service the AMP scraper already
+reads and the dashboard already queries, and the Event recorder teams already
+read with `kubectl describe`. A second addon would duplicate all three and add
+a second image, chart and set of RBAC to version in lockstep. The cost of
+sharing is contained: the harness is a separate loop in its own thread with its
+own error counter (`loop="harness"`) and alerts, it is off by default
+(`harness.enabled`), and it is not part of `/readyz`, so a failing harness loop
+can never take the online evaluation series down with it. The runner is a Job
+in the platform namespace, not part of the reconciler pod (see "Execution").
+
 **Follow-up for gate mode: an exact revision check per reply.** In report mode
 a run is tied to its revision by timing only (the supersede rule under
 "Execution"). Once a result can block a promotion that is not enough: the agent
@@ -1640,7 +1653,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A per-evaluator `strictness` override changes the reported `pass_threshold` and creates **no** additional rule
 - [x] The `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import, via grafana-operator
 
-### Covered by unit tests (`pytest tests/`, 210 tests, no cluster needed)
+### Covered by unit tests (`pytest tests/`, 290 tests, no cluster needed)
 
 - [x] Two agents with the same `coverage` but different `strictness` share one rule, and their pass ratios use different thresholds
 - [x] Deleting one agent's Application removes its tag from the rule; deleting the last agent removes the rule
@@ -1651,9 +1664,15 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A successful-but-empty evaluator catalog leaves this cluster's rules untouched and fails the pass, instead of deleting and recreating every rule
 - [x] Harness (§4b): every online rule carries the `source:harness` and `oap-harness-` exclusion clauses, and existing rules converge with one PATCH
 - [x] Harness: one Job per (agent, revision, dataset) each time the revision becomes current, with a deterministic name, a first revision runs as a baseline, a rollback (A -> B -> A) starts a `rollback` run that the series then show, nothing re-runs for a revision that stays current or after a restart, a superseded run is deleted and publishes nothing, history is pruned
-- [x] Harness: no Job starts while a required judge key is unavailable; the key is minted with a config-hash name and stale keys are deleted
-- [x] Harness: a dataset with zero cases or too many cases, an unparseable judge reply and a failed A2A call are run or case errors, never passes; an errored run publishes no counts
-- [x] Harness: the dataset and check prompt the chart ships load through the reconciler's own loaders, including the `checks.yaml` rendered by `helm template` (`tests/test_harness_chart_files.py`)
+- [x] Harness: no Job starts while a required judge key is unavailable, and the Jobs then mount it as required; the key is minted with a config-hash name, stale keys are deleted only while no harness Job is active, and a 404 on that delete is tolerated
+- [x] Harness: a dataset with zero cases, too many cases or an unknown case key is a run error; an unparseable judge reply and a persistent judge error are case errors, never passes; an errored run publishes no counts
+- [x] Harness, case classification: an agent that fails every case (A2A Task `failed`) reads as pass ratio 0.0, not an outage; 3 of 4 failed reads 0.25; one judge 429 is retried and the four correct answers read 1.0; judge errors are left out of the denominator, and a run where every case errored is a run error
+- [x] Harness, judge: the whole reply is parsed, so an answer quoting `{"score": 1.0}` cannot score itself; data is fenced with a per-call nonce and substituted in one pass; `{{now}}` is rendered into the check prompt and the reference (not the answer), and every shipped time case is judged against it
+- [x] Harness, deadline: the runner stops 60 s before `runTimeoutSeconds`, clamps every call to the time left and writes a partial result naming the cases not run
+- [x] Harness, lifecycle: a Job re-created under the same name ignores the old result (ownerReference UID match); Jobs and the judge Secret are owned by the chart's catalog ConfigMap, and no Job starts while it cannot be read; a rollback re-run is created before the run it replaces is stopped; an aborted Rollout counts as a moved preview; a missing Rollout, a canary or an ExternalName preview Service records an Event and starts no run; free slots go to the longest-waiting revision; session ids derive from the Job name
+- [x] Harness: one declaration that crashes the parser (`RecursionError`) is reported and skipped without stopping the others, in both the harness and the evaluation readers
+- [x] Harness: the dataset and check-prompt digests are written to `result.json` and published on `oap_agent_harness_info`; `HarnessRunCompleted` names the failed cases
+- [x] Harness: the datasets (`example-smoke-v1`, `general-assistant-v1`) and check prompt the chart ships load through the reconciler's own loaders, including the `checks.yaml` rendered by `helm template` (`tests/test_harness_chart_files.py`)
 
 ### Not yet exercised
 
@@ -1750,3 +1769,43 @@ only by a unit test, and from one not yet exercised at all.
    `GrafanaDashboard` pattern. Does the platform's grafana-operator version
    support alert rule CRs, or should alerts be AMP rule groups? Both are
    declarative; the choice depends on which the base platform already uses.
+
+### Agent harness (#137)
+
+What the report-mode harness (§4b) decides for open questions Q1, Q3, Q4 and
+Q5 in issue #137.
+
+- **Q1. Where datasets live.** Decided for now: as files in the
+  `agent-evaluation` chart (`files/harness/datasets/*.yaml`, rendered into the
+  `agent-evaluation-harness-datasets` ConfigMap), referenced by name from the
+  `harness` block. This is an interim store: a dataset change is a platform
+  chart change, so a team cannot yet own and grow its dataset on its own. The
+  `<namespace>/<name>` form is reserved for team-owned datasets and rejected
+  today (Contract 3). Because a name alone does not show an in-place edit, each
+  run records a content digest of its dataset and of its check prompt
+  (`datasetDigest` and `checksDigest` in `result.json`, `dataset_digest` and
+  `checks_digest` on `oap_agent_harness_info`, and the dashboard's "Latest run").
+- **Q3. Cost.** Bounded per cluster, not per team: the harness judge key is
+  minted per cluster with a budget and a rate limit (default USD 20 per month
+  and 2,000 requests per hour, `harness.judge.virtualKey.budget` and
+  `rateLimit`); `maxCases` (50) caps a dataset; `maxConcurrentJobs` (2) caps
+  parallel runs; and the run deadline (`runTimeoutSeconds`, 1800 s) caps one
+  run's wall time. A run makes at most one agent call per case and at most
+  three judge calls per case (retries). Not decided: tiering (a smaller
+  dataset on every revision and the full one less often, or a cheaper judge
+  for the harness).
+- **Q4. Non-determinism.** What this PR does: the judge runs at temperature 0;
+  each case gets one agent sample and one judge sample; a judge call is retried
+  on transient errors (transport, 429, 5xx: 3 attempts, 2 s then 4 s backoff);
+  and cases are classified so a flake does not move the ratio. An agent-side
+  failure (failed A2A Task, JSON-RPC error, error payload, HTTP 5xx, read
+  timeout) is a failed case, while judge and infrastructure errors are left out
+  of the denominator (`pass_ratio = passed / (passed + failed)`). The shipped
+  `general-assistant-v1` has 20 cases, so one case moves the ratio by 0.05.
+  Pending a decision: running each case k times with a per-case pass rate, and
+  a minimum case count below which `threshold_met` is not published.
+- **Q5. Reuse the reconciler or a separate addon.** Decided: reuse the
+  `agent-evaluation` reconciler. It shares the judge catalog and aliases, the
+  metrics server and the Event recorder; the harness loop stays isolated (own
+  thread, `loop="harness"` errors and alerts), off by default and out of
+  `/readyz`. The argument is in §4b.
