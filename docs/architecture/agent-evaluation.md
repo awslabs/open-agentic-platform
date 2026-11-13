@@ -1217,7 +1217,7 @@ A developer turns it on in the `agent` component
 ```yaml
 harness:
   enabled: true
-  dataset: example-smoke-v1   # a platform catalog dataset name
+  dataset: general-assistant-v1   # a platform catalog dataset name
   checks: [expected-answer]   # the only check in the first cut
   threshold: 0.8              # reported next to the score
   mode: report
@@ -1288,9 +1288,13 @@ dataset fails to load and the run is a run error. A run with `expectTools`
 says so in its log line and its `HarnessRunCompleted` Event.
 
 Zero cases, or more than `harness.maxCases` (default 50), is a run error. Cases
-are never truncated. The shipped `example-smoke-v1` is an **example**, labelled
-as such: it is not harvested from hub failures and is not a golden set. The real
-~20-case dataset is a TODO on #137.
+are never truncated. Two datasets ship, and neither was harvested from hub
+failures (no failure data exists; the header of each file says so):
+`general-assistant-v1`, 20 cases written from the failure classes the
+`expected-answer` check scores and from what the platform's sample agents can
+do without tools (the example Application uses it), and `example-smoke-v1`, the
+four-case format example. A dataset harvested from real traces and failures is
+a TODO on #137.
 
 The `expected-answer` check prompt lives in `files/harness/checks/`, not
 `files/evaluators/`, and is not in the evaluator `catalog`, so the hub never

@@ -471,7 +471,7 @@ addon on the cluster with `harness.enabled`.
 ```yaml
 harness:
   enabled: true
-  dataset: example-smoke-v1
+  dataset: general-assistant-v1
   checks: [expected-answer]
   threshold: 0.8
   mode: report

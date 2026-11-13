@@ -22,6 +22,7 @@ from app.judge import render_prompt
 CHART = Path(__file__).resolve().parents[3] / "gitops/addons/charts/agent-evaluation"
 DATASETS = sorted((CHART / "files/harness/datasets").glob("*.yaml"))
 CHECKS_DIR = CHART / "files/harness/checks"
+EXAMPLE_APP = Path(__file__).resolve().parents[3] / "platform/oam/examples/example-agent-harness.yaml"
 # The chart's harness.maxCases default.
 MAX_CASES = 50
 
@@ -35,6 +36,27 @@ def test_every_shipped_dataset_loads(path):
     dataset = load_dataset(path, max_cases=MAX_CASES)
     assert dataset.name == path.stem
     assert dataset.cases
+
+
+def test_general_assistant_v1_has_at_least_20_cases():
+    dataset = load_dataset(CHART / "files/harness/datasets/general-assistant-v1.yaml", MAX_CASES)
+    assert len(dataset.cases) >= 20
+
+
+@pytest.mark.parametrize("path", DATASETS, ids=lambda p: p.stem)
+def test_every_time_case_is_judged_against_now(path):
+    # A time case with a fixed reference fails a correct answer and passes an
+    # invented one; {{now}} is rendered at judge time.
+    for case in load_dataset(path, max_cases=MAX_CASES).cases:
+        if "time" in case.tags:
+            assert "{{now}}" in case.expected, case.id
+
+
+def test_the_example_application_names_a_shipped_dataset():
+    app = yaml.safe_load(EXAMPLE_APP.read_text(encoding="utf-8"))
+    harness = app["spec"]["components"][0]["properties"]["harness"]
+    assert harness["dataset"] == "general-assistant-v1"
+    assert harness["dataset"] in {p.stem for p in DATASETS}
 
 
 def test_expected_answer_prompt_has_every_placeholder_and_renders():

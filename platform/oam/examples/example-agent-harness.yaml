@@ -19,8 +19,12 @@
 # (the `evaluation` block) and never counted as live traffic.
 # There is no account, region, endpoint or API key in this file.
 #
-# example-smoke-v1 is an EXAMPLE dataset that shows the format. It is not a
-# golden set for this or any other agent.
+# general-assistant-v1 has 20 cases for a general assistant WITHOUT tools,
+# like this one: every case is passable without a tool (time cases accept an
+# honest "I cannot access the current time"), so a good revision can reach the
+# threshold. It was written for the platform, not harvested from this agent's
+# failures; a real agent's dataset should come from its own traces.
+# example-smoke-v1 is the four-case format example.
 #
 # Prerequisites:
 # - the agent-evaluation addon on this cluster, with harness.enabled
@@ -41,7 +45,7 @@ spec:
         harness:
           enabled: true
           # A platform catalog dataset name.
-          dataset: example-smoke-v1
+          dataset: general-assistant-v1
           # How each case is judged. expected-answer is the only check for now.
           checks:
             - expected-answer

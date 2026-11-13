@@ -1,23 +1,26 @@
-# EXAMPLE / SMOKE DATASET. Not harvested from hub failures and NOT a golden set:
-# it exists for tests and for the workshop assistant agent. The real ~20-case
-# dataset is a TODO on #137.
+# EXAMPLE / FORMAT DATASET. Not harvested from hub failures and NOT a golden
+# set: it shows the format and exists for tests. For a general assistant use
+# general-assistant-v1 (20 cases) instead.
 #
 # Schema (docs/architecture/agent-evaluation.md §4b, Contract 4): `name` must
 # equal this file's name without .yaml; each case needs a unique `id`, an
 # `input` sent to the agent and an `expected` reference the judge compares the
-# answer against. `expectTools` is accepted and ignored in the first cut.
+# answer against. `expected` may contain {{now}}, rendered as the current UTC
+# time at judge time. `expectTools` is accepted and ignored in the first cut;
+# any other case key is an error.
 name: example-smoke-v1
 description: >-
-  Four smoke cases for a general assistant with a time tool: the current UTC
-  time, a fixed time-zone conversion, a one-sentence definition, and declining
-  an action it cannot perform.
+  Four smoke cases for a general assistant, with or without a time tool: the
+  current UTC time (judged against {{now}}), a fixed time-zone conversion, a
+  one-sentence definition, and declining an action it cannot perform.
 cases:
   - id: utc-time-now
     input: What time is it in UTC right now?
     expected: >-
-      States a current UTC time with hours and minutes; does not say it cannot
-      know the time.
-    tags: [smoke, tools]
+      The current UTC time is {{now}}. Passes if the answer states a UTC time
+      within 5 minutes of it, or says plainly that it cannot access the current
+      time. Fails if it states any other time as the current time.
+    tags: [smoke, time]
   - id: timezone-conversion
     input: If it is 12:00 UTC, what time is it in Tokyo?
     expected: "21:00 in Tokyo (JST, UTC+9)."

@@ -169,7 +169,7 @@ spec:
         # ... your existing properties ...
         harness:
           enabled: true
-          dataset: example-smoke-v1   # a platform catalog dataset name
+          dataset: general-assistant-v1   # a platform catalog dataset name
           checks: [expected-answer]   # the only check today
           threshold: 0.8              # reported next to the score
           mode: report                # the only accepted mode
@@ -199,10 +199,14 @@ rendered into ConfigMap `agent-evaluation-harness-datasets`. Adding or changing
 a dataset is a reviewed chart change. The `<namespace>/<name>` form is reserved
 for team-owned datasets and is not accepted yet.
 
-Only one dataset ships: `example-smoke-v1`, four smoke cases for a general
-assistant with a time tool. It is an **example** that shows the format. It is
-not a golden set for your agent. Your real dataset must come from your agent's
-real traces and real failures (see 3.3).
+Two datasets ship. `general-assistant-v1` has 20 cases for a general assistant
+without tools (time honesty, arithmetic, short definitions, declining actions,
+not inventing live data or credentials, an injection inside data, exact
+formats); every case is passable without a tool, and the example Application
+uses it. `example-smoke-v1` is the four-case format example. Neither was
+harvested from real failures (each file's header says so), and neither is a
+golden set for your agent. Your real dataset must come from your agent's real
+traces and real failures (see 3.3).
 
 Schema (`datasets.py`):
 
@@ -578,9 +582,12 @@ The test agent is [`platform/oam/examples/example-agent-harness.yaml`](../../pla
 (agent `harness-assistant` in namespace `default`, `harness: {enabled: true,
 dataset: example-smoke-v1, checks: [expected-answer], threshold: 0.8, mode:
 report}`) plus a time tool, because the `utc-time-now` case in
-`example-smoke-v1` needs one. Without the tool that case fails, as expected.
+`example-smoke-v1` then asked for a stated current time and needed one. That
+case is now judged against `{{now}}` and also passes an honest "I cannot access
+the current time", and the example Application now names
+`general-assistant-v1`, so the example needs no time tool any more.
 
-We added to the agent component:
+For that live test we added to the agent component:
 
 ```yaml
         mcpServers:
@@ -726,8 +733,9 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
   through the downward API (agent component CUE plus the base image), and the
   runner checks it on every reply and treats a reply from another revision as
   superseding the run. Today a run is tied to its revision by timing only.
-- **Real golden dataset.** Only `example-smoke-v1` ships. A real dataset of
-  about 20 cases, harvested from real traces and failures, is a TODO on #137.
+- **Harvested dataset.** `general-assistant-v1` (20 cases) and
+  `example-smoke-v1` ship, both written by hand, not harvested. A dataset
+  harvested from real traces and failures is a TODO on #137.
 - **Publishing images and bumping pins.** The reconciler image with the harness
   is not in the platform's public registry yet, so `agent_evaluation` stays off
   on `main`. Once published, set the chart's `image.tag` and remove per-cluster

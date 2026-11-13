@@ -159,8 +159,9 @@ without it. Minting needs Bifrost governance auth to be off in-cluster, as it is
 today; when that changes, set `mint: false` and provide the Secret another way.
 
 **Datasets.** `files/harness/datasets/<name>.yaml`, referenced by name from an
-agent's `harness.dataset`. The shipped `example-smoke-v1` is an example, not a
-golden set.
+agent's `harness.dataset`. Two ship: `general-assistant-v1` (20 cases for a
+general assistant without tools) and `example-smoke-v1` (the four-case format
+example). Neither was harvested from real failures and neither is a golden set.
 
 **Enable it** per cluster through the overlay values file the registry entry
 already reads, `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`:
