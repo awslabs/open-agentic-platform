@@ -5,6 +5,13 @@ One Job runs one dataset against one agent revision through the agent's
 platform namespace. Report mode: the result is published as metrics and Events
 and never affects promotion.
 
+Case classification (review B1): an agent reply that is not a usable answer
+(failed Task, JSON-RPC error, error payload, HTTP 5xx, timeout) is a FAILED
+case, score 0, because that is how the revision answered. A judge error after
+retries, a transport error or a 4xx on the preview path is a case ERROR: it is
+counted but kept out of the pass ratio. The judge is retried on transient
+errors only.
+
 Exit codes: 0 once a result is written, whether the run completed or errored
 (an errored run is a result, and the Job must not be retried: a retry would
 drive the agent again). 1 only when the result cannot be written.
@@ -33,7 +40,10 @@ from .harness_results import (
     summarize,
     to_configmap_data,
 )
-from .judge import JudgeError, judge, render_prompt
+from .judge import JudgeError, JudgeVerdict, judge, render_prompt
+
+JUDGE_ATTEMPTS = 3
+JUDGE_BACKOFF_SECONDS = (2, 4)
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 logger = logging.getLogger("agent-evaluation.harness-runner")
@@ -71,17 +81,48 @@ def error_result(
     )
 
 
-def _run_case(case: Case, checks: list[Check], settings, agent_client_fn, judge_fn, clock):
+def judge_with_retry(judge_fn, prompt: str, sleep, deadline: float | None, clock) -> JudgeVerdict:
+    """Call the judge up to JUDGE_ATTEMPTS times, backing off 2 s then 4 s.
+
+    Only retryable errors (transport, 429, 5xx) are retried, and never past the
+    run deadline: a retry that would start after it re-raises the last error.
+    """
+    for attempt in range(JUDGE_ATTEMPTS):
+        try:
+            return judge_fn(prompt)
+        except JudgeError as exc:
+            if not exc.retryable or attempt == JUDGE_ATTEMPTS - 1:
+                raise
+            backoff = JUDGE_BACKOFF_SECONDS[attempt]
+            if deadline is not None and clock() + backoff >= deadline:
+                raise
+            logger.info("judge attempt %d failed (%s); retrying in %ss", attempt + 1, exc, backoff)
+            sleep(backoff)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _run_case(
+    case: Case,
+    checks: list[Check],
+    settings,
+    agent_client_fn,
+    judge_fn,
+    clock,
+    sleep=time.sleep,
+    deadline: float | None = None,
+):
     started = clock()
     try:
         reply = agent_client_fn(
             case.input, context_id_for(settings.revision, case.id, settings.run_number)
         )
     except AgentCallError as exc:
+        # The revision's own bad reply is a failed case; the path to it failing
+        # says nothing about the revision and stays out of the ratio.
         return CaseResult(
             id=case.id,
-            status="error",
-            score=None,
+            status="failed" if exc.agent_side else "error",
+            score=0.0 if exc.agent_side else None,
             reason=f"agent {exc}"[:MAX_REASON_CHARS],
             latency_ms=int((clock() - started) * 1000),
             tags=case.tags,
@@ -98,7 +139,7 @@ def _run_case(case: Case, checks: list[Check], settings, agent_client_fn, judge_
             check.prompt, case.input, case.expected, reply.text, secrets.token_hex(8)
         )
         try:
-            verdict = judge_fn(prompt)
+            verdict = judge_with_retry(judge_fn, prompt, sleep, deadline, clock)
         except JudgeError as exc:
             return CaseResult(
                 id=case.id,
@@ -131,6 +172,7 @@ def run_cases(
     clock=time.time,
     judge_key_present: bool = False,
     started_at: float | None = None,
+    sleep=time.sleep,
 ) -> RunResult:
     """Run every case with bounded concurrency and aggregate. Pure apart from the callables."""
     started_at = clock() if started_at is None else started_at
@@ -149,7 +191,7 @@ def run_cases(
         case_results = list(
             pool.map(
                 lambda case: _run_case(
-                    case, selected, settings, agent_client_fn, judge_fn, clock
+                    case, selected, settings, agent_client_fn, judge_fn, clock, sleep
                 ),
                 dataset.cases,
             )
@@ -169,6 +211,7 @@ def run(
     judge_fn,
     reachable_fn,
     clock=time.time,
+    sleep=time.sleep,
 ) -> RunResult:
     """Load the dataset, wait for the preview, run the cases. Every failure is a result."""
     key_present = bool(settings.judge_virtual_key)
@@ -204,6 +247,7 @@ def run(
         clock=clock,
         judge_key_present=key_present,
         started_at=started_at,
+        sleep=sleep,
     )
 
 

@@ -5,6 +5,12 @@ reconciler parses it and publishes oap_agent_harness_*. Parsing is strict: a
 result the reconciler does not understand (wrong schema, missing key) is a run
 ERROR, never a run with zero passes.
 
+Case statuses: `passed` and `failed` are judged outcomes of the revision; an
+agent reply that is not a usable answer is `failed` too (the runner decides).
+`error` is a case nothing could be learned from (judge error after retries,
+transport or 4xx on the preview path, run deadline): it is counted in `errors`
+and kept out of the pass ratio, so a flaky judge does not move it.
+
 JSON keys are camelCase (`passRatio`, `expectToolsIgnored`); the dataclass
 fields are their snake_case equivalents. Timestamps are Unix seconds.
 """
@@ -93,12 +99,14 @@ def summarize(
     failed = sum(1 for c in case_results if c.status == "failed")
     errors = sum(1 for c in case_results if c.status == "error")
     if status == "completed" and cases > 0 and errors == cases:
-        # Nothing was judged (agent or judge down for every case): an outage,
-        # so a run error with no ratio, never a 0% revision. The case results
-        # are kept so the reasons stay readable in result.json.
+        # Nothing was judged (judge or preview path down for every case): an
+        # outage, so a run error with no ratio, never a 0% revision. The case
+        # results are kept so the reasons stay readable in result.json.
         status = "error"
         error = f"every case errored ({errors} of {cases}); first: {case_results[0].reason}"
-    pass_ratio = passed / cases if status == "completed" and cases > 0 else None
+    judged = passed + failed
+    # Errors are outside the denominator: they say nothing about the revision.
+    pass_ratio = passed / judged if status == "completed" and judged > 0 else None
     threshold_met = None if pass_ratio is None else pass_ratio >= threshold
     return RunResult(
         schema=RESULT_SCHEMA,

@@ -5,6 +5,14 @@ that counts a JSON-RPC error or a failed Task as "some text" would score a
 broken revision as passing. `kind` is a short stable word for the result's
 reason field and the logs.
 
+`agent_side` says who produced the failure. A reply the agent itself gave
+that is not a usable answer (failed Task, JSON-RPC error, error payload,
+non-JSON, no text, HTTP 5xx) or an agent that did not answer in time is the
+revision's fault: the runner scores it as a FAILED case. A connect or other
+transport error and an HTTP 4xx from the preview path (auth, policy, 429) say
+nothing about the revision's answers: the runner counts them as case errors,
+outside the pass ratio.
+
 No `X-Forwarded-User` is sent, so the platform base image falls back to a
 per-request caller with no memory, which keeps cases independent. The contextId
 carries the harness marker so online evaluation skips these traces.
@@ -24,10 +32,11 @@ AGENT_CARD_PATHS = (".well-known/agent-card.json", ".well-known/agent.json")
 
 
 class AgentCallError(Exception):
-    def __init__(self, kind: str, detail: str):
+    def __init__(self, kind: str, detail: str, agent_side: bool = True):
         super().__init__(f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
+        self.agent_side = agent_side
 
 
 @dataclass(frozen=True)
@@ -96,10 +105,23 @@ def send_message(
     body = build_message_send(text, context_id, request_id or context_id)
     try:
         response = client.post(url, json=body, timeout=timeout)
+    except httpx.TimeoutException as exc:
+        # Connected but the agent did not answer in time. A connect or pool
+        # timeout means nothing answered at all: infrastructure, like a
+        # refused connection.
+        agent_side = not isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+        kind = "timeout" if agent_side else "transport"
+        raise AgentCallError(kind, f"{type(exc).__name__}: {exc}", agent_side) from exc
     except httpx.HTTPError as exc:
-        raise AgentCallError("transport", f"{type(exc).__name__}: {exc}") from exc
+        raise AgentCallError(
+            "transport", f"{type(exc).__name__}: {exc}", agent_side=False
+        ) from exc
     if not 200 <= response.status_code < 300:
-        raise AgentCallError("http", f"HTTP {response.status_code}")
+        raise AgentCallError(
+            "http",
+            f"HTTP {response.status_code}",
+            agent_side=response.status_code >= 500,
+        )
     try:
         payload = response.json()
     except ValueError as exc:

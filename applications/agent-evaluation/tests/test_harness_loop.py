@@ -315,7 +315,8 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     assert sample(metrics, "oap_agent_harness_passed") == 2
     assert sample(metrics, "oap_agent_harness_failed") == 1
     assert sample(metrics, "oap_agent_harness_case_errors") == 1
-    assert sample(metrics, "oap_agent_harness_pass_ratio") == 0.5
+    # The errored case is outside the denominator: 2 passed of 3 judged.
+    assert sample(metrics, "oap_agent_harness_pass_ratio") == 2 / 3
     assert sample(metrics, "oap_agent_harness_threshold_met") == 1
     assert sample(metrics, "oap_agent_harness_threshold") == 0.5
     assert sample(metrics, "oap_agent_harness_last_run_timestamp_seconds") == 3_000.0

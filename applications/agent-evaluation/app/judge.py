@@ -30,7 +30,15 @@ SYSTEM_GUARD = (
 
 
 class JudgeError(Exception):
-    """No usable verdict. Counted as a case error, never as a pass."""
+    """No usable verdict. Counted as a case error, never as a pass.
+
+    `retryable` is true for a transport error, HTTP 429 and HTTP 5xx: the judge
+    may answer on a later attempt. A 4xx or an unparseable verdict will not.
+    """
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -106,9 +114,14 @@ def judge(
             timeout=timeout,
         )
     except httpx.HTTPError as exc:
-        raise JudgeError(f"judge transport error: {type(exc).__name__}") from exc
+        raise JudgeError(
+            f"judge transport error: {type(exc).__name__}", retryable=True
+        ) from exc
     if not 200 <= response.status_code < 300:
-        raise JudgeError(f"judge returned HTTP {response.status_code}")
+        raise JudgeError(
+            f"judge returned HTTP {response.status_code}",
+            retryable=response.status_code == 429 or response.status_code >= 500,
+        )
     try:
         content = response.json()["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError) as exc:

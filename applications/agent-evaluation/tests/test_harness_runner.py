@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
+import respx
 
 from app.a2a_client import AgentCallError, AgentReply
 from app.datasets import Case, Dataset
@@ -15,8 +17,8 @@ from app.harness_results import (
     parse_result,
     to_configmap_data,
 )
-from app.harness_runner import run, run_cases
-from app.judge import JudgeError, JudgeVerdict
+from app.harness_runner import judge_with_retry, run, run_cases
+from app.judge import JudgeError, JudgeVerdict, judge
 
 CHECKS = {"expected-answer": Check("expected-answer", "I={{input}} O={{output}}", 0.7)}
 
@@ -87,6 +89,10 @@ def judge_fn(scores: dict):
     return fn
 
 
+def no_sleep(_seconds):
+    pass
+
+
 def test_pass_fail_error_aggregation():
     agent = agent_fn(
         {
@@ -100,13 +106,140 @@ def test_pass_fail_error_aggregation():
     result = run_cases(dataset("a", "b", "c", "d"), CHECKS, runner_settings(), agent, judge)
 
     assert result.status == "completed"
-    assert [c.status for c in result.case_results] == ["passed", "failed", "error", "error"]
-    assert (result.cases, result.passed, result.failed, result.errors) == (4, 1, 1, 2)
-    # Errors count against the ratio: a JSON-RPC error never reads as a pass.
-    assert result.pass_ratio == 0.25
+    assert [c.status for c in result.case_results] == ["passed", "failed", "failed", "error"]
+    assert (result.cases, result.passed, result.failed, result.errors) == (4, 1, 2, 1)
+    # The agent's JSON-RPC error is a failed case; the judge error is outside
+    # the denominator: 1 passed of 3 judged.
+    assert result.pass_ratio == 1 / 3
     assert result.threshold_met is False
     assert "jsonrpc-error" in result.case_results[2].reason
+    assert result.case_results[2].score == 0.0
     assert all(c.startswith("oap-harness-abc123-") for c in agent.seen)
+
+
+TASK_FAILED = AgentCallError("task-not-completed", "task state 'failed'")
+
+
+def test_agent_failing_every_case_is_a_zero_ratio_not_an_outage():
+    # Review B1 repro: an agent whose Task fails on every case is a 0% revision.
+    agent = agent_fn({f"input {i}": TASK_FAILED for i in "abcd"})
+    result = run_cases(dataset(*"abcd"), CHECKS, runner_settings(), agent, judge_fn({}))
+    assert result.status == "completed"
+    assert (result.passed, result.failed, result.errors) == (0, 4, 0)
+    assert result.pass_ratio == 0.0
+    assert result.threshold_met is False
+
+
+def test_agent_failing_three_of_four_cases():
+    agent = agent_fn(
+        {"input a": "good", "input b": TASK_FAILED, "input c": TASK_FAILED, "input d": TASK_FAILED}
+    )
+    result = run_cases(dataset(*"abcd"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    assert (result.passed, result.failed, result.errors) == (1, 3, 0)
+    assert result.pass_ratio == 0.25
+
+
+@pytest.mark.parametrize(
+    "exc,status",
+    [
+        (AgentCallError("http", "HTTP 503", agent_side=True), "failed"),
+        (AgentCallError("timeout", "ReadTimeout", agent_side=True), "failed"),
+        (AgentCallError("transport", "ConnectError", agent_side=False), "error"),
+        (AgentCallError("http", "HTTP 403", agent_side=False), "error"),
+    ],
+)
+def test_agent_side_errors_fail_and_infra_errors_are_errors(exc, status):
+    agent = agent_fn({"input a": exc, "input b": "good"})
+    result = run_cases(dataset("a", "b"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    assert result.case_results[0].status == status
+    assert result.pass_ratio == (0.5 if status == "failed" else 1.0)
+
+
+def flaky_judge(failures: dict, error=lambda: JudgeError("judge returned HTTP 429", retryable=True)):
+    """failures: reply text -> how many calls fail before the judge answers 1.0."""
+    calls = {}
+
+    def fn(prompt):
+        for text, count in failures.items():
+            if f"O={text}" in prompt:
+                calls[text] = calls.get(text, 0) + 1
+                if calls[text] <= count:
+                    raise error()
+                return JudgeVerdict(1.0, "ok")
+        raise AssertionError(prompt)
+
+    fn.calls = calls
+    return fn
+
+
+def test_one_judge_429_is_retried():
+    # Review B1 repro: 4 correct answers, one judge 429 then 200 -> ratio 1.0.
+    agent = agent_fn({f"input {i}": f"right {i}" for i in "abcd"})
+    judge = flaky_judge({"right a": 1, "right b": 0, "right c": 0, "right d": 0})
+    slept = []
+    result = run_cases(
+        dataset(*"abcd"), CHECKS, runner_settings(), agent, judge, sleep=slept.append
+    )
+    assert (result.passed, result.failed, result.errors) == (4, 0, 0)
+    assert result.pass_ratio == 1.0
+    assert slept == [2]
+    assert judge.calls["right a"] == 2
+
+
+def test_persistent_judge_error_is_excluded_from_the_ratio():
+    agent = agent_fn({f"input {i}": f"right {i}" for i in "abcd"})
+    judge = flaky_judge({"right a": 99, "right b": 0, "right c": 0, "right d": 0})
+    slept = []
+    result = run_cases(
+        dataset(*"abcd"), CHECKS, runner_settings(), agent, judge, sleep=slept.append
+    )
+    assert (result.passed, result.failed, result.errors) == (3, 0, 1)
+    assert result.pass_ratio == 1.0
+    assert judge.calls["right a"] == 3
+    assert slept == [2, 4]
+
+
+def test_every_judge_call_failing_is_a_run_error():
+    agent = agent_fn({f"input {i}": f"right {i}" for i in "ab"})
+    judge = flaky_judge({"right a": 99, "right b": 99})
+    result = run_cases(dataset("a", "b"), CHECKS, runner_settings(), agent, judge, sleep=no_sleep)
+    assert result.status == "error"
+    assert result.pass_ratio is None
+    assert result.errors == 2
+
+
+def test_non_retryable_judge_error_is_not_retried():
+    calls = []
+
+    def judge(prompt):
+        calls.append(prompt)
+        raise JudgeError("judge returned HTTP 400", retryable=False)
+
+    with pytest.raises(JudgeError):
+        judge_with_retry(judge, "p", sleep=no_sleep, deadline=None, clock=lambda: 0.0)
+    assert len(calls) == 1
+
+
+def test_judge_retry_never_sleeps_past_the_deadline():
+    calls = []
+
+    def judge(prompt):
+        calls.append(prompt)
+        raise JudgeError("judge returned HTTP 503", retryable=True)
+
+    with pytest.raises(JudgeError):
+        judge_with_retry(judge, "p", sleep=no_sleep, deadline=1.0, clock=lambda: 0.0)
+    assert len(calls) == 1
+
+
+@respx.mock
+@pytest.mark.parametrize("status,retryable", [(429, True), (503, True), (400, False), (401, False)])
+def test_judge_http_errors_say_whether_they_are_retryable(status, retryable):
+    url = "http://bifrost.example/v1"
+    respx.post(f"{url}/chat/completions").mock(return_value=httpx.Response(status, json={}))
+    with httpx.Client() as client, pytest.raises(JudgeError) as exc:
+        judge(client, url, "", "m", "p", 5)
+    assert exc.value.retryable is retryable
 
 
 def test_rerun_sends_its_own_context_ids():

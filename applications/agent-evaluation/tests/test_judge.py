@@ -78,8 +78,25 @@ def test_bad_verdicts_are_errors(content):
 @respx.mock
 def test_http_error_is_an_error():
     completion("{}", status=502)
-    with pytest.raises(JudgeError):
+    with pytest.raises(JudgeError) as exc:
         run()
+    assert exc.value.retryable is True
+
+
+@respx.mock
+def test_transport_error_is_retryable_and_a_bad_verdict_is_not():
+    respx.post(ENDPOINT).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(JudgeError) as exc:
+        run()
+    assert exc.value.retryable is True
+    respx.post(ENDPOINT).mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "no"}}]}
+        )
+    )
+    with pytest.raises(JudgeError) as exc:
+        run()
+    assert exc.value.retryable is False
 
 
 @respx.mock

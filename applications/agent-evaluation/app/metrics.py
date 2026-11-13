@@ -153,13 +153,14 @@ class Metrics:
         )
         self.harness_case_errors = harness_gauge(
             "oap_agent_harness_case_errors",
-            "Cases that could not be scored (agent or judge error); they count "
-            "against the pass ratio.",
+            "Cases nothing could be learned from (judge error after retries, "
+            "transport or 4xx on the preview path, run deadline); they are "
+            "outside the pass ratio.",
         )
         self.harness_pass_ratio = harness_gauge(
             "oap_agent_harness_pass_ratio",
-            "passed / cases of the latest completed run. Absent when no run has "
-            "completed or the latest run errored.",
+            "passed / (passed + failed) of the latest completed run. Absent when "
+            "no run has completed or the latest run errored.",
         )
         self.harness_threshold = harness_gauge(
             "oap_agent_harness_threshold", "The pass ratio the agent declared."

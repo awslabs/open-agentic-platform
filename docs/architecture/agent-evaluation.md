@@ -1292,9 +1292,20 @@ The `expected-answer` check prompt lives in `files/harness/checks/`, not
 `files/evaluators/`, and is not in the evaluator `catalog`, so the hub never
 publishes it to Langfuse. It frames the input, the reference and the agent's
 answer as untrusted data and asks for only `{"score": <0..1>, "reasoning": ...}`.
-A case passes when `score >= casePassScore` (default 0.7). Any other judge
-reply is a case **error**, never a pass. A run in which every case errored is a
-run error, not a 0% run: nothing was judged.
+A case passes when `score >= casePassScore` (default 0.7). The judge's whole
+reply must be that JSON object (one surrounding code fence is tolerated); any
+other judge reply is a case **error**, never a pass. Case outcomes:
+- **failed** (in the pass ratio): judged below `casePassScore`, or the agent's
+  own reply is not a usable answer: A2A Task not `completed`, JSON-RPC error,
+  error payload, non-JSON reply, reply with no text, HTTP 5xx, or a read
+  timeout. These score 0: that is how the revision answered.
+- **error** (counted in `errors`, outside the pass ratio): the judge failed
+  after its retries (up to 3 attempts, 2 s then 4 s backoff, only on transport
+  errors, HTTP 429 and 5xx), a connect or other transport error to the preview,
+  or an HTTP 4xx on the preview path (route, auth, policy, rate limit).
+`pass_ratio = passed / (passed + failed)`. A run in which every case errored is
+a run error, not a 0% run: nothing was judged. An agent that fails every case
+is a completed run with ratio 0.
 
 ### Contract 5: the harness metrics
 
@@ -1310,8 +1321,8 @@ series.
 | `oap_agent_harness_cases` | | cases in the latest completed run |
 | `oap_agent_harness_passed` | | cases at or above `casePassScore` |
 | `oap_agent_harness_failed` | | cases judged below it |
-| `oap_agent_harness_case_errors` | | cases with no usable answer or verdict |
-| `oap_agent_harness_pass_ratio` | | `passed / cases`; errors count against it |
+| `oap_agent_harness_case_errors` | | cases with no verdict (judge error after retries, transport or 4xx on the preview path); outside the pass ratio |
+| `oap_agent_harness_pass_ratio` | | `passed / (passed + failed)`; an agent's unusable reply is a failed case, errors are excluded |
 | `oap_agent_harness_threshold` | | the agent's declared threshold |
 | `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold` (the declared threshold). Informational only |
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |

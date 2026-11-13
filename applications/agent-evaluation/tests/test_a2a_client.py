@@ -104,6 +104,8 @@ def test_bad_replies_are_errors(payload, kind):
     with pytest.raises(AgentCallError) as exc:
         call()
     assert exc.value.kind == kind
+    # The agent produced this reply: the runner scores it as a failed case.
+    assert exc.value.agent_side is True
 
 
 @respx.mock
@@ -112,6 +114,37 @@ def test_http_500_is_an_error():
     with pytest.raises(AgentCallError) as exc:
         call()
     assert exc.value.kind == "http"
+    assert exc.value.agent_side is True
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [400, 403, 404, 429])
+def test_http_4xx_is_not_agent_side(status):
+    # A 4xx comes from the preview path (route, auth, policy, rate limit), not
+    # from the revision's answer.
+    reply({"x": 1}, status=status)
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "http"
+    assert exc.value.agent_side is False
+
+
+@respx.mock
+def test_read_timeout_is_agent_side():
+    respx.post(URL).mock(side_effect=httpx.ReadTimeout("slow"))
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "timeout"
+    assert exc.value.agent_side is True
+
+
+@respx.mock
+def test_connect_timeout_is_not_agent_side():
+    respx.post(URL).mock(side_effect=httpx.ConnectTimeout("no route"))
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "transport"
+    assert exc.value.agent_side is False
 
 
 @respx.mock
@@ -128,6 +161,7 @@ def test_transport_error():
     with pytest.raises(AgentCallError) as exc:
         call()
     assert exc.value.kind == "transport"
+    assert exc.value.agent_side is False
 
 
 @respx.mock
