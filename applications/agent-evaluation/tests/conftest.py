@@ -369,12 +369,43 @@ class FakeCustomObjects:
 
 
 class FakeCore:
-    """ConfigMaps and Secrets in memory, keyed by (namespace, name)."""
+    """ConfigMaps, Secrets and Services in memory, keyed by (namespace, name).
 
-    def __init__(self):
+    With `custom` (a FakeCustomObjects), `<agent>-preview` Services behave the
+    way Argo maintains them: a ClusterIP Service whose selector pins
+    `rollouts-pod-template-hash` to the Rollout's previewSelector. A Service
+    set with set_service overrides that.
+    """
+
+    def __init__(self, custom=None):
         self.configmaps: dict[tuple[str, str], SimpleNamespace] = {}
         self.secrets: dict[tuple[str, str], SimpleNamespace] = {}
         self.secret_writes: list[str] = []
+        self.services: dict[tuple[str, str], SimpleNamespace] = {}
+        self._custom = custom
+
+    def set_service(self, namespace, name, type="ClusterIP", selector=None):
+        self.services[(namespace, name)] = SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace),
+            spec=SimpleNamespace(type=type, selector=selector),
+        )
+
+    def read_namespaced_service(self, name, namespace):
+        if (namespace, name) in self.services:
+            return self.services[(namespace, name)]
+        rollout = None
+        if self._custom is not None and name.endswith("-preview"):
+            rollout = self._custom.rollouts.get((namespace, name.removesuffix("-preview")))
+        if rollout is None:
+            raise ApiException(status=404, reason="NotFound")
+        selected = (rollout["status"].get("blueGreen") or {}).get("previewSelector")
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace),
+            spec=SimpleNamespace(
+                type="ClusterIP",
+                selector={"app": name, "rollouts-pod-template-hash": selected},
+            ),
+        )
 
     @staticmethod
     def _obj(body: dict) -> SimpleNamespace:

@@ -86,9 +86,12 @@ Step by step, with the code that does it:
 1. **Declaration.** The `agent` component (`platform/oam/definitions/components/agent.cue`)
    renders a ConfigMap `<agent>-harness` in the agent's namespace when
    `harness.enabled: true`. It carries the label `harness.oap.io/agent: <agent>`
-   and the data keys `agent`, `dataset`, `checks` (JSON list), `threshold`,
-   `mode`, `previewService` (`<agent>-preview`) and `previewPort` (`8083`). It
-   is a KubeVela output, so disabling the block or deleting the Application
+   and the data keys `agent`, `dataset`, `checks` (JSON list), `threshold` and
+   `mode`. There is no target in it: the reconciler always targets
+   `<agent>-preview` on port `8083` and ignores `previewService`/`previewPort`
+   keys if a hand-written ConfigMap has them. Before each run it reads that
+   Service and refuses an `ExternalName` one (`HarnessPreviewUnsupported`) and
+   one whose selector does not select the revision. It is a KubeVela output, so disabling the block or deleting the Application
    deletes it.
 2. **Discovery.** The reconciler runs in the **same cluster** as the agent. Its
    harness loop (`harness_loop.py`, every `harness.intervalSeconds`, default
@@ -295,7 +298,7 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 | `InvalidHarnessDeclaration` | Warning | a field in the ConfigMap is invalid (the message names it) |
 | `HarnessJudgeKeyUnavailable` | Warning | no run starts because the judge key is missing (platform issue) |
 | `HarnessWaitingForPreview` | Normal | no run yet: no Rollout named `<agent>` in the namespace, or its `status.blueGreen.previewSelector` is not set yet. A preview that simply has not switched to the newest revision yet records nothing |
-| `HarnessPreviewUnsupported` | Warning | the Rollout has no `spec.strategy.blueGreen.previewService` (for example a canary strategy), so no run starts |
+| `HarnessPreviewUnsupported` | Warning | the Rollout has no `spec.strategy.blueGreen.previewService` (for example a canary strategy), or the `<agent>-preview` Service is of type `ExternalName`, so no run starts |
 
 Every message starts with `[<cluster>]`.
 
@@ -491,7 +494,7 @@ compared every verb against this template with no mismatch.
 
 | Subject | Scope | Grant |
 |---|---|---|
-| `agent-evaluation-reconciler` (ClusterRole, added) | cluster | `get`, `list`, `watch` on `argoproj.io` `rollouts` (read only) |
+| `agent-evaluation-reconciler` (ClusterRole, added) | cluster | `get`, `list`, `watch` on `argoproj.io` `rollouts`; `get` on `services` (the `<agent>-preview` check); read only |
 | `agent-evaluation-reconciler` (Role `agent-evaluation-harness`) | `agent-evaluation` only | `batch` `jobs`: `create`, `get`, `list`, `watch`, `delete`; `configmaps`: `delete`; `secrets`: `create`, and `get`, `update`, `patch` on `agent-evaluation-harness-judge-key` only |
 | `agent-evaluation-harness-runner` (Job pods, Role `agent-evaluation-harness-runner`) | `agent-evaluation` only | `configmaps`: `create` only (no read, no update) |
 
@@ -563,7 +566,7 @@ marked otherwise. Ids (D1 to D5, O-1, O-2) refer to the test report.
 | Series follow the current declaration (D3, D4) | Metrics show the newest finished run on the **declared** dataset against the **declared** threshold. A threshold-only change starts no run; `threshold` and `threshold_met` update at the next pass |
 | Disable cleans up | `enabled: false` or removing the block deletes the ConfigMap; the reconciler then deletes that agent's Jobs and results and drops its series (absent, not 0). Later revisions start no run. Re-enabling runs as `first-revision` |
 | History limit | Finished runs are pruned to `historyLimit` (default 3) per agent, newest by finish time, with no orphan result ConfigMaps |
-| Validation | 14 hostile hand-written ConfigMaps (agent names with `../` or capitals, `previewService` set to an external host, an IP, a dotted name or a URL, `mode: gate`, out-of-range ports and thresholds, unknown checks) were each refused with the field named; no Job was created and the loop kept running |
+| Validation | 14 hostile hand-written ConfigMaps (agent names with `../` or capitals, `previewService` set to an external host, an IP, a dotted name or a URL, `mode: gate`, out-of-range ports and thresholds, unknown checks) were each refused with the field named; no Job was created and the loop kept running. Since then `previewService`/`previewPort` are no longer read (ignored, the target is derived from the agent name), so those cases now run against `<agent>-preview` instead of being refused |
 | O-1 | A block without `dataset` passes admission and fails at render; nothing renders |
 | O-2 | Fixed (DEF-2): a rollback now starts a `rollback` run, and the series show it once it finishes. Until then they show the latest finished run on the declared dataset, which can belong to another revision; the `revision` label stays accurate. See "Rollback re-runs" for when no re-run starts |
 

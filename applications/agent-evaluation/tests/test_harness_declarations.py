@@ -18,8 +18,6 @@ BASE = {
     "checks": '["expected-answer"]',
     "threshold": "0.8",
     "mode": "report",
-    "previewService": "assistant-preview",
-    "previewPort": "8083",
 }
 
 
@@ -63,26 +61,20 @@ def test_missing_dataset():
         parse_harness_declaration(cm(dataset=None))
 
 
-def test_preview_defaults():
-    d = parse_harness_declaration(cm(previewService=None, previewPort=None))
+def test_preview_target_is_derived_from_the_agent_name():
+    d = parse_harness_declaration(cm())
     assert d.preview_service == "assistant-preview"
     assert d.preview_port == 8083
 
 
 @pytest.mark.parametrize(
     "service",
-    [
-        "evil.example.com/steal?",
-        "other.team-b",
-        "http://x",
-        "Assistant-preview",
-        "1-preview",
-        "a" * 64,
-    ],
+    ["evil", "evil.example.com/steal?", "other.team-b", "http://x", "1-preview", "a" * 64],
 )
-def test_hostile_or_invalid_preview_service_is_rejected(service):
-    with pytest.raises(HarnessDeclarationError, match="previewService"):
-        parse_harness_declaration(cm(previewService=service))
+def test_preview_service_and_port_in_the_configmap_are_ignored(service):
+    # Review #137 map: a team-writable value must not pick the Job's target.
+    d = parse_harness_declaration(cm(previewService=service, previewPort="9999"))
+    assert (d.preview_service, d.preview_port) == ("assistant-preview", 8083)
 
 
 @pytest.mark.parametrize(
@@ -91,13 +83,13 @@ def test_hostile_or_invalid_preview_service_is_rejected(service):
 )
 def test_invalid_agent_is_rejected(agent):
     with pytest.raises(HarnessDeclarationError, match="agent"):
-        parse_harness_declaration(cm(agent=agent, previewService="assistant-preview"))
+        parse_harness_declaration(cm(agent=agent))
 
 
 def test_derived_preview_service_too_long_is_rejected():
     # 60 characters is a valid agent name, but `<agent>-preview` is not a Service name.
-    with pytest.raises(HarnessDeclarationError, match="previewService"):
-        parse_harness_declaration(cm(agent="a" * 60, previewService=None))
+    with pytest.raises(HarnessDeclarationError, match="preview Service name"):
+        parse_harness_declaration(cm(agent="a" * 60))
 
 
 def _selects(labels: dict, selector: str) -> bool:

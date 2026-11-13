@@ -149,7 +149,8 @@ with no harness.
 | `harness.runner.resources` | 50m / 128Mi, 256Mi limit | The Job container |
 
 **RBAC.** The ClusterRole gains read-only `get`/`list`/`watch` on `argoproj.io`
-`rollouts`. Everything else is a Role in the release namespace: the reconciler
+`rollouts` and `get` on `services` (to check the `<agent>-preview` Service
+before a run). Everything else is a Role in the release namespace: the reconciler
 creates and deletes the harness Jobs, deletes their result ConfigMaps, creates
 Secrets and gets/updates only `harness.judge.virtualKey.secretRef`. The Jobs run
 as a separate ServiceAccount, `agent-evaluation-harness-runner`, which can only

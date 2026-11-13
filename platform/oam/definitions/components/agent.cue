@@ -480,15 +480,14 @@ template: {
 						"app.kubernetes.io/name": context.name
 					}
 				}
+				// No preview target here: the reconciler derives it from the
+				// agent name (<agent>-preview, port 8083) and checks that Service.
 				data: {
 					agent:     context.name
 					dataset:   parameter.harness.dataset
 					checks:    json.Marshal(parameter.harness.checks)
 					threshold: "\(parameter.harness.threshold)"
 					mode:      parameter.harness.mode
-					// The blue-green preview Service and the agent's A2A port.
-					previewService: context.name + "-preview"
-					previewPort:    "8083"
 				}
 			}
 		}

@@ -80,6 +80,8 @@ ANN_MODE = "harness.oap.io/mode"
 ANN_JUDGE_MODEL = "harness.oap.io/judge-model"
 # On the judge-key Secret: the Bifrost key name its value belongs to.
 ANN_JUDGE_KEY_NAME = "harness.oap.io/judge-key-name"
+# Argo Rollouts pins the preview Service's selector to the previewed revision.
+POD_TEMPLATE_HASH_LABEL = "rollouts-pod-template-hash"
 # Set by the Job controller on every pod of a Job, value = the Job's uid.
 JOB_CONTROLLER_UID_LABEL = "batch.kubernetes.io/controller-uid"
 
@@ -590,6 +592,8 @@ class HarnessLoop:
                 return  # this revision already ran or is running
             run_number = max(_run_number(j) for j in same) + 1
             trigger = TRIGGER_ROLLBACK
+        if not self._preview_service_ok(decl, revision):
+            return None
         name = harness_job_name(
             decl.namespace, decl.agent, revision, decl.dataset, run=run_number
         )
@@ -600,6 +604,49 @@ class HarnessLoop:
             if _finished_condition(j)[0] is None and _labels(j).get(LABEL_REVISION) != revision
         ]
         return _Start(decl, revision, name, trigger, run_number, to_stop)
+
+    def _preview_service_ok(self, decl: HarnessDeclaration, revision: str) -> bool:
+        """The derived `<agent>-preview` Service is one the Job may target.
+
+        Read only when a run is due. Refused: an ExternalName Service (it
+        resolves to any host the team names) with a Warning; a Service whose
+        selector does not pin `rollouts-pod-template-hash` to this revision
+        waits, silently, because Argo switches it shortly before every run.
+        """
+        try:
+            service = self._core.read_namespaced_service(
+                name=decl.preview_service, namespace=decl.namespace
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                self._recorder.normal(
+                    decl.namespace,
+                    decl.configmap,
+                    events.REASON_HARNESS_WAITING_FOR_PREVIEW,
+                    f"no Service named {decl.preview_service} in {decl.namespace} yet: "
+                    "the harness runs once the preview Service exists",
+                )
+                return False
+            raise
+        spec = getattr(service, "spec", None)
+        if getattr(spec, "type", None) == "ExternalName":
+            self._recorder.warn(
+                decl.namespace,
+                decl.configmap,
+                events.REASON_HARNESS_PREVIEW_UNSUPPORTED,
+                f"Service {decl.preview_service} is of type ExternalName: the harness "
+                "only targets the blue-green preview Service of the Rollout and starts no run",
+            )
+            return False
+        selector = getattr(spec, "selector", None) or {}
+        if selector.get(POD_TEMPLATE_HASH_LABEL) != revision:
+            logger.info(
+                "harness: %s preview Service does not select revision %s yet",
+                decl.key,
+                revision,
+            )
+            return False
+        return True
 
     def _start(self, start: _Start, jobs: list, results: dict, owner: dict) -> bool:
         """Create the planned Job if a slot is free; True when it was created."""

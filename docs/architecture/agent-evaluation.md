@@ -1243,13 +1243,21 @@ namespace; discovered **only** by the label.
 | `checks` | JSON list of check names; `["expected-answer"]` is the only accepted value |
 | `threshold` | fraction in (0, 1], default `0.8`, as a string |
 | `mode` | `report` |
-| `previewService` | `<agent>-preview`, the blue-green preview Service |
-| `previewPort` | `8083` |
 
-The ConfigMap is team-writable and its values reach a platform Job, so the
-reconciler accepts `agent` only as a DNS-1123 label and `previewService` only as
-a Service name (a DNS-1035 label, no dots or slashes) of at most 63 characters:
-a declaration cannot point the Job at another host or namespace.
+The ConfigMap is team-writable and its values reach a platform Job, so it
+carries no target. The reconciler accepts `agent` only as a DNS-1123 label and
+derives the target from it: `http://<agent>-preview.<namespace>.svc.cluster.local:8083/`
+(`<agent>-preview` must be a DNS-1035 label of at most 63 characters).
+`previewService` / `previewPort` keys, if present (hand-written or older
+declarations), are ignored. Before each run the reconciler reads that Service
+and refuses one of type `ExternalName` (`HarnessPreviewUnsupported`, since it
+would resolve to any host the team names); one whose selector does not pin
+`rollouts-pod-template-hash` to the revision starts no run (it waits, as for a
+preview Argo has not switched yet), and a missing one is reported as
+`HarnessWaitingForPreview`. Residual limit: a team that controls its namespace
+can still attach hand-made EndpointSlices to the Service; the Job then reaches
+those addresses. That is the team's own agent namespace and traffic, and the
+Job carries no credential the agent does not already receive.
 
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
@@ -1265,7 +1273,8 @@ trigger `first-revision`, `new-revision` or `rollback`), `HarnessRunCompleted`,
 and why a run cannot start: `HarnessWaitingForPreview` (Normal: no Rollout
 named `<agent>` yet, or its `blueGreen.previewSelector` is not set yet) and
 `HarnessPreviewUnsupported` (Warning: the Rollout has no
-`spec.strategy.blueGreen.previewService`, for example a canary strategy). A
+`spec.strategy.blueGreen.previewService`, for example a canary strategy, or an
+`ExternalName` `<agent>-preview` Service). A
 preview that does not select the newest revision yet records nothing: that is
 the normal, short wait before every run.
 The runner's `<job>-result` ConfigMaps also carry `harness.oap.io/agent`, so
@@ -1579,7 +1588,7 @@ judge key stays hub-only, as D4 decided.
 | A spoke changing how the fleet is scored | Judge prompts, scales and the judge connection are project-wide, so a single owner writes them (D4). A spoke resolves evaluators by name and never `POST`s one (there is no `PATCH` at the pin), which is what stops an out-of-date cluster from rolling a prompt back for every other cluster. The shared project key pair would allow the write, so the guarantee is the spoke code path, not the credential, and the validation plan checks it |
 | **Credential blast radius: every spoke holds a project-wide key** | Stated plainly because the control above is weaker than it reads. There is ONE Langfuse API key pair for the shared project, and every cluster running this addon has a copy of it in its own `agent-evaluation` namespace. That key pair is authorised to write every object in the project — the catalog evaluators, the judge LLM connection and **every other cluster's** evaluation rules. The only thing stopping a spoke from doing so is `allow_project_writes=False` in its own process (`langfuse_client._require_project_write`), i.e. a flag in code it is itself running. So the separation is a correctness guarantee against *bugs and drift*, not a security boundary against a *compromised spoke*: anyone who can read that Secret, or run code in that namespace, has full write access to how the entire fleet is scored. Per-cluster scoped keys are the real fix and Langfuse has no per-project-scope key model at `v4.72.0`; until then, treat the reconciler namespace on every cluster as carrying a fleet-wide credential, and note that the `oap-<owner token>-` naming limits *accidental* cross-cluster deletion but not deliberate use of the key |
 | Harness judge key (§4b) | A separate, harness-only virtual key **per cluster**, minted by that cluster's reconciler in that cluster's Bifrost through the in-cluster management API, which is open only while Bifrost governance auth is off. Scoped to the judge model, with its own budget and rate limit, stored in Secret `agent-evaluation-harness-judge-key` in the `agent-evaluation` namespace only and mounted as a file by the harness Jobs. Never in Secrets Manager, never in git, never in an agent namespace. Fail closed: with `required: true` no run starts without it |
-| Harness RBAC (§4b, only with `harness.enabled`) | Writes are namespaced to the release namespace: the reconciler's Role creates/deletes `batch` Jobs, deletes ConfigMaps, creates Secrets and gets/updates only `agent-evaluation-harness-judge-key`; the runner ServiceAccount can only **create** ConfigMaps there (no read, no update). The ClusterRole gains `get`/`list`/`watch` on `argoproj.io` `rollouts`, read only. Nothing new in any agent namespace |
+| Harness RBAC (§4b, only with `harness.enabled`) | Writes are namespaced to the release namespace: the reconciler's Role creates/deletes `batch` Jobs, deletes ConfigMaps, creates Secrets and gets/updates only `agent-evaluation-harness-judge-key`; the runner ServiceAccount can only **create** ConfigMaps there (no read, no update). The ClusterRole gains `get`/`list`/`watch` on `argoproj.io` `rollouts` and `get` on `services` (the derived `<agent>-preview` check), read only. Nothing new in any agent namespace |
 | Harness traffic reaching live pods | On a first deploy, and after promotion, `-preview` selects the same pods as `-stable`, so harness cases reach pods serving users. Report mode blocks nothing, cases carry no caller identity (so the base image gives each a fresh session with no memory), and the traffic is marked and excluded from online evaluation (§4b). An agent with `PROPAGATE_CALLER_TOKEN=true` has no caller token to forward to its MCP tools during a harness run |
 | Trace content sent to a model | The judge runs through Bifrost to Bedrock in the same account. Sensitive-data masking before judging is Q5 |
 | Cost | Cost per agent is about traces × sampling rate × evaluators judge calls. The default `coverage: medium` (0.1) with two evaluators is 0.2 judge calls per trace. `strictness` costs nothing: it changes thresholds, not judge calls. The Bifrost budget caps the total |

@@ -62,6 +62,11 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["rollouts"]
     verbs: ["get", "list", "watch"]
+  # Harness: read the agent's <agent>-preview Service before a run, to refuse
+  # an ExternalName Service and one that does not select the revision. get only.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

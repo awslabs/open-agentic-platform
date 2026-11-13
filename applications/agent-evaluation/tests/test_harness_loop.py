@@ -46,8 +46,6 @@ def decl(agent="assistant", namespace="team-a", dataset="example-smoke-v1", thre
         checks=("expected-answer",),
         threshold=threshold,
         mode="report",
-        preview_service=f"{agent}-preview",
-        preview_port=8083,
     )
 
 
@@ -80,9 +78,11 @@ def build(
     malformed=None,
     clock=lambda: 5_000.0,
 ):
-    fakes = fakes or SimpleNamespace(
-        batch=FakeBatch(), custom=FakeCustomObjects(), core=FakeCore(), events=FakeEvents()
-    )
+    if fakes is None:
+        custom = FakeCustomObjects()
+        fakes = SimpleNamespace(
+            batch=FakeBatch(), custom=custom, core=FakeCore(custom), events=FakeEvents()
+        )
     fakes.reader = FakeReader(declarations, malformed)
     # The chart's catalog ConfigMap: owner of the Jobs and the judge Secret.
     if (PLATFORM_NS, harness_settings.catalog_configmap) not in fakes.core.configmaps:
@@ -323,6 +323,76 @@ def test_canary_rollout_is_reported_as_unsupported(settings, harness_settings, c
     assert f.batch.created == []
     unsupported = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_PREVIEW_UNSUPPORTED]
     assert unsupported and "previewService" in unsupported[0]
+
+
+def test_declared_preview_service_is_ignored_for_the_target(
+    settings, harness_settings, catalog, metrics
+):
+    from app.harness_declarations import parse_harness_declaration
+
+    parsed = parse_harness_declaration(
+        make_configmap(
+            "team-a",
+            "assistant-harness",
+            {
+                "agent": "assistant",
+                "dataset": "example-smoke-v1",
+                "checks": '["expected-answer"]',
+                "previewService": "evil",
+                "previewPort": "9999",
+            },
+            labels={"harness.oap.io/agent": "assistant"},
+        )
+    )
+    loop, f = build(settings, harness_settings, catalog, metrics, [parsed])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    target = env_of(f.batch.created[0])["HARNESS_TARGET_URL"]
+    assert target == "http://assistant-preview.team-a.svc.cluster.local:8083/"
+
+
+def test_external_name_preview_service_is_refused(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    f.core.set_service("team-a", "assistant-preview", type="ExternalName")
+    loop.run_once()
+    assert f.batch.created == []
+    unsupported = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_PREVIEW_UNSUPPORTED]
+    assert unsupported and "ExternalName" in unsupported[0]
+
+
+def test_preview_service_selecting_another_revision_starts_no_run(
+    settings, harness_settings, catalog, metrics
+):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    f.core.set_service(
+        "team-a", "assistant-preview", selector={"rollouts-pod-template-hash": "rev0"}
+    )
+    loop.run_once()
+    assert f.batch.created == []
+    assert f.events.warnings == []
+
+    # A selector-less Service (hand-made endpoints) is not a preview either.
+    f.core.set_service("team-a", "assistant-preview", selector=None)
+    loop.run_once()
+    assert f.batch.created == []
+
+    f.core.set_service(
+        "team-a", "assistant-preview", selector={"rollouts-pod-template-hash": "rev1"}
+    )
+    loop.run_once()
+    assert len(f.batch.created) == 1
+
+
+def test_missing_preview_service_waits(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    f.core._custom = None  # no Argo-managed Service
+    loop.run_once()
+    assert f.batch.created == []
+    waiting = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_WAITING_FOR_PREVIEW]
+    assert waiting and "no Service named assistant-preview" in waiting[0]
 
 
 def test_preview_not_switched_yet_records_no_event(settings, harness_settings, catalog, metrics):

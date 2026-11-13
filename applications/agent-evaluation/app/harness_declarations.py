@@ -37,12 +37,18 @@ DECLARATION_SELECTOR = f"{LABEL_SELECTOR},!{LABEL_RESULT}"
 # means a hand-written ConfigMap cannot turn a report into a gate.
 VALID_MODES = ("report",)
 
-DEFAULT_PREVIEW_PORT = 8083
+# The Job's target is derived, never read from the ConfigMap: the blue-green
+# preview Service `<agent>-preview` the agent component renders, on the
+# agent's A2A port. `previewService` / `previewPort` keys in a (hand-written or
+# older) declaration are ignored, so a team-writable value cannot point a
+# platform Job at another Service or host. The loop also checks that Service
+# (not ExternalName, selects the revision) before each run.
+PREVIEW_SUFFIX = "-preview"
+PREVIEW_PORT = 8083
 
-# Both values come from a team-writable ConfigMap and end up in a platform Job:
-# `agent` in its labels and env, `previewService` in its target URL. Only plain
-# in-namespace names are accepted, so a declaration cannot point the Job at
-# another host or make Job creation fail for everyone.
+# `agent` comes from a team-writable ConfigMap and ends up in a platform Job's
+# labels, env and (derived) target URL. Only a plain in-namespace name is
+# accepted, so a declaration cannot make Job creation fail for everyone.
 MAX_LABEL_LEN = 63
 DNS1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 DNS1035_LABEL_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
@@ -61,12 +67,18 @@ class HarnessDeclaration:
     checks: tuple[str, ...]
     threshold: float
     mode: str
-    preview_service: str
-    preview_port: int
 
     @property
     def key(self) -> str:
         return f"{self.namespace}/{self.agent}"
+
+    @property
+    def preview_service(self) -> str:
+        return f"{self.agent}{PREVIEW_SUFFIX}"
+
+    @property
+    def preview_port(self) -> int:
+        return PREVIEW_PORT
 
 
 def parse_harness_declaration(cm) -> HarnessDeclaration:
@@ -128,21 +140,12 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
             "is implemented, so the harness never blocks a promotion"
         )
 
-    raw_port = data.get("previewPort", str(DEFAULT_PREVIEW_PORT))
-    try:
-        preview_port = int(raw_port)
-    except (TypeError, ValueError) as exc:
-        raise HarnessDeclarationError(
-            f"{where}: previewPort {raw_port!r} is not an integer"
-        ) from exc
-    if not 0 < preview_port < 65536:
-        raise HarnessDeclarationError(f"{where}: previewPort {preview_port} is out of range")
-
-    preview_service = data.get("previewService") or f"{agent}-preview"
+    preview_service = f"{agent}{PREVIEW_SUFFIX}"
     if len(preview_service) > MAX_LABEL_LEN or not DNS1035_LABEL_RE.match(preview_service):
         raise HarnessDeclarationError(
-            f"{where}: previewService {preview_service!r} is not a Service name "
-            f"(a DNS-1035 label of at most {MAX_LABEL_LEN} characters) in this namespace"
+            f"{where}: the preview Service name {preview_service!r} derived from agent "
+            f"{agent!r} is not a Service name (a DNS-1035 label of at most "
+            f"{MAX_LABEL_LEN} characters)"
         )
 
     return HarnessDeclaration(
@@ -153,8 +156,6 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
         checks=tuple(dict.fromkeys(checks)),
         threshold=threshold,
         mode=mode,
-        preview_service=preview_service,
-        preview_port=preview_port,
     )
 
 
