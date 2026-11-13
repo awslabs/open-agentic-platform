@@ -1369,9 +1369,16 @@ Loop health is the existing pair with `loop="harness"`:
 `oap_agent_eval_last_success_timestamp_seconds` and `oap_agent_eval_errors_total`.
 The harness loop is deliberately **not** in `/readyz`: an unready pod drops out
 of the metrics Service and would hide every `oap_agent_eval_*` series. The
-`AgentHarnessStale` alert covers it instead, and `AgentHarnessJudgeKeyMissing`
-reports a missing judge key. A pass without a required judge key does not count
-as complete, so `AgentHarnessStale` also follows a missing key; fix the key first.
+`AgentHarnessStale` alert covers it instead, `AgentHarnessReconcileErrors`
+reports a failing harness loop (its Kubernetes Job, Rollout or Service calls, or
+the Bifrost management API), and `AgentHarnessJudgeKeyMissing` reports a missing
+judge key. `AgentEvaluationReconcileErrors` excludes `loop="harness"`: it is
+about Langfuse calls, which the harness loop does not make.
+`AgentHarnessJudgeKeyMissing` is `warning` when
+`harness.judge.virtualKey.required` is true (no run starts) and `info` when it is
+false (runs go on with an un-budgeted judge). A pass without a required judge
+key does not count as complete, so `AgentHarnessStale` also follows a missing
+key; fix the key first.
 Like the rest of the chart's alerts these are
 pipeline alerts; there is no alert on the pass ratio.
 
@@ -1606,7 +1613,7 @@ on the hub against the `v2.7.0` the AgentCore `OnlineEvaluationConfig` needs.
 |---|---|---|
 | **1** | `agent-evaluation` addon on every cluster that runs agents (ConfigMap watch, `oap-<owner token>-` rules, metrics), as `role: hub` on the Langfuse cluster, which also writes the catalog evaluators (one per `judge.aliases` entry) and the judge LLM connection; a spoke `langfuse.url` resolved to the hub domain; `CLUSTER_NAME` / `AGENT_NAMESPACE` env and the scoped `agent:` trace tag in `strands-agent-base`; Bifrost allowlisted in the Langfuse chart; `judge-default` Bifrost alias; `evaluation` block for `centralized` agents; metrics Service and `Agent Evaluation` GrafanaDashboard; staleness alert; example and live check | **Done** |
 | **2** | `decentralized` agents: upgrade the Crossplane AWS provider to `v2.7.0` or later, then map the same declaration to an AgentCore `OnlineEvaluationConfig`, with the catalog entries mapped to built-in or custom evaluators. The reconciler exports the same `oap_agent_eval_*` metrics from those results, so the dashboard covers both modes unchanged | Blocked on provider `v2.7.0` |
-| **3** | Report mode (#137): a `harness` block on `agent`; a platform-catalog dataset run against the blue-green preview on every new revision (the first one as a baseline) by a Job in the platform namespace; an `expected-answer` judge on a per-cluster minted Bifrost key; `oap_agent_harness_*` metrics, a dashboard row and two pipeline alerts; harness traffic excluded from online evaluation (§4b). Gate mode and the Argo Rollouts `AnalysisTemplate` deferred | Report mode: in review |
+| **3** | Report mode (#137): a `harness` block on `agent`; a platform-catalog dataset run against the blue-green preview on every new revision (the first one as a baseline) by a Job in the platform namespace; an `expected-answer` judge on a per-cluster minted Bifrost key; `oap_agent_harness_*` metrics, a dashboard row and three pipeline alerts; harness traffic excluded from online evaluation (§4b). Gate mode and the Argo Rollouts `AnalysisTemplate` deferred | Report mode: in review |
 | **4** | `evaluator` component for team-defined evaluators (D4, "Planned follow-up"): `<namespace>/<name>` references, `#EvaluatorName` widened to accept them, `oap-<owner token>-<namespace>-<name>` objects owned by that cluster's reconciler, and a possible home for agent-based judges | Roadmap |
 
 ---

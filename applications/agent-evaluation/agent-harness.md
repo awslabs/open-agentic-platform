@@ -149,7 +149,7 @@ Step by step, with the code that does it:
    on its `/metrics` (Service `agent-evaluation-metrics`, port 9090). The Job
    publishes nothing. The platform's AMP scraper picks the series up through
    the Service's `prometheus.io/scrape` annotations, the Grafana dashboard
-   `agent-evaluation` has a harness row, and the chart ships two pipeline
+   `agent-evaluation` has a harness row, and the chart ships three pipeline
    alerts.
 10. **Excluded from online scoring.** The base image (`strands-agent-base`,
     `app/agent.py` and `app/config.py`) tags a trace whose session starts with
@@ -505,21 +505,29 @@ new is granted in any agent namespace: the Job reaches the agent over its
 
 ### 4.6 Alerts and the PF-1 caveat
 
-`templates/61-prometheus-rule.yaml` adds two pipeline alerts when the harness
+`templates/61-prometheus-rule.yaml` adds three pipeline alerts when the harness
 is on and the `monitoring.coreos.com/v1` PrometheusRule CRD exists:
 
-| Alert | Expression | For |
-|---|---|---|
-| `AgentHarnessStale` | `time() - max by (cluster) (oap_agent_eval_last_success_timestamp_seconds{loop="harness"}) > max(3 x intervalSeconds, 900)` | 15m |
-| `AgentHarnessJudgeKeyMissing` | `max by (cluster) (oap_agent_harness_judge_key_present) == 0` | 30m |
+| Alert | Expression | For | Severity |
+|---|---|---|---|
+| `AgentHarnessStale` | `time() - max by (cluster) (oap_agent_eval_last_success_timestamp_seconds{loop="harness"}) > max(3 x intervalSeconds, 900)` | 15m | warning |
+| `AgentHarnessReconcileErrors` | `sum by (cluster) (rate(oap_agent_eval_errors_total{loop="harness"}[15m])) > 0` | 30m | warning |
+| `AgentHarnessJudgeKeyMissing` | `max by (cluster) (oap_agent_harness_judge_key_present) == 0` | 30m | `warning` with `harness.judge.virtualKey.required: true` (no run starts), `info` with `false` (runs go on with an un-budgeted judge) |
+
+`AgentHarnessReconcileErrors` means the harness loop's Kubernetes Job, Rollout
+or Service calls, or its Bifrost management API calls, are failing. The
+chart-wide `AgentEvaluationReconcileErrors` excludes `loop="harness"`, because
+its wording and fixes are about Langfuse, which the harness loop does not call.
 
 There is no alert on the pass ratio; a low score is the owning team's signal on
 the dashboard. The harness loop is not part of `/readyz`, so `AgentHarnessStale`
 is how a stuck loop shows.
 
 **PF-1: nothing evaluates this PrometheusRule on the hub today.** The rule is
-rendered, and both expressions return the expected results when queried in AMP,
-but neither alert can fire:
+rendered, and the `AgentHarnessStale` and `AgentHarnessJudgeKeyMissing`
+expressions returned the expected results when queried in AMP
+(`AgentHarnessReconcileErrors` was added after the test environment was gone and
+has only been checked with `promtool check rules`), but no alert can fire:
 
 - The hub runs no Prometheus, prometheus-operator or Thanos Ruler. The
   `monitoring.coreos.com/v1` CRDs are installed (so the rule renders), but no
