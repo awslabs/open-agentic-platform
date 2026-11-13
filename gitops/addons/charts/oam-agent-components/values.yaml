@@ -35,6 +35,18 @@ global:
     # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
+  # Namespace of the agentgateway-proxy Gateway. Platform-owned: agents admit ingress
+  # only from this namespace (NetworkPolicy emitted by the agent component), and their
+  # HTTPRoutes attach to the Gateway here by default. Set it where the gateway is
+  # installed somewhere else; an application developer cannot change the ingress side.
+  agentGateway:
+    namespace: agentgateway-system
+    # Comma-separated namespaces also admitted to agents, for callers that cannot go
+    # through the gateway yet. Any pod in a listed namespace can name any user toward
+    # every agent on the cluster, so keep it empty unless a known caller needs it. The
+    # registry adds aiops-agent on clusters that run the aiops-agent addon, whose chat-ui
+    # and incident-bridge call the agent's Service directly.
+    extraIngressNamespaces: ""
   # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
   # properties.sandbox: true). Platform-owned: an application developer cannot set
   # this from their OAM, because the VMM is ambient environment config.

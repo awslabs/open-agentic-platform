@@ -71,3 +71,9 @@ oam-agent-components:
       # clh), kata-fc needs kata-nodepool kataFc.enabled plus the
       # agent_sandbox_kata_fc addon, or sandboxed pods stay Pending.
       sandboxRuntimeClass: kata-clh
+      # Namespaces admitted to agents besides the gateway's (agent component
+      # NetworkPolicy). The aiops-agent addon's chat-ui and incident-bridge call the
+      # agent's Service directly from its own namespace, so that namespace is admitted
+      # where the addon runs. Remove once both go through the gateway.
+      agentGateway:
+        extraIngressNamespaces: '{{ if eq (index .metadata.labels "enable_aiops_agent") "true" }}aiops-agent{{ end }}'
