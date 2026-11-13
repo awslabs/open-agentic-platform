@@ -451,3 +451,23 @@ def test_parse_result_rejects_a_wrong_schema():
         parse_result({"result.json": json.dumps(raw)})
     with pytest.raises(ResultSchemaError):
         parse_result({})
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda raw: raw["caseResults"][0].update(tags=5),
+        lambda raw: raw["caseResults"][0].update(latencyMs="x"),
+        lambda raw: raw.update(checks=7),
+    ],
+    ids=["tags-int", "latency-str", "checks-int"],
+)
+def test_parse_result_reports_wrong_typed_fields_as_a_schema_error(mutate):
+    # Review S1: a TypeError/ValueError from a conversion is a result not
+    # understood, never an exception that escapes the reconciler pass.
+    agent = agent_fn({"input a": "good"})
+    result = run_cases(dataset("a"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    raw = json.loads(to_configmap_data(result)["result.json"])
+    mutate(raw)
+    with pytest.raises(ResultSchemaError):
+        parse_result({"result.json": json.dumps(raw)})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import json
 from types import SimpleNamespace
 
 from app.bifrost_admin import BifrostAdminError
@@ -512,6 +513,31 @@ def test_result_with_unknown_schema_is_a_run_error(settings, harness_settings, c
     loop.run_once()
     assert sample(metrics, "oap_agent_harness_pass_ratio") is None
     assert REASON_HARNESS_RUN_FAILED in f.events.reasons()
+
+
+def test_result_with_a_wrong_typed_field_is_an_errored_run_and_pruned(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed"])
+    cm = f.core.configmaps[(PLATFORM_NS, result_configmap_name(name))]
+    raw = json.loads(cm.data["result.json"])
+    raw["caseResults"][0]["tags"] = 5
+    cm.data["result.json"] = json.dumps(raw)
+    f.batch.finish(name)
+    assert loop.run_once() is True
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+    failed = [w[3] for w in f.events.warnings if w[2] == REASON_HARNESS_RUN_FAILED]
+    assert failed and "result not understood" in failed[0]
+    # Pruned like any other run once the declaration is gone.
+    gone, _ = build(settings, harness_settings, catalog, metrics, [], fakes=f)
+    gone.run_once()
+    assert f.batch.jobs == {}
+    assert f.core.configmaps == {}
 
 
 def test_unknown_dataset_creates_no_job(settings, harness_settings, catalog, metrics):

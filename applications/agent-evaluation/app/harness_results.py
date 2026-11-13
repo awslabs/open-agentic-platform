@@ -187,24 +187,30 @@ def parse_result(data: dict | None) -> RunResult:
         raise ResultSchemaError("caseResults is not a list")
 
     cases: list[CaseResult] = []
-    for entry in values["case_results"]:
-        if not isinstance(entry, dict):
-            raise ResultSchemaError("a case result is not an object")
-        status = _need(entry, "status", "case result")
-        if status not in CASE_STATUSES:
-            raise ResultSchemaError(f"case status {status!r} is not known")
-        cases.append(
-            CaseResult(
-                id=str(_need(entry, "id", "case result")),
-                status=status,
-                score=_need(entry, "score", "case result"),
-                reason=str(_need(entry, "reason", "case result")),
-                latency_ms=int(_need(entry, "latencyMs", "case result")),
-                tags=tuple(_need(entry, "tags", "case result")),
+    # int(), tuple() on a wrong-typed field (`tags: 5`, `latencyMs: "x"`,
+    # `checks: 7`) raise TypeError/ValueError: that is a result not understood,
+    # so a run error like any other, never a crash of the pass.
+    try:
+        for entry in values["case_results"]:
+            if not isinstance(entry, dict):
+                raise ResultSchemaError("a case result is not an object")
+            status = _need(entry, "status", "case result")
+            if status not in CASE_STATUSES:
+                raise ResultSchemaError(f"case status {status!r} is not known")
+            cases.append(
+                CaseResult(
+                    id=str(_need(entry, "id", "case result")),
+                    status=status,
+                    score=_need(entry, "score", "case result"),
+                    reason=str(_need(entry, "reason", "case result")),
+                    latency_ms=int(_need(entry, "latencyMs", "case result")),
+                    tags=tuple(_need(entry, "tags", "case result")),
+                )
             )
-        )
+        values["checks"] = tuple(values["checks"])
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"result has a wrong-typed field: {exc}") from exc
     values["case_results"] = tuple(cases)
-    values["checks"] = tuple(values["checks"])
     for key in ("cases", "passed", "failed", "errors"):
         if not isinstance(values[key], int) or isinstance(values[key], bool):
             raise ResultSchemaError(f"result {_camel(key)} is not an integer")
