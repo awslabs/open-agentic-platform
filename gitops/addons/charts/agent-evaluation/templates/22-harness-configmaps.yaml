@@ -9,7 +9,8 @@ into every harness Job in this namespace.
 The check prompts live under files/harness/checks/, NOT files/evaluators/, and
 are not in .Values.catalog, so the hub never publishes them to Langfuse.
 Prompt files use literal double-brace placeholders (input, expected, output,
-nonce; nonce is a per-call random token for the data fence markers):
+nonce, now; nonce is a per-call random token for the data fence markers, now
+the current UTC time at judge time, also rendered inside a case's expected):
 .Files.Get returns them unrendered and the runner substitutes them.
 */ -}}
 {{- if .Values.harness.enabled }}

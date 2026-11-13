@@ -41,7 +41,7 @@ def test_expected_answer_prompt_has_every_placeholder_and_renders():
     template = (CHECKS_DIR / "expected-answer.md").read_text(encoding="utf-8")
     for placeholder in ("{{input}}", "{{expected}}", "{{output}}", "{{nonce}}"):
         assert placeholder in template
-    rendered = render_prompt(template, "IN-MARK", "EXP-MARK", "OUT-MARK", "NONCE-MARK")
+    rendered = render_prompt(template, "IN-MARK", "EXP-MARK", "OUT-MARK", "NONCE-MARK", "NOW-MARK")
     assert "{{" not in rendered
     for marker in ("IN-MARK", "EXP-MARK", "OUT-MARK"):
         assert marker in rendered

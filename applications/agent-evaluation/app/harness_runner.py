@@ -25,6 +25,7 @@ import secrets
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -78,6 +79,15 @@ def error_result(
         finished_at=finished_at,
         status="error",
         error=error[:MAX_REASON_CHARS],
+    )
+
+
+def utc_now_iso(clock) -> str:
+    """The `{{now}}` value: UTC, ISO 8601 to the second, `Z` suffix."""
+    return (
+        datetime.fromtimestamp(clock(), timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
     )
 
 
@@ -135,8 +145,14 @@ def _run_case(
     for check in checks:
         # A fresh nonce per judge call: the data cannot know the marker that
         # closes its fence.
+        # {{now}} is the time of this judge call, close to when the agent answered.
         prompt = render_prompt(
-            check.prompt, case.input, case.expected, reply.text, secrets.token_hex(8)
+            check.prompt,
+            case.input,
+            case.expected,
+            reply.text,
+            secrets.token_hex(8),
+            utc_now_iso(clock),
         )
         try:
             verdict = judge_with_retry(judge_fn, prompt, sleep, deadline, clock)

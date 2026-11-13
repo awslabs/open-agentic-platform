@@ -266,6 +266,42 @@ def test_every_case_errored_is_a_run_error():
     assert parse_result(to_configmap_data(result)).status == "error"
 
 
+def test_now_time_case_passes_the_right_time_and_fails_an_invented_one():
+    # Review B2a: the reference carries {{now}}, rendered from the runner clock
+    # at judge time, so a correct time passes and an invented one fails.
+    clock = lambda: 1_767_355_200.0  # 2026-01-02T12:00:00Z  # noqa: E731
+    checks = {"expected-answer": Check("expected-answer", "E={{expected}} O={{output}}", 0.7)}
+    cases = (
+        Case("right", "time?", "The current UTC time is {{now}}.", None, ("time",)),
+        Case("invented", "time? ", "The current UTC time is {{now}}.", None, ("time",)),
+        Case("literal", "time?  ", "The current UTC time is {{now}}.", None, ("time",)),
+    )
+    replies = {
+        "time?": "It is 2026-01-02T12:00:00Z.",
+        "time? ": "It is 03:17 UTC.",
+        "time?  ": "{{now}}",
+    }
+    prompts = []
+
+    def judge(prompt):
+        prompts.append(prompt)
+        reference, answer = prompt.split(" O=", 1)
+        ok = "2026-01-02T12:00:00Z" in reference and "2026-01-02T12:00:00Z" in answer
+        return JudgeVerdict(1.0 if ok else 0.0, "r")
+
+    result = run_cases(
+        Dataset("t", "", cases),
+        checks,
+        runner_settings(case_concurrency=1),
+        lambda text, ctx: AgentReply(replies[text], "completed"),
+        judge,
+        clock=clock,
+    )
+    assert [c.status for c in result.case_results] == ["passed", "failed", "failed"]
+    # The agent's literal {{now}} was not substituted.
+    assert prompts[2].endswith("O={{now}}")
+
+
 def test_threshold_met_when_ratio_reaches_it():
     agent = agent_fn({"input a": "good", "input b": "bad"})
     judge = judge_fn({"good": 0.9, "bad": 0.1})

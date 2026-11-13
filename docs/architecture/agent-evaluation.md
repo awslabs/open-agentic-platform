@@ -1279,7 +1279,7 @@ name. Changing a case is a reviewed chart change.
 | `description` | free text |
 | `cases[].id` | same pattern, at most 40 characters, unique in the file |
 | `cases[].input` | non-empty string, sent to the agent as one A2A message |
-| `cases[].expected` | non-empty string: what a correct answer must contain or do, judged by meaning, not wording |
+| `cases[].expected` | non-empty string: what a correct answer must contain or do, judged by meaning, not wording. May contain `{{now}}`, rendered as the current UTC time (ISO 8601, seconds, `Z`) at judge time |
 | `cases[].expectTools` | optional list of strings. **Accepted and ignored** in the first cut (no tool-call capture yet); a run that sees it reports `expectToolsIgnored: true` |
 | `cases[].tags` | optional list of strings, copied to the result |
 

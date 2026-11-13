@@ -221,7 +221,10 @@ cases:
 Rules the loader enforces: zero cases, or more than `harness.maxCases`
 (default 50), is a run error; cases are never truncated. `input` and `expected`
 must be non-empty strings. When any case has `expectTools`, the result reports
-`expectToolsIgnored: true` so nobody reads it as checked.
+`expectToolsIgnored: true` so nobody reads it as checked. `expected` may contain
+`{{now}}`: the runner renders it as the current UTC time (for example
+`2026-01-02T12:00:00Z`) when it calls the judge, so a time-dependent case is
+judged against the real time.
 
 ### 3.3 Writing good cases
 
@@ -239,7 +242,10 @@ must be non-empty strings. When any case has `expectTools`, the result reports
   `PROPAGATE_CALLER_TOKEN=true` has no token to forward to its MCP tools during
   a run.
 - **Avoid answers that change with time or data** unless `expected` allows for
-  it (the `utc-time-now` case checks the format, not a fixed time).
+  it. For the current time, put `{{now}}` in `expected` and say how close the
+  answer must be, for example "The current UTC time is {{now}}. Passes if the
+  answer states a UTC time within 5 minutes of it, or says plainly that it
+  cannot access the current time."
 - **Version the dataset name** (`-v1`, `-v2`) when you change cases, so the
   series of an old and a new dataset are not mixed.
 - **Tag cases** (`smoke`, `safety`, `tools`) so you can read results by group in

@@ -10,6 +10,10 @@ agent the score it wrote.
 The check prompt fences the untrusted data with BEGIN/END markers that carry a
 per-call random nonce, and placeholders are substituted in a single pass, so
 data can neither close a fence it cannot know nor expand another placeholder.
+`{{now}}` (the current UTC time) is rendered into the template and the
+reference before the data goes in, so a time-dependent case can be judged
+against the time of the judge call, and an answer containing `{{now}}` stays
+literal.
 """
 
 from __future__ import annotations
@@ -57,15 +61,19 @@ def render_prompt(
     expected: str,
     output: str,
     nonce: str,
+    now: str,
 ) -> str:
     """Substitute the placeholders in ONE pass over the template.
 
-    Substituted values are never scanned again, so an answer containing
-    `{{expected}}` or `{{nonce}}` stays literal.
+    `{{now}}` is rendered first, into the template and the reference only
+    (both are platform or dataset text). The data placeholders then go in one
+    pass and are never scanned again, so an answer containing `{{expected}}`,
+    `{{nonce}}` or `{{now}}` stays literal.
     """
+    template = template.replace("{{now}}", now)
     values = {
         "input": input,
-        "expected": expected,
+        "expected": expected.replace("{{now}}", now),
         "output": output[:MAX_OUTPUT_CHARS],
         "nonce": nonce,
     }
