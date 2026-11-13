@@ -353,6 +353,37 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     assert "promotion not affected" in completed[0][3]
 
 
+def test_completed_event_names_the_failed_case_ids(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed", "failed", "failed"])
+    f.batch.finish(name)
+    loop.run_once()
+    completed = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_COMPLETED][0]
+    assert "failed: c1, c2" in completed
+
+
+def test_completed_event_caps_the_failed_list_at_1000_chars(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["failed"] * 200)
+    f.batch.finish(name)
+    loop.run_once()
+    completed = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_COMPLETED][0]
+    assert len(completed) <= 1000
+    listed, more = completed.split("; failed: ", 1)[1].rsplit(" +", 1)
+    assert more.endswith(" more")
+    assert len(listed.split(", ")) + int(more.split()[0]) == 200
+
+
 def test_run_cut_short_by_the_deadline_says_so_in_the_event(settings, harness_settings, catalog, metrics):
     d = decl()
     loop, f = build(settings, harness_settings, catalog, metrics, [d])

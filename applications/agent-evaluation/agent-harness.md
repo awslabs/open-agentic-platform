@@ -285,7 +285,7 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 | Reason | Type | Meaning |
 |---|---|---|
 | `HarnessRunStarted` | Normal | a run started for a revision (`first-revision`, `new-revision` or `rollback`; a re-run says `run <n>`) |
-| `HarnessRunCompleted` | Normal | `revision <hash>: <passed>/<cases> passed on <dataset> (<errors> errors)` |
+| `HarnessRunCompleted` | Normal | `revision <hash>: <passed>/<cases> passed on <dataset> (<errors> errors)`, then the run deadline note and the expectTools note when they apply, then `; failed: <id>, <id>` naming every failed case (the message is capped at 1000 characters, `+N more` for the rest; errored cases keep the count only) |
 | `HarnessRunFailed` | Warning | the run errored (preview unreachable, dataset invalid, every case errored, timeout) |
 | `HarnessRunSuperseded` | Normal | the revision moved during the run; the result was discarded |
 | `UnknownDataset` | Warning | the dataset name is not in the platform catalog |

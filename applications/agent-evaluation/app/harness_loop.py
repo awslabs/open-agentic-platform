@@ -125,6 +125,32 @@ def _finished_condition(job):
     return None, None
 
 
+MAX_EVENT_MESSAGE_CHARS = 1000
+
+
+def _with_failed_ids(message: str, run: RunResult) -> str:
+    """Append "; failed: id1, id2" so a team sees which cases to look at.
+
+    Capped at MAX_EVENT_MESSAGE_CHARS with "+N more". Errored cases keep the
+    count only: they say nothing about the revision.
+    """
+    failed = [c.id for c in run.case_results if c.status == "failed"]
+    if not failed:
+        return message
+    shown: list[str] = []
+    for index, case_id in enumerate(failed):
+        rest = len(failed) - index - 1
+        candidate = f"{message}; failed: {', '.join(shown + [case_id])}"
+        more = f" +{rest} more" if rest else ""
+        if len(candidate + more) > MAX_EVENT_MESSAGE_CHARS:
+            break
+        shown.append(case_id)
+    hidden = len(failed) - len(shown)
+    if not shown:
+        return f"{message}; failed: +{hidden} more"[:MAX_EVENT_MESSAGE_CHARS]
+    return f"{message}; failed: {', '.join(shown)}" + (f" +{hidden} more" if hidden else "")
+
+
 def _ts(value) -> float | None:
     if value is None:
         return None
@@ -706,8 +732,9 @@ class HarnessLoop:
                 decl.namespace,
                 decl.configmap,
                 events.REASON_HARNESS_RUN_COMPLETED,
-                f"revision {run.revision}: {run.passed}/{run.cases} passed on "
-                f"{run.dataset} ({run.errors} errors)"
+                _with_failed_ids(
+                    f"revision {run.revision}: {run.passed}/{run.cases} passed on "
+                    f"{run.dataset} ({run.errors} errors)"
                 # A completed run carries an error only when the run deadline
                 # cut it short: say so, the ratio covers the judged cases only.
                 + (f"; {run.error}" if run.error else "")
@@ -716,7 +743,9 @@ class HarnessLoop:
                     if run.expect_tools_ignored
                     else ""
                 )
-                + ", report mode: promotion not affected",
+                    + ", report mode: promotion not affected",
+                    run,
+                ),
             )
         else:
             self._recorder.warn(
