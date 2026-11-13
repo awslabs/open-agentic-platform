@@ -340,7 +340,8 @@ class HarnessLoop:
             self._core.replace_namespaced_secret(
                 name=self._h.judge_key_secret, namespace=self._s.namespace, body=body
             )
-        logger.info("harness judge key Secret %s updated", self._h.judge_key_secret)
+        # No Secret name or value in the log (code-scanning alert #7).
+        logger.info("harness judge key stored for the runner Jobs")
 
     def _ensure_judge_key(self, owner: dict | None, delete_stale: bool = True) -> bool:
         if not self._h.judge_key_mint:
@@ -368,9 +369,16 @@ class HarnessLoop:
             )
             self._write_secret(value, vk_name(*config), owner)
             return True
-        except (BifrostAdminError, ApiException) as exc:
-            # Never log the key; the exception messages carry none.
+        except BifrostAdminError as exc:
+            # Our own messages: method, path and status, never a key value.
             logger.warning("harness judge key unavailable: %s", exc)
+            return False
+        except ApiException as exc:
+            # Status and reason only: an ApiException's text carries the API
+            # server's response body for the Secret request.
+            logger.warning(
+                "harness judge key unavailable: Kubernetes API %s %s", exc.status, exc.reason
+            )
             return False
 
     # ── the pass ─────────────────────────────────────────────────────────

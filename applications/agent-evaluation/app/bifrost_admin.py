@@ -220,6 +220,7 @@ class BifrostAdmin:
 
         for key in keys:
             if key.get("name") != name and delete_stale:
-                logger.info("deleting stale harness judge key %s", key.get("name"))
+                # Nothing read from the key object is logged: it holds the value.
+                logger.info("deleting a stale harness judge key (older configuration)")
                 self.delete_key(key.get("id"))
         return value
