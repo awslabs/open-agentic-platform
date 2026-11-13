@@ -1274,8 +1274,8 @@ when the Job calls the Service, so a change in between (for example to
 `ExternalName`, up to `readyTimeoutSeconds` later) is not caught. A team that
 controls its namespace can also attach hand-made EndpointSlices to the Service,
 and an EndpointSlice can list any address, so the Job in the platform namespace
-can be aimed at any IP and port it can reach. The Job sends only the fixed case
-input and carries no credential (no judge key, no Langfuse key) to that target.
+can be aimed at any IP and port it can reach. It sends that target only the
+fixed case input, with no credential the agent does not already receive.
 
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
