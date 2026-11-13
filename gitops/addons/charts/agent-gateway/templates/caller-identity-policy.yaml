@@ -17,6 +17,13 @@
 # that). Restricting agent ingress to agentgateway-system is the cluster operator's
 # NetworkPolicy; this platform does not ship one yet.
 #
+# Such a NetworkPolicy must also allow the agent harness, or every harness run turns
+# into case errors: its Jobs call the agent's `<agent>-preview` Service directly,
+# not through the gateway. Allow ingress from namespace `agent-evaluation` (the
+# agent-evaluation addon's namespace; the harness Job pods carry the label
+# `harness.oap.io/run: "true"`) to TCP 8083. Those calls send no X-Forwarded-User
+# (each case runs as an anonymous caller with no memory, by design).
+#
 # Scoped to the Gateway, like jwt-policy.yaml, so both hops are covered: client ->
 # agent, and agent -> MCP server or other agent.
 #
