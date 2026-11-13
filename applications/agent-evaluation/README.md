@@ -233,7 +233,7 @@ usually needs a handoff. For whoever holds those credentials:
 # 1. Authenticate to the public registry (public ECR is always us-east-1,
 #    whatever region the cluster is in).
 aws ecr-public get-login-password --region us-east-1 \
-  | podman login --username AWS --password-stdin public.ecr.aws
+  | docker login --username AWS --password-stdin public.ecr.aws
 
 # 2. Confirm the alias is reachable from these credentials. It must list
 #    z0a4o2j5; if it does not, these are the wrong credentials.
@@ -261,7 +261,7 @@ repository in your own account before publishing:
 ```bash
 aws ecr create-repository --repository-name agent-evaluation --region <region>
 aws ecr get-login-password --region <region> \
-  | podman login --username AWS --password-stdin \
+  | docker login --username AWS --password-stdin \
       <account>.dkr.ecr.<region>.amazonaws.com
 
 VERSION=<tag> REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com ./build.sh --push

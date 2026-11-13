@@ -82,14 +82,22 @@ for t in "${TAGS[@]+"${TAGS[@]}"}"; do
   [[ -n "$t" ]] && TAG_ARGS+=(--tag "${IMAGE}:${t}")
 done
 
+# The aws CLI is needed only for an ECR host, so a push to any other registry
+# (logged in with `docker login`) works without it.
+need_aws() {
+  command -v aws >/dev/null || die "aws CLI not found (needed for ECR login; pass --no-login to skip)"
+}
+
 ecr_login() {
   local host="${REGISTRY%%/*}" region
   if [[ "$host" =~ ^[0-9]{12}\.dkr\.ecr(-fips)?\.([a-z0-9-]+)\.amazonaws\.com(\.cn)?$ ]]; then
+    need_aws
     region="${BASH_REMATCH[2]}"
     echo "==> logging in to ${host} (region ${region})"
     aws ecr get-login-password --region "$region" |
       docker login --username AWS --password-stdin "$host"
   elif [[ "$host" == "public.ecr.aws" ]]; then
+    need_aws
     # ECR Public's auth endpoint only exists in us-east-1.
     echo "==> logging in to public.ecr.aws"
     aws ecr-public get-login-password --region us-east-1 |
@@ -98,7 +106,6 @@ ecr_login() {
 }
 
 if [[ "$PUSH" == true && "$ECR_LOGIN" == auto ]]; then
-  command -v aws >/dev/null || die "aws CLI not found (needed for ECR login; pass --no-login to skip)"
   ecr_login
 fi
 
@@ -108,7 +115,20 @@ if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
   echo "==> creating buildx builder ${BUILDER}"
   docker buildx create --name "$BUILDER" --driver docker-container >/dev/null
 fi
-docker buildx inspect "$BUILDER" --bootstrap >/dev/null
+
+# A builder lists only the platforms it can run: the native one, plus each arch
+# with a binfmt emulator registered. Without the emulator a cross build fails
+# deep inside the first RUN step with "exec format error", so check up front.
+builder_platforms="$(docker buildx inspect "$BUILDER" --bootstrap |
+  sed -n 's/^Platforms:[[:space:]]*//p' | tr -d ' ' | tr ',' '\n')"
+IFS=',' read -r -a requested <<<"$PLATFORMS"
+for p in "${requested[@]}"; do
+  p="${p// /}"
+  if ! grep -qxF "$p" <<<"$builder_platforms"; then
+    arch="${p#*/}"
+    die "builder ${BUILDER} cannot build ${p} (no binfmt emulator for it); install one with: docker run --privileged --rm tonistiigi/binfmt --install ${arch%%/*}"
+  fi
+done
 
 OUTPUT_ARGS=()
 if [[ "$PUSH" == true ]]; then
