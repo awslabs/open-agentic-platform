@@ -1262,3 +1262,41 @@ def test_no_free_slot_still_stops_the_replaced_run(settings, harness_settings, c
     assert old in f.batch.deleted
     assert len(f.batch.created) == 2
     assert REASON_HARNESS_RUN_SUPERSEDED in [n[2] for n in f.events.normals]
+
+
+def test_aborted_rollout_stops_the_active_run_and_publishes_nothing(
+    settings, harness_settings, catalog, metrics
+):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+
+    f.custom.set_rollout("team-a", "assistant", "rev1", abort=True)
+    loop.run_once()
+
+    assert name in f.batch.deleted
+    superseded = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_SUPERSEDED]
+    assert superseded and "aborted" in superseded[0]
+    assert len(f.batch.created) == 1  # nothing starts while aborted
+    loop.run_once()
+    assert len(f.batch.created) == 1
+    assert info_labels(metrics) == []
+
+
+def test_run_that_finished_after_an_abort_is_discarded(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed", "passed"])
+    f.batch.finish(name)
+    f.custom.set_rollout("team-a", "assistant", "rev1", abort=True)
+    loop.run_once()
+
+    assert name in f.batch.deleted
+    assert REASON_HARNESS_RUN_COMPLETED not in [n[2] for n in f.events.normals]
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None

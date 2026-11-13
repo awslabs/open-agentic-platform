@@ -1469,6 +1469,10 @@ with the change and bumping its pin makes both clauses effective.
   uses what this process saw, so after a reconciler restart a run already
   finished is taken as it is. Gate mode needs an exact check ("Follow-up for
   gate mode" at the start of §4b).
+- **Aborted Rollout:** `status.abort: true` counts as a moved preview (Argo
+  scales the aborted revision away). The agent's active runs are stopped and
+  superseded ("the rollout was aborted"), a run that finished after the abort
+  is discarded the same way, and nothing starts until the Rollout moves on.
 - **Pruning:** finished Jobs and their result ConfigMaps are kept to
   `harness.historyLimit` (default 3) per agent, and removed when the agent's
   `<agent>-harness` ConfigMap goes away.

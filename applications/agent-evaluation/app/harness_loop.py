@@ -168,6 +168,22 @@ def _with_failed_ids(message: str, run: RunResult) -> str:
     return f"{message}; failed: {', '.join(shown)}" + (f" +{hidden} more" if hidden else "")
 
 
+def _preview_of(rollout) -> str | None:
+    """The pod hash the preview Service selects; None when there is none.
+
+    An aborted Rollout (`status.abort`) counts as a moved preview: Argo
+    scales the aborted revision away, so nothing previewed is that revision.
+    """
+    status = (rollout or {}).get("status") or {}
+    if status.get("abort"):
+        return None
+    return (status.get("blueGreen") or {}).get("previewSelector")
+
+
+def _aborted(rollout) -> bool:
+    return bool(((rollout or {}).get("status") or {}).get("abort"))
+
+
 def _ts(value) -> float | None:
     if value is None:
         return None
@@ -457,9 +473,20 @@ class HarnessLoop:
             if exc.status == 404:
                 return  # not deployed yet
             raise
+        if _aborted(rollout):
+            # The revision under preview was aborted: a run of it measures
+            # pods that are going away. Stop this agent's active runs, start
+            # nothing until the Rollout moves on.
+            active_here = [
+                j
+                for j in jobs
+                if _agent_key(j) == decl.key and _finished_condition(j)[0] is None
+            ]
+            self._stop(decl, active_here, jobs, "the rollout was aborted")
+            return
         status = (rollout or {}).get("status") or {}
         revision = status.get("currentPodHash")
-        preview = (status.get("blueGreen") or {}).get("previewSelector")
+        preview = _preview_of(rollout)
         if not revision or preview != revision:
             return  # the preview Service does not select the newest ReplicaSet yet
 
@@ -503,7 +530,7 @@ class HarnessLoop:
         if active >= self._h.max_concurrent_jobs:
             # No slot even so: stop them now (their cases would reach the new
             # pods) and wait for a slot.
-            self._stop(decl, to_stop, jobs, revision)
+            self._stop(decl, to_stop, jobs, f"revision {revision} replaced it")
             logger.info(
                 "harness: %s revision %s waits, %d runs active", decl.key, revision, active
             )
@@ -525,7 +552,7 @@ class HarnessLoop:
         # Stopped only after the create succeeded: the in-between run's Job is
         # the record a rollback re-run is decided from, so a failed create
         # must leave it in place for the next pass.
-        self._stop(decl, to_stop, jobs, revision)
+        self._stop(decl, to_stop, jobs, f"revision {revision} replaced it")
         run_text = f" run {run_number}" if run_number != 1 else ""
         self._recorder.normal(
             decl.namespace,
@@ -535,8 +562,8 @@ class HarnessLoop:
             f"{decl.dataset} ({trigger}, report mode: promotion not affected)",
         )
 
-    def _stop(self, decl: HarnessDeclaration, to_stop: list, jobs: list, revision: str) -> None:
-        """Delete active runs that revision `revision` replaces; each is superseded."""
+    def _stop(self, decl: HarnessDeclaration, to_stop: list, jobs: list, why: str) -> None:
+        """Delete active runs that no longer measure their revision; each is superseded."""
         for job in to_stop:
             self._batch.delete_namespaced_job(
                 name=job.metadata.name,
@@ -547,7 +574,7 @@ class HarnessLoop:
             self._record_superseded(
                 decl,
                 f"harness run for revision {_labels(job).get(LABEL_REVISION)} "
-                f"was stopped: revision {revision} replaced it",
+                f"was stopped: {why}",
             )
 
     def job_body(
@@ -792,17 +819,21 @@ class HarnessLoop:
                 undecided.add(name)
                 ok = False
                 continue
-            status = (rollout or {}).get("status") or {}
-            preview = (status.get("blueGreen") or {}).get("previewSelector")
+            aborted = _aborted(rollout)
+            preview = _preview_of(rollout)
             revision = labels.get(LABEL_REVISION)
-            if not preview or preview == revision:
+            if not aborted and (not preview or preview == revision):
                 continue
             self._delete_job(name, results)
             jobs.remove(job)
             self._record_superseded(
                 by_key.get(_agent_key(job)),
-                f"harness run for revision {revision} was discarded: it finished after "
-                f"revision {preview} replaced it in the preview",
+                f"harness run for revision {revision} was discarded: "
+                + (
+                    "the rollout was aborted before it finished"
+                    if aborted
+                    else f"it finished after revision {preview} replaced it in the preview"
+                ),
             )
         return ok
 
