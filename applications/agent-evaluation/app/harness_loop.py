@@ -772,6 +772,8 @@ class HarnessLoop:
                     errors=run.errors if completed else None,
                     pass_ratio=run.pass_ratio if completed else None,
                     threshold_met=threshold_met,
+                    dataset_digest=run.dataset_digest,
+                    checks_digest=run.checks_digest,
                 )
             )
         self._metrics.publish_harness(rows)

@@ -10,7 +10,7 @@ import respx
 
 from app.a2a_client import AgentCallError, AgentReply
 from app.datasets import Case, Dataset
-from app.harness_config import Check, RunnerSettings, load_checks
+from app.harness_config import Check, RunnerSettings, checks_digest, load_checks
 from app.harness_results import (
     RESULT_SCHEMA,
     ResultSchemaError,
@@ -471,3 +471,36 @@ def test_parse_result_reports_wrong_typed_fields_as_a_schema_error(mutate):
     mutate(raw)
     with pytest.raises(ResultSchemaError):
         parse_result({"result.json": json.dumps(raw)})
+
+
+def test_run_records_the_dataset_and_checks_digests(harness_dirs):
+    result = run(
+        runner_settings(datasets_dir=harness_dirs.datasets),
+        CHECKS,
+        agent_fn({"What time is it in UTC?": "good", "Define latency in one sentence.": "good"}),
+        judge_fn({"good": 1.0}),
+        reachable_fn=lambda timeout: True,
+    )
+    assert result.status == "completed"
+    assert len(result.dataset_digest) == 12
+    assert result.checks_digest == checks_digest([CHECKS["expected-answer"]])
+    raw = json.loads(to_configmap_data(result)["result.json"])
+    assert raw["datasetDigest"] == result.dataset_digest
+    assert raw["checksDigest"] == result.checks_digest
+    assert parse_result(to_configmap_data(result)) == result
+
+
+def test_checks_digest_follows_prompt_and_pass_score():
+    base = checks_digest([Check("expected-answer", "p", 0.7)])
+    assert base == checks_digest([Check("expected-answer", "p", 0.7)])
+    assert base != checks_digest([Check("expected-answer", "p!", 0.7)])
+    assert base != checks_digest([Check("expected-answer", "p", 0.8)])
+
+
+def test_a_result_without_digests_still_parses():
+    agent = agent_fn({"input a": "good"})
+    result = run_cases(dataset("a"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
+    raw = json.loads(to_configmap_data(result)["result.json"])
+    del raw["datasetDigest"], raw["checksDigest"]
+    parsed = parse_result({"result.json": json.dumps(raw)})
+    assert (parsed.dataset_digest, parsed.checks_digest) == ("", "")

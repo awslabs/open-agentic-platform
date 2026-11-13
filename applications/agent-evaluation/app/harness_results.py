@@ -25,6 +25,7 @@ RESULT_KEY = "result.json"
 MAX_REASON_CHARS = 300
 
 CASE_STATUSES = ("passed", "failed", "error")
+OPTIONAL_KEYS = ("dataset_digest", "checks_digest")
 RUN_STATUSES = ("completed", "error")
 
 
@@ -72,6 +73,10 @@ class RunResult:
     threshold_met: bool | None
     expect_tools_ignored: bool
     case_results: tuple[CaseResult, ...]
+    # What exactly was run: dataset file and check prompts, 12 hex sha256
+    # each. "" when unknown (an errored run before loading, an older result).
+    dataset_digest: str = ""
+    checks_digest: str = ""
 
 
 def summarize(
@@ -92,6 +97,8 @@ def summarize(
     status: str = "completed",
     error: str | None = None,
     expect_tools_ignored: bool = False,
+    dataset_digest: str = "",
+    checks_digest: str = "",
 ) -> RunResult:
     case_results = tuple(case_results)
     cases = len(case_results)
@@ -132,6 +139,8 @@ def summarize(
         threshold_met=threshold_met,
         expect_tools_ignored=expect_tools_ignored,
         case_results=case_results,
+        dataset_digest=dataset_digest,
+        checks_digest=checks_digest,
     )
 
 
@@ -180,6 +189,10 @@ def parse_result(data: dict | None) -> RunResult:
 
     values: dict = {}
     for f in fields(RunResult):
+        if f.name in OPTIONAL_KEYS:
+            # Added after v1 shipped: a result written before has none.
+            values[f.name] = str(raw.get(_camel(f.name)) or "")
+            continue
         values[f.name] = _need(raw, _camel(f.name), "result")
     if values["status"] not in RUN_STATUSES:
         raise ResultSchemaError(f"result status {values['status']!r} is not known")

@@ -86,6 +86,15 @@ def test_unknown_case_key_is_an_error(tmp_path):
         load_dataset(write(tmp_path, body), max_cases=50)
 
 
+def test_digest_is_stable_and_changes_on_a_one_character_edit(tmp_path):
+    first = load_dataset(write(tmp_path, VALID), max_cases=50).digest
+    again = load_dataset(write(tmp_path, VALID), max_cases=50).digest
+    edited = load_dataset(write(tmp_path, VALID.replace("hello", "hellp")), max_cases=50).digest
+    assert len(first) == 12 and int(first, 16) >= 0
+    assert first == again
+    assert edited != first
+
+
 def test_available_datasets_reads_file_stems(tmp_path):
     write(tmp_path, VALID)
     (tmp_path / "broken.yaml").write_text(":::")

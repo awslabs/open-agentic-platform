@@ -16,6 +16,7 @@ published to Langfuse.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -280,6 +281,18 @@ def load_runner_settings() -> RunnerSettings:
         ),
         judge_virtual_key=_read_secret_file(f"{credentials_dir}/{JUDGE_KEY_FILE}"),
     )
+
+
+def checks_digest(checks) -> str:
+    """sha256 over `name\0casePassScore\0prompt` of each check, in declared order.
+
+    First 12 hex characters, like the dataset digest: a prompt or pass-score
+    change shows up on the run without a check rename.
+    """
+    h = hashlib.sha256()
+    for check in checks:
+        h.update(f"{check.name}\0{check.case_pass_score}\0{check.prompt}\0".encode("utf-8"))
+    return h.hexdigest()[:12]
 
 
 def load_checks(path: str) -> dict[str, Check]:

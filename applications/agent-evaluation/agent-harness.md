@@ -308,7 +308,9 @@ kubectl get cm <job>-result -n agent-evaluation -o jsonpath='{.data.result\.json
 `checks`, `threshold`, `mode`, `trigger`, `judgeModel`, `judgeKeyPresent`,
 `startedAt`, `finishedAt`, `status` (`completed` or `error`), `error`, `cases`,
 `passed`, `failed`, `errors`, `passRatio`, `thresholdMet`,
-`expectToolsIgnored`, and `caseResults[]` with `id`, `status`
+`expectToolsIgnored`, `datasetDigest` and `checksDigest` (12 hex characters of
+sha256 over the dataset file and over the selected check prompts and pass
+scores; absent in results written before they existed), and `caseResults[]` with `id`, `status`
 (`passed`/`failed`/`error`), `score`, `reason` (judge reasoning, at most 300
 characters), `latencyMs`, `tags`.
 
@@ -321,7 +323,7 @@ characters), `latencyMs`, `tags`.
 | `oap_agent_harness_threshold` | your declared threshold |
 | `oap_agent_harness_threshold_met` | 1 when `pass_ratio >= threshold`, informational |
 | `oap_agent_harness_last_run_timestamp_seconds` | when the latest run finished |
-| `oap_agent_harness_info` | always 1, extra labels `revision`, `mode`, `judge_model`, `trigger`, `status` |
+| `oap_agent_harness_info` | always 1, extra labels `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` (a dataset or prompt edited without a rename shows as a new digest) |
 | `oap_agent_harness_judge_key_present` | label `cluster` only; 1 when the judge key is available |
 | `oap_agent_harness_runs_total` | labels `cluster`, `result` (`completed`, `error`, `superseded`) |
 

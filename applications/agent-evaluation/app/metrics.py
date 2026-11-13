@@ -35,6 +35,8 @@ HARNESS_INFO_LABELS = HARNESS_LABELS + (
     "judge_model",
     "trigger",
     "status",
+    "dataset_digest",
+    "checks_digest",
 )
 
 
@@ -175,8 +177,9 @@ class Metrics:
         )
         self.harness_info = Gauge(
             "oap_agent_harness_info",
-            "Always 1. Revision, mode, judge model, trigger and status of the "
-            "latest finished harness run. Report mode: never blocks promotion.",
+            "Always 1. Revision, mode, judge model, trigger, status and the "
+            "dataset and check-prompt digests of the latest finished harness "
+            "run. Report mode: never blocks promotion.",
             HARNESS_INFO_LABELS,
             registry=r,
         )
@@ -221,6 +224,8 @@ class Metrics:
                 row.judge_model,
                 row.trigger,
                 row.status,
+                row.dataset_digest,
+                row.checks_digest,
             ).set(1)
             self.harness_threshold.labels(*labels).set(row.threshold)
             self.harness_last_run.labels(*labels).set(row.last_run_timestamp)
@@ -334,6 +339,9 @@ class HarnessRow:
     errors: int | None
     pass_ratio: float | None
     threshold_met: bool | None
+    # "" when the run carries none (errored before loading, older result).
+    dataset_digest: str = ""
+    checks_digest: str = ""
 
 
 @dataclass(frozen=True)

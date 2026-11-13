@@ -310,7 +310,10 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     f.custom.set_rollout("team-a", "assistant", "rev1")
     loop.run_once()
     name = f.batch.created[0]["metadata"]["name"]
-    write_result(f.core, name, d, "rev1", ["passed", "passed", "failed", "error"])
+    write_result(
+        f.core, name, d, "rev1", ["passed", "passed", "failed", "error"],
+        dataset_digest="0123456789ab", checks_digest="ba9876543210",
+    )
     f.batch.finish(name)
 
     loop.run_once()
@@ -337,6 +340,8 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
             "judge_model": "us.amazon.nova-pro-v1:0",
             "trigger": "first-revision",
             "status": "completed",
+            "dataset_digest": "0123456789ab",
+            "checks_digest": "ba9876543210",
         },
     ) == 1
     assert metrics.registry.get_sample_value(
@@ -700,6 +705,8 @@ def test_history_limit_prunes_the_oldest(settings, harness_settings, catalog, me
             "judge_model": "us.amazon.nova-pro-v1:0",
             "trigger": "new-revision",
             "status": "completed",
+            "dataset_digest": "",
+            "checks_digest": "",
         },
     ) == 1
 
@@ -818,6 +825,8 @@ def test_revision_that_becomes_current_again_gets_a_fresh_run(
             "judge_model": "us.amazon.nova-pro-v1:0",
             "trigger": "rollback",
             "status": "completed",
+            "dataset_digest": "",
+            "checks_digest": "",
         },
     ) == 1
     assert len(info_labels(metrics)) == 1

@@ -9,6 +9,7 @@ a truncated or empty run that would read as a result.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ import yaml
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$")
 MAX_NAME_LEN = 63
 MAX_CASE_ID_LEN = 40
+DIGEST_CHARS = 12
 # Every key a case may carry. Anything else is an error: a typo such as
 # `expectTool` would otherwise be dropped silently and read as checked.
 CASE_KEYS = frozenset({"id", "input", "expected", "expectTools", "tags"})
@@ -44,6 +46,9 @@ class Dataset:
     name: str
     description: str
     cases: tuple[Case, ...]
+    # sha256 of the file bytes, first 12 hex characters. A case edited without
+    # a name bump shows up as a new digest on the run.
+    digest: str = ""
 
     @property
     def uses_expect_tools(self) -> bool:
@@ -61,9 +66,12 @@ def _str_list(value, where: str) -> tuple[str, ...]:
 def load_dataset(path: str | Path, max_cases: int) -> Dataset:
     path = Path(path)
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = path.read_bytes()
+        raw = yaml.safe_load(data.decode("utf-8"))
     except OSError as exc:
         raise DatasetError(f"cannot read dataset {path.name}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise DatasetError(f"dataset {path.name} is not UTF-8: {exc}") from exc
     except yaml.YAMLError as exc:
         raise DatasetError(f"dataset {path.name} is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
@@ -145,6 +153,7 @@ def load_dataset(path: str | Path, max_cases: int) -> Dataset:
         name=name,
         description=str(raw.get("description") or ""),
         cases=tuple(cases),
+        digest=hashlib.sha256(data).hexdigest()[:DIGEST_CHARS],
     )
 
 

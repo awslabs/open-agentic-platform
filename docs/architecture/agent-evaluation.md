@@ -1336,7 +1336,7 @@ series.
 | `oap_agent_harness_threshold` | | the agent's declared threshold |
 | `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold` (the declared threshold). Informational only |
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
-| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status` | always 1; `trigger` is `first-revision`, `new-revision` or `rollback`, `status` `completed` or `error` |
+| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `trigger` is `first-revision`, `new-revision` or `rollback`, `status` `completed` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
 | `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `error`, `superseded` |
 

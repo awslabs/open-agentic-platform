@@ -40,7 +40,13 @@ import httpx
 from .a2a_client import AgentCallError, context_id_for, send_message, wait_until_reachable
 from .config import ConfigError
 from .datasets import Case, Dataset, DatasetError, load_dataset
-from .harness_config import Check, RunnerSettings, load_checks, load_runner_settings
+from .harness_config import (
+    Check,
+    RunnerSettings,
+    checks_digest,
+    load_checks,
+    load_runner_settings,
+)
 from .harness_results import (
     MAX_REASON_CHARS,
     CaseResult,
@@ -279,6 +285,8 @@ def run_cases(
             else None
         ),
         expect_tools_ignored=dataset.uses_expect_tools,
+        dataset_digest=dataset.digest,
+        checks_digest=checks_digest(selected),
     )
 
 
