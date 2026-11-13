@@ -22,7 +22,7 @@ global:
   # adds supervisor delegation (docs/agent-delegation/DESIGN.md §9 "Image
   # contract"). THE IMAGE VERSION LINE: keep this tag in step with version in applications/strands-agent-base/pyproject.toml,
   # which the build scripts there use as their default IMAGE_TAG.
-  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0-rc.1
+  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
