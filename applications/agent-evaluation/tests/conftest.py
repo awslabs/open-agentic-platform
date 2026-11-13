@@ -369,6 +369,7 @@ class FakeCore:
             metadata=SimpleNamespace(
                 name=meta["name"],
                 namespace=meta["namespace"],
+                uid=meta.get("uid"),
                 labels=dict(meta.get("labels") or {}),
                 annotations=dict(meta.get("annotations") or {}),
                 owner_references=[

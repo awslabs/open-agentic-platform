@@ -31,6 +31,8 @@ from tests.conftest import (
 )
 
 PLATFORM_NS = "agent-evaluation"
+CATALOG_UID = "uid-harness-catalog"
+CATALOG_NAME = "agent-evaluation-harness-catalog"
 
 
 def decl(agent="assistant", namespace="team-a", dataset="example-smoke-v1", threshold=0.5):
@@ -67,6 +69,20 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
         batch=FakeBatch(), custom=FakeCustomObjects(), core=FakeCore(), events=FakeEvents()
     )
     fakes.reader = FakeReader(declarations, malformed)
+    # The chart's catalog ConfigMap: owner of the Jobs and the judge Secret.
+    if (PLATFORM_NS, harness_settings.catalog_configmap) not in fakes.core.configmaps:
+        fakes.core.create_namespaced_config_map(
+            PLATFORM_NS,
+            {
+                "metadata": {
+                    "name": harness_settings.catalog_configmap,
+                    "namespace": PLATFORM_NS,
+                    "uid": CATALOG_UID,
+                    "labels": {},
+                },
+                "data": {},
+            },
+        )
     loop = HarnessLoop(
         settings,
         harness_settings,
@@ -139,6 +155,25 @@ def write_result(
     )
 
 
+def loop_key_name(loop, harness_settings) -> str:
+    """The Bifrost key name the loop writes on the Secret for its config."""
+    from app.bifrost_admin import vk_name
+
+    h = harness_settings
+    return vk_name(
+        h.judge_allowed_models or (loop.judge_model,),
+        h.judge_budget_usd,
+        h.judge_budget_reset,
+        h.judge_rate_limit_requests,
+        h.judge_rate_limit_reset,
+    )
+
+
+def result_configmaps(f) -> dict:
+    """The ConfigMaps in the fake, minus the chart's catalog ConfigMap."""
+    return {k: v for k, v in f.core.configmaps.items() if k[1] != CATALOG_NAME}
+
+
 def sample(metrics, name, agent="assistant", namespace="team-a", dataset="example-smoke-v1"):
     return metrics.registry.get_sample_value(
         name, {"cluster": "dev", "namespace": namespace, "agent": agent, "dataset": dataset}
@@ -192,6 +227,52 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     secret = f.core.secrets[(PLATFORM_NS, "agent-evaluation-harness-judge-key")]
     assert base64.b64decode(secret.data["BIFROST_VIRTUAL_KEY"]).decode() == "sk-bf-judge"
     assert metrics.registry.get_sample_value("oap_agent_harness_judge_key_present", {"cluster": "dev"}) == 1
+
+
+def test_job_and_judge_secret_are_owned_by_the_catalog_configmap(
+    settings, harness_settings, catalog, metrics
+):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once()
+    owner = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "name": CATALOG_NAME,
+        "uid": CATALOG_UID,
+    }
+    assert f.batch.created[0]["metadata"]["ownerReferences"] == [owner]
+    secret = f.core.secrets[(PLATFORM_NS, "agent-evaluation-harness-judge-key")]
+    assert [r.uid for r in secret.metadata.owner_references] == [CATALOG_UID]
+
+
+def test_judge_secret_without_an_owner_is_rewritten_once(
+    settings, harness_settings, catalog, metrics
+):
+    loop, f = build(settings, harness_settings, catalog, metrics, [])
+    f.core.create_namespaced_secret(
+        PLATFORM_NS,
+        {
+            "metadata": {
+                "name": "agent-evaluation-harness-judge-key",
+                "namespace": PLATFORM_NS,
+                "annotations": {"harness.oap.io/judge-key-name": loop_key_name(loop, harness_settings)},
+            },
+            "data": {"BIFROST_VIRTUAL_KEY": base64.b64encode(b"sk-bf-judge").decode()},
+        },
+    )
+    loop.run_once()
+    loop.run_once()
+    assert f.core.secret_writes == ["create", "replace"]
+
+
+def test_missing_catalog_configmap_creates_no_job(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    del f.core.configmaps[(PLATFORM_NS, CATALOG_NAME)]
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once() is False
+    assert f.batch.created == []
+    assert f.core.secrets == {}
 
 
 def test_preview_selector_not_switched_yet_creates_no_job(settings, harness_settings, catalog, metrics):
@@ -659,7 +740,7 @@ def test_result_with_a_wrong_typed_field_is_an_errored_run_and_pruned(
     gone, _ = build(settings, harness_settings, catalog, metrics, [], fakes=f)
     gone.run_once()
     assert f.batch.jobs == {}
-    assert f.core.configmaps == {}
+    assert result_configmaps(f) == {}
 
 
 def test_unknown_dataset_creates_no_job(settings, harness_settings, catalog, metrics):
@@ -774,7 +855,7 @@ def test_declaration_removed_deletes_jobs_results_and_series(settings, harness_s
     gone.run_once()
 
     assert f.batch.jobs == {}
-    assert f.core.configmaps == {}
+    assert result_configmaps(f) == {}
     assert sample(metrics, "oap_agent_harness_pass_ratio") is None
     assert sample(metrics, "oap_agent_harness_cases") is None
 
@@ -998,7 +1079,7 @@ def test_rollback_history_limit_prunes_per_agent(settings, harness_settings, cat
     assert set(f.batch.jobs) == {other_job, second, rerun}
     assert first in f.batch.deleted
     # No result ConfigMap is left without its Job.
-    assert {name for (_, name) in f.core.configmaps} == {
+    assert {name for (_, name) in result_configmaps(f)} == {
         result_configmap_name(j) for j in (other_job, second, rerun)
     }
     # The pruned first run does not make the re-run look stale: nothing reruns.

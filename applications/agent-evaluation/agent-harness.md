@@ -396,6 +396,19 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `checks.expected-answer.casePassScore` | 0.7 | judge score a case needs |
 | `runner.resources` | 50m / 128Mi request, 256Mi limit | Job container |
 
+**Turning the harness off.** Every harness Job and the judge-key Secret carry an
+`ownerReference` to the chart's `agent-evaluation-harness-catalog` ConfigMap,
+which renders only with `harness.enabled: true`; each result ConfigMap is owned
+by its Job. Set `harness.enabled: false` and, once Argo CD prunes the chart
+objects, the Kubernetes garbage collector deletes the Jobs, their results and
+the Secret. While the reconciler cannot read that ConfigMap it creates no Job
+and writes no Secret. The minted Bifrost virtual key is not a Kubernetes object,
+so delete it by hand: list the harness keys with
+`GET <bifrostAdminUrl>/api/governance/virtual-keys?search=oap-harness-judge-`
+(the reply includes the key values: print only `id` and `name`, as in 6.3)
+and delete each with `DELETE <bifrostAdminUrl>/api/governance/virtual-keys/<id>`
+(`bifrostAdminUrl` is `harness.judge.virtualKey.bifrostAdminUrl`).
+
 ### 4.2 Image and build
 
 One image runs both the reconciler and the harness Job. Build it with

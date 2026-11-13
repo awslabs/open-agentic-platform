@@ -1470,6 +1470,13 @@ with the change and bumping its pin makes both clauses effective.
 - **Pruning:** finished Jobs and their result ConfigMaps are kept to
   `harness.historyLimit` (default 3) per agent, and removed when the agent's
   `<agent>-harness` ConfigMap goes away.
+- **Harness turned off:** every Job and the judge-key Secret carry an
+  `ownerReference` to the chart's `agent-evaluation-harness-catalog` ConfigMap
+  (rendered only with `harness.enabled`; the ClusterRole already has `get` on
+  ConfigMaps). When Argo CD prunes it, the garbage collector deletes the Jobs,
+  their results (owned by the Jobs) and the Secret. While the reconciler cannot
+  read the owner it creates no Job and writes no Secret. The Bifrost virtual key
+  is not a Kubernetes object and is deleted by hand (agent-harness.md 4.1).
 - **First revision:** when no Job exists for the agent, the current revision runs
   as a baseline (`trigger="first-revision"`). On a first deploy `-preview` and
   `-stable` select the same, only, ReplicaSet: verified in argo-rollouts

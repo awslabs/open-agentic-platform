@@ -115,6 +115,13 @@ contracts: [§4b](../../../../docs/architecture/agent-evaluation.md#4b-the-agent
 Nothing below renders while `harness.enabled` is false; the only change to the
 disabled render is the `HARNESS_ENABLED: "false"` env var.
 
+Turning the harness off after it ran: the reconciler makes the catalog
+ConfigMap the owner of every harness Job and of the judge-key Secret (each
+result ConfigMap is owned by its Job), so once Argo CD prunes the catalog the
+garbage collector removes them. The minted Bifrost virtual key stays in
+Bifrost; delete it by hand as described in `agent-harness.md` ("Turning the
+harness off").
+
 | Renders | What |
 |---|---|
 | ConfigMap `agent-evaluation-harness-catalog` | `checks.yaml`: `harness.checks` with each prompt from `files/harness/checks/`. Fails the render on a missing prompt or a `casePassScore` outside [0, 1] |

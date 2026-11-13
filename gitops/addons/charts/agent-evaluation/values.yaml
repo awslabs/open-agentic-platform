@@ -252,6 +252,10 @@ catalog:
 # an agent namespace.
 harness:
   # Off by default. Nothing harness-specific renders while this is false.
+  # Turning it off after it was on: harness Jobs, their results and the judge
+  # key Secret are owned by the harness catalog ConfigMap, so the garbage
+  # collector deletes them once Argo prunes it. The minted Bifrost key is not
+  # a Kubernetes object: delete it by hand (agent-harness.md section 4.1).
   enabled: false
   # How often the harness loop looks for new revisions.
   intervalSeconds: 60

@@ -2,7 +2,10 @@
 
 Per pass:
 
-1. Make sure the harness judge virtual key exists (minted in this cluster's
+1. Read the chart's harness catalog ConfigMap: it owns every Job and the
+   judge-key Secret, so turning the harness off (Argo prunes it) lets the
+   garbage collector remove them. No owner, no new Job.
+   Make sure the harness judge virtual key exists (minted in this cluster's
    Bifrost) and is in the Secret the Jobs mount. Fail closed: while a required
    key is unavailable, no new Job is created.
 2. Read the `<agent>-harness` declarations.
@@ -219,32 +222,69 @@ class HarnessLoop:
     def judge_model(self) -> str:
         return self._catalog.judge_model(self._h.judge_alias or self._catalog.judge_default)
 
-    def _secret_state(self) -> tuple[str | None, str]:
-        """(value, key name) in the Secret; value is None when the Secret does not exist."""
+    def _owner_ref(self) -> dict | None:
+        """ownerReference to the chart's harness catalog ConfigMap, or None.
+
+        Every Job and the judge-key Secret are owned by this chart object,
+        which renders only with harness.enabled: when Argo prunes it (harness
+        turned off), the garbage collector deletes the Jobs, their results
+        (owned by the Jobs) and the Secret. None when it cannot be read: then
+        nothing that would outlive the chart is created.
+        """
+        try:
+            cm = self._core.read_namespaced_config_map(
+                name=self._h.catalog_configmap, namespace=self._s.namespace
+            )
+        except ApiException as exc:
+            logger.error(
+                "harness: cannot read the owner ConfigMap %s: %s %s",
+                self._h.catalog_configmap,
+                exc.status,
+                exc.reason,
+            )
+            return None
+        uid = getattr(cm.metadata, "uid", None)
+        if not uid:
+            logger.error("harness: owner ConfigMap %s has no uid", self._h.catalog_configmap)
+            return None
+        return {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "name": self._h.catalog_configmap,
+            "uid": uid,
+        }
+
+    def _secret_state(self) -> tuple[str | None, str, set]:
+        """(value, key name, owner uids) in the Secret; value is None when it does not exist."""
         try:
             secret = self._core.read_namespaced_secret(
                 name=self._h.judge_key_secret, namespace=self._s.namespace
             )
         except ApiException as exc:
             if exc.status == 404:
-                return None, ""
+                return None, "", set()
             raise
         meta = getattr(secret, "metadata", None)
         key_name = str((getattr(meta, "annotations", None) or {}).get(ANN_JUDGE_KEY_NAME, ""))
+        owners = {
+            getattr(ref, "uid", None) for ref in getattr(meta, "owner_references", None) or []
+        }
         raw = (getattr(secret, "data", None) or {}).get(JUDGE_KEY_FILE, "")
         try:
             value = base64.b64decode(raw).decode("utf-8") if raw else ""
         except (ValueError, UnicodeDecodeError):
             value = ""
-        return value, key_name
+        return value, key_name, owners
 
     def _secret_value(self) -> str | None:
         """Current key value in the Secret; None when the Secret does not exist."""
         return self._secret_state()[0]
 
-    def _write_secret(self, value: str, key_name: str) -> None:
-        current, current_name = self._secret_state()
-        if current == value and current_name == key_name:
+    def _write_secret(self, value: str, key_name: str, owner: dict) -> None:
+        current, current_name, owners = self._secret_state()
+        # Also rewritten when the owner is missing, so a Secret written before
+        # it had one is cleaned up with the chart too.
+        if current == value and current_name == key_name and owner["uid"] in owners:
             return
         body = {
             "apiVersion": "v1",
@@ -255,6 +295,7 @@ class HarnessLoop:
                 "namespace": self._s.namespace,
                 "labels": {"app.kubernetes.io/managed-by": MANAGED_BY},
                 "annotations": {ANN_JUDGE_KEY_NAME: key_name},
+                "ownerReferences": [dict(owner)],
             },
             "data": {JUDGE_KEY_FILE: base64.b64encode(value.encode()).decode()},
         }
@@ -266,14 +307,15 @@ class HarnessLoop:
             )
         logger.info("harness judge key Secret %s updated", self._h.judge_key_secret)
 
-    def _ensure_judge_key(self) -> bool:
+    def _ensure_judge_key(self, owner: dict | None) -> bool:
         if not self._h.judge_key_mint:
             try:
                 return bool(self._secret_value())
             except ApiException as exc:
                 logger.warning("cannot read harness judge key Secret: %s", exc.status)
                 return False
-        if self._bifrost is None:
+        if self._bifrost is None or owner is None:
+            # Without the owner a written Secret would outlive the chart.
             return False
         models = self._h.judge_allowed_models or (self.judge_model,)
         config = (
@@ -284,10 +326,10 @@ class HarnessLoop:
             self._h.judge_rate_limit_reset,
         )
         try:
-            current, current_name = self._secret_state()
+            current, current_name, _ = self._secret_state()
             known = (current_name, current) if current and current_name else None
             value = self._bifrost.ensure_judge_key(*config, known=known)
-            self._write_secret(value, vk_name(*config))
+            self._write_secret(value, vk_name(*config), owner)
             return True
         except (BifrostAdminError, ApiException) as exc:
             # Never log the key; the exception messages carry none.
@@ -301,7 +343,10 @@ class HarnessLoop:
         cluster = self._s.cluster
         ns = self._s.namespace
 
-        key_ok = self._ensure_judge_key()
+        owner = self._owner_ref()
+        if owner is None:
+            ok = False  # no Job without an owner (logged by _owner_ref)
+        key_ok = self._ensure_judge_key(owner)
         self._metrics.harness_judge_key_present.labels(cluster).set(1 if key_ok else 0)
         can_create = key_ok or not self._h.judge_key_required
         if not can_create:
@@ -345,6 +390,8 @@ class HarnessLoop:
 
         available = available_datasets(self._h.datasets_dir)
         for decl in declarations:
+            if owner is None:
+                break
             if not can_create:
                 self._recorder.warn(
                     decl.namespace,
@@ -355,7 +402,7 @@ class HarnessLoop:
                 )
                 continue
             try:
-                self._maybe_start(decl, jobs, results, available)
+                self._maybe_start(decl, jobs, results, available, owner)
             except ApiException as exc:
                 ok = False
                 logger.error(
@@ -385,7 +432,7 @@ class HarnessLoop:
         return ok
 
     def _maybe_start(
-        self, decl: HarnessDeclaration, jobs: list, results: dict, available: set
+        self, decl: HarnessDeclaration, jobs: list, results: dict, available: set, owner: dict
     ) -> None:
         if decl.dataset not in available:
             self._recorder.warn(
@@ -468,7 +515,7 @@ class HarnessLoop:
         if stale in results:
             self._delete_result(stale)
             results.pop(stale, None)
-        body = self.job_body(decl, revision, name, trigger, run_number)
+        body = self.job_body(decl, revision, name, trigger, run_number, owner=owner)
         created = self._batch.create_namespaced_job(namespace=self._s.namespace, body=body)
         # A new Job object under a name an earlier Job may have had: its
         # completion has not been announced yet.
@@ -490,6 +537,7 @@ class HarnessLoop:
         name: str,
         trigger: str,
         run_number: int = 1,
+        owner: dict | None = None,
     ) -> dict:
         h = self._h
         checks = json.dumps(list(decl.checks))
@@ -550,21 +598,25 @@ class HarnessLoop:
             LABEL_RUN_NUMBER: str(run_number),
             "app.kubernetes.io/managed-by": MANAGED_BY,
         }
+        metadata = {
+            "name": name,
+            "namespace": self._s.namespace,
+            "labels": labels,
+            "annotations": {
+                ANN_TRIGGER: trigger,
+                ANN_THRESHOLD: str(decl.threshold),
+                ANN_CHECKS: checks,
+                ANN_MODE: decl.mode,
+                ANN_JUDGE_MODEL: self.judge_model,
+            },
+        }
+        if owner is not None:
+            # Owned by the chart's catalog ConfigMap: see _owner_ref.
+            metadata["ownerReferences"] = [dict(owner)]
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
-            "metadata": {
-                "name": name,
-                "namespace": self._s.namespace,
-                "labels": labels,
-                "annotations": {
-                    ANN_TRIGGER: trigger,
-                    ANN_THRESHOLD: str(decl.threshold),
-                    ANN_CHECKS: checks,
-                    ANN_MODE: decl.mode,
-                    ANN_JUDGE_MODEL: self.judge_model,
-                },
-            },
+            "metadata": metadata,
             "spec": {
                 # A failed run is reported, never retried: a retry would drive
                 # the agent again with the same cases.
