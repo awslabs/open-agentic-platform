@@ -684,8 +684,110 @@ curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=10" | jq -r '.dat
 ```bash
 cd applications/agent-evaluation
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest tests/ -q      # 73 tests, no cluster needed
+.venv/bin/python -m pytest tests/ -q      # 293 tests, no cluster needed
 ```
+
+## Harness (report mode)
+
+Setup, behaviour and the tested hub example: [agent-harness.md](agent-harness.md).
+
+The harness (issue #137,
+[§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode))
+is covered by unit tests and `helm template`, and was run end to end on a hub
+cluster (setup in [agent-harness.md §6](agent-harness.md)). Every command
+below is read-only. Prerequisites: the addon with `harness.enabled: true` in
+`gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`, an image that
+contains the harness, and an agent with a `harness` block such as
+`platform/oam/examples/example-agent-harness.yaml`.
+
+```bash
+# 1. the declarations the agent component rendered, every namespace
+kubectl get cm -A -l harness.oap.io/agent
+kubectl describe cm <agent>-harness -n <ns>      # Events: UnknownDataset, InvalidHarnessDeclaration,
+                                                 # HarnessRunStarted/Completed/Failed/Superseded,
+                                                 # HarnessJudgeKeyUnavailable
+
+# 2. the revision the reconciler keys on, and whether -preview already selects it
+#    (a run starts only when the first two values are equal)
+kubectl get rollout <agent> -n <ns> \
+  -o jsonpath='{.status.currentPodHash} {.status.blueGreen.previewSelector} {.status.blueGreen.activeSelector}{"\n"}'
+
+# 3. the runs: Jobs and result ConfigMaps live in the PLATFORM namespace, never the agent's
+kubectl get jobs,cm -n agent-evaluation -l harness.oap.io/run=true
+kubectl get cm -n agent-evaluation -l harness.oap.io/result=true
+kubectl logs job/<job> -n agent-evaluation
+kubectl get cm <job>-result -n agent-evaluation -o jsonpath='{.data.result\.json}' | jq
+
+# 4. the metrics the reconciler publishes from those results
+kubectl port-forward -n agent-evaluation svc/agent-evaluation-metrics 9098:9090 &
+curl -s http://127.0.0.1:9098/metrics | grep -E '^oap_agent_harness_'
+curl -s http://127.0.0.1:9098/metrics | grep -E 'oap_agent_eval_(last_success_timestamp_seconds|errors_total)\{.*loop="harness"'
+
+# 5. the harness judge key: present in the Secret (names only, never the value) and in Bifrost
+kubectl get secret agent-evaluation-harness-judge-key -n agent-evaluation -o jsonpath='{.data}' | jq 'keys'
+kubectl port-forward -n bifrost svc/bifrost 8080:8080 &
+curl -s 'http://127.0.0.1:8080/api/governance/virtual-keys?search=oap-harness-judge-' \
+  | jq '.virtual_keys[] | {name, budgets, rate_limit, provider_configs}'
+kubectl get pods -n bifrost                                               # find the Bifrost pod
+kubectl logs -n bifrost <bifrost-pod> | grep -i 'oap-harness-judge-'      # judge calls attributed to the key
+```
+
+6. In Langfuse, confirm that every `oap-*` evaluation rule's filter carries the
+   two exclusion clauses, `tags` `none of` `["source:harness"]` and `sessionId`
+   `does not contain` `oap-harness-`:
+
+   ```bash
+   curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=50" \
+     | jq '.data[] | {name, filter: [.filter[] | select(.column == "tags" or .column == "sessionId")]}'
+   ```
+
+   Then pick a trace with tag `source:harness` (or session `oap-harness-*`) and
+   check it has **no** score. The tag needs a `strands-agent` image built from
+   this change; with older images the `sessionId` clause is what excludes it.
+
+What to expect, and what each mismatch means:
+
+- No Job although the agent has a declaration: compare step 2 (the preview
+  selector has not moved to the new pod hash yet), check step 1 Events, and
+  check `oap_agent_harness_judge_key_present`. With `required: true` a missing
+  key stops every run.
+- `oap_agent_harness_info{status="error"}` with no counts: the run failed (agent
+  unreachable within `readyTimeoutSeconds`, dataset invalid, every case errored
+  (judge failing each call after retries, or the preview path refusing or
+  answering 4xx; `caseResults` keeps the reasons; an agent answering with errors
+  is a completed run with failed cases instead), or the
+  Job hit `runTimeoutSeconds`); read step 3's log and `result.json`.
+- A first deploy runs as `trigger="first-revision"` against pods that also serve
+  users, because `-preview` and `-stable` select the same ReplicaSet then.
+- A `HarnessRunSuperseded` Event "… was discarded: it finished after revision
+  … replaced it in the preview" and no result for that revision: the revision
+  moved before the reconciler saw the run finish, so the run is dropped and
+  the new revision runs on its own (§4b, "Superseded"). A run that ended just
+  before a rollout in the same pass interval is dropped too; that is the
+  accepted cost in report mode. Gate mode needs the exact per-reply revision
+  check in the §4b follow-up (the agent exposes its pod-template-hash through
+  the downward API, the runner checks it on every reply).
+- Rollback (A -> B -> A): once `-preview` selects A again, a new Job for A
+  appears with `trigger=rollback` and a higher run number, and after it
+  finishes `oap_agent_harness_info` shows `revision=<A>,trigger="rollback"`.
+  List the runs per revision with
+  `kubectl get jobs -n agent-evaluation -l harness.oap.io/agent=<agent> -L harness.oap.io/revision,harness.oap.io/run-number`.
+  Its sessions are `<re-run job name>-<caseId>`. Later passes and a
+  reconciler restart start nothing more for A. No re-run is expected when B
+  left no retained Job (B's run never started, was stopped before A's re-run
+  could start, or was pruned); the series then keep A's earlier run.
+- Result ConfigMaps are not declarations (DEF-3): step 1 lists the
+  `oap-harness-*-result` ConfigMaps too, because they carry
+  `harness.oap.io/agent`, but the reconciler excludes them with
+  `!harness.oap.io/result`. Confirm that only `<agent>-harness` gets Events
+  and that no `InvalidHarnessDeclaration` Event names a result ConfigMap:
+
+  ```bash
+  kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
+  kubectl get events -n agent-evaluation --field-selector reason=InvalidHarnessDeclaration
+  # expect nothing from the second command (Events older than the fix age out
+  # after the cluster's event TTL, 1 h by default)
+  ```
 
 ## Re-verifying the Langfuse API after an upgrade
 

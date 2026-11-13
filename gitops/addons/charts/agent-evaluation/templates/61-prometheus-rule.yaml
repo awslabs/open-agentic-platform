@@ -51,8 +51,11 @@ spec:
               not running.
 
         - alert: AgentEvaluationReconcileErrors
+          # The Langfuse loops only. The harness loop calls Kubernetes and
+          # Bifrost, not Langfuse, so it has its own alert below with wording
+          # that points at the right system.
           expr: >-
-            sum by (cluster, loop) (rate(oap_agent_eval_errors_total[15m])) > 0
+            sum by (cluster, loop) (rate(oap_agent_eval_errors_total{loop!="harness"}[15m])) > 0
           for: 30m
           labels:
             severity: warning
@@ -105,5 +108,85 @@ spec:
               is mounted. Evaluation still works. To fix, create the Secrets
               Manager entry and set judge.virtualKey.enabled with its
               secretManagerKey on the agent-evaluation addon.
+{{- end }}
+{{- if .Values.harness.enabled }}
+{{- $harnessStale := max (mul 3 (int .Values.harness.intervalSeconds)) 900 }}
+        # Harness (report mode). Pipeline alerts only, like the rest of this
+        # file: a low harness pass ratio is the owning team's signal on the
+        # dashboard, not a page.
+        - alert: AgentHarnessStale
+          # The harness loop is not in /readyz (an unready pod would hide every
+          # evaluation series), so this is how a stuck loop is seen.
+          expr: >-
+            time() - max by (cluster)
+            (oap_agent_eval_last_success_timestamp_seconds{loop="harness"})
+            > {{ $harnessStale }}
+          for: 15m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The agent harness loop on cluster {{ `{{ $labels.cluster }}` }}
+              has not completed a pass for over
+              {{ div $harnessStale 60 }} minutes.
+            description: >-
+              New agent revisions are not being run against their harness
+              datasets, so harness results on the dashboard are stale. Usual
+              causes: the Kubernetes API refusing the reconciler's Job or Rollout
+              calls (check oap_agent_eval_errors_total{loop="harness"}), the
+              required harness judge key being unavailable, or the reconciler
+              not running. A pass without a required judge key does not count
+              as complete, so this alert also follows AgentHarnessJudgeKeyMissing;
+              when both fire, fix the key first.
+        - alert: AgentHarnessReconcileErrors
+          # The harness loop's own error rate, kept apart from
+          # AgentEvaluationReconcileErrors because its calls go to Kubernetes
+          # and Bifrost, not Langfuse.
+          expr: >-
+            sum by (cluster) (rate(oap_agent_eval_errors_total{loop="harness"}[15m])) > 0
+          for: 30m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The agent harness loop is failing on cluster
+              {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              The harness loop's Kubernetes Job, Rollout or Service calls, or
+              its Bifrost management API calls for the judge key, have been
+              failing for 30 minutes, so new agent revisions may not be run
+              against their harness datasets. Check the reconciler's logs in
+              the {{ .Release.Namespace }} namespace and the
+              HarnessJudgeKeyUnavailable Events.
+{{- $keyRequired := .Values.harness.judge.virtualKey.required }}
+        - alert: AgentHarnessJudgeKeyMissing
+          # Severity follows required: with required true no run starts
+          # without the key; with required false runs go on un-budgeted, so
+          # it is information, not a problem to act on now.
+          expr: max by (cluster) (oap_agent_harness_judge_key_present) == 0
+          for: 30m
+          labels:
+            severity: {{ ternary "warning" "info" $keyRequired }}
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The harness judge Bifrost virtual key is missing on cluster
+              {{ `{{ $labels.cluster }}` }}.
+            description: >-
+{{- if $keyRequired }}
+              With harness.judge.virtualKey.required true no harness run
+              starts while this fires. The reconciler mints the key
+{{- else }}
+              With harness.judge.virtualKey.required false harness runs still
+              start, but their judge calls reach Bedrock through Bifrost
+              without a budget or rate limit. The reconciler mints the key
+{{- end }}
+              in this cluster's Bifrost through the management API and writes it
+              to Secret {{ .Values.harness.judge.virtualKey.secretRef }} in the
+              {{ .Release.Namespace }} namespace. Check the reconciler's logs and
+              the HarnessJudgeKeyUnavailable Events, and that Bifrost answers at
+              {{ .Values.harness.judge.virtualKey.bifrostAdminUrl }}.
 {{- end }}
 {{- end }}

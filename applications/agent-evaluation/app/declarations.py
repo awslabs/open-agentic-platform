@@ -76,7 +76,9 @@ def _parse_evaluators(raw: str, where: str) -> tuple[RequestedEvaluator, ...]:
     """
     try:
         parsed = json.loads(raw)
-    except ValueError as exc:
+    # RecursionError: deeply nested JSON ("[" * 100000) exhausts the parser's
+    # stack; it is a bad declaration like any other, not a crash of the pass.
+    except (ValueError, RecursionError) as exc:
         raise DeclarationError(f"{where}: evaluators is not valid JSON: {exc}") from exc
     if not isinstance(parsed, list) or not parsed:
         raise DeclarationError(f"{where}: evaluators must be a non-empty list")
@@ -181,5 +183,18 @@ class DeclarationReader:
                 good.append(parse_declaration(cm))
             except DeclarationError as exc:
                 bad.append((cm, str(exc)))
+            except Exception as exc:  # noqa: BLE001 - one ConfigMap never stops the pass
+                # Anything the parser did not anticipate is that ConfigMap's
+                # problem: reported as malformed, the other declarations kept.
+                logger.warning(
+                    "evaluation declaration %s/%s crashed the parser: %s",
+                    cm.metadata.namespace,
+                    cm.metadata.name,
+                    type(exc).__name__,
+                )
+                bad.append(
+                    (cm, f"{cm.metadata.namespace}/{cm.metadata.name}: cannot be parsed "
+                     f"({type(exc).__name__})")
+                )
         good.sort(key=lambda d: d.key)
         return good, bad

@@ -31,6 +31,14 @@ on clusters that enforce NetworkPolicy (aws-samples/appmod-blueprints#1239). Whe
 not enforced, a workload that calls an agent directly can send any value
 (scripts/test-memory-matrix.sh row N1 does exactly that).
 
+The agent harness is the one direct caller that policy admits: its Jobs call the agent's
+`<agent>-preview` Service, not the gateway. When an agent's own `harness` block is
+enabled, agent.cue adds one ingress rule to that agent's NetworkPolicy for TCP 8083 from
+the agent-evaluation namespace, limited to the harness runner pods
+(`harness.oap.io/run: "true"`), not the reconciler. Those calls send no X-Forwarded-User
+(each case runs as an anonymous caller with no memory, by design). Agents without a
+harness block keep the gateway-only policy unchanged.
+
 Scoped to the Gateway, like jwt-policy.yaml, so every hop is covered: client -> agent,
 agent -> MCP server, and agent -> agent.
 

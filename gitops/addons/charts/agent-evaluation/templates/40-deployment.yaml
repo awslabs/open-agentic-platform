@@ -39,6 +39,10 @@ spec:
         # catalog edit actually reaches Langfuse instead of waiting for an
         # unrelated restart.
         checksum/catalog: {{ include "agent-evaluation.catalogChecksum" . }}
+        {{- if .Values.harness.enabled }}
+        # Same for a harness dataset, check prompt or harness value.
+        checksum/harness: {{ include "agent-evaluation.harnessChecksum" . }}
+        {{- end }}
     spec:
       serviceAccountName: agent-evaluation-reconciler
       securityContext:
@@ -93,6 +97,67 @@ spec:
               value: /etc/agent-evaluation/credentials
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            {{- if .Values.harness.enabled }}
+            # Harness (report mode). Rendered only when on, so a chart with the
+            # harness off carries nothing harness-specific; the reconciler
+            # defaults HARNESS_ENABLED to false.
+            - name: HARNESS_ENABLED
+              value: "true"
+            {{- $h := .Values.harness }}
+            - name: HARNESS_INTERVAL_SECONDS
+              value: {{ $h.intervalSeconds | quote }}
+            - name: HARNESS_MAX_CONCURRENT_JOBS
+              value: {{ $h.maxConcurrentJobs | quote }}
+            - name: HARNESS_HISTORY_LIMIT
+              value: {{ $h.historyLimit | quote }}
+            - name: HARNESS_CHECKS_PATH
+              value: /etc/agent-evaluation/harness-checks/checks.yaml
+            - name: HARNESS_DATASETS_DIR
+              value: /etc/agent-evaluation/harness-datasets
+            - name: HARNESS_CATALOG_CONFIGMAP
+              value: agent-evaluation-harness-catalog
+            - name: HARNESS_DATASETS_CONFIGMAP
+              value: agent-evaluation-harness-datasets
+            # The Job runs this same image with `python -m app.harness_runner`.
+            - name: HARNESS_JOB_IMAGE
+              value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            - name: HARNESS_JOB_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | quote }}
+            - name: HARNESS_RUNNER_SERVICE_ACCOUNT
+              value: agent-evaluation-harness-runner
+            - name: HARNESS_RUNNER_RESOURCES
+              value: {{ toJson $h.runner.resources | quote }}
+            - name: HARNESS_CASE_CONCURRENCY
+              value: {{ $h.caseConcurrency | quote }}
+            - name: HARNESS_CASE_TIMEOUT_SECONDS
+              value: {{ $h.caseTimeoutSeconds | quote }}
+            - name: HARNESS_READY_TIMEOUT_SECONDS
+              value: {{ $h.readyTimeoutSeconds | quote }}
+            - name: HARNESS_RUN_TIMEOUT_SECONDS
+              value: {{ $h.runTimeoutSeconds | quote }}
+            - name: HARNESS_MAX_CASES
+              value: {{ $h.maxCases | quote }}
+            - name: HARNESS_JUDGE_ALIAS
+              value: {{ $h.judge.alias | default "" | quote }}
+            - name: HARNESS_JUDGE_KEY_MINT
+              value: {{ ternary "true" "false" $h.judge.virtualKey.mint | quote }}
+            - name: HARNESS_JUDGE_KEY_REQUIRED
+              value: {{ ternary "true" "false" $h.judge.virtualKey.required | quote }}
+            - name: HARNESS_JUDGE_KEY_SECRET
+              value: {{ $h.judge.virtualKey.secretRef | quote }}
+            - name: BIFROST_ADMIN_URL
+              value: {{ $h.judge.virtualKey.bifrostAdminUrl | quote }}
+            - name: HARNESS_JUDGE_BUDGET_USD
+              value: {{ $h.judge.virtualKey.budget.maxLimitUsd | quote }}
+            - name: HARNESS_JUDGE_BUDGET_RESET
+              value: {{ $h.judge.virtualKey.budget.resetDuration | quote }}
+            - name: HARNESS_JUDGE_RATE_LIMIT_REQUESTS
+              value: {{ $h.judge.virtualKey.rateLimit.requestMaxLimit | quote }}
+            - name: HARNESS_JUDGE_RATE_LIMIT_RESET
+              value: {{ $h.judge.virtualKey.rateLimit.requestResetDuration | quote }}
+            - name: HARNESS_JUDGE_ALLOWED_MODELS
+              value: {{ join "," ($h.judge.virtualKey.allowedModels | default list) | quote }}
+            {{- end }}
           ports:
             # Scraped through a ClusterIP Service. No hostPort and no Ingress:
             # this listener is reachable only from inside the cluster.
@@ -119,6 +184,15 @@ spec:
             - name: judge-key
               mountPath: /etc/agent-evaluation/credentials/BIFROST_VIRTUAL_KEY
               subPath: BIFROST_VIRTUAL_KEY
+              readOnly: true
+            {{- end }}
+            {{- if .Values.harness.enabled }}
+            # Two sibling directories, the same layout the harness Jobs mount.
+            - name: harness-checks
+              mountPath: /etc/agent-evaluation/harness-checks
+              readOnly: true
+            - name: harness-datasets
+              mountPath: /etc/agent-evaluation/harness-datasets
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -149,4 +223,12 @@ spec:
         - name: judge-key
           secret:
             secretName: {{ .Values.judge.virtualKey.secretRef }}
+        {{- end }}
+        {{- if .Values.harness.enabled }}
+        - name: harness-checks
+          configMap:
+            name: agent-evaluation-harness-catalog
+        - name: harness-datasets
+          configMap:
+            name: agent-evaluation-harness-datasets
         {{- end }}

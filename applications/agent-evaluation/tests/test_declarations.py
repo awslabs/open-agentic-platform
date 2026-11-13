@@ -103,3 +103,41 @@ def test_one_bad_configmap_does_not_stop_the_others():
     assert [d.agent for d in good] == ["good"]
     assert len(bad) == 1
     assert bad[0][0].metadata.name == "bad-evaluation"
+
+
+def _reader_over(*configmaps):
+    class FakeCore:
+        def list_config_map_for_all_namespaces(self, label_selector):
+            return type("Listing", (), {"items": list(configmaps)})()
+
+    return DeclarationReader(FakeCore())
+
+
+def test_deeply_nested_evaluators_are_malformed_not_a_crash():
+    # Reviewer repro (C2): "[" * 100000 raised RecursionError out of the pass.
+    good, bad = _reader_over(
+        make_configmap("a", "good-evaluation", {"agent": "good", "evaluators": '["safety"]'}),
+        make_configmap("b", "deep-evaluation", {"agent": "deep", "evaluators": "[" * 100000}),
+    ).list()
+    assert [d.agent for d in good] == ["good"]
+    assert [cm.metadata.name for cm, _ in bad] == ["deep-evaluation"]
+    assert "evaluators" in bad[0][1]
+
+
+def test_an_unexpected_parser_crash_is_isolated_per_configmap(monkeypatch):
+    from app import declarations
+
+    real = declarations.parse_declaration
+
+    def crashy(cm):
+        if cm.metadata.name == "boom-evaluation":
+            raise KeyError("surprise")
+        return real(cm)
+
+    monkeypatch.setattr(declarations, "parse_declaration", crashy)
+    good, bad = _reader_over(
+        make_configmap("a", "good-evaluation", {"agent": "good", "evaluators": '["safety"]'}),
+        make_configmap("b", "boom-evaluation", {"agent": "boom", "evaluators": '["safety"]'}),
+    ).list()
+    assert [d.agent for d in good] == ["good"]
+    assert bad[0][0].metadata.name == "boom-evaluation" and "KeyError" in bad[0][1]

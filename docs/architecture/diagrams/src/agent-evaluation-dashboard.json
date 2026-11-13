@@ -39,7 +39,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info, cluster)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\"}, cluster)",
           "refId": "cluster"
         },
         "refresh": 2,
@@ -60,7 +60,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\"}, namespace)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\",cluster=~\"$cluster\"}, namespace)",
           "refId": "namespace"
         },
         "refresh": 2,
@@ -81,7 +81,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\"}, agent)",
+          "query": "label_values({__name__=~\"oap_agent_eval_info|oap_agent_harness_info\",cluster=~\"$cluster\",namespace=~\"$namespace\"}, agent)",
           "refId": "agent"
         },
         "refresh": 2,
@@ -267,7 +267,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "expr": "max by (gen_ai_request_model, eval_ai_request_model, strictness, coverage) (oap_agent_eval_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -281,12 +281,13 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "namespace": true,
-              "agent": true
+              "Value": true
+            },
+            "indexByName": {
+              "gen_ai_request_model": 0,
+              "eval_ai_request_model": 1,
+              "strictness": 2,
+              "coverage": 3
             },
             "renameByName": {
               "gen_ai_request_model": "Agent model",
@@ -487,7 +488,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sort(oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",window=\"$window\"})",
+          "expr": "sort(max by (cluster, namespace, agent, evaluator) (oap_agent_eval_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",window=\"$window\"}))",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -500,20 +501,18 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "window": true
+              "Time": true
             },
             "indexByName": {
-              "namespace": 0,
-              "agent": 1,
-              "evaluator": 2,
-              "Value": 3
+              "cluster": 0,
+              "namespace": 1,
+              "agent": 2,
+              "evaluator": 3,
+              "Value": 4
             },
             "renameByName": {
               "Value": "Pass rate",
+              "cluster": "Cluster",
               "namespace": "Namespace",
               "agent": "Agent",
               "evaluator": "Evaluator"
@@ -817,6 +816,392 @@
           }
         },
         "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Harness (pre-promotion dataset, report mode)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Harness pass ratio",
+      "description": "Share of the judged cases in the latest harness run for this agent's newest revision that passed: passed / (passed + failed). Case errors (judge or infrastructure errors, cases not run before the run deadline) are left out. One colour on purpose: each agent declares its own threshold, so read this against the Threshold and Threshold met panels. Report mode: this never blocks a promotion. Empty when the agent has no harness block or no run has completed yet, never 0.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_pass_ratio{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Cases / passed / errors",
+      "description": "Counts from the latest completed harness run. An errored run publishes no counts.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_cases{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "cases",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_passed{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "passed",
+          "refId": "B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_case_errors{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "errors",
+          "refId": "C",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Latest run",
+      "description": "Dataset, revision (Rollout pod hash), why it ran, its status, the judge model, and the dataset and check-prompt digests of the latest harness run. A changed digest under the same dataset name means the bar moved.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 12,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (dataset, revision, trigger, status, mode, judge_model, dataset_digest, checks_digest) (oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "indexByName": {
+              "dataset": 0,
+              "revision": 1,
+              "trigger": 2,
+              "status": 3,
+              "mode": 4,
+              "judge_model": 5,
+              "dataset_digest": 6,
+              "checks_digest": 7
+            },
+            "renameByName": {
+              "dataset": "Dataset",
+              "revision": "Revision",
+              "trigger": "Trigger",
+              "status": "Status",
+              "mode": "Mode",
+              "judge_model": "Judge",
+              "dataset_digest": "Dataset digest",
+              "checks_digest": "Checks digest"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Last run age",
+      "description": "Time since the latest harness run for this agent finished. A new revision without a newer run means the run is still in progress or waiting for a slot.",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - oap_agent_harness_last_run_timestamp_seconds{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Threshold",
+      "description": "The pass ratio this agent's harness block declares. Published for errored runs too.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_threshold{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Threshold met",
+      "description": "Whether the latest completed run's pass ratio reached the declared threshold. Informational in report mode. Empty for an errored run.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_threshold_met{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "below",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "met",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       }
     }
   ]

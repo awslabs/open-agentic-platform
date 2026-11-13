@@ -392,6 +392,23 @@ spec:
         	// Any pod in a listed namespace can name any user toward these agents, so the
         	// list is a platform decision, never an Application's.
         	let _extraIngress = [for ns in strings.Split("{{ .Values.global.agentGateway.extraIngressNamespaces }}", ",") if strings.TrimSpace(ns) != "" {strings.TrimSpace(ns)}]
+
+        	// The agent harness calls <agent>-preview directly, not through the gateway,
+        	// so an agent whose own harness block is enabled admits one more source: the
+        	// harness runner pods (harness.oap.io/run: "true", set by the reconciler on
+        	// every runner Job's pod template) in the agent-evaluation namespace
+        	// (global.agentEvaluation.namespace, platform-owned). Both selectors sit in
+        	// one `from` entry, so a pod must match both; the reconciler's own pod does
+        	// not carry the label. Those calls send no X-Forwarded-User, so they run as an
+        	// anonymous caller and cannot name a user. Without an enabled harness block
+        	// the policy has only the gateway rule.
+        	let _harnessIngress = [if _harnessEnabled {
+        		from: [{
+        			namespaceSelector: matchLabels: "kubernetes.io/metadata.name": "{{ .Values.global.agentEvaluation.namespace }}"
+        			podSelector: matchLabels: "harness.oap.io/run":                "true"
+        		}]
+        		ports: [{protocol: "TCP", port: 8083}]
+        	}]
         	gatewayOnlyIngress: {
         		apiVersion: "networking.k8s.io/v1"
         		kind:       "NetworkPolicy"
@@ -403,10 +420,10 @@ spec:
         		spec: {
         			podSelector: matchLabels: "app.kubernetes.io/name": context.name
         			policyTypes: ["Ingress"]
-        			ingress: [{
+        			ingress: list.Concat([[{
         				from: [for ns in list.Concat([["{{ .Values.global.agentGateway.namespace }}"], _extraIngress]) {namespaceSelector: matchLabels: "kubernetes.io/metadata.name": ns}]
         				ports: [{protocol: "TCP", port: 8083}]
-        			}]
+        			}], _harnessIngress])
         		}
         	}
 
@@ -502,6 +519,41 @@ spec:
         				if parameter.evaluation.judge != _|_ {
         					judge: parameter.evaluation.judge.modelId
         				}
+        			}
+        		}
+        	}
+
+        	// HARNESS DECLARATION (optional). Only a declaration: the agent-evaluation
+        	// reconciler finds it by the harness.oap.io/agent label and runs the
+        	// dataset against <agent>-preview for each new revision. It is a KubeVela
+        	// output, so disabling the harness or deleting the Application removes it
+        	// and the reconciler prunes that agent's runs. Same optional-field guard
+        	// as evaluation, see the comment above _evaluationEnabled.
+        	_harnessEnabled: *false | bool
+        	if parameter.harness != _|_ {
+        		_harnessEnabled: parameter.harness.enabled
+        	}
+        	if _harnessEnabled {
+        		harnessSpec: {
+        			apiVersion: "v1"
+        			kind:       "ConfigMap"
+        			metadata: {
+        				name:      context.name + "-harness"
+        				namespace: context.namespace
+        				labels: {
+        					// The reconciler lists on this label alone.
+        					"harness.oap.io/agent":   context.name
+        					"app.kubernetes.io/name": context.name
+        				}
+        			}
+        			// No preview target here: the reconciler derives it from the
+        			// agent name (<agent>-preview, port 8083) and checks that Service.
+        			data: {
+        				agent:     context.name
+        				dataset:   parameter.harness.dataset
+        				checks:    json.Marshal(parameter.harness.checks)
+        				threshold: "\(parameter.harness.threshold)"
+        				mode:      parameter.harness.mode
         			}
         		}
         	}
@@ -692,6 +744,33 @@ spec:
         			strictness?: "low" | "medium" | "high"
         		})]
         	}
+
+        	// +usage=Pre-promotion exam of this agent on a fixed dataset. Each new
+        	// revision is scored on <agent>-preview and the result is published as
+        	// oap_agent_harness_* metrics. Report mode only: the score is reported,
+        	// and it never blocks or delays promotion. Gate mode (block promotion
+        	// below the threshold) is a later phase, so it is rejected at admission
+        	// for now rather than admitted and silently ignored.
+        	// Requires the agent-evaluation addon on the cluster with harness.enabled.
+        	//
+        	// A dataset is a platform catalog name. The <namespace>/<name> form is
+        	// reserved for team-owned datasets and is not accepted yet.
+        	harness?: {
+        		// +usage=Turn the harness on for this agent.
+        		enabled: *false | bool
+        		// +usage=Platform dataset name, e.g. example-smoke-v1.
+        		dataset: #DatasetName
+        		// +usage=How each case is judged. First cut: expected-answer only.
+        		checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
+        		// +usage=Fraction of cases that must pass, reported next to the score.
+        		threshold: *0.8 | number & >0 & <=1
+        		// +usage=report: score it, promote anyway. gate is not available yet.
+        		mode: "report"
+        	}
+
+        	// Same shape as #EvaluatorName, and a valid ConfigMap value and label value.
+        	#DatasetName:  =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$" & strings.MaxRunes(63)
+        	#HarnessCheck: "expected-answer"
 
         	// Lowercase alphanumeric with internal hyphens. `--` is excluded because it
         	// separates an evaluator from its judge alias in the Langfuse object name

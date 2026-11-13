@@ -1,0 +1,180 @@
+"""Harness declarations: the ConfigMap the agent component renders."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.harness_declarations import (
+    LABEL_SELECTOR,
+    HarnessDeclarationError,
+    HarnessDeclarationReader,
+    parse_harness_declaration,
+)
+from tests.conftest import make_configmap
+
+BASE = {
+    "agent": "assistant",
+    "dataset": "example-smoke-v1",
+    "checks": '["expected-answer"]',
+    "threshold": "0.8",
+    "mode": "report",
+}
+
+
+def cm(**overrides):
+    data = {**BASE, **overrides}
+    data = {k: v for k, v in data.items() if v is not None}
+    return make_configmap(
+        "team-a", "assistant-harness", data, labels={LABEL_SELECTOR: "assistant"}
+    )
+
+
+def test_valid_declaration():
+    d = parse_harness_declaration(cm())
+    assert d.key == "team-a/assistant"
+    assert d.dataset == "example-smoke-v1"
+    assert d.checks == ("expected-answer",)
+    assert d.threshold == 0.8
+    assert d.mode == "report"
+    assert (d.preview_service, d.preview_port) == ("assistant-preview", 8083)
+
+
+def test_gate_mode_is_rejected():
+    with pytest.raises(HarnessDeclarationError, match="mode"):
+        parse_harness_declaration(cm(mode="gate"))
+
+
+@pytest.mark.parametrize("threshold", ["0", "1.5", "x"])
+def test_bad_threshold(threshold):
+    with pytest.raises(HarnessDeclarationError, match="threshold"):
+        parse_harness_declaration(cm(threshold=threshold))
+
+
+@pytest.mark.parametrize("checks", ["[]", '["helpfulness"]', "nope"])
+def test_bad_checks(checks):
+    with pytest.raises(HarnessDeclarationError, match="check"):
+        parse_harness_declaration(cm(checks=checks))
+
+
+def test_missing_dataset():
+    with pytest.raises(HarnessDeclarationError, match="dataset"):
+        parse_harness_declaration(cm(dataset=None))
+
+
+def test_preview_target_is_derived_from_the_agent_name():
+    d = parse_harness_declaration(cm())
+    assert d.preview_service == "assistant-preview"
+    assert d.preview_port == 8083
+
+
+@pytest.mark.parametrize(
+    "service",
+    ["evil", "evil.example.com/steal?", "other.team-b", "http://x", "1-preview", "a" * 64],
+)
+def test_preview_service_and_port_in_the_configmap_are_ignored(service):
+    # Review #137 map: a team-writable value must not pick the Job's target.
+    d = parse_harness_declaration(cm(previewService=service, previewPort="9999"))
+    assert (d.preview_service, d.preview_port) == ("assistant-preview", 8083)
+
+
+@pytest.mark.parametrize(
+    "agent",
+    ["a" * 64, "Assistant", "team.assistant", "bad/agent", "-assistant", "assistant_1"],
+)
+def test_invalid_agent_is_rejected(agent):
+    with pytest.raises(HarnessDeclarationError, match="agent"):
+        parse_harness_declaration(cm(agent=agent))
+
+
+def test_derived_preview_service_too_long_is_rejected():
+    # 60 characters is a valid agent name, but `<agent>-preview` is not a Service name.
+    with pytest.raises(HarnessDeclarationError, match="preview Service name"):
+        parse_harness_declaration(cm(agent="a" * 60))
+
+
+def _selects(labels: dict, selector: str) -> bool:
+    """Evaluate the selector forms the reader uses: `key`, `!key` and `key=value`."""
+    for clause in filter(None, selector.split(",")):
+        if clause.startswith("!"):
+            if clause[1:] in labels:
+                return False
+        elif "=" in clause:
+            key, _, value = clause.partition("=")
+            if labels.get(key) != value:
+                return False
+        elif clause not in labels:
+            return False
+    return True
+
+
+def test_result_configmaps_are_not_declarations():
+    declaration = cm()
+    # Labelled the way harness_runner._write_result labels its result ConfigMap.
+    result = make_configmap(
+        "agent-evaluation",
+        "oap-harness-0123456789ab-result",
+        {"passRatio": "1.0"},
+        labels={
+            "harness.oap.io/result": "true",
+            "harness.oap.io/job": "oap-harness-0123456789ab",
+            "harness.oap.io/agent-namespace": "team-a",
+            "harness.oap.io/agent": "assistant",
+            "harness.oap.io/revision": "rev1",
+            "harness.oap.io/dataset": "example-smoke-v1",
+            "app.kubernetes.io/managed-by": "agent-evaluation-reconciler",
+        },
+    )
+
+    class FakeCore:
+        def list_config_map_for_all_namespaces(self, label_selector):
+            class Listing:
+                items = [
+                    c for c in (declaration, result)
+                    if _selects(c.metadata.labels or {}, label_selector)
+                ]
+
+            return Listing()
+
+    good, bad = HarnessDeclarationReader(FakeCore()).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    # No parse error means no InvalidHarnessDeclaration Event for the result.
+    assert bad == []
+
+
+def _harness_reader_over(*configmaps):
+    class FakeCore:
+        def list_config_map_for_all_namespaces(self, label_selector):
+            return type("Listing", (), {"items": list(configmaps)})()
+
+    return HarnessDeclarationReader(FakeCore())
+
+
+def test_deeply_nested_checks_are_malformed_not_a_crash():
+    # Reviewer repro (C2): "[" * 100000 raised RecursionError out of the pass.
+    deep = make_configmap(
+        "team-b",
+        "deep-harness",
+        {**BASE, "agent": "deep", "checks": "[" * 100000},
+        labels={LABEL_SELECTOR: "deep"},
+    )
+    good, bad = _harness_reader_over(cm(), deep).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    assert [c.metadata.name for c, _ in bad] == ["deep-harness"]
+    assert "checks" in bad[0][1]
+
+
+def test_an_unexpected_parser_crash_is_isolated_per_configmap(monkeypatch):
+    from app import harness_declarations
+
+    real = harness_declarations.parse_harness_declaration
+
+    def crashy(c):
+        if c.metadata.name == "boom-harness":
+            raise KeyError("surprise")
+        return real(c)
+
+    monkeypatch.setattr(harness_declarations, "parse_harness_declaration", crashy)
+    boom = make_configmap("team-b", "boom-harness", dict(BASE), labels={LABEL_SELECTOR: "boom"})
+    good, bad = _harness_reader_over(cm(), boom).list()
+    assert [d.configmap for d in good] == ["assistant-harness"]
+    assert bad[0][0].metadata.name == "boom-harness" and "KeyError" in bad[0][1]

@@ -28,6 +28,16 @@ INFO_LABELS = (
     "strictness",
     "coverage",
 )
+HARNESS_LABELS = ("cluster", "namespace", "agent", "dataset")
+HARNESS_INFO_LABELS = HARNESS_LABELS + (
+    "revision",
+    "mode",
+    "judge_model",
+    "trigger",
+    "status",
+    "dataset_digest",
+    "checks_digest",
+)
 
 
 class Metrics:
@@ -83,7 +93,8 @@ class Metrics:
         )
         self.errors = Counter(
             "oap_agent_eval_errors_total",
-            "Failed Langfuse calls, by loop.",
+            "Failed loop passes, by loop (Langfuse calls for project, rules and "
+            "metrics; Kubernetes or Bifrost management calls for harness).",
             ("cluster", "loop"),
             registry=r,
         )
@@ -123,7 +134,116 @@ class Metrics:
             registry=r,
         )
 
+        # ── harness (issue #137, report mode) ─────────────────────────────
+        # Always registered, absent until a run of that agent has finished: an
+        # agent that has never been run must not read as 0% on a dashboard.
+        def harness_gauge(name: str, help_text: str) -> Gauge:
+            return Gauge(
+                name,
+                f"{help_text} Report mode: never blocks promotion.",
+                HARNESS_LABELS,
+                registry=r,
+            )
+
+        self.harness_cases = harness_gauge(
+            "oap_agent_harness_cases", "Cases in the agent's latest finished harness run."
+        )
+        self.harness_passed = harness_gauge(
+            "oap_agent_harness_passed", "Cases that passed every check in the latest run."
+        )
+        self.harness_failed = harness_gauge(
+            "oap_agent_harness_failed", "Cases a check scored below its pass score."
+        )
+        self.harness_case_errors = harness_gauge(
+            "oap_agent_harness_case_errors",
+            "Cases nothing could be learned from (judge error after retries, "
+            "transport or 4xx on the preview path, run deadline); they are "
+            "outside the pass ratio.",
+        )
+        self.harness_pass_ratio = harness_gauge(
+            "oap_agent_harness_pass_ratio",
+            "passed / (passed + failed) of the latest completed run. Absent when "
+            "no run has completed or the latest run errored.",
+        )
+        self.harness_threshold = harness_gauge(
+            "oap_agent_harness_threshold", "The pass ratio the agent declared."
+        )
+        self.harness_threshold_met = harness_gauge(
+            "oap_agent_harness_threshold_met",
+            "1 when pass_ratio >= threshold, 0 otherwise. Informational.",
+        )
+        self.harness_last_run = harness_gauge(
+            "oap_agent_harness_last_run_timestamp_seconds",
+            "Unix time the latest harness run finished.",
+        )
+        self.harness_info = Gauge(
+            "oap_agent_harness_info",
+            "Always 1. Revision, mode, judge model, trigger, status and the "
+            "dataset and check-prompt digests of the latest finished harness "
+            "run. Report mode: never blocks promotion.",
+            HARNESS_INFO_LABELS,
+            registry=r,
+        )
+        self.harness_judge_key_present = Gauge(
+            "oap_agent_harness_judge_key_present",
+            "1 when the harness judge virtual key is available, 0 when it is not "
+            "(no new harness run starts while it is required). Report mode: never "
+            "blocks promotion.",
+            ("cluster",),
+            registry=r,
+        )
+        self.harness_runs = Counter(
+            "oap_agent_harness_runs_total",
+            "Finished or superseded harness runs, by result "
+            "(completed|error|superseded). Report mode: never blocks promotion.",
+            ("cluster", "result"),
+            registry=r,
+        )
+
     # ── publishing ────────────────────────────────────────────────────────
+
+    def publish_harness(self, rows: list["HarnessRow"]) -> None:
+        """Replace every harness series with the latest finished run per agent."""
+        for gauge in (
+            self.harness_cases,
+            self.harness_passed,
+            self.harness_failed,
+            self.harness_case_errors,
+            self.harness_pass_ratio,
+            self.harness_threshold,
+            self.harness_threshold_met,
+            self.harness_last_run,
+            self.harness_info,
+        ):
+            gauge.clear()
+        for row in rows:
+            labels = (row.cluster, row.namespace, row.agent, row.dataset)
+            self.harness_info.labels(
+                *labels,
+                row.revision,
+                row.mode,
+                row.judge_model,
+                row.trigger,
+                row.status,
+                row.dataset_digest,
+                row.checks_digest,
+            ).set(1)
+            self.harness_threshold.labels(*labels).set(row.threshold)
+            self.harness_last_run.labels(*labels).set(row.last_run_timestamp)
+            for gauge, value in (
+                (self.harness_cases, row.cases),
+                (self.harness_passed, row.passed),
+                (self.harness_failed, row.failed),
+                (self.harness_case_errors, row.errors),
+            ):
+                if value is not None:
+                    gauge.labels(*labels).set(value)
+            if row.pass_ratio is not None:
+                self.harness_pass_ratio.labels(*labels).set(row.pass_ratio)
+            if row.threshold_met is not None:
+                self.harness_threshold_met.labels(*labels).set(
+                    1 if row.threshold_met else 0
+                )
 
     def publish_scores(self, rows: list["ScoreRow"]) -> None:
         """Replace every score series with one pass's results."""
@@ -197,6 +317,32 @@ class ThresholdRow:
     # reported 0 for all of them, in both windows, with no error anywhere.
     evaluator_object: str
     threshold: float
+
+
+@dataclass(frozen=True)
+class HarnessRow:
+    """One agent's latest finished harness run. Counts are None for an errored run."""
+
+    cluster: str
+    namespace: str
+    agent: str
+    dataset: str
+    revision: str
+    mode: str
+    judge_model: str
+    trigger: str
+    status: str
+    threshold: float
+    last_run_timestamp: float
+    cases: int | None
+    passed: int | None
+    failed: int | None
+    errors: int | None
+    pass_ratio: float | None
+    threshold_met: bool | None
+    # "" when the run carries none (errored before loading, older result).
+    dataset_digest: str = ""
+    checks_digest: str = ""
 
 
 @dataclass(frozen=True)
