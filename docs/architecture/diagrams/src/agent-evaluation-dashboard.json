@@ -835,7 +835,7 @@
       "id": 15,
       "type": "stat",
       "title": "Harness pass ratio",
-      "description": "Share of the latest harness run's cases that passed for this agent's newest revision. Case errors count against it. Report mode: this never blocks a promotion. Empty when the agent has no harness block or no run has completed yet, never 0.",
+      "description": "Share of the judged cases in the latest harness run for this agent's newest revision that passed: passed / (passed + failed). Case errors (judge or infrastructure errors, cases not run before the run deadline) are left out. One colour on purpose: each agent declares its own threshold, so read this against the Threshold and Threshold met panels. Report mode: this never blocks a promotion. Empty when the agent has no harness block or no run has completed yet, never 0.",
       "gridPos": {
         "h": 6,
         "w": 6,
@@ -865,31 +865,15 @@
           "decimals": 1,
           "min": 0,
           "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 0.7
-              },
-              {
-                "color": "green",
-                "value": 0.9
-              }
-            ]
-          },
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "blue"
           }
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "textMode": "value_and_name",
         "reduceOptions": {
@@ -979,7 +963,7 @@
       "id": 17,
       "type": "table",
       "title": "Latest run",
-      "description": "Dataset, revision (Rollout pod hash), why it ran, its status and the judge model of the latest harness run.",
+      "description": "Dataset, revision (Rollout pod hash), why it ran, its status, the judge model, and the dataset and check-prompt digests of the latest harness run. A changed digest under the same dataset name means the bar moved.",
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -996,7 +980,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (dataset, revision, trigger, status, mode, judge_model) (oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
+          "expr": "max by (dataset, revision, trigger, status, mode, judge_model, dataset_digest, checks_digest) (oap_agent_harness_info{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1018,7 +1002,9 @@
               "trigger": 2,
               "status": 3,
               "mode": 4,
-              "judge_model": 5
+              "judge_model": 5,
+              "dataset_digest": 6,
+              "checks_digest": 7
             },
             "renameByName": {
               "dataset": "Dataset",
@@ -1026,7 +1012,9 @@
               "trigger": "Trigger",
               "status": "Status",
               "mode": "Mode",
-              "judge_model": "Judge"
+              "judge_model": "Judge",
+              "dataset_digest": "Dataset digest",
+              "checks_digest": "Checks digest"
             }
           }
         }
@@ -1076,6 +1064,137 @@
       "options": {
         "colorMode": "value",
         "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Threshold",
+      "description": "The pass ratio this agent's harness block declares. Published for errored runs too.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_threshold{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Threshold met",
+      "description": "Whether the latest completed run's pass ratio reached the declared threshold. Informational in report mode. Empty for an errored run.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "oap_agent_harness_threshold_met{cluster=~\"$cluster\",namespace=~\"$namespace\",agent=\"$agent\"}",
+          "legendFormat": "{{dataset}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "below",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "met",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"

@@ -341,9 +341,15 @@ errored run publishes only `info{status="error"}`, `threshold` and
 
 **Grafana.** Dashboard `agent-evaluation` (folder "Agent Platform"), row
 "Harness (pre-promotion dataset, report mode)": panels "Harness pass ratio",
-"Cases / passed / errors", "Latest run" and "Last run age". **Not verified:**
-the rendered panels in a browser (the dashboard object synced; nobody logged in
-to look).
+"Cases / passed / errors", "Latest run", "Last run age", "Threshold" and
+"Threshold met". The pass ratio has a single colour, not fixed red/green bands,
+because each agent declares its own threshold: read it against "Threshold"
+(`oap_agent_harness_threshold`) and "Threshold met"
+(`oap_agent_harness_threshold_met`, shown as "met" in green or "below" in red).
+"Latest run" also shows the dataset and check-prompt digests, so a dataset
+edited in place under the same name is visible. **Not verified:** the rendered
+panels in a browser (the dashboard object synced before these panels were
+added; nobody logged in to look, and the test environment is gone).
 
 **Langfuse.** Harness traces have session id `<job-name>-<caseId>`
 (`oap-harness-<12 hex>-<caseId>`; the Job name is in the `HarnessRunStarted`
