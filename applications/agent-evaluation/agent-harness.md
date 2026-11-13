@@ -378,8 +378,9 @@ Two switches, both per cluster or environment:
    default and nothing harness-specific (RBAC, ConfigMaps, `HARNESS_*` env,
    alerts) renders without it; the reconciler then defaults `HARNESS_ENABLED`
    to false. The one exception is the Grafana dashboard: it is one static JSON,
-   so its "Harness" row still renders and its panels show "No data". Set it in a per-cluster or per-environment values overlay, which
-   the addon ApplicationSet reads at highest precedence with
+   so its "Harness" row still renders and its panels show "No data". Set it in
+   a per-cluster or per-environment values overlay, which the addon
+   ApplicationSet reads at highest precedence with
    `ignoreMissingValueFiles: true` (`gitops/bootstrap/agent-platform-app.yaml`):
 
    ```text
@@ -395,6 +396,16 @@ Two switches, both per cluster or environment:
    harness:
      enabled: true
    ```
+
+   **The image must have the harness loop.** `harness.enabled` needs image
+   `0.3.0` or later (the chart's `appVersion`). The hub overlay
+   `gitops/overlays/clusters/hub/agent-evaluation/values.yaml` still pins tag
+   `0.2.4` on `main`, and this change does not touch it: that tag moves when
+   the `0.3.0` image is published (4.2), in the same change that turns the
+   harness on there. Do not set `harness.enabled: true` on a cluster still on
+   `0.2.4`: the RBAC, ConfigMaps and alerts render, but the `0.2.4` image has
+   no harness loop, so no run ever starts and `AgentHarnessStale` is the only
+   sign.
 
 Useful `harness.*` values (`values.yaml`; all have working defaults):
 
@@ -448,6 +459,9 @@ image index at the end.
   can pull from it.
 - Pin `image.tag` to an immutable tag (we used the commit short sha) and record
   the index digest. Do not overwrite tags.
+- Publishing the image is also when the hub overlay's `image.tag` moves off
+  `0.2.4` (see 4.1); until then the hub runs the reconciler without a harness
+  loop.
 - The chart default `image.repository` is the platform public repository, which
   does not exist yet; that is why the addon defaults to off (section 8).
 
