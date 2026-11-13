@@ -89,9 +89,11 @@ Step by step, with the code that does it:
    and the data keys `agent`, `dataset`, `checks` (JSON list), `threshold` and
    `mode`. There is no target in it: the reconciler always targets
    `<agent>-preview` on port `8083` and ignores `previewService`/`previewPort`
-   keys if a hand-written ConfigMap has them. Before each run it reads that
+   keys if a hand-written ConfigMap has them. When it plans a run it reads that
    Service and refuses an `ExternalName` one (`HarnessPreviewUnsupported`) and
-   one whose selector does not select the revision. It is a KubeVela output, so disabling the block or deleting the Application
+   one whose selector does not select the revision. The check is not repeated
+   when the Job calls the Service, so a change made in between is not caught.
+   It is a KubeVela output, so disabling the block or deleting the Application
    deletes it.
 2. **Discovery.** The reconciler runs in the **same cluster** as the agent. Its
    harness loop (`harness_loop.py`, every `harness.intervalSeconds`, default

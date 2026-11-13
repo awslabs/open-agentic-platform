@@ -1264,15 +1264,18 @@ carries no target. The reconciler accepts `agent` only as a DNS-1123 label and
 derives the target from it: `http://<agent>-preview.<namespace>.svc.cluster.local:8083/`
 (`<agent>-preview` must be a DNS-1035 label of at most 63 characters).
 `previewService` / `previewPort` keys, if present (hand-written or older
-declarations), are ignored. Before each run the reconciler reads that Service
+declarations), are ignored. When it plans a run, the reconciler reads that Service
 and refuses one of type `ExternalName` (`HarnessPreviewUnsupported`, since it
 would resolve to any host the team names); one whose selector does not pin
 `rollouts-pod-template-hash` to the revision starts no run (it waits, as for a
 preview Argo has not switched yet), and a missing one is reported as
-`HarnessWaitingForPreview`. Residual limit: a team that controls its namespace
-can still attach hand-made EndpointSlices to the Service; the Job then reaches
-those addresses. That is the team's own agent namespace and traffic, and the
-Job carries no credential the agent does not already receive.
+`HarnessWaitingForPreview`. Residual limits: the check runs at plan time, not
+when the Job calls the Service, so a change in between (for example to
+`ExternalName`, up to `readyTimeoutSeconds` later) is not caught. A team that
+controls its namespace can also attach hand-made EndpointSlices to the Service,
+and an EndpointSlice can list any address, so the Job in the platform namespace
+can be aimed at any IP and port it can reach. The Job sends only the fixed case
+input and carries no credential (no judge key, no Langfuse key) to that target.
 
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
