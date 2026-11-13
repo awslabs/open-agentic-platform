@@ -415,7 +415,8 @@ def main() -> int:
 
     logger.info(
         "harness run %s/%s revision=%s dataset=%s status=%s cases=%d passed=%d "
-        "failed=%d errors=%d pass_ratio=%s threshold=%s judge_key_present=%s%s",
+        "failed=%d errors=%d pass_ratio=%s threshold=%s judge_key_present=%s "
+        "expect_tools_ignored=%s%s",
         settings.agent_namespace,
         settings.agent,
         settings.revision,
@@ -428,6 +429,7 @@ def main() -> int:
         "n/a" if result.pass_ratio is None else f"{result.pass_ratio:.3f}",
         settings.threshold,
         result.judge_key_present,
+        result.expect_tools_ignored,
         f" error={result.error}" if result.error else "",
     )
     try:

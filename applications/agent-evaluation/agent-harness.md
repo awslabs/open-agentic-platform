@@ -220,8 +220,12 @@ cases:
 
 Rules the loader enforces: zero cases, or more than `harness.maxCases`
 (default 50), is a run error; cases are never truncated. `input` and `expected`
-must be non-empty strings. When any case has `expectTools`, the result reports
-`expectToolsIgnored: true` so nobody reads it as checked. `expected` may contain
+must be non-empty strings. A case may carry only `id`, `input`, `expected`,
+`expectTools` and `tags`; any other key (a typo such as `expectTool`) makes the
+dataset invalid. When any case has `expectTools`, the result reports
+`expectToolsIgnored: true`, and the runner log and the `HarnessRunCompleted`
+Event say "expectTools in this dataset are not checked yet", so nobody reads it
+as checked. `expected` may contain
 `{{now}}`: the runner renders it as the current UTC time (for example
 `2026-01-02T12:00:00Z`) when it calls the judge, so a time-dependent case is
 judged against the real time.

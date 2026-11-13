@@ -79,6 +79,13 @@ def test_expect_tools_is_accepted_and_flagged(tmp_path):
     assert ds.uses_expect_tools
 
 
+def test_unknown_case_key_is_an_error(tmp_path):
+    # Review S2: `expectTool` (a typo) must not be dropped silently.
+    body = VALID.replace("    tags: [greeting]\n", "    expectTool: [get_time]\n")
+    with pytest.raises(DatasetError, match="unknown key.*expectTool"):
+        load_dataset(write(tmp_path, body), max_cases=50)
+
+
 def test_available_datasets_reads_file_stems(tmp_path):
     write(tmp_path, VALID)
     (tmp_path / "broken.yaml").write_text(":::")

@@ -1283,6 +1283,10 @@ name. Changing a case is a reviewed chart change.
 | `cases[].expectTools` | optional list of strings. **Accepted and ignored** in the first cut (no tool-call capture yet); a run that sees it reports `expectToolsIgnored: true` |
 | `cases[].tags` | optional list of strings, copied to the result |
 
+Any other key on a case (for example the typo `expectTool`) is rejected: the
+dataset fails to load and the run is a run error. A run with `expectTools`
+says so in its log line and its `HarnessRunCompleted` Event.
+
 Zero cases, or more than `harness.maxCases` (default 50), is a run error. Cases
 are never truncated. The shipped `example-smoke-v1` is an **example**, labelled
 as such: it is not harvested from hub failures and is not a golden set. The real
@@ -1295,6 +1299,7 @@ answer as untrusted data and asks for only `{"score": <0..1>, "reasoning": ...}`
 A case passes when `score >= casePassScore` (default 0.7). The judge's whole
 reply must be that JSON object (one surrounding code fence is tolerated); any
 other judge reply is a case **error**, never a pass. Case outcomes:
+
 - **failed** (in the pass ratio): judged below `casePassScore`, or the agent's
   own reply is not a usable answer: A2A Task not `completed`, JSON-RPC error,
   error payload, non-JSON reply, reply with no text, HTTP 5xx, or a read
@@ -1303,6 +1308,7 @@ other judge reply is a case **error**, never a pass. Case outcomes:
   after its retries (up to 3 attempts, 2 s then 4 s backoff, only on transport
   errors, HTTP 429 and 5xx), a connect or other transport error to the preview,
   or an HTTP 4xx on the preview path (route, auth, policy, rate limit).
+
 `pass_ratio = passed / (passed + failed)`. A run in which every case errored is
 a run error, not a 0% run: nothing was judged. An agent that fails every case
 is a completed run with ratio 0.

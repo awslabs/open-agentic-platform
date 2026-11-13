@@ -365,6 +365,19 @@ def test_run_cut_short_by_the_deadline_says_so_in_the_event(settings, harness_se
     assert "run deadline reached: 1 of 2 cases not run" in completed[0]
 
 
+def test_expect_tools_ignored_is_named_in_the_event(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed"], expect_tools_ignored=True)
+    f.batch.finish(name)
+    loop.run_once()
+    completed = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_COMPLETED]
+    assert "expectTools in this dataset are not checked yet" in completed[0]
+
+
 def test_run_where_every_case_errored_publishes_no_counts(settings, harness_settings, catalog, metrics):
     d = decl()
     loop, f = build(settings, harness_settings, catalog, metrics, [d])

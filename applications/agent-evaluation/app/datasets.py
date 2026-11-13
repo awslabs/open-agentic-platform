@@ -19,6 +19,9 @@ import yaml
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$")
 MAX_NAME_LEN = 63
 MAX_CASE_ID_LEN = 40
+# Every key a case may carry. Anything else is an error: a typo such as
+# `expectTool` would otherwise be dropped silently and read as checked.
+CASE_KEYS = frozenset({"id", "input", "expected", "expectTools", "tags"})
 
 
 class DatasetError(Exception):
@@ -107,6 +110,12 @@ def load_dataset(path: str | Path, max_cases: int) -> Dataset:
             )
         if case_id in seen:
             raise DatasetError(f"dataset {name}: case id {case_id!r} is not unique")
+        unknown = sorted(str(k) for k in entry if k not in CASE_KEYS)
+        if unknown:
+            raise DatasetError(
+                f"dataset {name} case {case_id}: unknown key(s) {', '.join(unknown)}; "
+                f"a case may carry only {', '.join(sorted(CASE_KEYS))}"
+            )
         seen.add(case_id)
         for key in ("input", "expected"):
             value = entry.get(key)

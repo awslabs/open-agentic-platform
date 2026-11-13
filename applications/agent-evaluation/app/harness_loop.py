@@ -711,6 +711,11 @@ class HarnessLoop:
                 # A completed run carries an error only when the run deadline
                 # cut it short: say so, the ratio covers the judged cases only.
                 + (f"; {run.error}" if run.error else "")
+                + (
+                    "; expectTools in this dataset are not checked yet"
+                    if run.expect_tools_ignored
+                    else ""
+                )
                 + ", report mode: promotion not affected",
             )
         else:
