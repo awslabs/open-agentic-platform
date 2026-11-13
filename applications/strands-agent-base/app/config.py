@@ -17,7 +17,7 @@ def _int_env(name: str, default: int, minimum: int) -> int:
 # A2A contextId prefixes that identify where a request came from. The harness
 # prefix is a platform contract shared with applications/agent-evaluation (the
 # cluster_loop exclusion of harness traffic from online evaluation, and the
-# harness runner that sends `oap-harness-<revision>-<caseId>`) and documented in
+# harness runner that sends `oap-harness-<12 hex>-<caseId>`) and documented in
 # docs/architecture/agent-evaluation.md. Change all of them together.
 HARNESS_SESSION_PREFIX = "oap-harness-"
 # Set by the incident-bridge for autonomous RCA: "incident-<fingerprint>".

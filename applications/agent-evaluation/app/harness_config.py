@@ -233,6 +233,11 @@ class RunnerSettings:
     # Never printed: repr=False keeps it out of any accidental log of settings.
     judge_virtual_key: str = field(default="", repr=False)
 
+    @property
+    def job_name(self) -> str:
+        """This run's Job name: the result ConfigMap is `<job>-result`."""
+        return self.result_configmap.removesuffix("-result")
+
 
 def load_runner_settings() -> RunnerSettings:
     raw_checks = _env("HARNESS_CHECKS", '["expected-answer"]')

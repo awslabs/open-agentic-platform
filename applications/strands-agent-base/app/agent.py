@@ -570,7 +570,7 @@ def _build_session_manager(session_id: str, actor_id: Optional[str]):
 # tags=source:rca vs source:chat in one click, which neither session_id nor
 # name filtering could do before (session_id was empty and untagged).
 #
-# The agent harness sets the contextId to "oap-harness-<revision>-<caseId>",
+# The agent harness sets the contextId to "oap-harness-<12 hex>-<caseId>",
 # which tags the trace source:harness. Offline harness traffic must not be
 # scored by online (continuous) evaluation: it would mix test cases into the
 # production pass ratios. The evaluation rules exclude source:harness, and also

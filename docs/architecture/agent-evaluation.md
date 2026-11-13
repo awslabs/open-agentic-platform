@@ -1380,8 +1380,10 @@ A harness case must not be scored again by the online evaluators, or read as
 live traffic. The marker is the A2A `contextId`, which the platform base image
 already maps to the trace's `session.id`:
 
-- the runner sends `contextId = oap-harness-<revision>-<caseId>` on every case
-  (`oap-harness-<revision>-r<n>-<caseId>` for run n >= 2, see "Rollback");
+- the runner sends `contextId = <job-name>-<caseId>`
+  (`oap-harness-<12 hex>-<caseId>`) on every case; the Job name hashes
+  namespace, agent, revision, dataset and run number, so no two runs share a
+  session;
 - `strands-agent-base` tags such traces `source:harness` instead of
   `source:chat`, the same transport-agnostic rule as `incident-` to `source:rca`;
 - every online rule the reconciler writes carries two extra filter clauses,
@@ -1457,8 +1459,8 @@ with the change and bumping its pin makes both clauses effective.
   the record, for the next pass (with no free slot they are stopped and the
   re-run waits). The re-run is then the revision's newest Job, so later passes and restarts start
   nothing; creation timestamps come from the API server, so no extra state or
-  RBAC is needed. Its cases use `contextId = oap-harness-<revision>-r<n>-<caseId>`,
-  which keeps the `oap-harness-` exclusion marker. Accepted limits: without a
+  RBAC is needed. Its cases use `contextId = <job-name>-<caseId>` of the re-run's
+  own Job, which keeps the `oap-harness-` exclusion marker. Accepted limits: without a
   retained Job of the in-between revision (none started, stopped before the
   re-run could start, or pruned) there is no re-run and the series keep the
   revision's earlier run; if all of the revision's runs were pruned it runs as

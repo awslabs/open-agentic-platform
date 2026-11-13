@@ -114,7 +114,7 @@ def test_pass_fail_error_aggregation():
     assert result.threshold_met is False
     assert "jsonrpc-error" in result.case_results[2].reason
     assert result.case_results[2].score == 0.0
-    assert all(c.startswith("oap-harness-abc123-") for c in agent.seen)
+    assert all(c.startswith("oap-harness-0123456789ab-") for c in agent.seen)
 
 
 TASK_FAILED = AgentCallError("task-not-completed", "task state 'failed'")
@@ -242,12 +242,20 @@ def test_judge_http_errors_say_whether_they_are_retryable(status, retryable):
     assert exc.value.retryable is retryable
 
 
-def test_rerun_sends_its_own_context_ids():
+def test_cases_send_job_name_context_ids():
     agent = agent_fn({"input a": "good", "input b": "good"})
     run_cases(
-        dataset("a", "b"), CHECKS, runner_settings(run_number=2), agent, judge_fn({"good": 0.9})
+        dataset("a", "b"),
+        CHECKS,
+        runner_settings(result_configmap="oap-harness-fedcba987654-result", run_number=2),
+        agent,
+        judge_fn({"good": 0.9}),
     )
-    assert sorted(agent.seen) == ["oap-harness-abc123-r2-a", "oap-harness-abc123-r2-b"]
+    assert sorted(agent.seen) == ["oap-harness-fedcba987654-a", "oap-harness-fedcba987654-b"]
+
+
+def test_runner_settings_job_name_drops_the_result_suffix():
+    assert runner_settings().job_name == "oap-harness-0123456789ab"
 
 
 def test_every_case_errored_is_a_run_error():

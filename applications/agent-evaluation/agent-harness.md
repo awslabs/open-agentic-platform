@@ -123,10 +123,11 @@ Step by step, with the code that does it:
    `harness.readyTimeoutSeconds` (600 s) for the preview's A2A agent card, then
    sends each case as an A2A `message/send` to
    `http://<agent>-preview.<namespace>.svc.cluster.local:8083/` with
-   `contextId = oap-harness-<revision>-<caseId>` (run n >= 2:
-   `oap-harness-<revision>-r<n>-<caseId>`) and no caller identity, so every
-   case is a fresh session (`a2a_client.py`). Every form starts with
-   `oap-harness-`, the marker online evaluation excludes.
+   `contextId = <job-name>-<caseId>` (`oap-harness-<12 hex>-<caseId>`) and no
+   caller identity, so every case is a fresh session (`a2a_client.py`). The
+   Job name already hashes namespace, agent, revision, dataset and run number,
+   so two datasets on one revision and a rollback re-run never share a session.
+   It starts with `oap-harness-`, the marker online evaluation excludes.
 6. **Judge.** Each answer goes to the `expected-answer` check: one
    OpenAI-compatible call to this cluster's Bifrost
    (`http://bifrost.bifrost.svc.cluster.local:8080/v1/chat/completions`) with
@@ -341,8 +342,9 @@ errored run publishes only `info{status="error"}`, `threshold` and
 the rendered panels in a browser (the dashboard object synced; nobody logged in
 to look).
 
-**Langfuse.** Harness traces have session id `oap-harness-<revision>-<caseId>`
-(run n >= 2, a rollback re-run: `oap-harness-<revision>-r<n>-<caseId>`).
+**Langfuse.** Harness traces have session id `<job-name>-<caseId>`
+(`oap-harness-<12 hex>-<caseId>`; the Job name is in the `HarnessRunStarted`
+Event and on the result).
 Filter traces by the `oap-harness-` session prefix to see exactly what the agent did for a
 case. They carry tag `source:harness` on images built with the marking change,
 and `source:chat` on older images (section 7). They never get an online score.

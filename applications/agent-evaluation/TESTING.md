@@ -772,7 +772,7 @@ What to expect, and what each mismatch means:
   finishes `oap_agent_harness_info` shows `revision=<A>,trigger="rollback"`.
   List the runs per revision with
   `kubectl get jobs -n agent-evaluation -l harness.oap.io/agent=<agent> -L harness.oap.io/revision,harness.oap.io/run-number`.
-  Its sessions are `oap-harness-<A>-r<n>-<caseId>`. Later passes and a
+  Its sessions are `<re-run job name>-<caseId>`. Later passes and a
   reconciler restart start nothing more for A. No re-run is expected when B
   left no retained Job (B's run never started, was stopped before A's re-run
   could start, or was pruned); the series then keep A's earlier run.

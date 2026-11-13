@@ -20,7 +20,7 @@ URL = "http://assistant-preview.team-a.svc.cluster.local:8083/"
 
 def call():
     with httpx.Client() as client:
-        return send_message(client, URL, "hello", context_id_for("abc123", "one"), 5)
+        return send_message(client, URL, "hello", context_id_for("oap-harness-0123456789ab", "one"), 5)
 
 
 def reply(payload, status=200):
@@ -177,22 +177,31 @@ def test_request_is_message_send_with_the_harness_context():
     assert body["method"] == "message/send"
     message = body["params"]["message"]
     assert message["contextId"].startswith("oap-harness-")
-    assert message["contextId"] == "oap-harness-abc123-one"
+    assert message["contextId"] == "oap-harness-0123456789ab-one"
     assert message["parts"] == [{"kind": "text", "text": "hello"}]
     assert "X-Forwarded-User" not in route.calls.last.request.headers
 
 
-def test_rerun_context_ids_keep_the_harness_session_marker():
-    # Online evaluation excludes harness traffic by this marker, so a re-run's
-    # sessions must carry it too.
+def test_context_ids_come_from_the_job_name():
+    # Review C8: ids from the revision alone collided across datasets on one
+    # revision and across agents sharing a pod hash. The Job name hashes
+    # namespace/agent/revision/dataset/run, and keeps the excluded marker.
     from app.cluster_loop import HARNESS_SESSION_MARKER
+    from app.naming import harness_job_name
 
-    first = context_id_for("abc123", "one")
-    second = context_id_for("abc123", "one", run=2)
-    assert first == "oap-harness-abc123-one" == context_id_for("abc123", "one", run=1)
-    assert second == "oap-harness-abc123-r2-one"
-    assert first.startswith(HARNESS_SESSION_MARKER)
-    assert second.startswith(HARNESS_SESSION_MARKER)
+    smoke = harness_job_name("team-a", "assistant", "abc123", "example-smoke-v1")
+    general = harness_job_name("team-a", "assistant", "abc123", "general-assistant-v1")
+    rerun = harness_job_name("team-a", "assistant", "abc123", "example-smoke-v1", run=2)
+    other_agent = harness_job_name("team-a", "other", "abc123", "example-smoke-v1")
+    ids = [context_id_for(job, "one") for job in (smoke, general, rerun, other_agent)]
+    assert ids[0] == f"{smoke}-one"
+    assert len(set(ids)) == 4
+    assert all(i.startswith(HARNESS_SESSION_MARKER) for i in ids)
+
+
+def test_context_id_refuses_a_name_without_the_marker():
+    with pytest.raises(ValueError):
+        context_id_for("assistant-abc123", "one")
 
 
 @respx.mock

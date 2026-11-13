@@ -83,7 +83,7 @@ AGENT_TURN_FILTER = {
 
 # Agent-harness traffic is offline test traffic and must never be sampled into
 # the online oap_agent_eval_* series. The harness sends A2A contextId
-# `oap-harness-<revision>-<caseId>`. Must equal strands-agent-base
+# `<job-name>-<caseId>` = `oap-harness-<12 hex>-<caseId>`. Must equal strands-agent-base
 # app/config.py HARNESS_SESSION_PREFIX.
 HARNESS_SESSION_MARKER = "oap-harness-"
 

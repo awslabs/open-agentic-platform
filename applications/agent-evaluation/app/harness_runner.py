@@ -179,7 +179,7 @@ def _run_case(
     try:
         reply = agent_client_fn(
             case.input,
-            context_id_for(settings.revision, case.id, settings.run_number),
+            context_id_for(settings.job_name, case.id),
             timeout,
         )
     except AgentCallError as exc:
@@ -348,7 +348,7 @@ def result_body(settings: RunnerSettings, result: RunResult) -> dict:
     collector removes the result with its Job. `blockOwnerDeletion` is left
     out because setting it needs update rights on the Job.
     """
-    job = settings.result_configmap.removesuffix("-result")
+    job = settings.job_name
     metadata = {
         "name": settings.result_configmap,
         "namespace": settings.pod_namespace,
