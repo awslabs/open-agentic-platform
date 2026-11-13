@@ -302,8 +302,9 @@ harness:
       mint: true
       # Fail closed: while the key is unavailable no harness run starts, an
       # Event and oap_agent_harness_judge_key_present 0 report it, and the
-      # AgentHarnessJudgeKeyMissing alert fires. false runs the judge
-      # un-budgeted through Bifrost instead.
+      # AgentHarnessJudgeKeyMissing alert fires; the Jobs mount the Secret as
+      # required, so a pod never starts without it. false runs the judge
+      # un-budgeted through Bifrost instead (the mount is then optional).
       required: true
       # Secret in this namespace the reconciler writes and every Job mounts.
       secretRef: agent-evaluation-harness-judge-key

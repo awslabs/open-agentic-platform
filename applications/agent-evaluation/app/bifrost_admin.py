@@ -34,7 +34,14 @@ PROVIDER_KEY_IDS = ("*",)
 
 
 class BifrostAdminError(Exception):
-    """The management API failed or answered in a shape this code does not understand."""
+    """The management API failed or answered in a shape this code does not understand.
+
+    `status` is the HTTP status of a non-2xx reply, None for every other failure.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def vk_name(
@@ -77,7 +84,10 @@ class BifrostAdmin:
                 f"{method} {path} failed: {type(exc).__name__}"
             ) from exc
         if not 200 <= response.status_code < 300:
-            raise BifrostAdminError(f"{method} {path} returned HTTP {response.status_code}")
+            raise BifrostAdminError(
+                f"{method} {path} returned HTTP {response.status_code}",
+                status=response.status_code,
+            )
         return response
 
     def _json(self, response: httpx.Response, what: str) -> dict:
@@ -143,7 +153,12 @@ class BifrostAdmin:
         return key
 
     def delete_key(self, key_id) -> None:
-        self._request("DELETE", f"{_PATH}/{key_id}")
+        try:
+            self._request("DELETE", f"{_PATH}/{key_id}")
+        except BifrostAdminError as exc:
+            # Already gone (deleted by hand, or by another pass): the goal is met.
+            if exc.status != 404:
+                raise
 
     def ensure_judge_key(
         self,
@@ -153,6 +168,7 @@ class BifrostAdmin:
         rl_requests: int,
         rl_reset: str,
         known: tuple[str, str] | None = None,
+        delete_stale: bool = True,
     ) -> str:
         """Return the value of the judge key for this configuration, minting it if needed.
 
@@ -160,6 +176,11 @@ class BifrostAdmin:
         the list call returns no readable value, a matching `known` is reused,
         so a restart neither resets the key's budget nor breaks running Jobs
         that mount the current value.
+
+        Other prefixed keys (an older configuration) are deleted only when
+        `delete_stale` is true. The caller passes false while a harness Job is
+        active: a running Job keeps the value it mounted at start (a subPath
+        mount never updates), so deleting its key would fail its judge calls.
         """
         name = vk_name(models, budget_usd, budget_reset, rl_requests, rl_reset)
         if known and known[0] == name and str(known[1]).startswith(KEY_VALUE_PREFIX):
@@ -198,7 +219,7 @@ class BifrostAdmin:
             logger.info("minted harness judge key %s", name)
 
         for key in keys:
-            if key.get("name") != name:
+            if key.get("name") != name and delete_stale:
                 logger.info("deleting stale harness judge key %s", key.get("name"))
                 self.delete_key(key.get("id"))
         return value

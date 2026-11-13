@@ -307,7 +307,7 @@ class HarnessLoop:
             )
         logger.info("harness judge key Secret %s updated", self._h.judge_key_secret)
 
-    def _ensure_judge_key(self, owner: dict | None) -> bool:
+    def _ensure_judge_key(self, owner: dict | None, delete_stale: bool = True) -> bool:
         if not self._h.judge_key_mint:
             try:
                 return bool(self._secret_value())
@@ -328,7 +328,9 @@ class HarnessLoop:
         try:
             current, current_name, _ = self._secret_state()
             known = (current_name, current) if current and current_name else None
-            value = self._bifrost.ensure_judge_key(*config, known=known)
+            value = self._bifrost.ensure_judge_key(
+                *config, known=known, delete_stale=delete_stale
+            )
             self._write_secret(value, vk_name(*config), owner)
             return True
         except (BifrostAdminError, ApiException) as exc:
@@ -343,10 +345,19 @@ class HarnessLoop:
         cluster = self._s.cluster
         ns = self._s.namespace
 
+        # Listed before the key step: a stale judge key is deleted only while
+        # no harness Job is active (see BifrostAdmin.ensure_judge_key).
+        jobs = list(
+            self._batch.list_namespaced_job(
+                namespace=ns, label_selector=f"{LABEL_RUN}=true"
+            ).items
+        )
+        any_active = any(_finished_condition(j)[0] is None for j in jobs)
+
         owner = self._owner_ref()
         if owner is None:
             ok = False  # no Job without an owner (logged by _owner_ref)
-        key_ok = self._ensure_judge_key(owner)
+        key_ok = self._ensure_judge_key(owner, delete_stale=not any_active)
         self._metrics.harness_judge_key_present.labels(cluster).set(1 if key_ok else 0)
         can_create = key_ok or not self._h.judge_key_required
         if not can_create:
@@ -376,11 +387,6 @@ class HarnessLoop:
             if agent and key not in by_key:
                 held[key] = (cm.metadata.namespace, agent)
 
-        jobs = list(
-            self._batch.list_namespaced_job(
-                namespace=ns, label_selector=f"{LABEL_RUN}=true"
-            ).items
-        )
         results = {
             cm.metadata.name: cm
             for cm in self._core.list_namespaced_config_map(
@@ -685,7 +691,10 @@ class HarnessLoop:
                                 "name": "judge-key",
                                 "secret": {
                                     "secretName": h.judge_key_secret,
-                                    "optional": True,
+                                    # Required when the key is required: a
+                                    # pod never starts without it and so
+                                    # never runs the judge un-budgeted.
+                                    "optional": not h.judge_key_required,
                                     "items": [
                                         {"key": JUDGE_KEY_FILE, "path": JUDGE_KEY_FILE}
                                     ],

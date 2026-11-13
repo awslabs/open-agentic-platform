@@ -169,3 +169,49 @@ def test_unreadable_value_with_a_secret_for_another_key_is_reminted():
         )
     assert value == "sk-bf-new"
     assert delete.called
+
+
+@respx.mock
+def test_stale_keys_are_kept_when_delete_stale_is_false():
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "virtual_keys": [
+                    {"id": "vk1", "name": NAME, "value": "sk-bf-new"},
+                    {"id": "vk2", "name": "oap-harness-judge-deadbeef", "value": "sk-bf-old"},
+                ]
+            },
+        )
+    )
+    stale = respx.delete(f"{KEYS}/vk2")
+    with httpx.Client() as client:
+        assert admin(client).ensure_judge_key(*ARGS, delete_stale=False) == "sk-bf-new"
+    assert not stale.called
+
+
+@respx.mock
+def test_deleting_a_key_that_is_already_gone_is_not_an_error():
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "virtual_keys": [
+                    {"id": "vk1", "name": NAME, "value": "sk-bf-new"},
+                    {"id": "vk2", "name": "oap-harness-judge-deadbeef", "value": "sk-bf-old"},
+                ]
+            },
+        )
+    )
+    stale = respx.delete(f"{KEYS}/vk2").mock(return_value=httpx.Response(404))
+    with httpx.Client() as client:
+        assert admin(client).ensure_judge_key(*ARGS) == "sk-bf-new"
+    assert stale.called
+
+
+@respx.mock
+def test_other_delete_errors_carry_the_status():
+    respx.delete(f"{KEYS}/vk2").mock(return_value=httpx.Response(500))
+    with httpx.Client() as client, pytest.raises(BifrostAdminError) as raised:
+        admin(client).delete_key("vk2")
+    assert raised.value.status == 500

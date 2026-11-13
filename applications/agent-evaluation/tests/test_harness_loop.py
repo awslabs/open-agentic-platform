@@ -55,10 +55,12 @@ class FakeBifrost:
         self.fail = fail
         self.calls = []
         self.known = []
+        self.delete_stale = []
 
-    def ensure_judge_key(self, models, *args, known=None):
+    def ensure_judge_key(self, models, *args, known=None, delete_stale=True):
         self.calls.append(tuple(models))
         self.known.append(known)
+        self.delete_stale.append(delete_stale)
         if self.fail:
             raise BifrostAdminError("bifrost down")
         return self.value
@@ -219,7 +221,8 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert not any(k.startswith("LANGFUSE") for k in env)
     secret_vol = next(v for v in pod["volumes"] if v["name"] == "judge-key")
     assert secret_vol["secret"]["secretName"] == "agent-evaluation-harness-judge-key"
-    assert secret_vol["secret"]["optional"] is True
+    # Required key: the pod never starts without it.
+    assert secret_vol["secret"]["optional"] is False
     mount = next(m for m in container["volumeMounts"] if m["name"] == "judge-key")
     assert mount["mountPath"] == "/etc/agent-evaluation/credentials/BIFROST_VIRTUAL_KEY"
     assert REASON_HARNESS_RUN_STARTED in [n[2] for n in f.events.normals]
@@ -766,6 +769,34 @@ def test_judge_key_not_required_still_runs(settings, harness_settings, catalog, 
     f.custom.set_rollout("team-a", "assistant", "rev1")
     loop.run_once()
     assert len(f.batch.created) == 1
+
+
+def test_judge_key_mount_is_optional_only_when_the_key_is_not_required(
+    settings, harness_settings, catalog, metrics
+):
+    relaxed = dataclasses.replace(harness_settings, judge_key_required=False)
+    loop, f = build(settings, relaxed, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    pod = f.batch.created[0]["spec"]["template"]["spec"]
+    vol = next(v for v in pod["volumes"] if v["name"] == "judge-key")
+    assert vol["secret"]["optional"] is True
+
+
+def test_stale_judge_keys_are_kept_while_a_job_is_active(
+    settings, harness_settings, catalog, metrics
+):
+    # A config change mints a new key while a Job runs with the old value
+    # (its subPath mount never updates): the old key must survive the run.
+    bifrost = FakeBifrost()
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()], bifrost=bifrost)
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()  # no Job yet when the key step runs
+    loop.run_once()  # the Job is active
+    name = f.batch.created[0]["metadata"]["name"]
+    f.batch.finish(name)
+    loop.run_once()  # none active
+    assert bifrost.delete_stale == [True, False, True]
 
 
 def test_secret_written_only_on_change(settings, harness_settings, catalog, metrics):

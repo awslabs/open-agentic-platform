@@ -1530,7 +1530,14 @@ judge key stays hub-only, as D4 decided.
   no Job starts while the key is unavailable; the reconciler records a
   `HarnessJudgeKeyUnavailable` Event, publishes
   `oap_agent_harness_judge_key_present 0`, and `AgentHarnessJudgeKeyMissing`
-  fires.
+  fires. The Job's judge-key Secret volume is then required (`optional: false`),
+  so a pod never starts without the key; with `required: false` it is optional.
+- **Key rotation and running Jobs:** a Job mounts the key value at start
+  (a `subPath` mount, never updated). When the key configuration changes the
+  reconciler mints the new key and rewrites the Secret, but deletes the older
+  `oap-harness-judge-` keys only on a pass where no harness Job is active, so a
+  running Job keeps a valid key until it ends. A delete that answers 404 (the
+  key is already gone) is not an error.
 - **The gap, stated:** minting relies on Bifrost's management API being open
   in-cluster, which is true only while governance auth is off (the current
   config). When #18 turns auth on, set `mint: false` and let a platform minter
