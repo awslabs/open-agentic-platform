@@ -1224,7 +1224,9 @@ harness:
 ```
 
 The addon side is `harness.enabled` on the `agent-evaluation` chart (off by
-default; nothing harness-specific renders without it), set per cluster in
+default; without it no harness RBAC, ConfigMaps, `HARNESS_*` env or alerts
+render, and only the dashboard's static "Harness" row remains, showing "No
+data"), set per cluster in
 `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`.
 
 ### Contract 3: the `<agent>-harness` ConfigMap

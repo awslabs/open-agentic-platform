@@ -97,11 +97,12 @@ spec:
               value: /etc/agent-evaluation/credentials
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            # Harness (report mode). Always rendered so the reconciler's choice
-            # is explicit; the rest is read only when it is "true".
-            - name: HARNESS_ENABLED
-              value: {{ ternary "true" "false" (.Values.harness.enabled | default false) | quote }}
             {{- if .Values.harness.enabled }}
+            # Harness (report mode). Rendered only when on, so a chart with the
+            # harness off carries nothing harness-specific; the reconciler
+            # defaults HARNESS_ENABLED to false.
+            - name: HARNESS_ENABLED
+              value: "true"
             {{- $h := .Values.harness }}
             - name: HARNESS_INTERVAL_SECONDS
               value: {{ $h.intervalSeconds | quote }}

@@ -98,11 +98,12 @@ and real.
 | Alert | Fires when |
 |---|---|
 | `AgentEvaluationDataStale` | No full metrics pass for `alerts.dataAgeSeconds` (per cluster, so one stalled cluster is not hidden) |
-| `AgentEvaluationReconcileErrors` | Langfuse calls failing for 30m |
+| `AgentEvaluationReconcileErrors` | Langfuse calls failing for 30m in a loop other than `harness` |
 | `AgentEvaluationRuleBudgetHigh` | The shared project is at 80% of `maxActiveRules` |
 | `AgentEvaluationJudgeKeyMissing` | Hub only: judge spend is un-budgeted |
 | `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m; also follows a missing required judge key |
-| `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; with `required: true` no run starts while it fires |
+| `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m |
+| `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; `warning` with `required: true` (no run starts while it fires), `info` with `required: false` (runs go on un-budgeted) |
 
 ## Harness (report mode)
 
@@ -112,8 +113,9 @@ every new revision's `<agent>-preview` Service and publishes
 `oap_agent_harness_*`. It **never blocks or delays a promotion**. Design and
 contracts: [§4b](../../../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
 
-Nothing below renders while `harness.enabled` is false; the only change to the
-disabled render is the `HARNESS_ENABLED: "false"` env var.
+Nothing in the table below renders while `harness.enabled` is false, not even a
+`HARNESS_ENABLED` env var (the reconciler defaults it to false). The one
+harness part of a disabled render is the dashboard's "Harness" row (see below).
 
 Turning the harness off after it ran: the reconciler makes the catalog
 ConfigMap the owner of every harness Job and of the judge-key Secret (each
@@ -128,10 +130,11 @@ harness off").
 | ConfigMap `agent-evaluation-harness-datasets` | every `files/harness/datasets/*.yaml`. Fails the render when there is none |
 | Deployment | the `HARNESS_*` env, both ConfigMaps mounted read-only, and a `checksum/harness` annotation so a dataset or prompt change restarts the reconciler |
 | RBAC | see below |
-| PrometheusRule | `AgentHarnessStale`, `AgentHarnessJudgeKeyMissing` (where the CRD exists) |
+| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing` (where the CRD exists) |
 
-The Grafana dashboard always contains the "Harness" row; it is empty for agents
-with no harness.
+The Grafana dashboard is one static JSON, so it always contains the "Harness"
+row, harness on or off. Its panels show "No data" for agents with no harness and
+on clusters with the harness off.
 
 | Value | Default | Meaning |
 |---|---|---|

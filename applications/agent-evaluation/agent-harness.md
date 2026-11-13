@@ -375,8 +375,10 @@ Two switches, both per cluster or environment:
    the chart's default image is not published yet (4.2). Turn it on per
    environment, together with an image override.
 2. **The harness.** `harness.enabled: true` in the chart values. It is off by
-   default and nothing harness-specific (RBAC, ConfigMaps, env, alerts) renders
-   without it. Set it in a per-cluster or per-environment values overlay, which
+   default and nothing harness-specific (RBAC, ConfigMaps, `HARNESS_*` env,
+   alerts) renders without it; the reconciler then defaults `HARNESS_ENABLED`
+   to false. The one exception is the Grafana dashboard: it is one static JSON,
+   so its "Harness" row still renders and its panels show "No data". Set it in a per-cluster or per-environment values overlay, which
    the addon ApplicationSet reads at highest precedence with
    `ignoreMissingValueFiles: true` (`gitops/bootstrap/agent-platform-app.yaml`):
 
