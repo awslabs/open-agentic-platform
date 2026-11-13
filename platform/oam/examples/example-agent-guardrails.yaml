@@ -1,0 +1,80 @@
+# Example: Agent with runtime content guardrails (PROPOSED — not implemented)
+#
+# This file documents the API that docs/architecture/agent-guardrails.md
+# proposes. The `guardrails` block does NOT exist on the agent component yet, so
+# applying this today is rejected by KubeVela. It is here so reviewers can read
+# the developer experience next to the design.
+#
+# Adding the `guardrails` block is the whole change. From it the platform routes
+# this agent's model calls through an inspection proxy that screens the prompt
+# with Amazon Bedrock Guardrails before the model sees it, refuses the request on
+# a violation, and reports every outcome to Grafana beside the evaluation scores.
+#
+# What the developer controls here: whether guardrails are on, which platform
+# profile applies, and — only in the stricter direction — the verdict and the
+# directions inspected.
+# What the platform controls: what a profile MEANS. Which detectors run, at what
+# strength, what the weakest allowed verdict is, and what happens when the
+# detection backend is unreachable. That keeps every agent held to one definition
+# of "standard", and keeps those definitions reviewed in one place.
+# There is no account, region, ARN, endpoint or API key in this file.
+#
+# Prerequisites:
+# - the agent-guardrails addon on this cluster (enable_agent_guardrails)
+# - Amazon Bedrock Guardrails reachable in the cluster's account
+#
+# Cost: one ApplyGuardrail call per model call — PER REQUEST, not sampled. At
+# $0.15 per 1,000 text units for content filters and denied topics, and a text
+# unit being up to 1,000 characters, a 2,000-character prompt costs ~$0.0003.
+# This is a different cost shape from evaluation's `coverage` dial.
+#
+# See the design: docs/architecture/agent-guardrails.md
+# Issues: #144 (content and topic control), #146 (Dogwood as the decision layer)
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: support-assistant
+  namespace: default
+spec:
+  components:
+    - name: support-assistant
+      type: agent
+      properties:
+        description: "Customer support assistant with content guardrails"
+        systemMessage: "You are a support assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+
+        guardrails:
+          enabled: true
+
+          # Platform profile. What `standard` means — which detectors, at what
+          # strength, the weakest verdict allowed, and the behaviour when the
+          # backend errors — lives in the agent-guardrails chart, not here.
+          profile: standard
+
+          # OPTIONAL, and only ever STRICTER than the profile's floor:
+          #   report < redact < block
+          # An attempt to weaken the profile is rejected at admission, with the
+          # profile's floor named in the message. Same semantics as mcpAccess,
+          # which can narrow a server's allowedAgents but never widen it.
+          onViolation: block
+
+          # OPTIONAL, and only ever ADDS to the profile's set.
+          # NOTE: output inspection is Phase 2, and when the verdict is `block`
+          # or `redact` the proxy must buffer the completion — so an agent that
+          # blocks on output DOES NOT STREAM. That is a contract, not a
+          # surprise; see the design, D5.
+          inspect: [input]
+
+        # Guardrails block in flight; evaluation scores after the fact, on a
+        # sample. They answer the same question at two different times, and the
+        # dashboard shows them together.
+        evaluation:
+          enabled: true
+          strictness: medium
+          coverage: medium
+          evaluators:
+            - goal-completion
+            - name: safety
+              strictness: high
