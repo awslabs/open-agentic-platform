@@ -396,6 +396,22 @@ template: {
 		// Any pod in a listed namespace can name any user toward these agents, so the
 		// list is a platform decision, never an Application's.
 		let _extraIngress = [for ns in strings.Split("{{ .Values.global.agentGateway.extraIngressNamespaces }}", ",") if strings.TrimSpace(ns) != "" {strings.TrimSpace(ns)}]
+		// The agent harness calls <agent>-preview directly, not through the gateway,
+		// so an agent whose own harness block is enabled admits one more source: the
+		// harness runner pods (harness.oap.io/run: "true", set by the reconciler on
+		// every runner Job's pod template) in the agent-evaluation namespace
+		// (global.agentEvaluation.namespace, platform-owned). Both selectors sit in
+		// one `from` entry, so a pod must match both; the reconciler's own pod does
+		// not carry the label. Those calls send no X-Forwarded-User, so they run as an
+		// anonymous caller and cannot name a user. Without an enabled harness block
+		// the policy has only the gateway rule.
+		let _harnessIngress = [if _harnessEnabled {
+			from: [{
+				namespaceSelector: matchLabels: "kubernetes.io/metadata.name": "{{ .Values.global.agentEvaluation.namespace }}"
+				podSelector: matchLabels: "harness.oap.io/run":                "true"
+			}]
+			ports: [{protocol: "TCP", port: 8083}]
+		}]
 		gatewayOnlyIngress: {
 			apiVersion: "networking.k8s.io/v1"
 			kind:       "NetworkPolicy"
@@ -407,10 +423,10 @@ template: {
 			spec: {
 				podSelector: matchLabels: "app.kubernetes.io/name": context.name
 				policyTypes: ["Ingress"]
-				ingress: [{
+				ingress: list.Concat([[{
 					from: [for ns in list.Concat([["{{ .Values.global.agentGateway.namespace }}"], _extraIngress]) {namespaceSelector: matchLabels: "kubernetes.io/metadata.name": ns}]
 					ports: [{protocol: "TCP", port: 8083}]
-				}]
+				}], _harnessIngress])
 			}
 		}
 

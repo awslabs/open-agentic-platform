@@ -478,6 +478,23 @@ On each cluster where the harness runs:
 | AMP scraper, Grafana operator (optional) | metrics and the dashboard |
 | Bedrock access to the judge model | the default judge is `judge.models.judge-default` |
 
+Network requirements. The runner Jobs call `<agent>-preview` on TCP 8083
+directly, not through the agent gateway. The agent component's
+`<agent>-gateway-only` NetworkPolicy admits that traffic for you: when an agent's
+`harness` block is enabled, it adds one ingress rule allowing TCP 8083 from pods
+labelled `harness.oap.io/run: "true"` in the agent-evaluation namespace. The
+reconciler sets that label on every runner Job's pod template, and its own
+Deployment pods do not carry it, so only runner pods match. The namespace is
+the platform value `global.agentEvaluation.namespace` of the
+`oam-agent-components` chart (default `agent-evaluation`). If you install the
+agent-evaluation addon in another namespace, set it to match, or every case
+errors with a connect failure. Agents without an enabled harness block keep the
+gateway-only policy, unchanged. The runner sends no `X-Forwarded-User`, so it
+reaches the agent as an anonymous caller. If you add your own NetworkPolicies
+on agent namespaces, they need the same allowance. Egress from the
+agent-evaluation namespace must reach the preview Services (TCP 8083), Bifrost
+and the Kubernetes API.
+
 ### 4.4 The judge key
 
 The harness judge key is separate from the online judge key (`judge.virtualKey`,

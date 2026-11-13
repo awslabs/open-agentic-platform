@@ -684,7 +684,7 @@ curl -s -u "$PK:$SK" "$LF/api/public/v2/evaluation-rules?limit=10" | jq -r '.dat
 ```bash
 cd applications/agent-evaluation
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest tests/ -q      # 290 tests, no cluster needed
+.venv/bin/python -m pytest tests/ -q      # 293 tests, no cluster needed
 ```
 
 ## Harness (report mode)

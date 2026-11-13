@@ -227,6 +227,8 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert env["HARNESS_RUN_TIMEOUT_SECONDS"] == str(harness_settings.run_timeout)
     assert body["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
+    # The agent's NetworkPolicy admits the runner pods by this label (agent.cue).
+    assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run"] == "true"
     assert env["POD_NAMESPACE"] == {"fieldRef": {"fieldPath": "metadata.namespace"}}
     assert env["HARNESS_JOB_UID"] == {
         "fieldRef": {"fieldPath": "metadata.labels['batch.kubernetes.io/controller-uid']"}

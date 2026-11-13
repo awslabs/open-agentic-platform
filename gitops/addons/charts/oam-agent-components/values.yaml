@@ -48,6 +48,12 @@ global:
     # registry adds aiops-agent on clusters that run the aiops-agent addon, whose chat-ui
     # and incident-bridge call the agent's Service directly.
     extraIngressNamespaces: ""
+  # Namespace of the agent-evaluation addon. Platform-owned. An agent whose harness block
+  # is enabled admits ingress on TCP 8083 from the harness runner pods
+  # (harness.oap.io/run: "true") in this namespace, because the harness Jobs call the
+  # agent's <agent>-preview Service directly. Agents without a harness block do not.
+  agentEvaluation:
+    namespace: agent-evaluation
   # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
   # properties.sandbox: true). Platform-owned: an application developer cannot set
   # this from their OAM, because the VMM is ambient environment config.

@@ -1512,6 +1512,19 @@ with the change and bumping its pin makes both clauses effective.
   scales the aborted revision away). The agent's active runs are stopped and
   superseded ("the rollout was aborted"), a run that finished after the abort
   is discarded the same way, and nothing starts until the Rollout moves on.
+- **Network path:** the Job calls `<agent>-preview` directly, not through the
+  gateway, and the agent component's `<agent>-gateway-only` NetworkPolicy
+  otherwise admits only the gateway namespace (and
+  `global.agentGateway.extraIngressNamespaces`). When the agent's own `harness`
+  block is enabled, the component adds one ingress rule: TCP 8083 from pods
+  labelled `harness.oap.io/run: "true"` in the namespace
+  `global.agentEvaluation.namespace` (default `agent-evaluation`), with both
+  selectors in one `from` entry. The reconciler sets that label on every runner
+  Job's pod template; its own Deployment pods do not carry it. Agents without an
+  enabled harness block render the gateway-only policy unchanged. The runner
+  sends no `X-Forwarded-User`, so it reaches the agent as an anonymous caller
+  and cannot name a user. Enforced only where the cluster enforces
+  NetworkPolicy.
 - **Slots:** at most `harness.maxConcurrentJobs` Jobs are active per cluster.
   Each pass first plans every declaration's pending run, then gives free slots
   to the run that has waited longest (first seen waiting by this process),
@@ -1653,7 +1666,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] A per-evaluator `strictness` override changes the reported `pass_threshold` and creates **no** additional rule
 - [x] The `Agent Evaluation` dashboard appears in AMG under "Agent Platform" with no manual import, via grafana-operator
 
-### Covered by unit tests (`pytest tests/`, 290 tests, no cluster needed)
+### Covered by unit tests (`pytest tests/`, 293 tests, no cluster needed)
 
 - [x] Two agents with the same `coverage` but different `strictness` share one rule, and their pass ratios use different thresholds
 - [x] Deleting one agent's Application removes its tag from the rule; deleting the last agent removes the rule
@@ -1673,6 +1686,7 @@ only by a unit test, and from one not yet exercised at all.
 - [x] Harness: one declaration that crashes the parser (`RecursionError`) is reported and skipped without stopping the others, in both the harness and the evaluation readers
 - [x] Harness: the dataset and check-prompt digests are written to `result.json` and published on `oap_agent_harness_info`; `HarnessRunCompleted` names the failed cases
 - [x] Harness: the datasets (`example-smoke-v1`, `general-assistant-v1`) and check prompt the chart ships load through the reconciler's own loaders, including the `checks.yaml` rendered by `helm template` (`tests/test_harness_chart_files.py`)
+- [x] Harness, network: an agent with an enabled `harness` block gets one extra ingress rule on its `<agent>-gateway-only` NetworkPolicy (TCP 8083 from `harness.oap.io/run: "true"` pods in the agent-evaluation namespace); without one, or with `enabled: false`, the policy has only the gateway rule; runner pod templates carry the label (`tests/test_agent_network_policy.py`, rendered with `helm template` and `vela dry-run --offline`, skipped when either is missing)
 
 ### Not yet exercised
 
