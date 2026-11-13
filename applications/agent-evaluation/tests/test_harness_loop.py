@@ -68,7 +68,18 @@ class FakeBifrost:
         return self.value
 
 
-def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=None, bifrost=None, malformed=None):
+def build(
+    settings,
+    harness_settings,
+    catalog,
+    metrics,
+    declarations,
+    *,
+    fakes=None,
+    bifrost=None,
+    malformed=None,
+    clock=lambda: 5_000.0,
+):
     fakes = fakes or SimpleNamespace(
         batch=FakeBatch(), custom=FakeCustomObjects(), core=FakeCore(), events=FakeEvents()
     )
@@ -98,7 +109,7 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
         fakes.custom,
         fakes.core,
         bifrost if bifrost is not None else FakeBifrost(),
-        clock=lambda: 5_000.0,
+        clock=clock,
     )
     return loop, fakes
 
@@ -1332,3 +1343,40 @@ def test_run_that_finished_after_an_abort_is_discarded(
     assert name in f.batch.deleted
     assert REASON_HARNESS_RUN_COMPLETED not in [n[2] for n in f.events.normals]
     assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+
+
+def test_free_slot_goes_to_the_longest_waiting_revision(
+    settings, harness_settings, catalog, metrics
+):
+    # Reviewer repro (S3): with one slot, key order always favoured team-a.
+    one = dataclasses.replace(harness_settings, max_concurrent_jobs=1)
+    busy, a, z = decl(namespace="team-b"), decl(namespace="team-a"), decl(namespace="team-z")
+    now = [100.0]
+    loop, f = build(settings, one, catalog, metrics, [a, busy, z], clock=lambda: now[0])
+    f.custom.set_rollout("team-b", "assistant", "b1")
+    loop.run_once()  # team-b takes the only slot
+    busy_job = f.batch.created[-1]["metadata"]["name"]
+
+    now[0] = 200.0
+    f.custom.set_rollout("team-z", "assistant", "z1")
+    loop.run_once()  # team-z starts waiting
+    now[0] = 300.0
+    f.custom.set_rollout("team-a", "assistant", "a1")
+    loop.run_once()  # team-a starts waiting, later
+    assert len(f.batch.created) == 1
+
+    f.batch.finish(busy_job)
+    now[0] = 400.0
+    loop.run_once()
+    assert env_of(f.batch.created[-1])["HARNESS_AGENT_NAMESPACE"] == "team-z"
+
+    # team-a is not starved: it gets the next free slot.
+    f.batch.finish(f.batch.created[-1]["metadata"]["name"])
+    now[0] = 500.0
+    loop.run_once()
+    assert [env_of(b)["HARNESS_AGENT_NAMESPACE"] for b in f.batch.created] == [
+        "team-b",
+        "team-z",
+        "team-a",
+    ]
+    assert loop._waiting_since == {}

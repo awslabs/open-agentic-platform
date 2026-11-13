@@ -115,7 +115,9 @@ Step by step, with the code that does it:
    namespace (`agent-evaluation`), never in the agent's. The Job objects are
    the "already ran" record. `backoffLimit: 0`, so a failed run is reported and never
    retried. At most `harness.maxConcurrentJobs` (default 2) run at once; a new
-   revision waits for a slot.
+   revision waits for a slot, and a free slot goes to the run that has waited
+   longest (ties by namespace/agent). The wait order is kept in memory, so
+   after a reconciler restart it falls back to namespace/agent order.
 5. **Cases.** The Job runs the reconciler image as `python -m app.harness_runner`
    under ServiceAccount `agent-evaluation-harness-runner`. It waits up to
    `harness.readyTimeoutSeconds` (600 s) for the preview's A2A agent card, then
@@ -386,7 +388,7 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | Value | Default | Effect |
 |---|---|---|
 | `intervalSeconds` | 60 | harness loop period |
-| `maxConcurrentJobs` | 2 | Jobs at once per cluster |
+| `maxConcurrentJobs` | 2 | Jobs at once per cluster; a free slot goes to the longest-waiting revision |
 | `historyLimit` | 3 | finished runs kept per agent |
 | `caseConcurrency` | 2 | cases in flight per run |
 | `caseTimeoutSeconds` | 120 | per call: the agent call and each judge call |

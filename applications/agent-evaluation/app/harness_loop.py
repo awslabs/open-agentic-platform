@@ -90,6 +90,19 @@ TRIGGER_ROLLBACK = "rollback"
 
 
 @dataclass
+class _Start:
+    """A run one declaration needs now, planned before any slot is given out."""
+
+    decl: HarnessDeclaration
+    revision: str
+    name: str
+    trigger: str
+    run_number: int
+    # This agent's active runs of other revisions, stopped once this one starts.
+    to_stop: list
+
+
+@dataclass
 class _Finished:
     job: object
     run: RunResult
@@ -231,6 +244,10 @@ class HarnessLoop:
         # superseded, not a result. In memory on purpose: after a restart the
         # set is empty and finished runs are taken as they are.
         self._seen_active: set[str] = set()
+        # (agent key, Job name) -> when this process first saw the run waiting
+        # for a slot. Free slots go to the oldest entry. In memory on purpose:
+        # after a restart the order falls back to the agent key.
+        self._waiting_since: dict[tuple[str, str], float] = {}
 
     # ── judge model and key ──────────────────────────────────────────────
 
@@ -411,6 +428,7 @@ class HarnessLoop:
         }
 
         available = available_datasets(self._h.datasets_dir)
+        plans: list[_Start] = []
         for decl in declarations:
             if owner is None:
                 break
@@ -424,11 +442,35 @@ class HarnessLoop:
                 )
                 continue
             try:
-                self._maybe_start(decl, jobs, results, available, owner)
+                start = self._plan_start(decl, jobs, available)
             except ApiException as exc:
                 ok = False
                 logger.error(
                     "harness: %s failed: %s %s", decl.key, exc.status, exc.reason
+                )
+                continue
+            if start is not None:
+                plans.append(start)
+
+        # Free slots go to the longest-waiting run, then by agent key. In
+        # memory: after a restart every pending run counts as waiting from
+        # the first pass, so the order falls back to the agent key.
+        now = self._clock()
+        planned = {(p.decl.key, p.name) for p in plans}
+        for entry in list(self._waiting_since):
+            if entry not in planned:
+                del self._waiting_since[entry]
+        for p in plans:
+            self._waiting_since.setdefault((p.decl.key, p.name), now)
+        plans.sort(key=lambda p: (self._waiting_since[(p.decl.key, p.name)], p.decl.key))
+        for p in plans:
+            try:
+                if self._start(p, jobs, results, owner):
+                    self._waiting_since.pop((p.decl.key, p.name), None)
+            except ApiException as exc:
+                ok = False
+                logger.error(
+                    "harness: %s failed: %s %s", p.decl.key, exc.status, exc.reason
                 )
 
         undecided: set[str] = set()
@@ -453,9 +495,14 @@ class HarnessLoop:
         }
         return ok
 
-    def _maybe_start(
-        self, decl: HarnessDeclaration, jobs: list, results: dict, available: set, owner: dict
-    ) -> None:
+    def _plan_start(
+        self, decl: HarnessDeclaration, jobs: list, available: set
+    ) -> _Start | None:
+        """The run this declaration needs now, or None. Creates no Job.
+
+        Refusals and waits are reported here as Events, and an aborted
+        Rollout's active runs are stopped here: neither takes a slot.
+        """
         if decl.dataset not in available:
             self._recorder.warn(
                 decl.namespace,
@@ -534,7 +581,7 @@ class HarnessLoop:
             # newest run (the "another revision was current" record). Once the
             # re-run exists it is the newest, so later passes and a restarted
             # reconciler start nothing. Decided before other revisions' active
-            # runs are stopped below, which deletes their Jobs.
+            # runs are stopped in _start, which deletes their Jobs.
             newest = max(_created(j) for j in same)
             if not any(
                 _labels(j).get(LABEL_REVISION) != revision and _created(j) > newest
@@ -546,13 +593,19 @@ class HarnessLoop:
         name = harness_job_name(
             decl.namespace, decl.agent, revision, decl.dataset, run=run_number
         )
-
         # This agent's active runs of other revisions: replaced by this run.
         to_stop = [
             j
             for j in agent_jobs
             if _finished_condition(j)[0] is None and _labels(j).get(LABEL_REVISION) != revision
         ]
+        return _Start(decl, revision, name, trigger, run_number, to_stop)
+
+    def _start(self, start: _Start, jobs: list, results: dict, owner: dict) -> bool:
+        """Create the planned Job if a slot is free; True when it was created."""
+        decl, revision, name = start.decl, start.revision, start.name
+        trigger, run_number = start.trigger, start.run_number
+        to_stop = [j for j in start.to_stop if j in jobs]
         # They free their slots, so they do not count against this run.
         active = sum(1 for j in jobs if _finished_condition(j)[0] is None) - len(to_stop)
         if active >= self._h.max_concurrent_jobs:
@@ -562,7 +615,7 @@ class HarnessLoop:
             logger.info(
                 "harness: %s revision %s waits, %d runs active", decl.key, revision, active
             )
-            return
+            return False
 
         # A result left under this name by an earlier Job of the same name (the
         # Job was deleted by hand and is now recreated): delete it first, so the
@@ -589,6 +642,7 @@ class HarnessLoop:
             f"harness run {name} started for revision {revision}{run_text} on dataset "
             f"{decl.dataset} ({trigger}, report mode: promotion not affected)",
         )
+        return True
 
     def _stop(self, decl: HarnessDeclaration, to_stop: list, jobs: list, why: str) -> None:
         """Delete active runs that no longer measure their revision; each is superseded."""
@@ -815,7 +869,7 @@ class HarnessLoop:
     def _supersede_finished(self, jobs: list, results: dict, by_key: dict, undecided: set) -> bool:
         """Drop runs that finished after their revision moved, unseen by this process.
 
-        `_maybe_start` stops a run that is still active when a newer revision
+        `_start` stops a run that is still active when a newer revision
         appears. A run can also finish between two passes after the preview
         Service already moved on (live campaign finding S2): its cases may
         have reached the newer pods, so its result is not this revision's.

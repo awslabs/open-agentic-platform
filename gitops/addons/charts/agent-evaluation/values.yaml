@@ -260,7 +260,8 @@ harness:
   # How often the harness loop looks for new revisions.
   intervalSeconds: 60
   # Harness Jobs allowed to run at once on this cluster. A new revision waits
-  # for a free slot; it is never dropped.
+  # for a free slot; it is never dropped. Free slots go to the longest-waiting
+  # revision first (in memory; after a restart, namespace/agent order).
   maxConcurrentJobs: 2
   # Finished Jobs (and their result ConfigMaps) kept per agent. The newest run
   # is what the metrics show; older ones are kept for `kubectl logs`.

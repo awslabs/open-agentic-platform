@@ -1479,6 +1479,12 @@ with the change and bumping its pin makes both clauses effective.
   scales the aborted revision away). The agent's active runs are stopped and
   superseded ("the rollout was aborted"), a run that finished after the abort
   is discarded the same way, and nothing starts until the Rollout moves on.
+- **Slots:** at most `harness.maxConcurrentJobs` Jobs are active per cluster.
+  Each pass first plans every declaration's pending run, then gives free slots
+  to the run that has waited longest (first seen waiting by this process),
+  ties by namespace/agent, so one namespace cannot starve another. The wait
+  times are in memory only; after a restart the order falls back to
+  namespace/agent. No state is persisted.
 - **Pruning:** finished Jobs and their result ConfigMaps are kept to
   `harness.historyLimit` (default 3) per agent, and removed when the agent's
   `<agent>-harness` ConfigMap goes away.
