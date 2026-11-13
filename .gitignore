@@ -19,3 +19,9 @@ gitops/addons/charts/dark-factory/iam/_provider.tf
 # .kiro/steering/ IS tracked deliberately; only the handoff notes are ignored.
 .kiro/session-handoff*.md
 .oap-private/
+
+# Python bytecode and tool caches, anywhere in the repo
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

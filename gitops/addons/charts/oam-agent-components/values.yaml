@@ -18,11 +18,12 @@ global:
   # applications/strands-agent-base (app/agent.py), so this default must point
   # at a build that includes it.
   #
-  # v1.6.0 is built from the OAP v0.1.0 release tag and emits that tag, next to
-  # the bare ['<agent>', 'source:chat'] tags. THE IMAGE VERSION LINE: keep this
-  # tag in step with version in applications/strands-agent-base/pyproject.toml,
-  # which the build scripts there use as their default IMAGE_TAG.
-  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.6.0
+  # v1.7.0 emits that tag next to the bare ['<agent>', 'source:chat'] tags, and
+  # adds supervisor delegation (docs/agent-delegation/DESIGN.md §9 "Image
+  # contract"). THE IMAGE VERSION LINE: keep this tag in step with version in
+  # applications/strands-agent-base/pyproject.toml, which the build scripts
+  # there use as their default IMAGE_TAG.
+  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.
@@ -35,6 +36,18 @@ global:
     # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
+  # Namespace of the agentgateway-proxy Gateway. Platform-owned: agents admit ingress
+  # only from this namespace (NetworkPolicy emitted by the agent component), and their
+  # HTTPRoutes attach to the Gateway here by default. Set it where the gateway is
+  # installed somewhere else; an application developer cannot change the ingress side.
+  agentGateway:
+    namespace: agentgateway-system
+    # Comma-separated namespaces also admitted to agents, for callers that cannot go
+    # through the gateway yet. Any pod in a listed namespace can name any user toward
+    # every agent on the cluster, so keep it empty unless a known caller needs it. The
+    # registry adds aiops-agent on clusters that run the aiops-agent addon, whose chat-ui
+    # and incident-bridge call the agent's Service directly.
+    extraIngressNamespaces: ""
   # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
   # properties.sandbox: true). Platform-owned: an application developer cannot set
   # this from their OAM, because the VMM is ambient environment config.
