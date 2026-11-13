@@ -93,7 +93,8 @@ class Metrics:
         )
         self.errors = Counter(
             "oap_agent_eval_errors_total",
-            "Failed Langfuse calls, by loop.",
+            "Failed loop passes, by loop (Langfuse calls for project, rules and "
+            "metrics; Kubernetes or Bifrost management calls for harness).",
             ("cluster", "loop"),
             registry=r,
         )
