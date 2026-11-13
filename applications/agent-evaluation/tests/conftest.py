@@ -436,6 +436,7 @@ checks:
       Input: {{input}}
       Expected: {{expected}}
       Output: {{output}}
+      Markers: {{nonce}}
       Return {"score": <0..1>, "reasoning": "<short>"}
 """
 

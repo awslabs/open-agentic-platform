@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -91,7 +92,11 @@ def _run_case(case: Case, checks: list[Check], settings, agent_client_fn, judge_
     reasons: list[str] = []
     failed = False
     for check in checks:
-        prompt = render_prompt(check.prompt, case.input, case.expected, reply.text)
+        # A fresh nonce per judge call: the data cannot know the marker that
+        # closes its fence.
+        prompt = render_prompt(
+            check.prompt, case.input, case.expected, reply.text, secrets.token_hex(8)
+        )
         try:
             verdict = judge_fn(prompt)
         except JudgeError as exc:

@@ -8,7 +8,8 @@ startup and rejects a declaration naming a dataset that is not shipped) and
 into every harness Job in this namespace.
 The check prompts live under files/harness/checks/, NOT files/evaluators/, and
 are not in .Values.catalog, so the hub never publishes them to Langfuse.
-Prompt files use literal double-brace placeholders (input, expected, output):
+Prompt files use literal double-brace placeholders (input, expected, output,
+nonce; nonce is a per-call random token for the data fence markers):
 .Files.Get returns them unrendered and the runner substitutes them.
 */ -}}
 {{- if .Values.harness.enabled }}

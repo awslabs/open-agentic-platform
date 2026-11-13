@@ -1,13 +1,21 @@
 """The harness judge: one OpenAI-compatible call to this cluster's Bifrost.
 
-Anything the judge returns that is not a JSON object with a numeric `score` in
-[0, 1] is a JudgeError, which the runner counts as a case error. An unparseable
-verdict is never a pass.
+The judge's WHOLE reply must be one JSON object with a numeric `score` in
+[0, 1] (one surrounding code fence is tolerated). Anything else is a
+JudgeError, which the runner counts as a case error. An unparseable verdict is
+never a pass. The reply is not searched for the first `{...}`: the agent's
+answer is quoted in the prompt, and a judge that echoes it would hand the
+agent the score it wrote.
+
+The check prompt fences the untrusted data with BEGIN/END markers that carry a
+per-call random nonce, and placeholders are substituted in a single pass, so
+data can neither close a fence it cannot know nor expand another placeholder.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -31,26 +39,43 @@ class JudgeVerdict:
     reasoning: str
 
 
-def render_prompt(template: str, input: str, expected: str, output: str) -> str:  # noqa: A002
-    return (
-        template.replace("{{input}}", input)
-        .replace("{{expected}}", expected)
-        .replace("{{output}}", output[:MAX_OUTPUT_CHARS])
-    )
+_PLACEHOLDER = re.compile(r"\{\{(input|expected|output|nonce)\}\}")
+_FENCE = re.compile(r"\A```(?:json)?[ \t]*\n(.*)\n```\Z", re.DOTALL | re.IGNORECASE)
 
 
-def _first_json_object(text: str) -> dict | None:
-    decoder = json.JSONDecoder()
-    index = text.find("{")
-    while index != -1:
-        try:
-            value, _ = decoder.raw_decode(text, index)
-        except ValueError:
-            value = None
-        if isinstance(value, dict):
-            return value
-        index = text.find("{", index + 1)
-    return None
+def render_prompt(
+    template: str,
+    input: str,  # noqa: A002
+    expected: str,
+    output: str,
+    nonce: str,
+) -> str:
+    """Substitute the placeholders in ONE pass over the template.
+
+    Substituted values are never scanned again, so an answer containing
+    `{{expected}}` or `{{nonce}}` stays literal.
+    """
+    values = {
+        "input": input,
+        "expected": expected,
+        "output": output[:MAX_OUTPUT_CHARS],
+        "nonce": nonce,
+    }
+    return _PLACEHOLDER.sub(lambda match: values[match.group(1)], template)
+
+
+def _parse_verdict(content: str) -> dict:
+    text = content.strip()
+    fenced = _FENCE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        verdict = json.loads(text)
+    except ValueError as exc:
+        raise JudgeError("judge reply is not exactly one JSON object") from exc
+    if not isinstance(verdict, dict):
+        raise JudgeError("judge reply is not a JSON object")
+    return verdict
 
 
 def judge(
@@ -91,9 +116,7 @@ def judge(
     if not isinstance(content, str):
         raise JudgeError("judge reply has no text content")
 
-    verdict = _first_json_object(content)
-    if verdict is None:
-        raise JudgeError("judge reply contains no JSON object")
+    verdict = _parse_verdict(content)
     score = verdict.get("score")
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         raise JudgeError("judge verdict has no numeric score")
