@@ -1205,3 +1205,60 @@ def test_job_without_run_number_label_counts_as_run_one(settings, harness_settin
         "team-a", "assistant", "rev1", "example-smoke-v1", run=2
     )
     assert f.batch.created[-1]["metadata"]["labels"]["harness.oap.io/run-number"] == "2"
+
+
+def test_rollback_rerun_is_created_before_the_run_it_replaces_is_stopped(
+    settings, harness_settings, catalog, metrics
+):
+    # Reviewer repro (C6): A -> B (B active) -> A. If the rollback create
+    # fails, B's Job must survive: it is the record the re-run is decided from.
+    from kubernetes.client.rest import ApiException
+
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    go_to(loop, f, "rev1")
+    settle(loop, f, d, "rev1", ["passed"], 3_000.0)
+    go_to(loop, f, "rev2")
+    b_job = f.batch.created[-1]["metadata"]["name"]
+
+    real_create = f.batch.create_namespaced_job
+    failures = [ApiException(status=500, reason="InternalError")]
+
+    def flaky_create(namespace, body):
+        if failures:
+            raise failures.pop()
+        return real_create(namespace, body)
+
+    f.batch.create_namespaced_job = flaky_create
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once() is False
+    assert b_job in f.batch.jobs and b_job not in f.batch.deleted
+    assert REASON_HARNESS_RUN_SUPERSEDED not in [n[2] for n in f.events.normals]
+
+    assert loop.run_once()
+    rerun = f.batch.created[-1]
+    assert rerun["metadata"]["annotations"]["harness.oap.io/trigger"] == "rollback"
+    assert b_job in f.batch.deleted
+    # Created first, then stopped: superseded is recorded before the start Event.
+    assert [n[2] for n in f.events.normals][-2:] == [
+        REASON_HARNESS_RUN_SUPERSEDED,
+        REASON_HARNESS_RUN_STARTED,
+    ]
+
+
+def test_no_free_slot_still_stops_the_replaced_run(settings, harness_settings, catalog, metrics):
+    # Two runs active (assistant, other), then the limit drops to 1: the
+    # replaced run is stopped as before, and the new revision waits.
+    d, other = decl(), decl(agent="other")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d, other])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    f.custom.set_rollout("team-a", "other", "o1")
+    loop.run_once()
+    old = f.batch.created[0]["metadata"]["name"]
+    one = dataclasses.replace(harness_settings, max_concurrent_jobs=1)
+    restarted, _ = build(settings, one, catalog, metrics, [d, other], fakes=f)
+    f.custom.set_rollout("team-a", "assistant", "rev2")
+    restarted.run_once()
+    assert old in f.batch.deleted
+    assert len(f.batch.created) == 2
+    assert REASON_HARNESS_RUN_SUPERSEDED in [n[2] for n in f.events.normals]

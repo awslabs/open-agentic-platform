@@ -1446,8 +1446,10 @@ with the change and bumping its pin makes both clauses effective.
 - **Rollback:** a revision that ran before runs again (`trigger="rollback"`,
   run n+1) when it is current and previewed and a retained Job of another
   revision of the agent was created after its newest run on the declared
-  dataset. The check runs before other revisions' active runs are stopped. The
-  re-run is then the revision's newest Job, so later passes and restarts start
+  dataset. The check runs before other revisions' active runs are stopped, and
+  the re-run's Job is created before they are: a failed create leaves them, and
+  the record, for the next pass (with no free slot they are stopped and the
+  re-run waits). The re-run is then the revision's newest Job, so later passes and restarts start
   nothing; creation timestamps come from the API server, so no extra state or
   RBAC is needed. Its cases use `contextId = oap-harness-<revision>-r<n>-<caseId>`,
   which keeps the `oap-harness-` exclusion marker. Accepted limits: without a

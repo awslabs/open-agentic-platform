@@ -492,23 +492,18 @@ class HarnessLoop:
             decl.namespace, decl.agent, revision, decl.dataset, run=run_number
         )
 
-        for job in list(agent_jobs):
-            state, _ = _finished_condition(job)
-            if state is None and _labels(job).get(LABEL_REVISION) != revision:
-                self._batch.delete_namespaced_job(
-                    name=job.metadata.name,
-                    namespace=self._s.namespace,
-                    propagation_policy="Background",
-                )
-                jobs.remove(job)
-                self._record_superseded(
-                    decl,
-                    f"harness run for revision {_labels(job).get(LABEL_REVISION)} "
-                    f"was stopped: revision {revision} replaced it",
-                )
-
-        active = sum(1 for j in jobs if _finished_condition(j)[0] is None)
+        # This agent's active runs of other revisions: replaced by this run.
+        to_stop = [
+            j
+            for j in agent_jobs
+            if _finished_condition(j)[0] is None and _labels(j).get(LABEL_REVISION) != revision
+        ]
+        # They free their slots, so they do not count against this run.
+        active = sum(1 for j in jobs if _finished_condition(j)[0] is None) - len(to_stop)
         if active >= self._h.max_concurrent_jobs:
+            # No slot even so: stop them now (their cases would reach the new
+            # pods) and wait for a slot.
+            self._stop(decl, to_stop, jobs, revision)
             logger.info(
                 "harness: %s revision %s waits, %d runs active", decl.key, revision, active
             )
@@ -527,6 +522,10 @@ class HarnessLoop:
         # completion has not been announced yet.
         self._reported.discard(name)
         jobs.append(created)
+        # Stopped only after the create succeeded: the in-between run's Job is
+        # the record a rollback re-run is decided from, so a failed create
+        # must leave it in place for the next pass.
+        self._stop(decl, to_stop, jobs, revision)
         run_text = f" run {run_number}" if run_number != 1 else ""
         self._recorder.normal(
             decl.namespace,
@@ -535,6 +534,21 @@ class HarnessLoop:
             f"harness run {name} started for revision {revision}{run_text} on dataset "
             f"{decl.dataset} ({trigger}, report mode: promotion not affected)",
         )
+
+    def _stop(self, decl: HarnessDeclaration, to_stop: list, jobs: list, revision: str) -> None:
+        """Delete active runs that revision `revision` replaces; each is superseded."""
+        for job in to_stop:
+            self._batch.delete_namespaced_job(
+                name=job.metadata.name,
+                namespace=self._s.namespace,
+                propagation_policy="Background",
+            )
+            jobs.remove(job)
+            self._record_superseded(
+                decl,
+                f"harness run for revision {_labels(job).get(LABEL_REVISION)} "
+                f"was stopped: revision {revision} replaced it",
+            )
 
     def job_body(
         self,
