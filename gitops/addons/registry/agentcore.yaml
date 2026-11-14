@@ -123,3 +123,9 @@ oam-agent-components:
       # are REJECTED on a class that is not in this list, because Kata ignores
       # them silently. Present-and-empty disables them all on this cluster.
       nitroSandboxRuntimeClasses: '{{ $v := index .metadata.annotations "nitro_sandbox_runtime_classes" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}isolated-sandbox,confidential-sandbox{{ end }}'
+      # Namespaces admitted to agents besides the gateway's (agent component
+      # NetworkPolicy). The aiops-agent addon's chat-ui and incident-bridge call the
+      # agent's Service directly from its own namespace, so that namespace is admitted
+      # where the addon runs. Remove once both go through the gateway.
+      agentGateway:
+        extraIngressNamespaces: '{{ if eq (index .metadata.labels "enable_aiops_agent") "true" }}aiops-agent{{ end }}'

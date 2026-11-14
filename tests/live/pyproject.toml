@@ -1,0 +1,21 @@
+[project]
+name = "oap-live-tests"
+version = "0.1.0"
+description = "Scenario matrices run against a live cluster (production-readiness.md)"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest~=9.1",
+    "httpx~=0.28.1",
+    "kubernetes~=33.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+markers = [
+    "identity: gateway identity and access rules (agent, MCP)",
+    "delegation: supervisor agents delegating to other agents",
+]
+# Live calls go through a model, so a slow row should fail on its own timeout, not hang.
+addopts = "-ra --tb=short"

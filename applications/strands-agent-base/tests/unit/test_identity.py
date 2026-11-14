@@ -119,3 +119,46 @@ def test_missing_workload_token_path_yields_no_credential(monkeypatch):
 def test_unreadable_workload_token_does_not_raise(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKLOAD_TOKEN_PATH", str(tmp_path / "absent"))
     assert workload_headers() == {}
+
+
+# ── delegated calls whose user the gateway did not set ──────────────────────
+
+from app.identity import caller_key, caller_subject, inbound_actor, inbound_agent, inbound_depth_raw  # noqa: E402
+from app.identity import task_owner as _task_owner  # noqa: E402
+
+
+def _ctx(**headers):
+    return type("C", (), {"state": {"headers": headers}})()
+
+
+def test_unattributed_delegation_has_no_identity(monkeypatch):
+    # A supervisor not in the gateway's delegation.agents: X-Forwarded-User is the
+    # supervisor itself, so keying on it would pool every user of that supervisor.
+    sup = "system:serviceaccount:default:sup"
+    t = [inbound_actor.set(sup), inbound_agent.set(sup), inbound_depth_raw.set("1"),
+         inbound_auth.set("Bearer sup-token")]
+    try:
+        assert caller_subject() is None
+        assert caller_key(False).startswith("none:")
+        assert _task_owner().startswith("none:")
+        assert _task_owner(_ctx(**{"x-forwarded-user": sup, "x-forwarded-agent": sup,
+                                   "x-delegation-depth": "1", "authorization": "Bearer sup-token"})).startswith("none:")
+    finally:
+        for var, tok in zip((inbound_actor, inbound_agent, inbound_depth_raw, inbound_auth), t):
+            var.reset(tok)
+
+
+def test_attributed_delegation_and_direct_agent_calls_keep_their_identity():
+    sup = "system:serviceaccount:default:sup"
+    t = [inbound_actor.set("user-1"), inbound_agent.set(sup), inbound_depth_raw.set("1")]
+    try:
+        assert caller_subject() == "user-1"  # gateway named the user
+    finally:
+        for var, tok in zip((inbound_actor, inbound_agent, inbound_depth_raw), t):
+            var.reset(tok)
+    t = [inbound_actor.set(sup), inbound_agent.set(sup), inbound_depth_raw.set(None)]
+    try:
+        assert caller_subject() == sup  # an agent calling directly, not delegating
+    finally:
+        for var, tok in zip((inbound_actor, inbound_agent, inbound_depth_raw), t):
+            var.reset(tok)

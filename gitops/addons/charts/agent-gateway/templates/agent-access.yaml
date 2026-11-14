@@ -1,0 +1,59 @@
+{{- /*
+Which agents may call which agents. The agent-to-agent counterpart of mcp-access.yaml,
+with the same mechanism and the same rules; read that file for why.
+
+  - A `Require` rule in `traffic.authorization` on the target agent's HTTPRoute. It ANDs
+    with the Gateway-wide rule in jwt-policy.yaml, so a caller must be authenticated AND
+    listed. `Allow` would be ORed with the Gateway rule and restrict nothing.
+  - Subjects are ServiceAccount token `sub` values, so the calling agent presents its own
+    identity, which is what a supervisor does (docs/agent-delegation/DESIGN.md).
+  - One policy per agent, one expression listing every allowed caller.
+  - An agent with no entry keeps the Gateway-wide rule: any authenticated caller.
+
+Delegated calls are transitive, as for MCP: the rule checks the calling agent, not the
+user it acts for. A user who may use a supervisor may use what the supervisor delegates
+to.
+
+An entry restricts the agent to the listed agents, so users can no longer call it
+directly (as with an MCP server that sets allowedAgents). `allowUsers: true` keeps direct
+user calls for an agent that is both a sub-agent and used by people.
+
+Entry shape:
+  agentAccess:
+    <agent component name>:
+      namespace: <namespace of the agent>        # the policy must live beside its route
+      agents: [<agent>, <namespace>/<agent>]     # bare name = same namespace as the agent
+      allowUsers: false                          # optional
+*/ -}}
+{{- $sa := .Values.workloadIdentity.allowedSubjectPrefix -}}
+{{- range $agent, $grant := .Values.agentAccess }}
+{{- if $grant.agents }}
+{{- $ns := required (printf "agentAccess.%s.namespace is required" $agent) $grant.namespace }}
+{{- $expr := printf "jwt.sub in [%s]" (include "agent-gateway.mcpAccessSubjects" (dict "agents" $grant.agents "ns" $ns)) }}
+{{- if $grant.allowUsers }}
+{{- $expr = printf "!jwt.sub.startsWith(%q) || %s" $sa $expr }}
+{{- end }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: {{ $agent }}-agent-access
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+    oap.dev/agent: {{ $agent }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ $agent }}
+  traffic:
+    authorization:
+      # Require, not Allow (Allow would be ORed with the Gateway rule) and not Deny
+      # (the CRD warns Deny fails OPEN when an expression errors).
+      action: Require
+      policy:
+        matchExpressions:
+          - {{ $expr | squote }}
+{{- end }}
+{{- end }}
