@@ -145,3 +145,20 @@ def test_now_is_rendered_into_template_and_reference_but_not_the_answer():
     assert out == (
         "at 2026-01-02T12:00:00Z: E=The time is 2026-01-02T12:00:00Z. O=It is {{now}}"
     )
+
+
+def test_asked_date_and_weekday_come_from_the_time_the_question_was_sent():
+    # Review round 2: the judge did the weekday arithmetic, against the judge-call
+    # time. {{asked}}, {{date}} and {{weekday}} are rendered from the send time.
+    out = render_prompt(
+        "now={{now}} E={{expected}} O={{output}}",
+        "q",
+        "sent {{asked}} on {{weekday}} {{date}}",
+        "{{weekday}}",
+        "n",
+        "2026-01-03T00:00:05Z",
+        "2026-01-02T23:59:58Z",
+    )
+    assert out == (
+        "now=2026-01-03T00:00:05Z E=sent 2026-01-02T23:59:58Z on Friday 2026-01-02 O={{weekday}}"
+    )

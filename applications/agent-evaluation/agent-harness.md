@@ -266,8 +266,9 @@ judged against the real time.
   `PROPAGATE_CALLER_TOKEN=true` has no token to forward to its MCP tools during
   a run.
 - **Avoid answers that change with time or data** unless `expected` allows for
-  it. For the current time, put `{{now}}` in `expected` and say how close the
-  answer must be, for example "The current UTC time is {{now}}. Passes if the
+  it. For the current time, put `{{asked}}` (or `{{date}}`, `{{weekday}}`) in
+  `expected` and say how close the answer must be, for example "The question
+  was sent at {{asked}}. Passes if the
   answer states a UTC time within 5 minutes of it, or says plainly that it
   cannot access the current time."
 - **Version the dataset name** (`-v1`, `-v2`) when you change cases, so the

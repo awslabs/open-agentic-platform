@@ -177,6 +177,7 @@ def _run_case(
     deadline: float | None = None,
 ):
     started = clock()
+    asked_at = utc_now_iso(clock)
     if deadline is not None and started >= deadline:
         return CaseResult(
             id=case.id,
@@ -215,7 +216,8 @@ def _run_case(
     for check in checks:
         # A fresh nonce per judge call: the data cannot know the marker that
         # closes its fence.
-        # {{now}} is the time of this judge call, close to when the agent answered.
+        # {{now}} is the time of this judge call; {{asked}}, {{date}} and
+        # {{weekday}} are the time the question was sent.
         prompt = render_prompt(
             check.prompt,
             case.input,
@@ -223,6 +225,7 @@ def _run_case(
             reply.text,
             secrets.token_hex(8),
             utc_now_iso(clock),
+            asked_at,
         )
         try:
             verdict = judge_with_retry(

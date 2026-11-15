@@ -44,12 +44,15 @@ def test_general_assistant_v1_has_at_least_20_cases():
 
 
 @pytest.mark.parametrize("path", DATASETS, ids=lambda p: p.stem)
-def test_every_time_case_is_judged_against_now(path):
+def test_every_time_case_is_judged_against_the_clock(path):
     # A time case with a fixed reference fails a correct answer and passes an
     # invented one; {{now}} is rendered at judge time.
     for case in load_dataset(path, max_cases=MAX_CASES).cases:
         if "time" in case.tags:
-            assert "{{now}}" in case.expected, case.id
+            assert any(
+                token in case.expected
+                for token in ("{{now}}", "{{asked}}", "{{date}}", "{{weekday}}")
+            ), case.id
 
 
 def test_the_example_application_names_a_shipped_dataset():

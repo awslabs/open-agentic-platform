@@ -14,12 +14,17 @@ data can neither close a fence it cannot know nor expand another placeholder.
 reference before the data goes in, so a time-dependent case can be judged
 against the time of the judge call, and an answer containing `{{now}}` stays
 literal.
+`{{asked}}` (the UTC time the question was sent to the agent), `{{date}}` and
+`{{weekday}}` (that time's date and English weekday name) are rendered the same
+way, so the judge compares against the time the agent was asked and does no
+date arithmetic itself.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass
 
 import httpx
@@ -55,6 +60,29 @@ _PLACEHOLDER = re.compile(r"\{\{(input|expected|output|nonce)\}\}")
 _FENCE = re.compile(r"\A```(?:json)?[ \t]*\n(.*)\n```\Z", re.DOTALL | re.IGNORECASE)
 
 
+_WEEKDAYS = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+)
+
+
+def _time_values(now: str, asked: str) -> dict[str, str]:
+    """`{{date}}` and `{{weekday}}` come from the ISO time the question was sent."""
+    values = {"now": now, "asked": asked}
+    try:
+        moment = datetime.fromisoformat(asked.replace("Z", "+00:00"))
+    except ValueError:
+        return values
+    values["date"] = moment.date().isoformat()
+    values["weekday"] = _WEEKDAYS[moment.weekday()]
+    return values
+
+
+def _render_times(text: str, times: dict[str, str]) -> str:
+    for name, value in times.items():
+        text = text.replace("{{" + name + "}}", value)
+    return text
+
+
 def render_prompt(
     template: str,
     input: str,  # noqa: A002
@@ -62,6 +90,7 @@ def render_prompt(
     output: str,
     nonce: str,
     now: str,
+    asked: str = "",
 ) -> str:
     """Substitute the placeholders in ONE pass over the template.
 
@@ -70,10 +99,11 @@ def render_prompt(
     pass and are never scanned again, so an answer containing `{{expected}}`,
     `{{nonce}}` or `{{now}}` stays literal.
     """
-    template = template.replace("{{now}}", now)
+    times = _time_values(now, asked or now)
+    template = _render_times(template, times)
     values = {
         "input": input,
-        "expected": expected.replace("{{now}}", now),
+        "expected": _render_times(expected, times),
         "output": output[:MAX_OUTPUT_CHARS],
         "nonce": nonce,
     }
