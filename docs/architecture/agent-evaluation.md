@@ -1270,12 +1270,17 @@ would resolve to any host the team names); one whose selector does not pin
 `rollouts-pod-template-hash` to the revision starts no run (it waits, as for a
 preview Argo has not switched yet), and a missing one is reported as
 `HarnessWaitingForPreview`. Residual limits: the check runs at plan time, not
-when the Job calls the Service, so a change in between (for example to
-`ExternalName`, up to `readyTimeoutSeconds` later) is not caught. A team that
+when the Job calls the Service. The runner resolves the Service name on every
+connection, so a change at any point in the run (for example to `ExternalName`,
+up to `runTimeoutSeconds` after the Job starts) is not caught. A team that
 controls its namespace can also attach hand-made EndpointSlices to the Service,
 and an EndpointSlice can list any address, so the Job in the platform namespace
 can be aimed at any IP and port it can reach. It sends that target only the
-fixed case input, with no credential the agent does not already receive.
+fixed case input, with no credential the agent does not already receive. The
+runner pods also have no egress NetworkPolicy, so nothing at the network layer
+limits where they connect. Both are accepted for report mode, where a run only
+publishes a score; they are to be closed before gate mode, where a run decides
+a promotion.
 
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
