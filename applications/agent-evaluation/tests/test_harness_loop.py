@@ -1542,3 +1542,21 @@ def test_service_get_500_counts_a_harness_error(settings, harness_settings, cata
     f.core.read_namespaced_service = boom
     assert loop.run_once() is False
     assert _harness_errors(metrics) == 1
+def test_agent_with_tools_or_sub_agents_gets_a_warning_event(
+    settings, harness_settings, catalog, metrics
+):
+    d = dataclasses.replace(decl(), mcp_servers=("mail",), sub_agents=("booker",))
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    assert len(f.batch.created) == 1  # a warning, not a refusal
+    from app.events import REASON_HARNESS_AGENT_HAS_TOOLS
+    warned = [w for w in f.events.warnings if w[2] == REASON_HARNESS_AGENT_HAS_TOOLS]
+    assert len(warned) == 1
+    assert "mail" in warned[0][3] and "booker" in warned[0][3]
+def test_tool_less_agent_gets_no_tools_warning(settings, harness_settings, catalog, metrics):
+    from app.events import REASON_HARNESS_AGENT_HAS_TOOLS
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    assert REASON_HARNESS_AGENT_HAS_TOOLS not in f.events.reasons()

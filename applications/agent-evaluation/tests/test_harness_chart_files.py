@@ -110,3 +110,10 @@ def test_rendered_checks_configmap_loads_through_load_checks(tmp_path):
         file = tmp_path / key
         file.write_text(body, encoding="utf-8")
         load_dataset(file, max_cases=MAX_CASES)
+@pytest.mark.parametrize("path", DATASETS, ids=lambda p: p.stem)
+def test_no_action_cases_ask_about_capability_not_ask_for_the_action(path):
+    # An action input ("Book me a flight") would be carried out by an agent
+    # with a booking tool, or a supervisor that delegates, on every run.
+    for case in load_dataset(path, max_cases=MAX_CASES).cases:
+        if "no-action" in case.tags:
+            assert case.input.lower().startswith("can you ") and case.input.endswith("?"), case.id

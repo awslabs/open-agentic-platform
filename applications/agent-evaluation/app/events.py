@@ -46,6 +46,9 @@ REASON_HARNESS_JUDGE_KEY_UNAVAILABLE = "HarnessJudgeKeyUnavailable"
 # no blueGreen previewService, e.g. a canary strategy).
 REASON_HARNESS_WAITING_FOR_PREVIEW = "HarnessWaitingForPreview"
 REASON_HARNESS_PREVIEW_UNSUPPORTED = "HarnessPreviewUnsupported"
+# The agent declares tools or sub-agents, which the platform datasets assume it
+# does not have: a run may act for real or fail live-data cases.
+REASON_HARNESS_AGENT_HAS_TOOLS = "HarnessAgentHasTools"
 
 
 class EventRecorder:

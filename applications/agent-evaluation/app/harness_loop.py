@@ -702,6 +702,24 @@ class HarnessLoop:
         # the record a rollback re-run is decided from, so a failed create
         # must leave it in place for the next pass.
         self._stop(decl, to_stop, jobs, f"revision {revision} replaced it")
+        if decl.mcp_servers or decl.sub_agents:
+            declared = ", ".join(
+                part
+                for part in (
+                    f"MCP servers {list(decl.mcp_servers)}" if decl.mcp_servers else "",
+                    f"sub-agents {list(decl.sub_agents)}" if decl.sub_agents else "",
+                )
+                if part
+            )
+            self._recorder.warn(
+                decl.namespace,
+                decl.configmap,
+                events.REASON_HARNESS_AGENT_HAS_TOOLS,
+                f"the agent declares {declared}. The platform datasets are written "
+                "for an agent without tools or sub-agents: a case that asks for an "
+                "action may be carried out for real, and a live-data case may fail "
+                "because the agent answers correctly from a tool",
+            )
         run_text = f" run {run_number}" if run_number != 1 else ""
         self._recorder.normal(
             decl.namespace,

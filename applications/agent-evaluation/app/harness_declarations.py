@@ -67,6 +67,10 @@ class HarnessDeclaration:
     checks: tuple[str, ...]
     threshold: float
     mode: str
+    # MCP servers and sub-agents the agent declares (comma lists in the
+    # ConfigMap). Only used to warn: the datasets assume an agent without them.
+    mcp_servers: tuple[str, ...] = ()
+    sub_agents: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -81,6 +85,10 @@ class HarnessDeclaration:
         return PREVIEW_PORT
 
 
+def _name_list(raw) -> tuple[str, ...]:
+    if not isinstance(raw, str):
+        return ()
+    return tuple(n for n in (p.strip() for p in raw.split(",")) if n)
 def parse_harness_declaration(cm) -> HarnessDeclaration:
     meta = cm.metadata
     where = f"{meta.namespace}/{meta.name}"
@@ -158,6 +166,8 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
         checks=tuple(dict.fromkeys(checks)),
         threshold=threshold,
         mode=mode,
+        mcp_servers=_name_list(data.get("mcpServers")),
+        sub_agents=_name_list(data.get("agents")),
     )
 
 

@@ -555,6 +555,15 @@ template: {
 					checks:    json.Marshal(parameter.harness.checks)
 					threshold: "\(parameter.harness.threshold)"
 					mode:      parameter.harness.mode
+					// What the agent can act with. The platform datasets assume an
+					// agent without tools or sub-agents, so the reconciler warns
+					// (an Event) when either is listed; CUE itself cannot warn.
+					if len(parameter.mcpServers) > 0 {
+						mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
+					}
+					if len(parameter.agents) > 0 {
+						agents: strings.Join([for a in parameter.agents {a.name}], ",")
+					}
 				}
 			}
 		}

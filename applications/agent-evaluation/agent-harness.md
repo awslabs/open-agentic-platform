@@ -216,6 +216,14 @@ harvested from real failures (each file's header says so), and neither is a
 golden set for your agent. Your real dataset must come from your agent's real
 traces and real failures (see 3.3).
 
+The shipped datasets are for agents without tools or sub-agents. The action
+cases ask whether the agent *can* book or send ("Can you send emails on my
+behalf?"), so nothing is ever carried out, but a tool-using agent still fails
+the live-data cases because it can look the answer up. When the agent declares
+`mcpServers` or `agents`, the reconciler records a Warning Event
+(`HarnessAgentHasTools`) on the harness ConfigMap as each run starts; the run is
+not blocked.
+
 Schema (`datasets.py`):
 
 ```yaml

@@ -178,3 +178,9 @@ def test_an_unexpected_parser_crash_is_isolated_per_configmap(monkeypatch):
     good, bad = _harness_reader_over(cm(), boom).list()
     assert [d.configmap for d in good] == ["assistant-harness"]
     assert bad[0][0].metadata.name == "boom-harness" and "KeyError" in bad[0][1]
+def test_tools_and_sub_agents_are_read_from_the_declaration():
+    d = parse_harness_declaration(cm(mcpServers="mail, calendar", agents="booker"))
+    assert d.mcp_servers == ("mail", "calendar")
+    assert d.sub_agents == ("booker",)
+    plain = parse_harness_declaration(cm())
+    assert plain.mcp_servers == () and plain.sub_agents == ()
