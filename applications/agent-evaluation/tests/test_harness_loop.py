@@ -225,6 +225,8 @@ def test_first_revision_creates_a_job_in_the_platform_namespace(settings, harnes
     assert env["HARNESS_TRIGGER"] == "first-revision"
     assert env["HARNESS_RUN_NUMBER"] == "1"
     assert env["HARNESS_RUN_TIMEOUT_SECONDS"] == str(harness_settings.run_timeout)
+    # The test clock is 5000: the runner's absolute deadline is Job start + timeout.
+    assert float(env["HARNESS_RUN_DEADLINE_EPOCH"]) == 5_000.0 + harness_settings.run_timeout
     assert body["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     assert body["spec"]["template"]["metadata"]["labels"]["harness.oap.io/run-number"] == "1"
     # The agent's NetworkPolicy admits the runner pods by this label (agent.cue).

@@ -240,6 +240,10 @@ class RunnerSettings:
     # The Job's activeDeadlineSeconds: the runner stops before it and writes a
     # partial result instead of being killed with none.
     run_timeout: int = 1800
+    # Epoch second the Job's activeDeadlineSeconds expires, set by the
+    # reconciler when it creates the Job. 0 when unset: the runner then counts
+    # run_timeout from its own start.
+    run_deadline_epoch: float = 0.0
     # The Job's uid (downward API, the Job controller's controller-uid pod
     # label): the result ConfigMap's ownerReference. Empty when unknown.
     job_uid: str = ""
@@ -301,6 +305,7 @@ def load_runner_settings() -> RunnerSettings:
         run_timeout=_positive(
             "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
         ),
+        run_deadline_epoch=_env_float("HARNESS_RUN_DEADLINE_EPOCH", 0.0),
         job_uid=_env("HARNESS_JOB_UID"),
         judge_virtual_key=_read_secret_file(f"{credentials_dir}/{JUDGE_KEY_FILE}"),
     )

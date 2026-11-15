@@ -703,3 +703,25 @@ def test_a_result_without_digests_still_parses():
     del raw["datasetDigest"], raw["checksDigest"]
     parsed = parse_result({"result.json": json.dumps(raw)})
     assert (parsed.dataset_digest, parsed.checks_digest) == ("", "")
+def test_run_deadline_uses_the_absolute_deadline_from_the_reconciler():
+    # Review round 2: the Job's clock started 90 s before the runner did
+    # (scheduling, image pull), so the runner's 400 s count would overrun it.
+    from app.harness_runner import run_deadline
+    late = runner_settings(run_timeout=400, run_deadline_epoch=1_400.0)
+    assert run_deadline(late, started_at=1_090.0) == 1_340.0
+    assert run_deadline(runner_settings(run_timeout=400), started_at=1_090.0) == 1_430.0
+def test_runner_stops_at_the_absolute_deadline_not_its_own_start():
+    now = [1_090.0]  # the runner started 90 s after the Job
+    def agent(text, context_id, timeout):
+        now[0] += 100
+        return AgentReply("good", "completed")
+    settings = runner_settings(
+        case_concurrency=1, case_timeout=120, run_timeout=400, run_deadline_epoch=1_400.0
+    )
+    result = run_cases(
+        dataset(*"abcdef"), CHECKS, settings, agent, judge_fn({"good": 1.0}),
+        clock=lambda: now[0], started_at=1_090.0, sleep=no_sleep,
+    )
+    # Deadline 1340: calls end at 1190, 1290, then the third gets 50 s and the rest do not run.
+    assert [c.status for c in result.case_results].count("passed") == 2
+    assert result.error and "not run" in result.error

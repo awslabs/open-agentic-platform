@@ -762,6 +762,10 @@ class HarnessLoop:
             "HARNESS_READY_TIMEOUT_SECONDS": str(h.ready_timeout),
             # Same value as activeDeadlineSeconds, so the runner can stop first.
             "HARNESS_RUN_TIMEOUT_SECONDS": str(h.run_timeout),
+            # activeDeadlineSeconds counts from the Job's start, not the runner's:
+            # the runner stops at this absolute time (minus its margin). Taken
+            # just before the create, so it is never later than the Job's own.
+            "HARNESS_RUN_DEADLINE_EPOCH": str(self._clock() + h.run_timeout),
             "HARNESS_MAX_CASES": str(h.max_cases),
             "HARNESS_MIN_JUDGED_RATIO": str(h.min_judged_ratio),
             "HARNESS_CHECKS_PATH": f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}",
