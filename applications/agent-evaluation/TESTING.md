@@ -753,8 +753,8 @@ What to expect, and what each mismatch means:
   key stops every run.
 - `oap_agent_harness_info{status="error"}` with no counts: the run failed (agent
   unreachable within `readyTimeoutSeconds`, dataset invalid, every case errored
-  (judge failing each call after retries, or the preview path refusing or
-  answering 4xx; `caseResults` keeps the reasons; an agent answering with errors
+  (judge failing each call after retries, or no connection to the preview;
+  a 4xx from the agent is a failed case; `caseResults` keeps the reasons; an agent answering with errors
   is a completed run with failed cases instead), or the
   Job hit `runTimeoutSeconds`); read step 3's log and `result.json`.
 - A first deploy runs as `trigger="first-revision"` against pods that also serve

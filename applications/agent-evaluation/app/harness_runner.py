@@ -6,10 +6,11 @@ platform namespace. Report mode: the result is published as metrics and Events
 and never affects promotion.
 
 Case classification (review B1): an agent reply that is not a usable answer
-(failed Task, JSON-RPC error, error payload, HTTP 5xx, timeout) is a FAILED
-case, score 0, because that is how the revision answered. A judge error after
-retries, a transport error or a 4xx on the preview path is a case ERROR: it is
-counted but kept out of the pass ratio. The judge is retried on transient
+(failed Task, JSON-RPC error, error payload, any non-2xx HTTP status, timeout,
+a connection dropped after the request was sent) is a FAILED case, score 0,
+because that is how the revision answered: the preview Service is the agent
+container itself. A judge error after retries or a failure to connect to the
+preview is a case ERROR: it is counted but kept out of the pass ratio. The judge is retried on transient
 errors only.
 
 Run deadline (review C4): the Job's activeDeadlineSeconds would kill the pod

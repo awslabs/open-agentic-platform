@@ -157,7 +157,7 @@ class Metrics:
         self.harness_case_errors = harness_gauge(
             "oap_agent_harness_case_errors",
             "Cases nothing could be learned from (judge error after retries, "
-            "transport or 4xx on the preview path, run deadline); they are "
+            "failure to connect to the preview, run deadline); they are "
             "outside the pass ratio.",
         )
         self.harness_pass_ratio = harness_gauge(

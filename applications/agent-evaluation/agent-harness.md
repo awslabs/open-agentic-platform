@@ -270,9 +270,11 @@ judged against the real time.
 ### 3.4 Choosing a threshold
 
 `pass_ratio = passed / (passed + failed)`. A reply from your agent that is not a
-usable answer (failed Task, JSON-RPC error, HTTP 5xx, timeout) is a **failed**
-case. A judge error after retries, or a transport error or HTTP 4xx on the path
-to the preview, is a case **error**: counted in `errors`, outside the ratio,
+usable answer (failed Task, JSON-RPC error, any non-2xx HTTP status, timeout, or
+a connection dropped after the request was sent) is a **failed** case: the
+`-preview` Service is your agent container, so a 4xx or a crash on an input is
+your revision's answer. A judge error after retries, or a failure to connect to
+the preview, is a case **error**: counted in `errors`, outside the ratio,
 because it says nothing about your revision. `threshold_met` is `pass_ratio >= threshold`. Start from the pass ratio your
 current good revision gets (its `first-revision` baseline), then set the
 threshold a little below it so a real regression shows and judge noise does
@@ -614,7 +616,7 @@ marked otherwise. Ids (D1 to D5, O-1, O-2) refer to the test report.
 | Restart is safe | A reconciler restart creates or deletes no Job, re-mints no key and does not reset its budget; gauges come back from the retained results. `runs_total` and completion Events are counted again once after a restart (by design) |
 | Superseded runs are discarded (D5) | If the revision moves while a run is active, the Job is stopped. If a run the reconciler saw active finishes after `-preview` moved to another revision, it is discarded. Both delete the Job and its result, record `HarnessRunSuperseded` and increment `runs_total{result="superseded"}`; nothing is published for it. Accepted trade-off: a valid run that ended just before a rollout within one pass interval is discarded too. After a restart, an already finished run is taken as it is |
 | Invalid declaration keeps history (D1) | A hand-edited or otherwise invalid `<agent>-harness` gets `InvalidHarnessDeclaration`, starts no run, and keeps the agent's Jobs, results and series. KubeVela restores a rendered ConfigMap on its next reconcile, with no re-run |
-| All cases errored is a run error (D2) | The agent's own unusable replies (failed Task, JSON-RPC error, HTTP 5xx, timeout) are failed cases and count in the pass ratio. Judge errors (retried up to 3 times on transport, 429 and 5xx) and transport or 4xx errors on the preview path are case errors, outside the ratio. If every case errored, the run is `status=error` with no counts or pass ratio, so a judge or path outage never reads as a 0% revision; an agent failing every case is a completed run at 0 |
+| All cases errored is a run error (D2) | The agent's own unusable replies (failed Task, JSON-RPC error, any non-2xx status incl. 4xx, timeout, a connection dropped after the request was sent) are failed cases and count in the pass ratio. Judge errors (retried up to 3 times on transport, 429 and 5xx) and a failure to connect to the preview (ConnectError, ConnectTimeout, PoolTimeout) are case errors, outside the ratio. If every case errored, the run is `status=error` with no counts or pass ratio, so a judge or path outage never reads as a 0% revision; an agent failing every case is a completed run at 0 |
 | Series follow the current declaration (D3, D4) | Metrics show the newest finished run on the **declared** dataset against the **declared** threshold. A threshold-only change starts no run; `threshold` and `threshold_met` update at the next pass |
 | Disable cleans up | `enabled: false` or removing the block deletes the ConfigMap; the reconciler then deletes that agent's Jobs and results and drops its series (absent, not 0). Later revisions start no run. Re-enabling runs as `first-revision` |
 | History limit | Finished runs are pruned to `historyLimit` (default 3) per agent, newest by finish time, with no orphan result ConfigMaps |
@@ -796,7 +798,7 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
 | No `<agent>-harness` ConfigMap | `enabled: true` set? `dataset` set (O-1)? Application status and render errors: `kubectl get application.core.oam.dev <app> -n <ns> -o yaml` |
 | ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`, `HarnessWaitingForPreview`, `HarnessPreviewUnsupported`); Rollout `currentPodHash` equals `blueGreen.previewSelector`?; `harness.enabled` on this cluster's addon?; `maxConcurrentJobs` slots busy (reconciler log "waits")? |
 | `HarnessJudgeKeyUnavailable`, `judge_key_present` 0 | Reconciler log "harness judge key unavailable"; Bifrost reachable at `harness.judge.virtualKey.bifrostAdminUrl`; governance auth on (4.4)? |
-| `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, preview path refusing or answering 4xx), or the Job killed at `runTimeoutSeconds` before it wrote a result (the runner normally stops 60 s earlier with a partial result). An agent answering with errors is not this: it shows as a completed run with failed cases |
+| `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, or no connection to the preview; a 404 or 403 from the agent is a failed case, not this), or the Job killed at `runTimeoutSeconds` before it wrote a result (the runner normally stops 60 s earlier with a partial result). An agent answering with errors is not this: it shows as a completed run with failed cases |
 | Many case errors with reason `expected-answer: judge returned HTTP 4xx` | Judge key scope (`allowedModels`), budget exhausted, or Bedrock access to the judge model |
 | Run discarded with `HarnessRunSuperseded` | The revision moved during the run; the new revision gets its own run (5, D5) |
 | Series missing | Absent means no finished run on the declared dataset yet, the last run errored (no counts), or the harness was disabled. `oap_agent_eval_last_success_timestamp_seconds{loop="harness"}` advancing? |

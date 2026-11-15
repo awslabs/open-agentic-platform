@@ -119,13 +119,34 @@ def test_http_500_is_an_error():
 
 @respx.mock
 @pytest.mark.parametrize("status", [400, 403, 404, 429])
-def test_http_4xx_is_not_agent_side(status):
-    # A 4xx comes from the preview path (route, auth, policy, rate limit), not
-    # from the revision's answer.
+def test_http_4xx_is_agent_side(status):
+    # Review round 2: the preview Service is the agent container itself, so a
+    # 4xx comes from the revision (404 on every case read as an outage).
     reply({"x": 1}, status=status)
     with pytest.raises(AgentCallError) as exc:
         call()
     assert exc.value.kind == "http"
+    assert exc.value.agent_side is True
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error", [httpx.ReadError("reset"), httpx.RemoteProtocolError("closed without a response")]
+)
+def test_connection_dropped_after_the_request_is_agent_side(error):
+    # A crash or OOM on this input drops the connection after it was sent.
+    respx.post(URL).mock(side_effect=error)
+    with pytest.raises(AgentCallError) as exc:
+        call()
+    assert exc.value.kind == "dropped"
+    assert exc.value.agent_side is True
+
+
+@respx.mock
+def test_pool_timeout_is_not_agent_side():
+    respx.post(URL).mock(side_effect=httpx.PoolTimeout("no free connection"))
+    with pytest.raises(AgentCallError) as exc:
+        call()
     assert exc.value.agent_side is False
 
 

@@ -7,11 +7,14 @@ reason field and the logs.
 
 `agent_side` says who produced the failure. A reply the agent itself gave
 that is not a usable answer (failed Task, JSON-RPC error, error payload,
-non-JSON, no text, HTTP 5xx) or an agent that did not answer in time is the
-revision's fault: the runner scores it as a FAILED case. A connect or other
-transport error and an HTTP 4xx from the preview path (auth, policy, 429) say
-nothing about the revision's answers: the runner counts them as case errors,
-outside the pass ratio.
+non-JSON, no text, any non-2xx HTTP status) or an agent that did not answer in
+time is the revision's fault: the runner scores it as a FAILED case. So is a
+connection dropped after the request was sent (reset, crash or OOM on that
+input). `<agent>-preview:8083` is the agent container itself, so a 4xx or a
+dropped connection comes from the revision, not from the path to it. Only a
+failure to connect (ConnectError, ConnectTimeout, PoolTimeout) says nothing
+about the revision's answers: the runner counts it as a case error, outside
+the pass ratio.
 
 No `X-Forwarded-User` is sent, so the platform base image falls back to a
 per-request caller with no memory, which keeps cases independent. The contextId
@@ -120,15 +123,17 @@ def send_message(
         kind = "timeout" if agent_side else "transport"
         raise AgentCallError(kind, f"{type(exc).__name__}: {exc}", agent_side) from exc
     except httpx.HTTPError as exc:
+        # Only a failed connect is infrastructure. An error after the request
+        # went out (ReadError, RemoteProtocolError, WriteError) means the agent
+        # container dropped it: a crash or OOM on this input is a failed case.
+        infra = isinstance(exc, httpx.ConnectError)
         raise AgentCallError(
-            "transport", f"{type(exc).__name__}: {exc}", agent_side=False
+            "transport" if infra else "dropped",
+            f"{type(exc).__name__}: {exc}",
+            agent_side=not infra,
         ) from exc
     if not 200 <= response.status_code < 300:
-        raise AgentCallError(
-            "http",
-            f"HTTP {response.status_code}",
-            agent_side=response.status_code >= 500,
-        )
+        raise AgentCallError("http", f"HTTP {response.status_code}")
     try:
         payload = response.json()
     except ValueError as exc:

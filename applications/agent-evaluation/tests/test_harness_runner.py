@@ -149,7 +149,6 @@ def test_agent_failing_three_of_four_cases():
         (AgentCallError("http", "HTTP 503", agent_side=True), "failed"),
         (AgentCallError("timeout", "ReadTimeout", agent_side=True), "failed"),
         (AgentCallError("transport", "ConnectError", agent_side=False), "error"),
-        (AgentCallError("http", "HTTP 403", agent_side=False), "error"),
     ],
 )
 def test_agent_side_errors_fail_and_infra_errors_are_errors(exc, status):
@@ -157,6 +156,44 @@ def test_agent_side_errors_fail_and_infra_errors_are_errors(exc, status):
     result = run_cases(dataset("a", "b"), CHECKS, runner_settings(), agent, judge_fn({"good": 1.0}))
     assert result.case_results[0].status == status
     assert result.pass_ratio == (0.5 if status == "failed" else 1.0)
+
+
+def test_404_on_every_case_is_a_zero_ratio_not_an_outage():
+    # Review round 2 blocking 2, through the real client: status was "error".
+    ids = "abcd"
+    with respx.mock:
+        respx.post("http://preview.test/").mock(return_value=httpx.Response(404))
+        with httpx.Client() as client:
+            from app.a2a_client import send_message
+
+            def agent(text, context_id, timeout):
+                return send_message(client, "http://preview.test/", text, context_id, timeout)
+
+            result = run_cases(
+                dataset(*ids), CHECKS, runner_settings(), agent, judge_fn({}), sleep=no_sleep
+            )
+    assert result.status == "completed"
+    assert (result.passed, result.failed, result.errors) == (0, 4, 0)
+    assert result.pass_ratio == 0.0
+
+
+def test_crashes_count_against_the_ratio():
+    # Review round 2 blocking 2: 10 crashes + 5 of 10 correct gave 0.5, not 0.25.
+    ids = [f"c{i}" for i in range(20)]
+    dropped = AgentCallError("dropped", "ReadError", agent_side=True)
+    behaviour = {}
+    for n, i in enumerate(ids):
+        behaviour[f"input {i}"] = dropped if n < 10 else ("RIGHT" if n < 15 else "WRONG")
+
+    result = run_cases(
+        dataset(*ids),
+        CHECKS,
+        runner_settings(),
+        agent_fn(behaviour),
+        lambda prompt, timeout: JudgeVerdict(1.0 if "O=RIGHT" in prompt else 0.0, "r"),
+    )
+    assert (result.passed, result.failed, result.errors) == (5, 15, 0)
+    assert result.pass_ratio == 0.25
 
 
 def flaky_judge(failures: dict, error=lambda: JudgeError("judge returned HTTP 429", retryable=True)):
