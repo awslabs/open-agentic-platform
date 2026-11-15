@@ -1505,9 +1505,12 @@ with the change and bumping its pin makes both clauses effective.
   revision of the agent was created after its newest run on the declared
   dataset. The check runs before other revisions' active runs are stopped, and
   the re-run's Job is created before they are: a failed create leaves them, and
-  the record, for the next pass (with no free slot they are stopped and the
-  re-run waits). The re-run is then the revision's newest Job, so later passes and restarts start
-  nothing; creation timestamps come from the API server, so no extra state or
+  the record, for the next pass. With no free slot they are stopped anyway
+  (their cases would reach the new pods), which deletes that record. Unless
+  another retained Job still records the move, the re-run is lost, not
+  delayed: later passes plan no re-run and the series keep the revision's
+  earlier run. Once created, the re-run is the revision's newest Job, so later
+  passes and restarts start nothing; creation timestamps come from the API server, so no extra state or
   RBAC is needed. Its cases use `contextId = <job-name>-<caseId>` of the re-run's
   own Job, which keeps the `oap-harness-` exclusion marker. Accepted limits: without a
   retained Job of the in-between revision (none started, stopped before the
