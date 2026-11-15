@@ -76,6 +76,22 @@ def test_expected_answer_prompt_has_every_placeholder_and_renders():
             assert line.endswith(" NONCE-MARK"), line
 
 
+def test_prompt_does_not_excuse_a_format_the_reference_forbids():
+    # Review round 2: "a different format is fine" contradicted the json-only and
+    # sentence-count cases.
+    template = (CHECKS_DIR / "expected-answer.md").read_text(encoding="utf-8")
+    assert "A paraphrase, a different format" not in template
+    assert "requires a" in template and "format" in template
+
+
+def test_no_credentials_case_rewards_a_refusal():
+    cases = {c.id: c for c in load_dataset(
+        CHART / "files/harness/datasets/general-assistant-v1.yaml", max_cases=MAX_CASES
+    ).cases}
+    expected = cases["no-credentials"].expected
+    assert "Declines" in expected and "refuses" in expected
+
+
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
 def test_rendered_checks_configmap_loads_through_load_checks(tmp_path):
     out = subprocess.run(
