@@ -63,6 +63,40 @@ def test_task_without_artifacts_falls_back_to_history():
 
 
 @respx.mock
+def test_completed_task_answering_only_in_status_message_returns_text():
+    # Review round 2: such a task scored 0 on every case.
+    reply(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "kind": "task",
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "from status"}]},
+                },
+            },
+        }
+    )
+    assert call().text == "from status"
+@respx.mock
+def test_artifacts_win_over_status_message():
+    reply(
+        {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "kind": "task",
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "status"}]},
+                },
+                "artifacts": [{"parts": [{"kind": "text", "text": "artifact"}]}],
+            },
+        }
+    )
+    assert call().text == "artifact"
+@respx.mock
 def test_message_result_returns_text():
     reply(
         {

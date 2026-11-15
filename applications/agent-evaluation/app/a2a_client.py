@@ -91,11 +91,20 @@ def _text_of(parts) -> str:
 
 
 def _task_text(result: dict) -> str:
+    """Artifacts, else status.message (as strands-agent-base's delegation does), else history."""
     artifacts = result.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        return "".join(
+    if isinstance(artifacts, list):
+        text = "".join(
             _text_of(a.get("parts")) for a in artifacts if isinstance(a, dict)
         )
+        if text.strip():
+            return text
+    status = result.get("status")
+    message = status.get("message") if isinstance(status, dict) else None
+    if isinstance(message, dict):
+        text = _text_of(message.get("parts"))
+        if text.strip():
+            return text
     history = result.get("history")
     if isinstance(history, list):
         for message in reversed(history):
