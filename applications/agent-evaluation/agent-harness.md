@@ -355,7 +355,7 @@ errored run publishes only `info{status="error"}`, `threshold` and
 `info{status="insufficient"}` but no `pass_ratio` or `threshold_met`.
 
 **Grafana.** Dashboard `agent-evaluation` (folder "Agent Platform"), row
-"Harness (pre-promotion dataset, report mode)": panels "Harness pass ratio",
+"Harness (per-revision dataset, report mode)": panels "Harness pass ratio",
 "Cases / passed / errors", "Latest run", "Last run age", "Threshold" and
 "Threshold met". The pass ratio has a single colour, not fixed red/green bands,
 because each agent declares its own threshold: read it against "Threshold"

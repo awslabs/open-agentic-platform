@@ -759,7 +759,7 @@ template: {
 			})]
 		}
 
-		// +usage=Pre-promotion exam of this agent on a fixed dataset. Each new
+		// +usage=Per-revision exam of this agent on a fixed dataset. Each new
 		// revision is scored on <agent>-preview and the result is published as
 		// oap_agent_harness_* metrics. Report mode only: the score is reported,
 		// and it never blocks or delays promotion. Gate mode (block promotion

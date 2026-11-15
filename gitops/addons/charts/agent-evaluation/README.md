@@ -107,10 +107,12 @@ and real.
 
 ## Harness (report mode)
 
-The pre-promotion harness from issue #137, off by default. With
+The per-revision harness from issue #137, off by default. With
 `harness.enabled: true` the reconciler runs an agent's `harness` dataset against
 every new revision's `<agent>-preview` Service and publishes
-`oap_agent_harness_*`. It **never blocks or delays a promotion**. Design and
+`oap_agent_harness_*`. It **never blocks or delays a promotion**. With the
+agent's default `autoPromotionEnabled: true`, Argo usually promotes the revision
+before its run starts, so the run scores a revision that already serves users. Design and
 contracts: [§4b](../../../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
 
 Nothing in the table below renders while `harness.enabled` is false, not even a

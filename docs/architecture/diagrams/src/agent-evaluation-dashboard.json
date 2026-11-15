@@ -821,7 +821,7 @@
     {
       "id": 14,
       "type": "row",
-      "title": "Harness (pre-promotion dataset, report mode)",
+      "title": "Harness (per-revision dataset, report mode)",
       "collapsed": false,
       "gridPos": {
         "h": 1,

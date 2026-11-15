@@ -1,4 +1,4 @@
-# Example: Agent with a pre-promotion harness (fixed dataset, report mode)
+# Example: Agent with a per-revision harness (fixed dataset, report mode)
 #
 # Adding the `harness` block is the whole change. The platform runs a fixed
 # dataset of cases against every new revision of this agent, including the

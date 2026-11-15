@@ -472,7 +472,7 @@ rolloutStrategy:
     scaleDownDelaySeconds: 30
 ```
 
-## Agent harness (pre-promotion dataset, report mode)
+## Agent harness (per-revision dataset, report mode)
 
 The optional `harness` block runs a fixed dataset against each new revision of
 the agent on its blue-green preview Service (`<agent>-preview`) and publishes
@@ -497,7 +497,10 @@ harness:
 | `mode` | `report` (the only value) | `report` only: score the revision and promote anyway. `gate` is rejected at admission until the gating phase ships. |
 
 Report mode never blocks or delays promotion; the `rolloutStrategy` settings
-above behave exactly as without the harness. On a first deploy the preview and
+above behave exactly as without the harness. With the default
+`autoPromotionEnabled: true`, Argo usually promotes the revision before its run
+starts, so the run scores a revision that already serves users, not one waiting
+for promotion. On a first deploy the preview and
 stable Services select the same ReplicaSet, so the first run scores the initial
 revision and serves as the baseline for later revisions.
 
