@@ -172,6 +172,19 @@ def test_unreadable_value_with_a_secret_for_another_key_is_reminted():
 
 
 @respx.mock
+def test_unreadable_current_key_is_not_deleted_while_jobs_are_active():
+    # Review round 2: the replace path deleted the current key under a running Job.
+    respx.get(KEYS).mock(
+        return_value=httpx.Response(200, json={"virtual_keys": [{"id": "vk1", "name": NAME}]})
+    )
+    delete = respx.delete(f"{KEYS}/vk1")
+    create = respx.post(KEYS)
+    with httpx.Client() as client:
+        with pytest.raises(BifrostAdminError, match="Job is active"):
+            admin(client).ensure_judge_key(*ARGS, delete_stale=False)
+    assert not delete.called
+    assert not create.called
+@respx.mock
 def test_stale_keys_are_kept_when_delete_stale_is_false():
     respx.get(KEYS).mock(
         return_value=httpx.Response(

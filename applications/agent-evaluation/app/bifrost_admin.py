@@ -181,6 +181,8 @@ class BifrostAdmin:
         `delete_stale` is true. The caller passes false while a harness Job is
         active: a running Job keeps the value it mounted at start (a subPath
         mount never updates), so deleting its key would fail its judge calls.
+        The same holds for the current key when its value is unreadable and not
+        known: replacing it waits (the pass fails) until no Job is active.
         """
         name = vk_name(models, budget_usd, budget_reset, rl_requests, rl_reset)
         if known and known[0] == name and str(known[1]).startswith(KEY_VALUE_PREFIX):
@@ -198,7 +200,15 @@ class BifrostAdmin:
                 value = self._minted[name]
             else:
                 # Ours by name but its value is not readable here or in the
-                # Secret: replace it rather than run without a key.
+                # Secret: replace it rather than run without a key, but never
+                # while a Job runs: it mounted this key's value at start, and
+                # deleting the key would fail its judge calls. The pass fails
+                # and the replacement happens on a pass with no active Job.
+                if not delete_stale:
+                    raise BifrostAdminError(
+                        f"harness judge key {name} has no readable value and a "
+                        "harness Job is active; it is replaced once no Job is active"
+                    )
                 logger.warning(
                     "harness judge key %s has no readable value; replacing it", name
                 )
