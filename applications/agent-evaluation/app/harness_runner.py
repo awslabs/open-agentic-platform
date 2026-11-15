@@ -42,6 +42,7 @@ from .a2a_client import AgentCallError, context_id_for, send_message, wait_until
 from .config import ConfigError
 from .datasets import Case, Dataset, DatasetError, load_dataset
 from .harness_config import (
+    DEADLINE_MARGIN_SECONDS,
     Check,
     RunnerSettings,
     checks_digest,
@@ -61,7 +62,6 @@ JUDGE_ATTEMPTS = 3
 JUDGE_BACKOFF_SECONDS = (2, 4)
 # Time kept back before the Job's deadline to judge the last call and write
 # the result ConfigMap.
-DEADLINE_MARGIN_SECONDS = 60
 NOT_RUN_REASON = "not run: run deadline reached"
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"

@@ -118,6 +118,11 @@ class HarnessSettings:
     judge_allowed_models: tuple[str, ...] = ()
 
 
+# The runner stops starting work this long before the Job's activeDeadlineSeconds
+# (harness_runner re-exports it), so the Job can write a partial result.
+DEADLINE_MARGIN_SECONDS = 60
+
+
 def load_harness_settings() -> HarnessSettings:
     """Read the reconciler-side harness settings. Disabled means nothing else is read."""
     enabled = _env_bool("HARNESS_ENABLED", False)
@@ -147,6 +152,20 @@ def load_harness_settings() -> HarnessSettings:
     if budget <= 0:
         raise ConfigError(f"HARNESS_JUDGE_BUDGET_USD must be > 0, got {budget}")
 
+    case_timeout = _positive(
+        "HARNESS_CASE_TIMEOUT_SECONDS", _env_int("HARNESS_CASE_TIMEOUT_SECONDS", 120)
+    )
+    run_timeout = _positive(
+        "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
+    )
+    if run_timeout <= DEADLINE_MARGIN_SECONDS + case_timeout:
+        # The runner stops at run_timeout - margin: with less than one case
+        # timeout after that, every case is cut by the run deadline.
+        raise ConfigError(
+            f"HARNESS_RUN_TIMEOUT_SECONDS ({run_timeout}) must be greater than the "
+            f"{DEADLINE_MARGIN_SECONDS} s deadline margin plus "
+            f"HARNESS_CASE_TIMEOUT_SECONDS ({case_timeout})"
+        )
     return HarnessSettings(
         enabled=True,
         interval=_positive("HARNESS_INTERVAL_SECONDS", _env_int("HARNESS_INTERVAL_SECONDS", 60)),
@@ -173,15 +192,11 @@ def load_harness_settings() -> HarnessSettings:
         case_concurrency=_positive(
             "HARNESS_CASE_CONCURRENCY", _env_int("HARNESS_CASE_CONCURRENCY", 2)
         ),
-        case_timeout=_positive(
-            "HARNESS_CASE_TIMEOUT_SECONDS", _env_int("HARNESS_CASE_TIMEOUT_SECONDS", 120)
-        ),
+        case_timeout=case_timeout,
         ready_timeout=_positive(
             "HARNESS_READY_TIMEOUT_SECONDS", _env_int("HARNESS_READY_TIMEOUT_SECONDS", 600)
         ),
-        run_timeout=_positive(
-            "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
-        ),
+        run_timeout=run_timeout,
         max_cases=_positive("HARNESS_MAX_CASES", _env_int("HARNESS_MAX_CASES", 50)),
         min_judged_ratio=_ratio("HARNESS_MIN_JUDGED_RATIO", 0.8),
         judge_alias=_env("HARNESS_JUDGE_ALIAS"),

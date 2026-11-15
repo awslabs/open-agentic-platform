@@ -735,3 +735,21 @@ def test_parse_result_rejects_a_non_string_string_field(key):
     raw[key] = ["x"]
     with pytest.raises(ResultSchemaError, match="not a string"):
         parse_result({RESULT_KEY: json.dumps(raw)})
+@pytest.mark.parametrize(
+    "run_timeout,case_timeout,ok",
+    [("60", "120", False), ("180", "120", False), ("181", "120", True), ("1800", "120", True)],
+)
+def test_run_timeout_must_exceed_the_margin_plus_a_case_timeout(
+    monkeypatch, run_timeout, case_timeout, ok
+):
+    # Review round 2: a runTimeoutSeconds of 60 or less errored every case.
+    from app.harness_config import ConfigError, load_harness_settings
+    monkeypatch.setenv("HARNESS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_JOB_IMAGE", "img")
+    monkeypatch.setenv("HARNESS_RUN_TIMEOUT_SECONDS", run_timeout)
+    monkeypatch.setenv("HARNESS_CASE_TIMEOUT_SECONDS", case_timeout)
+    if ok:
+        assert load_harness_settings().run_timeout == int(run_timeout)
+    else:
+        with pytest.raises(ConfigError, match="HARNESS_RUN_TIMEOUT_SECONDS"):
+            load_harness_settings()
