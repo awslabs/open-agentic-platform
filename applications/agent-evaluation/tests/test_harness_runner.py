@@ -12,6 +12,7 @@ from app.a2a_client import AgentCallError, AgentReply
 from app.datasets import Case, Dataset
 from app.harness_config import Check, RunnerSettings, checks_digest, load_checks
 from app.harness_results import (
+    RESULT_KEY,
     RESULT_SCHEMA,
     CaseResult,
     ResultSchemaError,
@@ -725,3 +726,12 @@ def test_runner_stops_at_the_absolute_deadline_not_its_own_start():
     # Deadline 1340: calls end at 1190, 1290, then the third gets 50 s and the rest do not run.
     assert [c.status for c in result.case_results].count("passed") == 2
     assert result.error and "not run" in result.error
+@pytest.mark.parametrize("key", ["dataset", "agent", "revision", "namespace", "trigger"])
+def test_parse_result_rejects_a_non_string_string_field(key):
+    # Review round 2: "dataset": ["x"] raised TypeError in _publish on every pass
+    # and _prune never ran. It is now a result not understood (a run error).
+    good = to_configmap_data(run_cases(dataset("a"), CHECKS, runner_settings(), agent_fn({"input a": "good"}), judge_fn({"good": 1.0})))
+    raw = json.loads(good[RESULT_KEY])
+    raw[key] = ["x"]
+    with pytest.raises(ResultSchemaError, match="not a string"):
+        parse_result({RESULT_KEY: json.dumps(raw)})

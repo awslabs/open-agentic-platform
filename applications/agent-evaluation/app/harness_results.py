@@ -31,6 +31,9 @@ MAX_REASON_CHARS = 300
 
 CASE_STATUSES = ("passed", "failed", "error")
 OPTIONAL_KEYS = ("dataset_digest", "checks_digest")
+STRING_KEYS = (
+    "namespace", "agent", "revision", "dataset", "mode", "trigger", "judge_model",
+)
 RUN_STATUSES = ("completed", "insufficient", "error")
 DEFAULT_MIN_JUDGED_RATIO = 0.8
 
@@ -214,6 +217,13 @@ def parse_result(data: dict | None) -> RunResult:
         raise ResultSchemaError(f"result status {values['status']!r} is not known")
     if not isinstance(values["case_results"], list):
         raise ResultSchemaError("caseResults is not a list")
+    # A list or number here would reach _publish's label and string handling
+    # and raise on every pass, so it is a result not understood.
+    for key in STRING_KEYS:
+        if not isinstance(values[key], str):
+            raise ResultSchemaError(f"result {_camel(key)} is not a string")
+    if values["error"] is not None and not isinstance(values["error"], str):
+        raise ResultSchemaError("result error is neither a string nor null")
 
     cases: list[CaseResult] = []
     # int(), tuple() on a wrong-typed field (`tags: 5`, `latencyMs: "x"`,
