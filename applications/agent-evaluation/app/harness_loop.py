@@ -384,6 +384,19 @@ class HarnessLoop:
     # ── the pass ─────────────────────────────────────────────────────────
 
     def run_once(self) -> bool:
+        """One pass. A pass that caught an error counts toward errors_total.
+
+        `_pass` catches its own Kubernetes and Bifrost errors so one agent's
+        failure does not stop the others, and reports them as False. Without
+        this count the main loop would never see them (it counts only raised
+        exceptions), and AgentHarnessReconcileErrors could not fire.
+        """
+        ok = self._pass()
+        if not ok:
+            self._metrics.errors.labels(self._s.cluster, "harness").inc()
+        return ok
+
+    def _pass(self) -> bool:
         ok = True
         cluster = self._s.cluster
         ns = self._s.namespace
@@ -403,8 +416,8 @@ class HarnessLoop:
         key_ok = self._ensure_judge_key(owner, delete_stale=not any_active)
         self._metrics.harness_judge_key_present.labels(cluster).set(1 if key_ok else 0)
         can_create = key_ok or not self._h.judge_key_required
-        if not can_create:
-            ok = False
+        if not key_ok:
+            ok = False  # an unreadable or unmintable key is an error even when optional
 
         try:
             declarations, malformed = self._reader.list()

@@ -1492,3 +1492,51 @@ def test_free_slot_goes_to_the_longest_waiting_revision(
         "team-a",
     ]
     assert loop._waiting_since == {}
+def _harness_errors(metrics):
+    return metrics.registry.get_sample_value(
+        "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
+    )
+def test_clean_pass_counts_no_harness_error(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once() is True
+    assert not _harness_errors(metrics)
+def test_bifrost_down_counts_a_harness_error(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once() is False
+    assert _harness_errors(metrics) == 1
+def test_bifrost_down_with_an_optional_key_counts_a_harness_error(
+    settings, harness_settings, catalog, metrics
+):
+    hs = dataclasses.replace(harness_settings, judge_key_required=False)
+    loop, f = build(settings, hs, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop.run_once() is False
+    assert _harness_errors(metrics) == 1
+def test_job_create_500_counts_a_harness_error(settings, harness_settings, catalog, metrics):
+    from kubernetes.client.rest import ApiException
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    def boom(namespace, body):
+        raise ApiException(status=500, reason="boom")
+    f.batch.create_namespaced_job = boom
+    assert loop.run_once() is False
+    assert _harness_errors(metrics) == 1
+def test_rollout_get_500_counts_a_harness_error(settings, harness_settings, catalog, metrics):
+    from kubernetes.client.rest import ApiException
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    def boom(*args, **kwargs):
+        raise ApiException(status=500, reason="boom")
+    f.custom.get_namespaced_custom_object = boom
+    assert loop.run_once() is False
+    assert _harness_errors(metrics) == 1
+def test_service_get_500_counts_a_harness_error(settings, harness_settings, catalog, metrics):
+    from kubernetes.client.rest import ApiException
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    def boom(name, namespace):
+        raise ApiException(status=500, reason="boom")
+    f.core.read_namespaced_service = boom
+    assert loop.run_once() is False
+    assert _harness_errors(metrics) == 1
