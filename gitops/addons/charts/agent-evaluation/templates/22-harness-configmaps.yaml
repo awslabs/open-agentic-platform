@@ -8,9 +8,16 @@ startup and rejects a declaration naming a dataset that is not shipped) and
 into every harness Job in this namespace.
 The check prompts live under files/harness/checks/, NOT files/evaluators/, and
 are not in .Values.catalog, so the hub never publishes them to Langfuse.
+DO NOT DELETE OR RENAME the catalog ConfigMap below (agent-evaluation-harness-catalog),
+and do not delete and re-create the Argo CD application that renders it. It owns
+every harness Job, every result ConfigMap and the judge key Secret through
+ownerReferences, so deleting or renaming it garbage-collects all of them and the
+run history with them. Change its content in place.
+
 Prompt files use literal double-brace placeholders (input, expected, output,
 nonce, now; nonce is a per-call random token for the data fence markers, now
-the current UTC time at judge time, also rendered inside a case's expected):
+the current UTC time at judge time, also rendered inside a case's expected,
+where asked, date and weekday render the time the question was sent):
 .Files.Get returns them unrendered and the runner substitutes them.
 */ -}}
 {{- if .Values.harness.enabled }}
