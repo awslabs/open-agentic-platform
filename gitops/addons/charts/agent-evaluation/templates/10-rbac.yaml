@@ -21,13 +21,17 @@ The harness (harness.enabled, off by default) adds, and nothing else renders
 without it:
 - cluster-wide READ of argoproj.io rollouts, to see an agent's current
   revision (status.currentPodHash) and whether -preview already selects it.
+- cluster-wide GET (no list/watch) of services, to read the derived
+  <agent>-preview Service before a run and refuse an ExternalName one or one
+  that does not select the revision.
 - a Role in THIS namespace only for the reconciler: create/delete the harness
   Jobs, delete their result ConfigMaps, and write the one harness judge-key
   Secret (create cannot be scoped by name in RBAC, get/update/patch are).
 - a separate ServiceAccount for the Job pods whose only grant is creating its
   result ConfigMap in this namespace.
-Nothing new is granted in any agent namespace: the Jobs reach the agent over
-its -preview Service, not the Kubernetes API.
+No write is granted in any agent namespace; the only new access there is the
+two cluster-wide reads above. The Jobs reach the agent over its -preview
+Service, not the Kubernetes API.
 */ -}}
 apiVersion: v1
 kind: ServiceAccount

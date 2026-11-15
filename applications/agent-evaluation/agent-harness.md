@@ -544,8 +544,9 @@ Secrets Manager from the hub.
 
 ### 4.5 RBAC actually granted
 
-From `templates/10-rbac.yaml`, only with `harness.enabled: true`. The live test
-compared every verb against this template with no mismatch.
+From `templates/10-rbac.yaml`, only with `harness.enabled: true`. The earlier
+live test compared every verb against the template of that time, before the
+`get` on `services` was added; this table is read from the current template.
 
 | Subject | Scope | Grant |
 |---|---|---|
@@ -554,9 +555,10 @@ compared every verb against this template with no mismatch.
 | `agent-evaluation-harness-runner` (Job pods, Role `agent-evaluation-harness-runner`) | `agent-evaluation` only | `configmaps`: `create` only (no read, no update) |
 
 The reconciler's existing ClusterRole already grants cluster-wide
-`get`/`list`/`watch` on ConfigMaps and `create`/`patch`/`get` on Events. Nothing
-new is granted in any agent namespace: the Job reaches the agent over its
-`-preview` Service, not the Kubernetes API.
+`get`/`list`/`watch` on ConfigMaps and `create`/`patch`/`get` on Events. No
+write is granted in any agent namespace; the only new access there is the
+cluster-wide read of Rollouts and the `get` on Services above. The Job reaches
+the agent over its `-preview` Service, not the Kubernetes API.
 
 ### 4.6 Alerts and the PF-1 caveat
 

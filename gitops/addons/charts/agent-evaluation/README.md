@@ -160,8 +160,8 @@ before a run). Everything else is a Role in the release namespace: the reconcile
 creates and deletes the harness Jobs, deletes their result ConfigMaps, creates
 Secrets and gets/updates only `harness.judge.virtualKey.secretRef`. The Jobs run
 as a separate ServiceAccount, `agent-evaluation-harness-runner`, which can only
-create ConfigMaps in this namespace. Nothing new is granted in any agent
-namespace.
+create ConfigMaps in this namespace. No write is granted in any agent
+namespace; the only new access there is the cluster-wide read above.
 
 **Judge key.** A harness-only Bifrost virtual key, separate from the ONLINE judge
 key in `judge.virtualKey` (which stays hub-only). The reconciler mints it in
