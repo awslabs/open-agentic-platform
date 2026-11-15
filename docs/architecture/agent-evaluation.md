@@ -1832,13 +1832,16 @@ Q5 in issue #137.
 - **Q4. Non-determinism.** What this PR does: the judge runs at temperature 0;
   each case gets one agent sample and one judge sample; a judge call is retried
   on transient errors (transport, 429, 5xx: 3 attempts, 2 s then 4 s backoff);
-  and cases are classified so a flake does not move the ratio. An agent-side
-  failure (failed A2A Task, JSON-RPC error, error payload, any non-2xx status,
-  read timeout, connection dropped after the request) is a failed case, while judge and infrastructure errors are left out
+  and cases are classified so a flake from the judge or the infrastructure
+  does not move the ratio. Anything that comes from the revision does: an
+  agent-side failure (failed A2A Task, JSON-RPC error, error payload, any
+  non-2xx status including a 5xx, read timeout, connection dropped after the
+  request) is a failed case, while judge and infrastructure errors are left out
   of the denominator (`pass_ratio = passed / (passed + failed)`). The shipped
   `general-assistant-v1` has 20 cases, so one case moves the ratio by 0.05.
-  Pending a decision: running each case k times with a per-case pass rate, and
-  a minimum case count below which `threshold_met` is not published.
+  Below `harness.minJudgedRatio` judged cases (default 0.8) the run is
+  `insufficient` and publishes no ratio (§4b). Pending a decision: running each
+  case k times with a per-case pass rate.
 - **Q5. Reuse the reconciler or a separate addon.** Decided: reuse the
   `agent-evaluation` reconciler. It shares the judge catalog and aliases, the
   metrics server and the Event recorder; the harness loop stays isolated (own
