@@ -294,6 +294,14 @@ clusters that enforce NetworkPolicy, which is part of the base platform's cluste
 (aws-samples/appmod-blueprints#1239). A caller that reached agents directly, such as an
 incident bridge, must go through the gateway instead. MCP servers are tracked in #86.
 
+Exception: an agent with an enabled `harness` block also admits port 8083 from pods
+labelled `harness.oap.io/run: "true"` in the agent-evaluation namespace, because the
+harness runner calls `<agent>-preview` directly. The runner code sends no
+`X-Forwarded-User`, but the policy admits any pod with that label in that namespace, so
+anyone who can create a pod there (the reconciler's ServiceAccount included) can send
+the header to that agent and, through a harness-enabled supervisor, to its sub-agents.
+See `docs/agent-delegation/DESIGN.md` section 5.
+
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not
 immediately.

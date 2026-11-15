@@ -204,6 +204,18 @@ and incident-bridge post to the agent directly; every pod in a listed namespace 
 name any user toward these agents, so routing those callers through the gateway is the
 follow-up that removes the entry.
 
+Exception: the agent harness. An agent whose `harness` block is enabled also admits
+ingress to port 8083 from pods labelled `harness.oap.io/run: "true"` in the
+agent-evaluation namespace (`global.agentEvaluation.namespace`, platform-owned), because
+the harness runner calls `<agent>-preview` directly. The runner code sends no
+`X-Forwarded-User`, so it runs as an anonymous caller. The policy does not enforce that:
+it admits any pod carrying the label in that namespace, so anyone who can create a pod
+there, the reconciler's ServiceAccount included, can send `X-Forwarded-User` to an agent
+with an enabled harness block. Through a harness-enabled supervisor that header is then
+delegated on to its sub-agents. "Cannot name a user" holds for the runner's code, not
+for the policy. Closing it needs the runner's identity checked, for example at the
+gateway, and stays open until gate mode.
+
 The stronger model, verifying the user's own token at the gateway (token exchange, ADR-6
 in `docs/architecture/agent-identity-and-token-exchange.md`), is a follow-up issue.
 
