@@ -13,8 +13,10 @@ from app.datasets import Case, Dataset
 from app.harness_config import Check, RunnerSettings, checks_digest, load_checks
 from app.harness_results import (
     RESULT_SCHEMA,
+    CaseResult,
     ResultSchemaError,
     parse_result,
+    summarize,
     to_configmap_data,
 )
 from app.harness_runner import judge_with_retry, result_body, run, run_cases
@@ -43,6 +45,8 @@ def runner_settings(datasets_dir="/nonexistent", **overrides) -> RunnerSettings:
         case_timeout=5,
         ready_timeout=5,
         max_cases=50,
+        # Older tests have errors among few cases; the floor has its own tests.
+        min_judged_ratio=0.5,
         checks_path="/nonexistent/checks.yaml",
         datasets_dir=str(datasets_dir),
         credentials_dir="/nonexistent",
@@ -197,6 +201,67 @@ def test_persistent_judge_error_is_excluded_from_the_ratio():
     assert result.pass_ratio == 1.0
     assert judge.calls["right a"] == 3
     assert slept == [2, 4]
+
+
+def test_one_judged_case_among_judge_errors_is_insufficient_not_a_full_pass():
+    # Review round 2 blocking 1: 1 passed + 19 judge errors read as 100%.
+    ids = [f"c{i}" for i in range(20)]
+    agent = agent_fn({f"input {i}": f"right {i}" for i in ids})
+    judge = flaky_judge({f"right {i}": (0 if i == "c0" else 99) for i in ids})
+    result = run_cases(
+        dataset(*ids),
+        CHECKS,
+        runner_settings(min_judged_ratio=0.8),
+        agent,
+        judge,
+        sleep=no_sleep,
+    )
+    assert result.status == "insufficient"
+    assert (result.cases, result.passed, result.failed, result.errors) == (20, 1, 0, 19)
+    assert result.pass_ratio is None
+    assert result.threshold_met is None
+    assert "1 of 20 cases judged" in result.error
+    assert parse_result(to_configmap_data(result)) == result
+
+
+def test_deadline_cut_run_with_two_of_fifty_judged_is_insufficient():
+    now = [0.0]
+    ids = [f"c{i}" for i in range(50)]
+
+    def agent(text, context_id, timeout):
+        now[0] += 150
+        return AgentReply("good", "completed")
+
+    settings = runner_settings(
+        case_concurrency=1, case_timeout=120, run_timeout=400, min_judged_ratio=0.8
+    )
+    result = run_cases(
+        dataset(*ids),
+        CHECKS,
+        settings,
+        agent,
+        judge_fn({"good": 1.0}),
+        clock=lambda: now[0],
+        started_at=0.0,
+        sleep=no_sleep,
+    )
+    assert result.status == "insufficient"
+    assert result.passed == 2 and result.cases == 50
+    assert result.pass_ratio is None and result.threshold_met is None
+    assert "run deadline reached" in result.error
+
+
+def test_judged_cases_exactly_at_the_floor_publish_a_ratio():
+    # 4 of 5 judged is 80%: the floor is reached, so the ratio is published.
+    cases = [
+        CaseResult(id=i, status=s, score=None, reason="r", latency_ms=1, tags=())
+        for i, s in zip("abcde", ["passed", "passed", "failed", "passed", "error"])
+    ]
+    result = summarize(
+        **_summary_args(), case_results=cases, min_judged_ratio=0.8
+    )
+    assert result.status == "completed"
+    assert result.pass_ratio == 0.75
 
 
 def test_every_judge_call_failing_is_a_run_error():
@@ -361,6 +426,32 @@ def test_ready_wait_is_clamped_to_the_run_deadline(harness_dirs):
     )
     assert waited == [240]
     assert result.status == "error"
+
+
+def _summary_args():
+    return dict(
+        namespace="team-a", agent="assistant", revision="r", dataset="d", checks=("c",),
+        threshold=0.5, mode="report", trigger="t", judge_model="m",
+        judge_key_present=True, started_at=0.0, finished_at=1.0,
+    )
+
+
+def test_min_judged_ratio_is_read_and_validated(monkeypatch):
+    from app.harness_config import ConfigError, load_runner_settings
+
+    monkeypatch.setenv("HARNESS_TARGET_URL", "http://x/")
+    for k, v in dict(
+        HARNESS_AGENT_NAMESPACE="n", HARNESS_AGENT="a", HARNESS_REVISION="r",
+        HARNESS_DATASET="d", HARNESS_RESULT_CONFIGMAP="oap-harness-x-result",
+        POD_NAMESPACE="p", HARNESS_JUDGE_MODEL="m", CREDENTIALS_DIR="/nonexistent",
+    ).items():
+        monkeypatch.setenv(k, v)
+    assert load_runner_settings().min_judged_ratio == 0.8
+    monkeypatch.setenv("HARNESS_MIN_JUDGED_RATIO", "0.5")
+    assert load_runner_settings().min_judged_ratio == 0.5
+    monkeypatch.setenv("HARNESS_MIN_JUDGED_RATIO", "0")
+    with pytest.raises(ConfigError):
+        load_runner_settings()
 
 
 def test_threshold_met_when_ratio_reaches_it():

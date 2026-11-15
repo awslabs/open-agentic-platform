@@ -1321,7 +1321,14 @@ dataset fails to load and the run is a run error. A run with `expectTools`
 says so in its log line and its `HarnessRunCompleted` Event.
 
 Zero cases, or more than `harness.maxCases` (default 50), is a run error. Cases
-are never truncated. Two datasets ship, and neither was harvested from hub
+are never truncated. Case errors sit outside the pass ratio, so a floor keeps an
+outage from reading as a pass: a run publishes `pass_ratio` and `threshold_met`
+only when judged cases (passed plus failed) are at least `harness.minJudgedRatio`
+(default 0.8) of all cases. Below it the run's status is `insufficient`: the
+counts and `info{status="insufficient"}` are published, the ratio and
+`threshold_met` are absent, the `HarnessRunCompleted` Event says how many cases
+were judged, and `result.json` has `status: "insufficient"`, null `passRatio`
+and `thresholdMet`. A run where nothing was judged stays a run error. Two datasets ship, and neither was harvested from hub
 failures (no failure data exists; the header of each file says so):
 `general-assistant-v1`, 20 cases written from the failure classes the
 `expected-answer` check scores and from what the platform's sample agents can
@@ -1369,16 +1376,17 @@ series.
 | `oap_agent_harness_threshold` | | the agent's declared threshold |
 | `oap_agent_harness_threshold_met` | | 1 when `pass_ratio >= threshold` (the declared threshold). Informational only |
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
-| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `trigger` is `first-revision`, `new-revision` or `rollback`, `status` `completed` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
+| `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `trigger` is `first-revision`, `new-revision` or `rollback`, `status` `completed`, `insufficient` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
-| `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `error`, `superseded` |
+| `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `insufficient`, `error`, `superseded` |
 
 The two rules of Contract 2 bind these too:
 
 - **Absent, not zero.** An agent with no harness, or no finished run yet, has no
   series. An errored run publishes `info{status="error"}`, the threshold and the
   timestamp, and **no** counts or pass ratio, so an outage never reads as a 0%
-  revision.
+  revision. An `insufficient` run publishes the counts but no pass ratio or
+  `threshold_met`, so a judge outage never reads as 100%.
 - **Not understood is an error.** A result the reconciler cannot parse is
   published as an errored run (`info{status="error"}`, threshold, timestamp) with
   no counts or pass ratio. It does not fail the pass.

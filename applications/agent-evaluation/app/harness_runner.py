@@ -80,6 +80,7 @@ def _base(settings: RunnerSettings, judge_key_present: bool, started_at: float) 
         "judge_model": settings.judge_model,
         "judge_key_present": judge_key_present,
         "started_at": started_at,
+        "min_judged_ratio": settings.min_judged_ratio,
     }
 
 

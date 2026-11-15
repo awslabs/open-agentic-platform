@@ -329,17 +329,19 @@ characters), `latencyMs`, `tags`.
 | Metric | Meaning |
 |---|---|
 | `oap_agent_harness_cases` / `_passed` / `_failed` / `_case_errors` | counts from the latest completed run |
-| `oap_agent_harness_pass_ratio` | `passed / (passed + failed)`; case errors are excluded |
+| `oap_agent_harness_pass_ratio` | `passed / (passed + failed)`; case errors are excluded. Absent on an `insufficient` run |
 | `oap_agent_harness_threshold` | your declared threshold |
 | `oap_agent_harness_threshold_met` | 1 when `pass_ratio >= threshold`, informational |
 | `oap_agent_harness_last_run_timestamp_seconds` | when the latest run finished |
 | `oap_agent_harness_info` | always 1, extra labels `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` (a dataset or prompt edited without a rename shows as a new digest) |
 | `oap_agent_harness_judge_key_present` | label `cluster` only; 1 when the judge key is available |
-| `oap_agent_harness_runs_total` | labels `cluster`, `result` (`completed`, `error`, `superseded`) |
+| `oap_agent_harness_runs_total` | labels `cluster`, `result` (`completed`, `insufficient`, `error`, `superseded`) |
 
 Series are **absent, not zero**: an agent with no finished run has none, and an
 errored run publishes only `info{status="error"}`, `threshold` and
-`last_run_timestamp_seconds`, never counts or a pass ratio.
+`last_run_timestamp_seconds`, never counts or a pass ratio. An `insufficient` run (judged cases below
+`harness.minJudgedRatio` of all cases) publishes the counts and
+`info{status="insufficient"}` but no `pass_ratio` or `threshold_met`.
 
 **Grafana.** Dashboard `agent-evaluation` (folder "Agent Platform"), row
 "Harness (pre-promotion dataset, report mode)": panels "Harness pass ratio",
@@ -421,6 +423,7 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `readyTimeoutSeconds` | 600 | wait for the preview agent card |
 | `runTimeoutSeconds` | 1800 | Job `activeDeadlineSeconds`. The runner stops 60 s before it, clamps every call to the time left and writes a partial result: a completed run over the judged cases, cases not run are errors, and `error` (and the `HarnessRunCompleted` Event) says "run deadline reached: K of N cases not run" |
 | `maxCases` | 50 | a larger dataset is a run error |
+| `minJudgedRatio` | 0.8 | judged cases (passed + failed) as a share of all cases needed to publish a ratio; below it the run is `insufficient` |
 | `judge.alias` | `""` (= `judge.defaultAlias`) | judge model alias from `judge.models` |
 | `judge.virtualKey.*` | see 4.4 | key minting, budget, rate limit |
 | `checks.expected-answer.casePassScore` | 0.7 | judge score a case needs |

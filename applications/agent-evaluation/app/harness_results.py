@@ -8,8 +8,13 @@ ERROR, never a run with zero passes.
 Case statuses: `passed` and `failed` are judged outcomes of the revision; an
 agent reply that is not a usable answer is `failed` too (the runner decides).
 `error` is a case nothing could be learned from (judge error after retries,
-transport or 4xx on the preview path, run deadline): it is counted in `errors`
+connect failure on the preview path, run deadline): it is counted in `errors`
 and kept out of the pass ratio, so a flaky judge does not move it.
+
+Errors outside the denominator would let an outage read as 100% (1 passed and
+19 judge errors), so the ratio is published only when judged cases (passed +
+failed) reach `min_judged_ratio` of all cases. Below it the run is
+`insufficient`: the counts stay, `pass_ratio` and `threshold_met` are None.
 
 JSON keys are camelCase (`passRatio`, `expectToolsIgnored`); the dataclass
 fields are their snake_case equivalents. Timestamps are Unix seconds.
@@ -26,7 +31,8 @@ MAX_REASON_CHARS = 300
 
 CASE_STATUSES = ("passed", "failed", "error")
 OPTIONAL_KEYS = ("dataset_digest", "checks_digest")
-RUN_STATUSES = ("completed", "error")
+RUN_STATUSES = ("completed", "insufficient", "error")
+DEFAULT_MIN_JUDGED_RATIO = 0.8
 
 
 class ResultSchemaError(Exception):
@@ -99,6 +105,7 @@ def summarize(
     expect_tools_ignored: bool = False,
     dataset_digest: str = "",
     checks_digest: str = "",
+    min_judged_ratio: float = DEFAULT_MIN_JUDGED_RATIO,
 ) -> RunResult:
     case_results = tuple(case_results)
     cases = len(case_results)
@@ -112,6 +119,15 @@ def summarize(
         status = "error"
         error = f"every case errored ({errors} of {cases}); first: {case_results[0].reason}"
     judged = passed + failed
+    if status == "completed" and cases > 0 and judged / cases < min_judged_ratio - 1e-9:
+        # Too few cases were judged for a ratio to mean anything (judge outage,
+        # run deadline). Counts stay published; the ratio does not.
+        status = "insufficient"
+        note = (
+            f"insufficient: {judged} of {cases} cases judged, "
+            f"{min_judged_ratio:.0%} needed for a pass ratio"
+        )
+        error = f"{error}; {note}" if error else note
     # Errors are outside the denominator: they say nothing about the revision.
     pass_ratio = passed / judged if status == "completed" and judged > 0 else None
     threshold_met = None if pass_ratio is None else pass_ratio >= threshold

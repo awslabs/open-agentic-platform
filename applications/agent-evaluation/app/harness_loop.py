@@ -750,6 +750,7 @@ class HarnessLoop:
             # Same value as activeDeadlineSeconds, so the runner can stop first.
             "HARNESS_RUN_TIMEOUT_SECONDS": str(h.run_timeout),
             "HARNESS_MAX_CASES": str(h.max_cases),
+            "HARNESS_MIN_JUDGED_RATIO": str(h.min_judged_ratio),
             "HARNESS_CHECKS_PATH": f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}",
             "HARNESS_DATASETS_DIR": JOB_DATASETS_DIR,
             "CREDENTIALS_DIR": JOB_CREDENTIALS_DIR,
@@ -1014,11 +1015,11 @@ class HarnessLoop:
         if name in self._reported:
             return
         self._reported.add(name)
-        result = "completed" if run.status == "completed" else "error"
+        result = run.status if run.status in ("completed", "insufficient") else "error"
         self._metrics.harness_runs.labels(self._s.cluster, result).inc()
         if decl is None:
             return
-        if run.status == "completed":
+        if run.status in ("completed", "insufficient"):
             self._recorder.normal(
                 decl.namespace,
                 decl.configmap,
@@ -1068,10 +1069,10 @@ class HarnessLoop:
             if item is None:
                 continue  # never run on this dataset: absent, not 0
             run = item.run
-            completed = run.status == "completed"
+            completed = run.status in ("completed", "insufficient")
             threshold = current.threshold if current else run.threshold
             threshold_met = None
-            if completed and run.pass_ratio is not None:
+            if run.status == "completed" and run.pass_ratio is not None:
                 threshold_met = run.pass_ratio >= threshold
             rows.append(
                 HarnessRow(
@@ -1090,7 +1091,7 @@ class HarnessLoop:
                     passed=run.passed if completed else None,
                     failed=run.failed if completed else None,
                     errors=run.errors if completed else None,
-                    pass_ratio=run.pass_ratio if completed else None,
+                    pass_ratio=run.pass_ratio if run.status == "completed" else None,
                     threshold_met=threshold_met,
                     dataset_digest=run.dataset_digest,
                     checks_digest=run.checks_digest,

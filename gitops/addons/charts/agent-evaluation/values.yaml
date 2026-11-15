@@ -280,6 +280,12 @@ harness:
   # A dataset with more cases than this is a run error. Cases are never
   # truncated, so a partial run cannot read as a result.
   maxCases: 50
+  # Judged cases (passed + failed) a run needs, as a share of all its cases,
+  # before it publishes a pass ratio. Below it the run is `insufficient`: the
+  # counts are published, the ratio and threshold_met are not. Case errors sit
+  # outside the ratio, so without this floor 1 passed case among 19 judge errors
+  # would read as 100%. Must be in (0, 1].
+  minJudgedRatio: 0.8
   judge:
     # A key in judge.models. Empty means judge.defaultAlias.
     alias: ""

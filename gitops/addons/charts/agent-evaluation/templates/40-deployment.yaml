@@ -137,6 +137,8 @@ spec:
               value: {{ $h.runTimeoutSeconds | quote }}
             - name: HARNESS_MAX_CASES
               value: {{ $h.maxCases | quote }}
+            - name: HARNESS_MIN_JUDGED_RATIO
+              value: {{ $h.minJudgedRatio | quote }}
             - name: HARNESS_JUDGE_ALIAS
               value: {{ $h.judge.alias | default "" | quote }}
             - name: HARNESS_JUDGE_KEY_MINT

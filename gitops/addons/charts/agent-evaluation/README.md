@@ -146,6 +146,7 @@ on clusters with the harness off.
 | `harness.readyTimeoutSeconds` | `600` | Wait for the preview's agent card |
 | `harness.runTimeoutSeconds` | `1800` | Whole run; the runner stops 60 s before it with a partial result |
 | `harness.maxCases` | `50` | Larger datasets are a run error |
+| `harness.minJudgedRatio` | `0.8` | Share of a run's cases that must be judged (passed or failed) before a pass ratio is published; below it the run is `insufficient` (counts only, no ratio or threshold_met) |
 | `harness.judge.alias` | `""` | Judge alias; empty is `judge.defaultAlias` |
 | `harness.judge.virtualKey.*` | see `values.yaml` | The harness judge key: `mint`, `required`, `secretRef`, `bifrostAdminUrl`, `allowedModels`, `budget`, `rateLimit` |
 | `harness.checks` | `expected-answer` (0.7) | Check prompt file and per-case pass score |

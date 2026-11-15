@@ -150,6 +150,7 @@ Read only when `HARNESS_ENABLED=true`; the chart sets every one of these from
 | `HARNESS_READY_TIMEOUT_SECONDS` | `600` | Wait for the preview's A2A agent card |
 | `HARNESS_RUN_TIMEOUT_SECONDS` | `1800` | Job `activeDeadlineSeconds` |
 | `HARNESS_MAX_CASES` | `50` | More cases is a run error, never truncated |
+| `HARNESS_MIN_JUDGED_RATIO` | `0.8` | Share of cases that must be judged before a ratio is published; below it the run is `insufficient`. In (0, 1] |
 | `HARNESS_JUDGE_ALIAS` | catalog default | Judge alias from the catalog |
 | `HARNESS_JUDGE_KEY_MINT` | `true` | Mint the harness judge key in this cluster's Bifrost |
 | `HARNESS_JUDGE_KEY_REQUIRED` | `true` | Fail closed: no run without the key |

@@ -60,6 +60,13 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
 
 
+def _ratio(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    if not 0 < value <= 1:
+        raise ConfigError(f"{name} must be in (0, 1], got {value}")
+    return value
+
+
 def _positive(name: str, value: int) -> int:
     if value < 1:
         raise ConfigError(f"{name} must be >= 1, got {value}")
@@ -94,6 +101,9 @@ class HarnessSettings:
     ready_timeout: int = 600
     run_timeout: int = 1800
     max_cases: int = 50
+    # Judged cases (passed + failed) needed, as a share of all cases, before a
+    # run publishes a pass ratio; below it the run is `insufficient`.
+    min_judged_ratio: float = 0.8
     # '' means the catalog's judge default alias.
     judge_alias: str = ""
     judge_key_mint: bool = True
@@ -173,6 +183,7 @@ def load_harness_settings() -> HarnessSettings:
             "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
         ),
         max_cases=_positive("HARNESS_MAX_CASES", _env_int("HARNESS_MAX_CASES", 50)),
+        min_judged_ratio=_ratio("HARNESS_MIN_JUDGED_RATIO", 0.8),
         judge_alias=_env("HARNESS_JUDGE_ALIAS"),
         judge_key_mint=_env_bool("HARNESS_JUDGE_KEY_MINT", True),
         judge_key_required=_env_bool("HARNESS_JUDGE_KEY_REQUIRED", True),
@@ -224,6 +235,8 @@ class RunnerSettings:
     credentials_dir: str
     # 1 for a revision's first run; n >= 2 when it became current again.
     run_number: int = 1
+    # See HarnessSettings.min_judged_ratio.
+    min_judged_ratio: float = 0.8
     # The Job's activeDeadlineSeconds: the runner stops before it and writes a
     # partial result instead of being killed with none.
     run_timeout: int = 1800
@@ -280,6 +293,7 @@ def load_runner_settings() -> RunnerSettings:
             "HARNESS_READY_TIMEOUT_SECONDS", _env_int("HARNESS_READY_TIMEOUT_SECONDS", 600)
         ),
         max_cases=_positive("HARNESS_MAX_CASES", _env_int("HARNESS_MAX_CASES", 50)),
+        min_judged_ratio=_ratio("HARNESS_MIN_JUDGED_RATIO", 0.8),
         checks_path=_env("HARNESS_CHECKS_PATH", f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}"),
         datasets_dir=_env("HARNESS_DATASETS_DIR", JOB_DATASETS_DIR),
         credentials_dir=credentials_dir,

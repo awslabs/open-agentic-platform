@@ -535,6 +535,7 @@ def test_finished_job_with_result_publishes_metrics(settings, harness_settings, 
     write_result(
         f.core, name, d, "rev1", ["passed", "passed", "failed", "error"],
         dataset_digest="0123456789ab", checks_digest="ba9876543210",
+        min_judged_ratio=0.5,
     )
     f.batch.finish(name)
 
@@ -655,6 +656,43 @@ def test_run_where_every_case_errored_publishes_no_counts(settings, harness_sett
     assert metrics.registry.get_sample_value(
         "oap_agent_harness_runs_total", {"cluster": "dev", "result": "error"}
     ) == 1
+
+
+def test_insufficient_run_publishes_counts_but_no_ratio(settings, harness_settings, catalog, metrics):
+    # Review round 2 blocking 1: 1 passed + 3 errors must not read as 100%.
+    d = decl(threshold=0.5)
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    name = f.batch.created[0]["metadata"]["name"]
+    write_result(f.core, name, d, "rev1", ["passed", "error", "error", "error"])
+    f.batch.finish(name)
+    loop.run_once()
+
+    assert sample(metrics, "oap_agent_harness_cases") == 4
+    assert sample(metrics, "oap_agent_harness_passed") == 1
+    assert sample(metrics, "oap_agent_harness_case_errors") == 3
+    assert sample(metrics, "oap_agent_harness_pass_ratio") is None
+    assert sample(metrics, "oap_agent_harness_threshold_met") is None
+    info = [s for s in metrics.registry.collect() if s.name == "oap_agent_harness_info"][0].samples
+    assert [s.labels["status"] for s in info] == ["insufficient"]
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_runs_total", {"cluster": "dev", "result": "insufficient"}
+    ) == 1
+    completed = [n[3] for n in f.events.normals if n[2] == REASON_HARNESS_RUN_COMPLETED]
+    assert "insufficient: 1 of 4 cases judged" in completed[0]
+
+
+def test_job_env_carries_the_judged_case_floor(settings, harness_settings, catalog, metrics):
+    d = decl()
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    loop.run_once()
+    env = {
+        e["name"]: e.get("value")
+        for e in f.batch.created[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["HARNESS_MIN_JUDGED_RATIO"] == str(harness_settings.min_judged_ratio)
 
 
 def test_threshold_change_publishes_the_declared_threshold(settings, harness_settings, catalog, metrics):
