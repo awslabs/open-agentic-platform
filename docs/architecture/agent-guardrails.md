@@ -248,7 +248,7 @@ to get a hook into its gateway (§D1).
 Two things follow. Bedrock is the only one of the three that both **enforces**
 and takes **natural-language topic definitions**, which is why it is the Phase 1
 backend for a Bedrock-based platform. And all three are detectors — the gateway
-is the policy enforcement point in every case, so the proxy in §D1 is doing the
+is the policy enforcement point in every case, so the AI route in §D1 is doing the
 job these services assume someone is doing.
 
 **In-process libraries are the common mistake.** NeMo Guardrails, Guardrails AI,
@@ -594,7 +594,7 @@ real and the gateway does not paper over it:
 | Bedrock `InvokeGuardrailChecks` | **Not Phase 1, but the answer to #146's score question.** It is where numeric `severityScore` actually lives, and it separates prompt attack into `JAILBREAK` / `PROMPT_INJECTION` / `PROMPT_LEAKAGE`. Against it: detect-only ("The API doesn't block, pass, or redact content"), no denied topics, and **7 Regions**. Adopt it behind the same boundary when a policy needs a number |
 | Azure AI Content Safety | A real option for a customer already on Azure. Standalone-only by design, which fits a gateway. Against it for OAP's default: cross-cloud egress and credentials, no PII in the standalone API (that is a second service, Azure AI Language, at ~2.7× the unit price), and a documented retirement of groundedness and custom categories on 2027-04-30 |
 | Google Model Armor | Also genuinely model-agnostic, and the only candidate with org-wide policy floors. Against it for OAP: cross-cloud hop, a **1,200 QPM per-project** quota, and streaming that is gRPC-only and cannot do PII de-identification |
-| An OSS classifier behind the proxy | Keep as an option for air-gapped installs. Not Phase 1: it moves model-hosting and tuning into the platform's scope |
+| An OSS classifier behind the `webhook` guard | Keep as an option for air-gapped installs. Not Phase 1: it moves model-hosting and tuning into the platform's scope |
 
 **#146 needs one correction here, and it changes a conclusion.** The issue says
 Dogwood's `ContentFilterFinding` / `PromptAttackFinding` / `SensitiveInfoFinding`
@@ -768,7 +768,7 @@ Bedrock's documented `ApplyGuardrail` quota is **100 requests/second** in the
 larger Regions and **25/second elsewhere**, and throttling returns a
 `ThrottlingException` that AWS says to handle with "retries with exponential
 backoff and random jitter". A guardrail that treats a 429 as `onError` blocks
-real traffic during a burst, so the proxy retries inside a bounded budget and
+real traffic during a burst, so the gateway's own retry budget applies and
 only then applies `onError`. The budget is a chart value and the remaining
 latency headroom is what bounds it (§5).
 
@@ -1075,7 +1075,7 @@ restriction, sandboxing and spend caps — three of which OAP already has.
 **The tool-call gap has a known mechanism, and it is not this hop.** The two
 bullets above are the same hole seen twice, and the reason is structural rather
 than a Bedrock limitation: a model call carries the prompt and the completion, so
-a proxy on that hop can only ever see those. agentgateway's MCP guardrail
+a guard on that hop can only ever see those. agentgateway's MCP guardrail
 processor sits at the JSON-RPC layer and receives "the JSON-RPC method name, the
 target backend, the request or response parameters, and selected request
 headers" — so it *does* see the tool name and its arguments, and in the response
@@ -1162,7 +1162,7 @@ the configuration that produced it is reproducible but not **explainable**. Repl
 a blocked prompt a week later, after the profile has been tuned, and a different
 answer is correct behaviour and useless evidence.
 
-Guardrails have two independently mutable inputs, and the proxy records both on
+Guardrails have two independently mutable inputs, and the record carries both on
 every non-`allowed` decision:
 
 | Recorded | Why it moves on its own |
@@ -1179,7 +1179,7 @@ configuration a block came from. Two consequences worth stating:
   `oap_agent_guardrail_requests_total` it would multiply every series on each
   release.
 - **A rollout makes replicas legitimately disagree.** During a chart rollout or a
-  guardrail-version publish, two proxy replicas hold different configuration, so
+  guardrail-version publish, two gateway replicas hold different configuration, so
   two identical prompts can get different verdicts and **both be right**. A test
   asserting the replicas agree would hide that; the useful assertion is that the
   record names the version explaining the difference. The same reasoning #104
@@ -1202,14 +1202,14 @@ the regression #143 fixed.
 | | This design (#144) | #152 |
 |---|---|---|
 | Hop | agent → **model** | agent → **tool** (MCP) |
-| Mechanism | an OAP-owned proxy in front of Bifrost (§D1) | `backend.mcp.guardrails.processors[].remote`, an agentgateway hook that already exists |
+| Mechanism | `backend.ai.promptGuard` on an AI route in front of Bifrost (§D1) | `backend.mcp.guardrails.processors[].remote` — the same gateway, the other backend type |
 | Sees | the prompt and the completion | the JSON-RPC method, **the params — tool name and arguments** — and the result |
 | Question answered | "is this text acceptable?" | "is this caller allowed to call this tool, with these arguments, right now?" |
 | Decides with | detector findings + thresholds (`decide()`, §D4) | a policy engine over principal / action / resource / entities |
 | Fail mode | `onError: block` by default (§D4) | `failureMode: FailClosed`, already the documented default |
 
 Neither hop can do the other's job, and that is structural rather than a
-limitation to engineer away. A model call carries no tool name, so no proxy on
+limitation to engineer away. A model call carries no tool name, so no guard on
 that path can authorize a tool. An MCP call carries no prompt, so no processor on
 that path can judge what the user asked the model. **A platform that wants both
 needs both**, which is why these are two designs rather than one.
@@ -1247,7 +1247,7 @@ Three things, already folded in above rather than left as future work:
   than N calls" is not an authorization question; agentgateway answers it
   natively at `spec.traffic.rateLimit`, and Bifrost answers the model-side
   equivalent through `governance` once per-workload virtual keys exist (§2.3).
-  Neither this proxy nor a policy engine should be made to count.
+  Neither this guard nor a policy engine should be made to count.
 
 #### Sequencing
 
@@ -1451,7 +1451,7 @@ the three things that make it consistent with the model hop rather than a second
 unrelated system.**
 
 What this design does *not* do: add a `tools:` key, add a fourth writer on
-`backend.mcp.authorization`, or put a policy engine in the content proxy. §2.2's
+`backend.mcp.authorization`, or put a policy engine on the content route. §2.2's
 silent-drop bug and §3.9's one-verdict-seam-per-hop both still apply.
 
 What it does own:
@@ -1578,7 +1578,7 @@ flowchart TB
         R["Reachability<br/>jwt-policy, caller-identity"]:::have
     end
     subgraph MODEL["Agent → model"]
-        C["Content + topic<br/>guardrail proxy — THIS DESIGN"]:::new
+        C["Content + topic<br/>promptGuard on AI route — THIS DESIGN"]:::new
         S["Spend + rate<br/>Bifrost governance — needs VK"]:::gapn
     end
     subgraph TOOL["Agent → tool"]
@@ -1616,7 +1616,7 @@ first.
 | Application developer | `guardrails.enabled`, which profile, and tightening within it |
 | Platform engineer | the profile catalog, the floor each profile sets, the backend, the Bedrock guardrail objects |
 | KubeVela | rendering the declaration ConfigMap |
-| Guardrail proxy | resolving profiles, inspecting, deciding, forwarding, publishing metrics |
+| agentgateway | matching the route, running the guard, deciding, forwarding, emitting `guardrail_checks` |
 | grafana-operator | importing the dashboard |
 
 ---
@@ -1658,15 +1658,15 @@ response is an **error, not a clean result**.
 
 | Concern | Control |
 |---|---|
-| The proxy sees every prompt | It already runs where prompts flow. It holds no agent credential and no model key, logs no content, and the `raw` assessment goes only to the trace store that already holds prompts |
-| Guardrail API credential | One `bedrock:ApplyGuardrail` permission on the proxy's own ServiceAccount via Pod Identity. Verbatim: "you only need the `bedrock:ApplyGuardrail` permission" |
-| The trace carries unmasked PII | Bedrock's trace "returns the unmasked values". The proxy requests the trace (it must, to tell masking from blocking) and never writes it to a log or a metric label |
+| The gateway sees every prompt | It already terminates agent traffic, so this adds no component with prompt visibility. It must not log the guard's response body (§D3), and the assessment goes only to the trace store that already holds prompts |
+| Guardrail API credential | One `bedrock:ApplyGuardrail` permission on the **`agentgateway` ServiceAccount** via Pod Identity, reached through `policies.backendAuth.aws`. Verbatim: "you only need the `bedrock:ApplyGuardrail` permission". Scope it to the catalog's guardrail ARNs (§D3, open question 14) |
+| The response carries unmasked PII | Bedrock's trace "returns the unmasked values", and the guard must read the assessments to tell masking from blocking. So the gateway's access-log and metric configuration must exclude the guard response body — a configuration assertion now, not OAP code (§D3) |
 | A developer weakening the control | `onViolation` and `inspect` may only tighten (§D2); the profile floor is a reviewed chart edit; `oap_agent_guardrail_info` shows the effective profile on every dashboard |
 | A guardrail that silently stops working | `onError` defaults to `block`, `error_blocked` is a distinct outcome, and staleness has its own alert |
 | Bypass | Honest answer in §D7: not closed in Phase 1 |
 | Cost | Content filters and denied topics **$0.15 / 1,000 text units**; PII **$0.10**; word filters and regex **free**. A text unit is up to 1,000 characters. Input-only inspection on a 2,000-character prompt is 2 units ≈ **$0.0003** per request — but it is **per request**, not sampled, which is a different shape from evaluation's `coverage` dial |
 | Throughput | `ApplyGuardrail` is **100 requests/second** in the larger Regions, **25** elsewhere, adjustable. At input-only that is one call per model call, so the quota is the platform's request ceiling and belongs in the validation plan |
-| Latency | AWS publishes **no** figure. The response carries `guardrailProcessingLatency` per call, so the proxy records it as a histogram and Phase 1's exit criterion is a measured p50/p99, not an estimate |
+| Latency | AWS publishes **no** figure. Phase 1's exit criterion is a measured p50/p99 of the added request latency on real hub traffic, not an estimate. The gateway, not OAP, owns the timing instrumentation |
 
 ---
 
@@ -1726,13 +1726,13 @@ anything**
 - [ ] With the guardrail API unreachable, a `block`-profile agent is refused and
       `outcome="error_blocked"` increments — *not* `blocked`
 - [ ] A throttled call is retried within the budget and only then fails closed
-- [ ] Killing the proxy does not silently un-guard an agent: measure what the
+- [ ] Killing the **gateway** does not silently un-guard an agent: measure what the
       agent actually gets, and make it a refusal rather than a direct path
 
 **Operational**
 
 - [ ] Measured added p50/p99 from `guardrailProcessingLatency` and from the
-      proxy's own histogram, on real hub traffic
+      gateway's own latency telemetry, on real hub traffic
 - [ ] Measured cost per 1,000 requests against the $0.15/$0.10 per-text-unit rates
 - [ ] Sustained request rate against the 100/sec `ApplyGuardrail` quota, with the
       throttle path exercised
