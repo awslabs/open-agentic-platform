@@ -1525,6 +1525,61 @@ Read the **error**, not the failure:
 
 ---
 
+## Part 5 — the pre-existing live matrices, on hub (requested in review)
+
+Review asked for `tests/live/test_identity.py` and `test_delegation.py` to be run,
+to show that agents **without** `sandbox: true` behave exactly as before. Run on
+the hub (EKS 1.37 Auto Mode), with the fixture deployed and removed afterwards:
+
+```bash
+kubectl apply -f examples/mcp-servers/mcp-time-server.yaml
+kubectl apply -f examples/mcp-servers/my-assistant.yaml
+cd tests/live
+KEYCLOAK_HOST=<your idp host> SPOKE_KUBECONFIG=$KUBECONFIG uv run pytest test_identity.py -q
+```
+
+### test_identity.py — 12 passed, 1 skipped, 1 failed
+
+The 12 passes are the point: an ordinary agent's identity toward the gateway and
+toward an MCP server is unchanged by anything in this branch.
+
+The one failure is **not caused by this PR**, and is worth recording so the next
+person does not chase it:
+
+- `G1` asserts an `AgentGatewayPolicy` named `mcp-time-access`.
+- That object comes from the **agent-gateway chart's `mcpAccess`** value, which
+  is `{}` by default and unset on this hub — so the policy does not exist.
+  `allowedAgents` on the MCP server produces a *different* object,
+  `mcp-time-allowed-agents`, which is present and healthy.
+- The test arrived with #85. This branch modifies neither it nor
+  `mcp-server.cue`: `git diff origin/main...HEAD -- tests/live/
+  platform/oam/definitions/components/mcp-server.cue` is empty.
+
+To make `G1` pass, set `mcpAccess` for `mcp-time` on the cluster's agent-gateway
+values. Left alone here: it is a gateway authorization change on a live hub and
+has nothing to do with sandboxing.
+
+### test_delegation.py — needs a cluster configured as the dev spoke
+
+**Not a meaningful result on the hub, and not run as evidence.** 12 of 23 rows
+fail there because the suite's own prerequisites are absent, which its docstring
+states:
+
+- the **dev overlay's `delegation` and `agentAccess` entries**
+  (`gitops/overlays/environments/dev/agent-gateway/values.yaml`) — the hub uses
+  the control-plane overlay, so the per-agent authorization policies those
+  entries generate do not exist. The hub has only the three base gateway
+  policies.
+- the AgentCore memory example's agent **`my-agent`**, which is not deployed on
+  the hub.
+
+So this one belongs on a spoke. This branch touches neither the gateway chart
+nor its dev values (`git diff origin/main...HEAD --
+gitops/addons/charts/agent-gateway/ gitops/overlays/environments/dev/agent-gateway/`
+is empty), so there is no reason to expect it to behave differently once run
+where its prerequisites hold — but that is an expectation, not a result, and it
+is recorded as one. **Outstanding: run it on a spoke.**
+
 ## Rough edges I hit, neither of them blocking
 
 1. **`type: sandbox` requires `description`, and omitting it fails badly.** You
