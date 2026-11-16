@@ -5,7 +5,7 @@
 | **Status** | Proposed — design only, nothing implemented |
 | **Author** | @elamaran11 |
 | **Reviewers** | @shapirov103 (CHANGES_REQUESTED on rev 3, D1; addressed in rev 4) |
-| **Target** | `agent` component, new `agent-guardrails` addon, `bifrost` chart |
+| **Target** | `agent` component, `agent-gateway` chart, `crossplane` providers — **no new addon and no new image** |
 | **Date** | 2026-11-11 |
 | **Revision** | 4 — D1 reversed after @shapirov103's review |
 | **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
