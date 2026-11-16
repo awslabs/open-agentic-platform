@@ -123,6 +123,15 @@ oam-agent-components:
       # are REJECTED on a class that is not in this list, because Kata ignores
       # them silently. Present-and-empty disables them all on this cluster.
       nitroSandboxRuntimeClasses: '{{ $v := index .metadata.annotations "nitro_sandbox_runtime_classes" }}{{ if eq $v "none" }}{{ else if $v }}{{ $v }}{{ else }}isolated-sandbox,confidential-sandbox{{ end }}'
+      # Whether this cluster has the agent-sandbox operator, and therefore the
+      # Sandbox* CRDs that `type: sandbox` renders into. Derived from the SAME
+      # label that installs them, so a cluster cannot have the definition
+      # registered and the CRDs missing without the component saying so.
+      #
+      # A label, not an annotation: enable_agent_sandbox is what the addon's own
+      # selector matches on, and reading the selector's input is what keeps this
+      # honest.
+      sandboxOperator: '{{ if eq (index .metadata.labels "enable_agent_sandbox") "true" }}true{{ else }}false{{ end }}'
       # Namespaces admitted to agents besides the gateway's (agent component
       # NetworkPolicy). The aiops-agent addon's chat-ui and incident-bridge call the
       # agent's Service directly from its own namespace, so that namespace is admitted

@@ -205,15 +205,19 @@ die_defs() { echo "cannot build definition set '$1' -- see the render error abov
 
 echo "== definitions =="
 # nitro: the shipped defaults. session: per-session isolation switched on.
-D_NITRO="$(defs_for nitro)" || die_defs nitro
-D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)" || die_defs kata
-D_NORUNTIME="$(defs_for noruntime --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)" || die_defs noruntime
+D_NITRO="$(defs_for nitro --set global.sandboxOperator=true)" || die_defs nitro
+D_KATA="$(defs_for kata --set global.sandboxOperator=true --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)" || die_defs kata
+D_NORUNTIME="$(defs_for noruntime --set global.sandboxOperator=true --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)" || die_defs noruntime
 # A MISCONFIGURED cluster: confidential_sandbox_runtime_class pointed at a Kata
 # class. Not a hypothetical -- it is the obvious thing to try on a Kata cluster
 # that wants confidential mode, and it is the only way to reach the
 # confidential-needs-Nitro guards, since the ordinary Kata cluster leaves the
 # confidential class empty and trips the empty-class guard first.
-D_KATACONF="$(defs_for kataconf --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=kata-clh)" || die_defs kataconf
+D_KATACONF="$(defs_for kataconf --set global.sandboxOperator=true --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=kata-clh)" || die_defs kataconf
+# A SPOKE. oam-agent-components ships everywhere, so the `sandbox`
+# ComponentDefinition is registered; the Sandbox* CRDs come only from the
+# agent_sandbox addon, which is off on spokes.
+D_NOOPERATOR="$(defs_for nooperator --set global.sandboxOperator=false)" || die_defs nooperator
 printf 'rendered 4 definition sets (nitro default, kata-only, no-runtime, kata-as-confidential)\n\n'
 
 # ---------------------------------------------------------------- A. examples
@@ -748,6 +752,21 @@ spec:
 YAML
 )"
 row C23 "sandbox: conntrackLimit + dnsQueriesPerSecond on a Kata class" _throttlesNeedNitro "$(guard "$c_thr_sbx_kata" "$D_KATA" "$WORK/o-c23.yaml" _throttlesNeedNitro)"
+
+c_sbx_nooperator="$(app c24 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c24, namespace: default}
+spec:
+  components:
+    - name: c24-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim
+YAML
+)"
+row C24 "sandbox: on a cluster without the agent-sandbox operator (a spoke)" _sandboxOperatorRequired \
+  "$(guard "$c_sbx_nooperator" "$D_NOOPERATOR" "$WORK/o-c24.yaml" _sandboxOperatorRequired)"
 
 # ---- review 'smaller': unreplaced example placeholders --------------------
 # Both used to render, deploy, and fail minutes later -- the sandbox agent

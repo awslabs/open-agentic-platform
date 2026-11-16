@@ -104,6 +104,20 @@ global:
   # per-cluster via the nitro_sandbox_runtime_classes annotation on the cluster
   # secret. Emptying it disables every Nitro-only field on this cluster.
   nitroSandboxRuntimeClasses: "isolated-sandbox,confidential-sandbox"
+  # Whether the agent-sandbox OPERATOR is installed on this cluster, which is the
+  # only source of the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs.
+  # A string, because it is substituted into CUE as text.
+  #
+  # "false" by default, and that default is load-bearing. This chart ships to
+  # EVERY cluster, so the `sandbox` ComponentDefinition is registered on spokes
+  # too -- while the CRDs come only from the agent_sandbox addon, which is off on
+  # spokes. Without this value a `type: sandbox` Application on a spoke is
+  # ADMITTED and then fails on apply with "no matches for kind SandboxWarmPool",
+  # which reads like a platform bug rather than a missing addon.
+  #
+  # The registry derives it from the enable_agent_sandbox label -- the same label
+  # that installs the CRDs -- so the two cannot drift apart.
+  sandboxOperator: "false"
 
 # Decentralized observability Pod Identity
 # Creates an IAM Role + PodIdentityAssociation for agents using

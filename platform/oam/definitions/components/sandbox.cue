@@ -110,6 +110,29 @@ template: {
 
 	_isolationClassIsNitro: list.Contains(_nitroClasses, _isolationClass)
 
+	// PLATFORM-OWNED: does this cluster have the agent-sandbox operator, and so
+	// the CRDs this component renders into?
+	_sandboxOperator: "{{ .Values.global.sandboxOperator }}"
+
+	// FAIL CLOSED where the definition is registered but the CRDs are not.
+	//
+	// This chart ships to every cluster, so `type: sandbox` is a registered
+	// component type on spokes; the Sandbox* CRDs come only from the
+	// agent_sandbox addon, which is off on spokes. Without this guard the
+	// Application is ADMITTED -- the ComponentDefinition exists, the properties
+	// validate -- and then fails on apply with
+	//   no matches for kind "SandboxWarmPool" in version
+	//   "extensions.agents.x-k8s.io/v1beta1"
+	// which reads as a platform bug rather than a missing addon, and arrives
+	// after the developer has been told their Application was accepted.
+	//
+	// The value is derived from enable_agent_sandbox, the same label that
+	// installs the CRDs, so this cannot report "present" on a cluster that lacks
+	// them.
+	if _sandboxOperator != "true" {
+		_sandboxOperatorRequired: "set" & "type: sandbox needs the agent-sandbox operator, which is the only source of the SandboxTemplate / SandboxWarmPool / SandboxClaim CRDs, and this cluster does not have it (global.sandboxOperator is not \"true\", derived from the enable_agent_sandbox label). The `sandbox` ComponentDefinition ships to every cluster but the CRDs do not, so without this check the Application would be admitted and then fail on apply with \"no matches for kind SandboxWarmPool\". Enable the agent_sandbox addon on this cluster (sandbox.enabled in config.yaml for a hub), or deploy this component where it is already enabled."
+	}
+
 	// SHAPE CHECK on cedarPolicy. The value is base64 and opaque, so a wrong one
 	// cannot be detected -- but a value that is not base64 at all can be, and
 	// that is the one that actually happens: the placeholder from an example,
