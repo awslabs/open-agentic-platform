@@ -425,6 +425,66 @@ spec:
         		}
         	}
 
+        	// WHAT IS ALLOWED TO REACH A SANDBOX: its claimer, in its own namespace,
+        	// on the ports this component declared. Nothing else.
+        	//
+        	// Raised in review: since #85 an agent admits ingress only from the
+        	// gateway, and this component emitted no NetworkPolicy at all -- so a
+        	// `service: true` sandbox was reachable by any pod on the cluster. That is
+        	// the wrong default for a workload whose whole purpose is running code
+        	// nobody reviewed: a second tenant's pod could drive another tenant's
+        	// claimed instance, and the per-session filesystem isolation this
+        	// component sells would be bypassed over the network rather than broken.
+        	//
+        	// SAME NAMESPACE, not the gateway's. An agent is addressed from outside and
+        	// needs the gateway; a sandbox is not addressed from outside at all. Its
+        	// legitimate caller is whatever holds its claim, and claims are namespaced
+        	// -- the claim RBAC the agent component renders is a Role, so a claimer
+        	// outside this namespace cannot create the claim that binds the instance in
+        	// the first place. A cross-namespace claimer therefore needs its own
+        	// policy, deliberately, because it is already outside the model.
+        	//
+        	// kubernetes.io/metadata.name is set by the API server from the namespace
+        	// name, so another namespace cannot forge it.
+        	//
+        	// EMITTED EVEN WITH service: false, where it is belt-and-braces rather than
+        	// load-bearing: the pod still has an IP and is still reachable by it. Under
+        	// networkIsolated it is inert, since the sandbox has no network device at
+        	// all -- and harmless.
+        	//
+        	// DECLARED PORTS ONLY. With no ports declared this is a default-deny
+        	// ingress policy, which is the correct answer for a sandbox driven over
+        	// exec/stdin: there is nothing to reach.
+        	//
+        	// INGRESS ONLY. This says nothing about EGRESS, and a sandbox running
+        	// model-written code wants that locked down too. This component does not
+        	// do it: the agent-sandbox chart's egress policy selects
+        	// agent-sandbox.io/role: coder, and these pods are labelled
+        	// agent-sandbox.io/role: session on purpose so the Dark Factory's
+        	// allowlist is not silently applied to an unrelated workload. Use
+        	// networkIsolated: true for no egress at all, or a namespace-level policy.
+        	// Claiming an egress guarantee here that the manifest does not carry would
+        	// be worse than this note.
+        	claimerOnlyIngress: {
+        		apiVersion: "networking.k8s.io/v1"
+        		kind:       "NetworkPolicy"
+        		metadata: {
+        			name:      context.name + "-claimer-only"
+        			namespace: context.namespace
+        			labels: "app.kubernetes.io/name": context.name
+        		}
+        		spec: {
+        			podSelector: matchLabels: "app.kubernetes.io/name": context.name
+        			policyTypes: ["Ingress"]
+        			ingress: [{
+        				from: [{namespaceSelector: matchLabels: "kubernetes.io/metadata.name": context.namespace}]
+        				if len(parameter.ports) > 0 {
+        					ports: [for prt in parameter.ports {protocol: "TCP", port: prt.containerPort}]
+        				}
+        			}]
+        		}
+        	}
+
         	// The sandbox's identity anchor, named context.name like every other
         	// workload component's, so the gateway-identity and aws-service-identity
         	// traits attach with no extra wiring. It exists even when
