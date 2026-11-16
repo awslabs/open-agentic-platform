@@ -990,26 +990,38 @@ OAM API, the ConfigMap contract or the metrics.
 
 §2.4 established that an agent can leave the platform's model path today. A
 guardrail at that path inherits the gap, so closing it is part of this design
-rather than a footnote. Three changes, each independently useful, none of which
-Phase 1 blocks on:
+rather than a footnote.
+
+**D1's reversal promotes change 1 from Phase 2 to Phase 1.** Under the proxy
+design, agents already pointed at a platform endpoint and the question was
+whether they could *change* it. Now the endpoint itself moves: agents must reach
+the **gateway's** AI route instead of the Bifrost Service. So repointing
+`llmGatewayUrl` is not hardening — it is how the capability reaches any traffic
+at all, and an agent keeping today's value is simply unguarded.
 
 | # | Change | Effect | Owner |
 |---|---|---|---|
-| 1 | `llmGatewayUrl` becomes platform-set, not a developer parameter — it already defaults correctly, so this removes the override rather than adding a value | an agent can no longer *declare* a different endpoint | this design, Phase 2 |
-| 2 | A default-deny egress NetworkPolicy on agent namespaces, allowing the guardrail proxy, the gateway, the collector and DNS | an agent cannot *reach* a different endpoint | new work; **no egress addon exists today** (§2.3) |
-| 3 | Per-workload Bifrost virtual keys, then `is_vk_mandatory: true` | Bifrost stops serving unauthenticated in-cluster callers, so the proxy becomes the only holder of a usable key | already designed in `gitops/addons/charts/bifrost/DESIGN.md` |
+| 1 | `llmGatewayUrl` defaults to the **gateway's AI route** and stops being a developer override | the guard is on the path at all, and an agent can no longer *declare* its way off it | this design, **Phase 1** |
+| 2 | A default-deny egress NetworkPolicy on agent namespaces, allowing the gateway, the collector and DNS | an agent cannot *reach* Bifrost or a third party directly | new work; **no egress addon exists today** (§2.3) |
+| 3 | Per-workload Bifrost virtual keys, then `is_vk_mandatory: true` | Bifrost stops serving unauthenticated in-cluster callers, so the gateway becomes the only caller holding a usable key | already designed in `gitops/addons/charts/bifrost/DESIGN.md` |
 
-Only all three together make the hop unbypassable. One alone narrows it:
+Change 3 is also worth more than it was. Under the proxy design it protected
+Bifrost from agents that skipped one OAP component; now the gateway is a natural
+single holder of the virtual key, so (3) turns "agents should go through the
+gateway" into "only the gateway can get an answer". **(2) and (3) together are
+what make this a control rather than a convention**, and (3) no longer needs new
+credential plumbing invented for it.
+
+One alone narrows it:
 
 - With (1) only, a developer cannot declare a bypass but a compromised image can
-  still open a socket.
-- With (2) only, the policy is the control and the parameter is cosmetic — which
-  is why (2) is the highest-value single change of the three.
+  still open a socket to Bifrost.
+- With (2) only, the policy is the control and the parameter is cosmetic.
 - With (3) only, Bifrost is protected but a third-party endpoint is not.
 
-**Until at least (2) lands, this capability is a control for cooperating agents
-and a detection for everything else.** That sentence belongs in the README row,
-not only here.
+**Until at least (2) or (3) lands, this capability is a control for cooperating
+agents and a detection for everything else.** That sentence belongs in the
+README row, not only here.
 
 #### Admission is the cheap half
 
