@@ -154,7 +154,8 @@ enabledAddons:
   # defaulting off -- a dangling dependency is a worse first-run experience
   # than an addon a cluster opts into.
   # Flip to true in the same change that points image.tag at the published tag.
-  agent_evaluation: false
+  # TEST ONLY - never merge: on for the hub so the report-mode harness can be exercised.
+  agent_evaluation: true
   agent_core: true
   agent_gateway: true
   oam_components: true

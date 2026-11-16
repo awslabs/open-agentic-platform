@@ -19,13 +19,12 @@
 # answers NAME_UNKNOWN, which is the outstanding handoff ("Ask 2" on #104). At
 # that point the chart default is correct for every cluster and the hub needs no
 # override.
+# TEST ONLY - never merge. Private ECR image built from 5a2e0b8d
+# (multi-arch index digest
+# sha256:6f80582aeb858f3793af5394ceee1f647551ccc5b666a036db08673b6c5c2348;
+# the chart pins by tag only, so the tag is used).
 image:
-  # A private repository in the account that builds the pre-publication images.
-  # An AWS account id is not a secret, but this is still a registry only one
-  # account can pull from, which is exactly why it must not become the chart
-  # default -- see gitops/addons/charts/agent-evaluation/values.yaml.
-  repository: 940019131157.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
-  # Must match the chart's appVersion / pyproject.toml / build.sh VERSION. Only
-  # the REPOSITORY is hub-specific; the tag is pinned here too so that a reader
-  # of this file can see exactly what the hub runs without cross-referencing.
-  tag: "0.2.4"
+  repository: 257077212816.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
+  tag: "5a2e0b8d"
+harness:
+  enabled: true
