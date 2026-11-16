@@ -306,6 +306,36 @@ objects, and whichever syncs last owns resources the other believes it manages (
 That is ordinary Kubernetes name collision rather than anything new here, and the matrix detects it
 by intersecting emitted objects across renders.
 
+## 6.2 Registry template pitfalls
+
+Three ways to read a per-cluster annotation in `gitops/addons/registry/agentcore.yaml`
+that look right and are not. Recorded here because the comment in that file was
+growing a paragraph per discovery, and because **no offline test catches any of
+them** — the ApplicationSet controller is what evaluates these templates, so the
+failure only appears on a live cluster.
+
+**`default` treats an empty string as unset.** `{{ default "isolated-sandbox"
+(index .metadata.annotations "sandbox_runtime_class") }}` turns an annotation
+that is *present and empty* back into the Nitro class. That silently broke the
+documented escape hatch — "leave it empty to reject `sandbox: true`" — and left
+a Kata cluster that had set only `sandbox_runtime_class` still being handed
+`confidential-sandbox` for `sandboxMode: confidential`. Hence the `none`
+sentinel: with `map[string]string` there is no way to distinguish absent from
+present-but-empty, so the meaning has to be carried by a word.
+
+**`hasKey` does not work on annotations at all.** sprig's `hasKey`, `get` and
+`dig` all require `map[string]interface{}`; ArgoCD types annotations as
+`map[string]string`. `hasKey` fails with `wrong type for value`, and the
+ApplicationSet then generates **no parameters** — so every child Application
+silently keeps its previous values rather than erroring. Verified on a live
+cluster. This is the worst of the three, because the symptom is "my change had
+no effect" rather than any error.
+
+**`index` on an absent key is fine, and is what we use.** It returns `""`. The
+`_defaults.yaml` `missingkey=error` setting makes a *field access* on an absent
+key fail, which is why the read is `index .metadata.annotations "..."` and never
+`.metadata.annotations.foo`.
+
 ## 7. Kata is not impacted
 
 Verified as a property of the render, not an intention:
