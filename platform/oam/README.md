@@ -507,7 +507,10 @@ revision and serves as the baseline for later revisions.
 The component renders a `<agent>-harness` ConfigMap labelled
 `harness.oap.io/agent`; it is only a declaration for the reconciler, and
 disabling the harness removes it. See
-[example-agent-harness.yaml](examples/example-agent-harness.yaml) and
+[example-agent-harness.yaml](examples/example-agent-harness.yaml) (default:
+the revision promotes on health and the harness scores it afterwards),
+[example-agent-harness-manual-gate.yaml](examples/example-agent-harness-manual-gate.yaml)
+(`autoPromotionEnabled: false`: the preview holds until a person promotes it) and
 [docs/architecture/agent-evaluation.md](../../docs/architecture/agent-evaluation.md).
 
 ## Troubleshooting
