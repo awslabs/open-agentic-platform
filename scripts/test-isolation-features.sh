@@ -164,8 +164,8 @@ AGENT_MIN='        description: "m"
         systemMessage: "m"'
 
 echo "== definitions =="
-D_NITRO="$(defs_for nitro)" || die_defs nitro
-D_KATA="$(defs_for kata --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass= --set global.nitroSandboxRuntimeClasses=)" || die_defs kata
+D_NITRO="$(defs_for nitro --set global.sandboxOperator=true)" || die_defs nitro
+D_KATA="$(defs_for kata --set global.sandboxOperator=true --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass= --set global.nitroSandboxRuntimeClasses=)" || die_defs kata
 printf 'rendered 2 definition sets (nitro default, kata-only)\n\n'
 
 # A correctly shaped stub policy: the components shape-check cedarPolicy.
@@ -242,7 +242,24 @@ row F9 "an agent WITHOUT sandbox gets no runtime class at all" \
   "ABSENT" "$(q "$WORK/o-f9.yaml" "podspec('Rollout','f9-agent').get('runtimeClassName')")"
 
 # The Kata path is the one a live cluster regressed on, so it is asserted, not assumed.
-render "$f_iso" "$D_KATA" "$WORK/o-f10.yaml" || { echo "FAIL F: kata agent did not render"; FAILS=$((FAILS+1)); }
+# A PORTABLE isolation request: sandbox: true and nothing else. f1 carries the
+# Nitro-only throttles, which a Kata class cannot honour and the component now
+# rejects, so rendering it here asked the wrong question. What F10 is for is
+# "one Application, two clusters, the platform picks the class".
+f_portable="$(app f10 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: f10, namespace: default}
+spec:
+  components:
+    - name: f1-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+YAML
+)"
+render "$f_portable" "$D_KATA" "$WORK/o-f10.yaml" || { echo "FAIL F: kata agent did not render"; FAILS=$((FAILS+1)); }
 row F10 "the SAME Application on a Kata cluster selects kata-clh" \
   "kata-clh" "$(q "$WORK/o-f10.yaml" "podspec('Rollout','f1-agent')['runtimeClassName']")"
 
