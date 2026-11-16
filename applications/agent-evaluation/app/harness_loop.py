@@ -418,12 +418,13 @@ class HarnessLoop:
         can_create = key_ok or not self._h.judge_key_required
         if not can_create:
             ok = False  # a required key that cannot be created fails the pass
-        elif not key_ok and ok:
+        elif not key_ok:
             # An optional key (judge.virtualKey.required: false) that cannot be
-            # minted or read is still an error to count, but runs go on without
-            # it, so the pass stays successful. Skipped when ok is already False
-            # so run_once does not count the same pass twice.
-            self._metrics.errors.labels(cluster, "harness").inc()
+            # minted or read neither fails the pass nor counts in errors_total:
+            # it may be absent on purpose (mint: false and no Secret), and
+            # counting it would fire AgentHarnessReconcileErrors on every pass.
+            # harness_judge_key_present=0 drives AgentHarnessJudgeKeyMissing.
+            logger.debug("optional judge key unavailable; runs start without it")
 
         try:
             declarations, malformed = self._reader.list()

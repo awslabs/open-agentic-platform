@@ -535,10 +535,11 @@ Secrets Manager from the hub.
   Event, `oap_agent_harness_judge_key_present` is 0, and the harness loop pass
   is not counted as successful. `required: false` lets runs start without a key,
   so judge calls go through Bifrost unbudgeted. In that mode a key that cannot
-  be minted or read adds one to `errors_total` per pass but does not fail the
-  pass, so `last_success` keeps moving and `AgentHarnessStale` stays quiet;
-  `AgentHarnessReconcileErrors` and the `info` `AgentHarnessJudgeKeyMissing`
-  still fire.
+  be minted or read neither fails the pass nor counts in `errors_total`, so
+  `last_success` keeps moving and `AgentHarnessStale` and
+  `AgentHarnessReconcileErrors` stay quiet; only the `info`
+  `AgentHarnessJudgeKeyMissing` fires. This covers a key that is absent on
+  purpose, such as `mint: false` with no Secret.
 - **`mint: false`.** The reconciler only checks that Secret
   `agent-evaluation-harness-judge-key` holds a value. Use this when something
   else owns the key.
@@ -577,7 +578,8 @@ is on and the `monitoring.coreos.com/v1` PrometheusRule CRD exists:
 | `AgentHarnessJudgeKeyMissing` | `max by (cluster) (oap_agent_harness_judge_key_present) == 0` | 30m | `warning` with `harness.judge.virtualKey.required: true` (no run starts), `info` with `false` (runs go on with an un-budgeted judge) |
 
 `AgentHarnessReconcileErrors` means the harness loop's Kubernetes Job, Rollout
-or Service calls, or its Bifrost management API calls, are failing. The
+or Service calls, or its Bifrost management API calls, are failing. A judge key
+that cannot be minted or read counts here only with `required: true`. The
 chart-wide `AgentEvaluationReconcileErrors` excludes `loop="harness"`, because
 its wording and fixes are about Langfuse, which the harness loop does not call.
 

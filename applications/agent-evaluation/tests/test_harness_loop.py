@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import threading
 from types import SimpleNamespace
 
 from app.bifrost_admin import BifrostAdminError
@@ -22,6 +23,7 @@ from app.events import (
 from app.harness_declarations import HarnessDeclaration
 from app.harness_loop import HarnessLoop
 from app.harness_results import CaseResult, summarize, to_configmap_data
+from app.main import _run_loop
 from app.naming import harness_job_name, result_configmap_name
 from tests.conftest import (
     FakeBatch,
@@ -924,11 +926,12 @@ def test_judge_key_not_required_still_runs(settings, harness_settings, catalog, 
     f.custom.set_rollout("team-a", "assistant", "rev1")
     assert loop.run_once() is True
     assert len(f.batch.created) == 1
-    # The failed mint is counted once and does not fail the pass, so
-    # AgentHarnessStale does not fire for the documented un-budgeted mode.
-    assert metrics.registry.get_sample_value(
+    # An optional key that cannot be minted neither fails the pass nor counts
+    # in errors_total, so neither AgentHarnessStale nor
+    # AgentHarnessReconcileErrors fires for the documented un-budgeted mode.
+    assert not metrics.registry.get_sample_value(
         "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
-    ) == 1
+    )
 
 
 def test_judge_key_failure_pass_result_depends_on_required(
@@ -941,11 +944,46 @@ def test_judge_key_failure_pass_result_depends_on_required(
     errors = lambda: metrics.registry.get_sample_value(
         "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
     )
-    assert errors() == 3
+    assert not errors()
     loop2, f2 = build(settings, harness_settings, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
     f2.custom.set_rollout("team-a", "assistant", "rev1")
     assert loop2.run_once() is False
-    assert errors() == 4
+    assert errors() == 1
+
+
+def test_optional_key_never_present_counts_no_error(
+    settings, harness_settings, catalog, metrics
+):
+    # Review of #153: required false, mint false and no Secret is a key that
+    # is absent on purpose. Every pass succeeds through the real main loop,
+    # last_success moves and errors_total stays absent, so only the info
+    # AgentHarnessJudgeKeyMissing fires, not AgentHarnessReconcileErrors.
+    hs = dataclasses.replace(harness_settings, judge_key_required=False, judge_key_mint=False)
+    bifrost = FakeBifrost()
+    loop, f = build(settings, hs, catalog, metrics, [decl()], bifrost=bifrost)
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    results = []
+    stop = threading.Event()
+    stop.wait = lambda _timeout=None: None  # no sleep between passes
+
+    def body():
+        results.append(loop.run_once())
+        if len(results) == 3:
+            stop.set()
+        return results[-1]
+
+    _run_loop("harness", 60, body, stop, metrics, "dev")
+    assert results == [True, True, True]
+    assert bifrost.calls == []
+    assert not metrics.registry.get_sample_value(
+        "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
+    )
+    assert metrics.registry.get_sample_value(
+        "oap_agent_eval_last_success_timestamp_seconds", {"cluster": "dev", "loop": "harness"}
+    )
+    assert metrics.registry.get_sample_value(
+        "oap_agent_harness_judge_key_present", {"cluster": "dev"}
+    ) == 0
 
 
 def test_judge_key_mount_is_optional_only_when_the_key_is_not_required(
@@ -1530,14 +1568,16 @@ def test_bifrost_down_counts_a_harness_error(settings, harness_settings, catalog
     f.custom.set_rollout("team-a", "assistant", "rev1")
     assert loop.run_once() is False
     assert _harness_errors(metrics) == 1
-def test_bifrost_down_with_an_optional_key_counts_a_harness_error(
+def test_bifrost_down_with_an_optional_key_counts_no_harness_error(
     settings, harness_settings, catalog, metrics
 ):
+    # Only a required key counts; an optional one shows in
+    # oap_agent_harness_judge_key_present (AgentHarnessJudgeKeyMissing).
     hs = dataclasses.replace(harness_settings, judge_key_required=False)
     loop, f = build(settings, hs, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
     f.custom.set_rollout("team-a", "assistant", "rev1")
     assert loop.run_once() is True
-    assert _harness_errors(metrics) == 1
+    assert not _harness_errors(metrics)
 def test_job_create_500_counts_a_harness_error(settings, harness_settings, catalog, metrics):
     from kubernetes.client.rest import ApiException
     loop, f = build(settings, harness_settings, catalog, metrics, [decl()])

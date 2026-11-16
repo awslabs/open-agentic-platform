@@ -1410,8 +1410,11 @@ about Langfuse calls, which the harness loop does not make.
 `AgentHarnessJudgeKeyMissing` is `warning` when
 `harness.judge.virtualKey.required` is true (no run starts) and `info` when it is
 false (runs go on with an un-budgeted judge). A pass without a required judge
-key does not count as complete, so `AgentHarnessStale` also follows a missing
-key; fix the key first.
+key does not count as complete and counts in `errors_total`, so
+`AgentHarnessStale` and `AgentHarnessReconcileErrors` also follow a missing
+key; fix the key first. A missing optional key (`required: false`, for example
+`mint: false` with no Secret) neither fails the pass nor counts in
+`errors_total`, so only the `info` `AgentHarnessJudgeKeyMissing` fires.
 Like the rest of the chart's alerts these are
 pipeline alerts; there is no alert on the pass ratio.
 

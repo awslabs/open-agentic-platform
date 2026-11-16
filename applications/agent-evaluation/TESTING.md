@@ -750,7 +750,8 @@ What to expect, and what each mismatch means:
 - No Job although the agent has a declaration: compare step 2 (the preview
   selector has not moved to the new pod hash yet), check step 1 Events, and
   check `oap_agent_harness_judge_key_present`. With `required: true` a missing
-  key stops every run.
+  key stops every run and counts in `errors_total{loop="harness"}`; with
+  `required: false` runs go on and `errors_total` does not move.
 - `oap_agent_harness_info{status="error"}` with no counts: the run failed (agent
   unreachable within `readyTimeoutSeconds`, dataset invalid, every case errored
   (judge failing each call after retries, or no connection to the preview;
