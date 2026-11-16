@@ -407,7 +407,49 @@ template: {
 							// scores would be one indistinguishable series.
 							// The agent is not told its own namespace otherwise, and the tag
 							// needs it.
-							{name: "CLUSTER_NAME", value: "{{ .Values.global.clusterName }}"},
+							//
+							// TWO SHAPES, because in confidential mode this one value
+							// decided whether the Application was portable at all.
+							//
+							// A confidential Cedar policy pins the container's
+							// environment, and this is the ONLY cluster-dependent field
+							// in the rendered pod template -- measured, not assumed:
+							// rendering the same confidential Application against two
+							// clusters differs in exactly this one line and nothing else
+							// (scripts/test-isolation-features.sh, row F11). So with the
+							// literal below, one Application's policy was valid on the
+							// cluster it was generated against and wrong on every other,
+							// which steering §1 forbids and which made hub-and-spoke
+							// impossible for confidential agents.
+							//
+							// Taking it from a ConfigMap the component itself emits makes
+							// the POD TEMPLATE identical on every cluster -- the reference
+							// is the same string everywhere -- while the differing value
+							// lives in an object the policy does not pin. The agent still
+							// reads CLUSTER_NAME from its environment and nothing about
+							// the trace tag changes.
+							//
+							// What this gives up: a compromised parent instance could
+							// alter that ConfigMap and change the cluster recorded in the
+							// trace tag. That is trace mislabelling, not a confidentiality
+							// break -- the alternative was pinning NO environment at all,
+							// which would have unpinned LLM_GATEWAY_URL and the Langfuse
+							// keys too.
+							//
+							// Non-confidential agents keep the literal, so their rendered
+							// output stays byte-identical to before this feature existed.
+							if parameter.sandboxMode != "confidential" {
+								{name: "CLUSTER_NAME", value: "{{ .Values.global.clusterName }}"}
+							},
+							if parameter.sandboxMode == "confidential" {
+								{
+									name: "CLUSTER_NAME"
+									valueFrom: configMapKeyRef: {
+										name: context.name + "-cluster-info"
+										key:  "clusterName"
+									}
+								}
+							},
 							{name: "AGENT_NAMESPACE", value: context.namespace},
 							// Observability env vars — mode-dependent
 							{name: "OTEL_SERVICE_NAME", value: context.name},
@@ -618,6 +660,30 @@ template: {
 			}
 			if len(parameter.agents) > 0 {
 				data: agents: strings.Join([for a in parameter.agents {a.name}], ",")
+			}
+		}
+
+		// The one cluster-dependent value a confidential agent needs, kept OUT of
+		// the pod template so the template is identical on every cluster and one
+		// Cedar policy is valid on all of them. See the CLUSTER_NAME env above.
+		//
+		// Emitted only in confidential mode: every other agent takes the literal,
+		// so this adds no object and changes no output for them.
+		//
+		// Namespaced beside the agent rather than shared, because a shared
+		// platform ConfigMap would have to exist in every namespace an agent is
+		// deployed to, and nothing creates it there. This is a KubeVela output, so
+		// it arrives with the agent and is deleted with it.
+		if parameter.sandbox && parameter.sandboxMode == "confidential" {
+			clusterInfo: {
+				apiVersion: "v1"
+				kind:       "ConfigMap"
+				metadata: {
+					name:      context.name + "-cluster-info"
+					namespace: context.namespace
+					labels: "app.kubernetes.io/name": context.name
+				}
+				data: clusterName: "{{ .Values.global.clusterName }}"
 			}
 		}
 

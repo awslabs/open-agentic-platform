@@ -263,6 +263,52 @@ render "$f_portable" "$D_KATA" "$WORK/o-f10.yaml" || { echo "FAIL F: kata agent 
 row F10 "the SAME Application on a Kata cluster selects kata-clh" \
   "kata-clh" "$(q "$WORK/o-f10.yaml" "podspec('Rollout','f1-agent')['runtimeClassName']")"
 
+# THE ROW THAT KEEPS CONFIDENTIAL MODE PORTABLE.
+#
+# A confidential Cedar policy pins the container's environment, so if ANY field
+# of the rendered pod template depends on the cluster, one Application's policy
+# is valid on the cluster it was generated against and wrong on every other --
+# and the developer did nothing wrong. That is blocking review feedback on this
+# PR, and it was true: CLUSTER_NAME was a literal from global.clusterName.
+#
+# The fix was to take that one value from a ConfigMap the component emits, so the
+# TEMPLATE is identical everywhere and only the ConfigMap's contents differ. This
+# row is what stops that regressing: it renders the same confidential
+# Application against two different cluster names and requires the pod templates
+# to be byte-identical. A future platform change that puts anything
+# cluster-dependent back into the pod spec fails here, loudly, instead of
+# breaking every confidential agent at its next rollout.
+D_OTHER_CLUSTER="$(defs_for othercluster --set global.sandboxOperator=true --set global.clusterName=some-other-cluster)" || die_defs othercluster
+render "$f_conf" "$D_NITRO" "$WORK/o-f11a.yaml" || { echo "FAIL F: confidential agent did not render (cluster A)"; FAILS=$((FAILS+1)); }
+render "$f_conf" "$D_OTHER_CLUSTER" "$WORK/o-f11b.yaml" || { echo "FAIL F: confidential agent did not render (cluster B)"; FAILS=$((FAILS+1)); }
+podtpl() { python3 -c "
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get('kind') == 'Rollout':
+        yaml.safe_dump(d['spec']['template'], sys.stdout, default_flow_style=False, width=10000)
+" "$1"; }
+row F11 "a confidential pod template is IDENTICAL on two clusters" identical \
+  "$(if [ "$(podtpl "$WORK/o-f11a.yaml")" = "$(podtpl "$WORK/o-f11b.yaml")" ]; then echo identical; else echo differs; fi)"
+
+# And the value is still delivered, from the ConfigMap the component emits.
+row F12 "...with CLUSTER_NAME taken from the component's ConfigMap" f6-agent-cluster-info \
+  "$(python3 -c "
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get('kind') == 'Rollout':
+        for e in d['spec']['template']['spec']['containers'][0]['env']:
+            if e['name'] == 'CLUSTER_NAME':
+                print((e.get('valueFrom') or {}).get('configMapKeyRef', {}).get('name', 'LITERAL'))
+" "$WORK/o-f11a.yaml")"
+
+row F13 "...and that ConfigMap carries the cluster this render is for" matrix-cluster \
+  "$(python3 -c "
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get('kind') == 'ConfigMap' and d['metadata']['name'].endswith('-cluster-info'):
+        print(d['data']['clusterName'])
+" "$WORK/o-f11a.yaml")"
+
 # =============================================================== H. type: sandbox
 echo
 f_pool="$(app h <<YAML

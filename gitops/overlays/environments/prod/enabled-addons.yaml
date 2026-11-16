@@ -41,8 +41,22 @@ enabledAddons:
   agent_core: true
   agent_gateway: true
   oam_components: true
-  # Agent Sandbox capability — DISABLED for now (same reason as dev): EKS Auto
-  # Mode + Bottlerocket cannot host Kata. Re-enable once Auto Mode integration
-  # is designed. When on, prod holds the capability but the pool stays dormant
-  # (the Dark Factory only runs on spoke-dev — production-safety).
-  # agent_sandbox: true
+  # Agent Sandbox capability — ON, for the CRDs only.
+  #
+  # The old reason to keep it off (EKS Auto Mode + Bottlerocket cannot host
+  # Kata) no longer applies: Nitro Sandboxes need no node layer of ours, and the
+  # Dark Factory warm pool -- the thing that actually wanted Kata nodes -- is off
+  # in the chart default and enabled only where dark_factory is. So this installs
+  # the operator and the Sandbox* CRDs and nothing that schedules a pod. The
+  # Dark Factory still runs only on spoke-dev.
+  #
+  # Required because oam-agent-components ships the `sandbox` ComponentDefinition
+  # to every cluster while the CRDs come only from here: without it a
+  # `type: sandbox` Application on this cluster is rejected at admission.
+  #
+  # Nitro itself needs Kubernetes 1.36+ in a US commercial region. A prod spoke
+  # that does not meet that still gets the CRDs and the component, and a
+  # sandboxed pod there stays Pending -- visible as a not-Ready Rollout, never
+  # fake-green. Annotate such a cluster onto Kata, or onto `none` to reject
+  # sandbox: true outright.
+  agent_sandbox: true
