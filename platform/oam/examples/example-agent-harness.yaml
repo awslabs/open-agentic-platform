@@ -38,7 +38,7 @@ spec:
     - name: harness-assistant
       type: agent
       properties:
-        description: "Assistant scored on a fixed dataset before each promotion"
+        description: "Assistant scored on a fixed dataset for each new revision"
         systemMessage: "You are a helpful assistant. Be concise and accurate."
         modelConfig:
           modelId: claude-sonnet
