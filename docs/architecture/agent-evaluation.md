@@ -1341,6 +1341,16 @@ do without tools (the example Application uses it), and `example-smoke-v1`, the
 four-case format example. A dataset harvested from real traces and failures is
 a TODO on #137.
 
+Design note, not a commitment: the harvest TODO shares ground with #146 (the
+replay work). Both are a fixed corpus, run offline, with a pass or fail before
+release, and both need recorded traffic in a replayable form. #146's gate is
+whether Langfuse observations carry tool-call arguments and timestamps in a form
+that converts cleanly. The harvest TODO has to answer the same question, so the
+trace-to-case converter should be solved once and shared, not designed twice
+with separate formats. If both land, the harness could also assert that policy
+holds over the corpus, in addition to task outcomes: a deterministic check, no
+judge, no model calls. Nothing here is built or scheduled.
+
 The `expected-answer` check prompt lives in `files/harness/checks/`, not
 `files/evaluators/`, and is not in the evaluator `catalog`, so the hub never
 publishes it to Langfuse. It frames the input, the reference and the agent's

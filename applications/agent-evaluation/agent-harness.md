@@ -832,6 +832,9 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
 - **Harvested dataset.** `general-assistant-v1` (20 cases) and
   `example-smoke-v1` ship, both written by hand, not harvested. A dataset
   harvested from real traces and failures is a TODO on #137.
+  The trace-to-case converter for that TODO is shared ground with #146 (the
+  replay work) and should be solved once; see the design note in
+  `docs/architecture/agent-evaluation.md` §4b. A design note, not a commitment.
 - **Publishing images and bumping pins.** The reconciler image with the harness
   is not in the platform's public registry yet, so `agent_evaluation` stays off
   on `main`. Once published, set the chart's `image.tag` and remove per-cluster
