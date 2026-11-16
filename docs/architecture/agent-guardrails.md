@@ -1667,14 +1667,15 @@ response is an **error, not a clean result**.
 
 | Phase | Delivers |
 |---|---|
-| **1** | `agent-guardrails` addon: the proxy, the profile catalog, `provider-aws-bedrock` ≥ v2.9.0 and the `Guardrail` resources, the `guardrails` block on `agent`, **input inspection only**, `oap_agent_guardrail_*` metrics, the dashboard, the staleness and error alerts, and a measured latency and cost report on real hub traffic |
-| **2** | Output inspection (buffered when blocking, §D5). The bypass chain in §D7: `llmGatewayUrl` becomes platform-set, a default-deny egress NetworkPolicy, and admission rejection of a weakened or ungranted declaration |
+| **1** | **No new component.** In the `agent-gateway` chart: an `ai` backend pointed at Bifrost, one HTTPRoute per profile, and an `AgentgatewayPolicy` with `backend.ai.promptGuard` rendered from the profile catalog. Plus `provider-aws-bedrock` ≥ v2.9.0 and the `Guardrail` / `GuardrailVersion` resources, `bedrock:ApplyGuardrail` on the gateway's ServiceAccount, the `guardrails` block on `agent`, `llmGatewayUrl` repointed to the AI route (§D7, change 1), **request guards only**, `oap_agent_guardrail_*` as recording rules over `guardrail_checks` (§D8), the dashboard, the alerts — including a **fail-open rate** alert (§D4) — and a measured latency and cost report on real hub traffic |
+| **2** | Response guards, with `promptGuard.streaming` and the no-masking-on-streams constraint (§D5). The rest of the bypass chain in §D7: a default-deny egress NetworkPolicy, per-workload virtual keys then `is_vk_mandatory: true`, and admission rejection of a weakened or ungranted declaration. Decide §D4's option (b) or (c) from Phase 1's measured fail-open rate |
 | **3** | The Dogwood offline experiment (§D6): generate the schema from real MCP manifests, write three policies, convert recorded traffic to the replay format, and report what the language expressed. Decides whether a policy engine is worth scoping at all. It also settles §3.10's two prerequisites, because both are cheap to answer offline and expensive to discover later: whether a **platform-controlled correlation key** can be minted per agent conversation and carried to the tool hop, and whether the argument names a policy would constrain actually appear in OAP's `tools/list` payloads |
 | Later | A second backend behind the boundary (Bifrost Enterprise for licensed customers, Azure Content Safety, Model Armor); per-team profiles; human review of blocked requests |
 
-Phase 1 ships with the addon **off by default** in every overlay, as
-`agent_evaluation: false` does today, and is flipped on in the same change that
-publishes the image.
+Phase 1 ships **off by default** in every overlay, as `agent_evaluation: false`
+does today. With D1's reversal there is no image to publish, so the flag gates
+whether the chart renders the AI route, the policy and the Crossplane guardrail
+objects at all.
 
 ---
 
