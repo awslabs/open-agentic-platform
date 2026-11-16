@@ -1085,6 +1085,36 @@ different times, so they belong on one dashboard. The metric names deliberately
 mirror `oap_agent_eval_*` (`docs/architecture/agent-evaluation.md` §4a) so the
 two read together.
 
+**D1's reversal means most of this already exists, and one part of it does not.**
+agentgateway emits `guardrail_checks` (`crates/agentgateway/src/telemetry/metrics.rs`),
+a counter labelled `phase` (`Request` / `Response`) and `action`:
+
+| Native `action` | This design's `outcome` |
+|---|---|
+| `Allow` | `allowed` |
+| `Reject` | `blocked` |
+| `Mask` | `redacted` |
+| `FailOpen` | `error_allowed` — and upstream already keeps it distinct from `Allow`, which is the §D8 rule this document was going to have to implement itself |
+
+So OAP writes no instrumentation for the verdict. **The gap is attribution:**
+`GuardrailLabels` is `{phase, action}` and carries no agent, namespace or
+profile. The native counter answers "how often did guardrails fire" but not
+"which agent" — and "which agent" is the question a platform dashboard exists to
+answer.
+
+Two consequences:
+
+- **Per-agent attribution comes from the route, not the counter.** Because the
+  platform renders one HTTPRoute per profile and per agent (§D1), the route
+  identifier in the gateway's access logs and CEL-driven metrics is the join
+  key. `oap_agent_guardrail_*` therefore becomes a set of **recording rules over
+  gateway telemetry** rather than a counter OAP's own code increments.
+- **That is a Phase 1 deliverable, not a detail.** A reviewer should read the
+  table below as the contract the recording rules must produce, and the first
+  validation item is that `guardrail_checks` can in fact be attributed to one
+  agent. If it cannot, the dashboard loses its primary dimension and that is a
+  bigger loss than the fail-open in §D4.
+
 | Metric | Labels | Meaning |
 |---|---|---|
 | `oap_agent_guardrail_requests_total` | `cluster`, `namespace`, `agent`, `direction`, `outcome` | every inspected request. `outcome` is `allowed` \| `blocked` \| `redacted` \| `reported` \| `error_blocked` \| `error_allowed` |
