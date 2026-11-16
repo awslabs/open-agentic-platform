@@ -386,7 +386,21 @@ networkPolicy:
 
 # ── Warm pool ────────────────────────────────────────────────────────────────
 warmPool:
-  enabled: true
+  # OFF BY DEFAULT. The pool exists for the Dark Factory coder, which is the only
+  # thing in this repo that claims from it, and `dark_factory` is opt-in. Left
+  # on, enabling agent_sandbox for its CRDs alone -- which is what `type: sandbox`
+  # and the OAM isolation work need -- also stood up a pool of coder pods that
+  # nobody claims, holding real nodes, and on Nitro asking for a sandbox-capable
+  # node for a workload no one requested. That is what made agent-sandbox report
+  # Degraded.
+  #
+  # The registry entry turns it back on wherever enable_dark_factory is set
+  # (gitops/addons/registry/sandbox.yaml), so the consumer enables its own pool
+  # and no per-cluster overlay is involved. It used to be switched off by
+  # gitops/overlays/clusters/hub/agent-sandbox/values.yaml, which only ever
+  # matched a cluster literally named `hub` -- so on peeks-hub, or any customer
+  # hub, the file did nothing.
+  enabled: false
   # Number of idle sandboxes to keep ready. Claim one → pool-manager refills;
   # release one → pool-manager shrinks back to this target.
   # 1, not 3: each idle sandbox is a real Kata micro-VM holding EC2 capacity, and a

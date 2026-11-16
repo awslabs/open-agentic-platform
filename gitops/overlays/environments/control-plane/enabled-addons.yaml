@@ -195,10 +195,19 @@ enabledAddons:
   # live on a 1.37 Auto Mode cluster. So kata_nodepool and agent_sandbox_kata
   # stay FALSE above and nothing goes Pending for want of a kata node.
   #
-  # This is the only source of the Sandbox* CRDs, which `type: sandbox` needs. Clusters that do not want the Dark Factory coder
-  # warm pool this chart also renders set warmPool.enabled: false in their
-  # per-cluster overlay -- see gitops/overlays/clusters/hub/agent-sandbox.
-  agent_sandbox: true
+  # This is the only source of the Sandbox* CRDs, which `type: sandbox` needs.
+  #
+  # FALSE HERE, AND TURNED ON PER HUB. This file is shared by EVERY
+  # control-plane cluster, so `true` here enabled the addon on every hub
+  # including other people's -- and on a hub below Kubernetes 1.36, or outside a
+  # US commercial region, Nitro cannot run at all. The switch is
+  # `sandbox.enabled` in config.yaml, which puts enable_agent_sandbox on that
+  # one hub's cluster secret.
+  #
+  # Nothing else needs to be turned off alongside it any more: the warm pool is
+  # OFF in the chart default and enabled only where dark_factory is, so enabling
+  # this addon now installs the CRDs and nothing that schedules a pod.
+  agent_sandbox: false
   # kata-deploy installs the clh/qemu runtime onto the kata nodes (separate app).
   # Required, or the warm pool's runtimeClassName has no handler on the node.
   agent_sandbox_kata: false

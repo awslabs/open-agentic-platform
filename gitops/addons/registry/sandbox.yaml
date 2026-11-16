@@ -287,6 +287,21 @@ agent-sandbox:
         operator: In
         values: ['true']
   valuesObject:
+    warmPool:
+      # THE CONSUMER ENABLES ITS OWN POOL. The chart ships warmPool.enabled:
+      # false, because enable_agent_sandbox is what installs the Sandbox* CRDs
+      # and a cluster that wants only those -- for `type: sandbox`, or for the
+      # OAM isolation work -- should not also get a pool of Dark Factory coder
+      # pods that nobody claims.
+      #
+      # The Dark Factory is the only claimer in this repo, so its own label is
+      # what turns the pool back on. That keeps the decision per cluster and in
+      # git, where the previous mechanism -- warmPool.enabled: false in
+      # gitops/overlays/clusters/hub/agent-sandbox/values.yaml -- was neither:
+      # that path is keyed on the cluster NAME, so it only ever applied to a
+      # cluster literally called `hub` and silently did nothing on peeks-hub or
+      # any customer hub.
+      enabled: '{{ if eq (index .metadata.labels "enable_dark_factory") "true" }}true{{ else }}false{{ end }}'
     # PER-CLUSTER warm-pool runtime, read from the cluster secret the same way
     # sandbox_runtime_class is (agentcore.yaml). Without this the chart default
     # applied fleet-wide: every cluster with enable_agent_sandbox: true had its
