@@ -298,11 +298,55 @@ an assumption (§D2, §6).
 
 ## 3. Decisions
 
-### D1. The enforcement point: an OAP-owned inspection proxy in front of Bifrost
+### D1. The enforcement point: agentgateway's own `promptGuard`, on an AI route in front of Bifrost
 
-#144 proposes enforcing at Bifrost, on the correct reasoning that every model
-call already goes there. The reasoning holds; the *mechanism* does not survive
-contact with how OAP runs Bifrost and how Bifrost accepts plugins.
+**Revision 4 reverses this decision.** Revision 3 proposed an OAP-owned
+inspection proxy. @shapirov103 pointed out in review that agentgateway is also an
+LLM gateway with native prompt guards, and prototyped it against Bifrost on a dev
+spoke. That is correct, it is in the version OAP already pins, and it removes the
+proxy entirely.
+
+Revision 3's error is worth naming precisely, because it is a class of mistake
+rather than a detail: it observed that OAP routes only A2A and MCP traffic
+through the gateway today, and concluded the gateway *could not* see a model
+call. That is a fact about OAP's routing read as a limit of the product. The
+check that would have caught it — read the CRD, not the topology — is the same
+check this document applies to every other claim.
+
+#### What agentgateway v1.4.1 actually offers, verified in source
+
+| Fact | Source, at tag `v1.4.1` |
+|---|---|
+| `promptGuard` takes **`request`** and **`response`** guard lists, 1–8 entries each | `controller/api/v1alpha1/agentgateway/ai_policy.go` — `AIPromptGuard`, `MinItems=1`, `MaxItems=8` |
+| Five guard types, exactly one per entry: `regex`, `webhook`, `openAIModeration`, `bedrockGuardrails`, `googleModelArmor` | same file — `+kubebuilder:validation:ExactlyOneOf` on `PromptguardRequest`. `openAIModeration` is request-only; the other four work on both phases |
+| `bedrockGuardrails` takes `identifier`, `version`, `region`, and `policies.backendAuth.aws` | same file — `BedrockGuardrails`; example at `examples/llm-prompt-guard/bedrock-config.yaml` |
+| It calls **`ApplyGuardrail`** — `POST /guardrail/{identifier}/version/{version}/apply`, `source: INPUT` on request guards and `OUTPUT` on response guards — and reads `BLOCKED` / `ANONYMIZED` assessments | `crates/agentgateway/src/llm/policy/bedrock_guardrails.rs` — `ApplyGuardrailRequest`, `is_blocked()`, `is_anonymized()` |
+| `regex` carries `action: MASK \| REJECT` and five built-in patterns (SSN, credit card, phone, email, Canadian SIN) | `ai_policy.go` — `Action`, `BuiltIn` |
+| The dataplane implements all of it, not just the CRD | `crates/agentgateway/src/llm/policy/mod.rs` — `apply_prompt_guard`, `mod bedrock_guardrails` |
+| Guard outcomes are already a metric: `guardrail_checks`, labelled `phase` (Request/Response) and `action` (**Allow / Mask / Reject / FailOpen**) | `crates/agentgateway/src/telemetry/metrics.rs` — `GuardrailLabels`, `GuardrailAction` |
+| The AI backend reaches Bifrost because `host` / `port` **"override the provider default"** for a managed provider, and `pathPrefix` overrides `/v1` | `agentgateway.dev_agentgatewaybackends.yaml` |
+
+So the topology is `agent → agentgateway (AI route + promptGuard) → Bifrost → Bedrock`.
+Bifrost keeps its job — virtual keys, governance, provider fan-out — and the
+guardrail moves one hop earlier, onto infrastructure OAP already runs and
+already upgrades.
+
+**What this deletes from the design:** a Deployment, a chart, a container image,
+an OpenAI-compatible protocol implementation that would have had to stay
+compatible with Bifrost's, a streaming path, and the operational burden of all
+of it. @shapirov103's objection was that OAP is not in the business of building
+scalable proxies and that a Python one would be the wrong instrument regardless.
+Both hold, and neither needs arguing now, because the proxy is gone.
+
+**What survives unchanged:** the API in D2, the tighten-only rule, the backend
+boundary in D3, the verdict semantics in D4, the streaming tradeoff in D5, and
+every observability contract in D8. They were written against a *seam*, not
+against the proxy, which is the one thing revision 3 got right.
+
+#### Why not Bifrost's own plugins — still the answer, for the same reasons
+
+This part of revision 3 stands, and it is why the guard belongs at the gateway
+rather than one hop later.
 
 #### What Bifrost actually offers
 
@@ -348,41 +392,38 @@ So the two Bifrost-native routes both fail a platform requirement:
 
 | Option | Verdict |
 |---|---|
-| **An OAP-owned inspection proxy in front of Bifrost** (**chosen**) | OpenAI-compatible, owned by this repo like `applications/agent-evaluation`, no Bifrost coupling and no licence. Agents reach it instead of Bifrost by a one-line default change; it inspects, then forwards to Bifrost unchanged. Costs one in-cluster hop |
-| Bifrost Enterprise guardrails | Rejected as the default: commercial licence, private image, fails open. **Worth supporting as an alternative backend** for customers who have it (§D3) |
-| A custom Bifrost `.so` plugin | Rejected for Phase 1: OAP would own a Bifrost build and a per-upgrade rebuild. Reconsider if upstream ships the planned webhook plugin path, which removes the ABI coupling entirely |
-| Agent Gateway | Rejected for content. It sees A2A and MCP traffic, not the model call, so it cannot read a prompt or a completion. It keeps tool authorization, which is its correct job |
-| A library in the agent image (NeMo, Guardrails AI, LlamaFirewall, Presidio) | Rejected as the control. It lives where a developer can omit it, which is the definition of a convention rather than a guardrail. Any of them may sit *behind* the proxy later |
+| **agentgateway `promptGuard` on an AI route in front of Bifrost** (**chosen**) | Native in the pinned v1.4.1, implemented in the dataplane, calls `ApplyGuardrail`, emits guard metrics, and adds **no OAP-owned component at all**. The one qualification is the fail-open default in §D4 |
+| An OAP-owned inspection proxy | **Rejected, and this is the reversal.** It builds and operates a service to do what the gateway already does. A platform that runs a gateway and then puts its own proxy beside it for one feature has two things to upgrade and one of them has no users but itself |
+| Bifrost Enterprise guardrails | Rejected as the default: commercial licence, private image, fails open. Still reasonable as an alternative backend for customers holding a licence (§D3) |
+| A custom Bifrost `.so` plugin | Rejected: OAP would own a Bifrost build and a per-upgrade rebuild, for a feature the gateway gives for free |
+| A library in the agent image (NeMo, Guardrails AI, LlamaFirewall, Presidio) | Rejected as the control. It lives where a developer can omit it, which is the definition of a convention rather than a guardrail. Any of them can sit behind the `webhook` guard instead |
 | AgentCore policy | Rejected as the platform answer. AgentCore components are optional and per-agent, so binding enforcement there leaves every EKS agent unguarded |
-| Kyverno / OPA admission | Yes, but for a different job: what an agent may *declare* (§D5). Not runtime content. Note `kyverno` is `false` in every overlay today |
+| Kyverno / OPA admission | Yes, but for a different job: what an agent may *declare* (§D2). Not runtime content. Note `kyverno` is `false` in every overlay today |
 
-#### What the proxy is, precisely
+#### What OAP actually builds, now that the proxy is gone
 
-One Deployment in a platform namespace, OpenAI-compatible on `/v1`, doing:
+No service. The capability is **configuration OAP renders**, in the shape the
+platform already uses for MCP:
 
-1. read the agent's identity from its request
-2. resolve that agent's profile from the catalog it holds in memory
-3. inspect the prompt; on a violation, apply the verdict (§D4) and **return
-   without calling Bifrost**
-4. otherwise forward verbatim to Bifrost, and inspect the completion on the way
-   back under the same rules
+| Object | Who writes it | Precedent in the repo |
+|---|---|---|
+| `AgentgatewayBackend` of type `ai`, provider `openai`, `host`/`port` pointed at the Bifrost Service, `pathPrefix: /v1` | the `agent-gateway` chart, once per cluster | `backend.yaml` already renders the MCP backend this way |
+| `HTTPRoute` per guardrail profile on the existing gateway | the `agent-gateway` chart | `mcp-server.cue` renders one HTTPRoute per MCP server |
+| `AgentgatewayPolicy` with `backend.ai.promptGuard`, `targetRefs` → that route | the `agent-gateway` chart, from the profile catalog | `mcp-access.yaml` renders platform-owned policies from chart values |
+| Bedrock `Guardrail` + `GuardrailVersion` | Crossplane, from the catalog (§D3) | unchanged from revision 3 |
+| `guardrails` block on the `agent` component → which profile's route the agent is pointed at | `agent.cue` | unchanged from revision 3 (§D2) |
 
-It is deliberately the *same shape* as the evaluation reconciler: a small Python
-service in `applications/`, a chart in `gitops/addons/charts/`, a platform-owned
-catalog in chart values, and `oap_agent_guardrail_*` metrics.
+`backend.ai` and `backend.mcp` are **different fields on the same CRD**, so this
+adds no second writer to `backend.mcp.authorization` and does not reintroduce
+§2.2's silent-drop collision. The one-writer rule now applies to `backend.ai`
+instead, and the platform owns it — which is exactly how D2's tighten-only rule
+gets enforced rather than merely asserted.
 
-**Three properties make this honest rather than a workaround:**
-
-- It is a hop, not a library, so a developer cannot omit it from inside an image.
-- It holds no new credential beyond its own guardrail-API permission, and never
-  the agent's.
-- Blocking is its default path on a violation, not an error path, so there is no
-  fail-open hiding in a timeout branch (§D4).
-
-**One property makes it incomplete, and must not be glossed:** an agent that
-sets `llmGatewayUrl` to Bifrost directly skips it, exactly as it can skip
-Bifrost today (§2.4). Closing that is §D7 and Phase 2, and until it is closed
-this is a control for cooperating agents and a detection for the rest.
+**One property still makes this incomplete, and it is now load-bearing rather
+than a hardening item:** an agent that points `llmGatewayUrl` at Bifrost
+directly skips the gateway and therefore the guard. Under the proxy design that
+was one of three bypasses; here it is *the* bypass, and closing it is a
+prerequisite rather than Phase 2 polish. §D7 is rewritten accordingly.
 
 ### D2. The developer API: a `guardrails` block that can only tighten the profile
 
