@@ -1543,9 +1543,12 @@ with the change and bumping its pin makes both clauses effective.
   selectors in one `from` entry. The reconciler sets that label on every runner
   Job's pod template; its own Deployment pods do not carry it. Agents without an
   enabled harness block render the gateway-only policy unchanged. The runner
-  sends no `X-Forwarded-User`, so it reaches the agent as an anonymous caller
-  and cannot name a user. Enforced only where the cluster enforces
-  NetworkPolicy.
+  sends no `X-Forwarded-User`, so it reaches the agent as an anonymous caller.
+  The policy does not enforce that: any pod labelled `harness.oap.io/run: "true"`
+  in the agent-evaluation namespace can send `X-Forwarded-User` to an agent with
+  an enabled harness block (and through a harness-enabled supervisor to its
+  sub-agents); see `docs/agent-delegation/DESIGN.md` §5. Enforced only where the
+  cluster enforces NetworkPolicy.
 - **Slots:** at most `harness.maxConcurrentJobs` Jobs are active per cluster.
   Each pass first plans every declaration's pending run, then gives free slots
   to the run that has waited longest (first seen waiting by this process),

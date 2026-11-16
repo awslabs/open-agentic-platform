@@ -36,8 +36,11 @@ The agent harness is the one direct caller that policy admits: its Jobs call the
 enabled, agent.cue adds one ingress rule to that agent's NetworkPolicy for TCP 8083 from
 the agent-evaluation namespace, limited to the harness runner pods
 (`harness.oap.io/run: "true"`), not the reconciler. Those calls send no X-Forwarded-User
-(each case runs as an anonymous caller with no memory, by design). Agents without a
-harness block keep the gateway-only policy unchanged.
+(each case runs as an anonymous caller with no memory, by design), but the policy does
+not enforce that: any pod labelled harness.oap.io/run=true in the agent-evaluation
+namespace can send X-Forwarded-User to an agent with an enabled harness block (see
+docs/agent-delegation/DESIGN.md section 5). Agents without a harness block keep the
+gateway-only policy unchanged.
 
 Scoped to the Gateway, like jwt-policy.yaml, so every hop is covered: client -> agent,
 agent -> MCP server, and agent -> agent.
