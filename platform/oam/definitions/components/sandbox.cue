@@ -176,6 +176,13 @@ template: {
 		_confidentialNeedsNitro: "set" & "mode: confidential requires an AWS Nitro Sandboxes runtime class, and this cluster's global.confidentialSandboxRuntimeClass is not one of global.nitroSandboxRuntimeClasses. Kata has no confidential equivalent: there is no attestation document, nothing measures the Cedar policy into PCR17, and the parent instance can read guest memory. Point confidential_sandbox_runtime_class at a Nitro class, or use mode: isolated."
 	}
 
+	// Same gate as the agent component's: these render as
+	// sandbox.amazonaws.com/conntrack-limit and .../dns-packets-per-second, which
+	// a non-Nitro class accepts and silently ignores.
+	if !_isolationClassIsNitro && (parameter.conntrackLimit != _|_ || parameter.dnsQueriesPerSecond != _|_) {
+		_throttlesNeedNitro: "set" & "conntrackLimit and dnsQueriesPerSecond require an AWS Nitro Sandboxes runtime class, and the class this sandbox would use is not one of global.nitroSandboxRuntimeClasses. They render as sandbox.amazonaws.com/conntrack-limit and .../dns-packets-per-second, which a Kata class accepts and ignores -- so the limit you asked for would not exist and nothing would say so. Remove them, or run this sandbox on a Nitro class."
+	}
+
 	// FAIL CLOSED on confidential without a Cedar policy. Same reasoning as
 	// agent.cue, and it bites harder here: this component exists to run code
 	// nobody has reviewed, so the policy IS the admission control. With no policy

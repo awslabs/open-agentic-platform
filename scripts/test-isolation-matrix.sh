@@ -701,6 +701,54 @@ YAML
 )"
 row C18 "sandbox: confidential with a Kata confidential class" _confidentialNeedsNitro "$(guard "$c_sbxconf_kata" "$D_KATACONF" "$WORK/o-c18.yaml" _confidentialNeedsNitro)"
 
+c_thr_agent_kata="$(app c21 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c21, namespace: default}
+spec:
+  components:
+    - name: c21-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+        sandboxConntrackLimit: 8192
+YAML
+)"
+row C21 "agent: sandboxConntrackLimit on a Kata class" _throttlesNeedNitro "$(guard "$c_thr_agent_kata" "$D_KATA" "$WORK/o-c21.yaml" _throttlesNeedNitro)"
+
+c_thr_agent_dns="$(app c22 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c22, namespace: default}
+spec:
+  components:
+    - name: c22-agent
+      type: agent
+      properties:
+$AGENT_MIN
+        sandbox: true
+        sandboxDnsQueriesPerSecond: 300
+YAML
+)"
+row C22 "agent: sandboxDnsQueriesPerSecond on a Kata class" _throttlesNeedNitro "$(guard "$c_thr_agent_dns" "$D_KATA" "$WORK/o-c22.yaml" _throttlesNeedNitro)"
+
+c_thr_sbx_kata="$(app c23 <<YAML
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: c23, namespace: default}
+spec:
+  components:
+    - name: c23-pool
+      type: sandbox
+      properties:
+        image: public.ecr.aws/docker/library/python:3.12-slim
+        conntrackLimit: 1024
+        dnsQueriesPerSecond: 50
+YAML
+)"
+row C23 "sandbox: conntrackLimit + dnsQueriesPerSecond on a Kata class" _throttlesNeedNitro "$(guard "$c_thr_sbx_kata" "$D_KATA" "$WORK/o-c23.yaml" _throttlesNeedNitro)"
+
 # ---- review 'smaller': unreplaced example placeholders --------------------
 # Both used to render, deploy, and fail minutes later -- the sandbox agent
 # rejecting the policy, or an ImagePullBackOff -- with an error nowhere near the

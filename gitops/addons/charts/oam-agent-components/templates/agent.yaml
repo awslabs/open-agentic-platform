@@ -161,6 +161,30 @@ spec:
         	_cedarPolicyNeedsNitro: "set" & "cedarPolicy requires an AWS Nitro Sandboxes runtime class, and this cluster's class for sandboxMode: \(parameter.sandboxMode) is not one of global.nitroSandboxRuntimeClasses. The policy is enforced by the Nitro sandbox agent and measured into PCR17; a Kata class ignores the annotation, so the pod would admit any container and attest nothing. Run this agent on a Nitro class, or remove cedarPolicy."
         }
 
+        // The per-pod throttles are Nitro annotations too, and they fail the same way
+        // everything else in sandbox.amazonaws.com/ does on Kata: the annotation is
+        // accepted, ignored, and the developer believes a limit is in force that is
+        // not. Same gate, same reason as cedarPolicy above.
+        //
+        // Both in ONE guard with one message. They are the same mistake -- "I asked
+        // for a Nitro-only knob on a class that is not Nitro" -- and a developer who
+        // set both would otherwise fix one, re-render, and be told about the other.
+        if parameter.sandbox && !_isolationClassIsNitro && (parameter.sandboxConntrackLimit != _|_ || parameter.sandboxDnsQueriesPerSecond != _|_) {
+        	_throttlesNeedNitro: "set" & "sandboxConntrackLimit and sandboxDnsQueriesPerSecond require an AWS Nitro Sandboxes runtime class, and this cluster's class for sandboxMode: \(parameter.sandboxMode) is not one of global.nitroSandboxRuntimeClasses. They render as sandbox.amazonaws.com/conntrack-limit and .../dns-packets-per-second, which a Kata class accepts and ignores -- so the limit you asked for would not exist and nothing would say so. Remove them, or run this agent on a Nitro class."
+        }
+
+        // The per-pod throttles are Nitro annotations too, and they fail the same way
+        // everything else in sandbox.amazonaws.com/ does on Kata: the annotation is
+        // accepted, ignored, and the developer believes a limit is in force that is
+        // not. Same gate, same reason as cedarPolicy above.
+        //
+        // Both in ONE guard with one message. They are the same mistake -- "I asked
+        // for a Nitro-only knob on a class that is not Nitro" -- and a developer who
+        // set both would otherwise fix one, re-render, and be told about the other.
+        if parameter.sandbox && !_isolationClassIsNitro && (parameter.sandboxConntrackLimit != _|_ || parameter.sandboxDnsQueriesPerSecond != _|_) {
+        	_throttlesNeedNitro: "set" & "sandboxConntrackLimit and sandboxDnsQueriesPerSecond require an AWS Nitro Sandboxes runtime class, and this cluster's class for sandboxMode: \(parameter.sandboxMode) is not one of global.nitroSandboxRuntimeClasses. They render as sandbox.amazonaws.com/conntrack-limit and .../dns-packets-per-second, which a Kata class accepts and ignores -- so the limit you asked for would not exist and nothing would say so. Remove them, or run this agent on a Nitro class."
+        }
+
         // Reachable only by pointing confidential_sandbox_runtime_class at a non-Nitro
         // class; the empty-class guard above covers the ordinary Kata-only cluster.
         if parameter.sandbox && parameter.sandboxMode == "confidential" && !_isolationClassIsNitro {
