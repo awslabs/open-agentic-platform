@@ -62,13 +62,15 @@ vars:
     sh: yq -r '.identityCenter.adminGroupId' {{.CONFIG_FILE}}
   K8S_VERSION:
     sh: yq -r '.hub.kubernetesVersion // "1.37"' {{.CONFIG_FILE}}
-  # Agent sandbox. Default false so an existing config.local.yaml without a
-  # `sandbox:` block behaves exactly as before.
+  # Agent sandbox. The shipped config.yaml sets `sandbox.enabled: true`; the
+  # `// false` fallback is only for a config.local.yaml written before the
+  # `sandbox:` block existed, which then behaves exactly as it did before.
   SANDBOX_ENABLED:
     sh: yq -r '.sandbox.enabled // false' {{.CONFIG_FILE}}
-  # No `// "kata"` fallback on purpose: the task refuses an unknown value rather
-  # than quietly choosing a runtime, because choosing wrong means either a pool
-  # of Pending pods (kata with no kata nodes) or a pool recreated on a class the
+  # Falls back to nitro, matching the chart default, because nitro is the
+  # runtime that needs no node layer of ours. The task still REFUSES an unknown
+  # value rather than passing it through: choosing wrong means either a pool of
+  # Pending pods (kata with no kata nodes) or a pool recreated on a class the
   # nodes do not have.
   SANDBOX_RUNTIME:
     sh: yq -r '.sandbox.runtime // "nitro"' {{.CONFIG_FILE}}
@@ -406,10 +408,11 @@ tasks:
           enable_agent_sandbox=true
 
         # The runtime is an ANNOTATION, read by the agent-sandbox registry entry
-        # (gitops/addons/registry/sandbox.yaml). It is required for nitro: the
-        # chart's own default is kata, because the warm pool has a live Kata
-        # consumer and a silent flip would recreate its pool on a class its
-        # nodes may not have.
+        # (gitops/addons/registry/sandbox.yaml). The chart already defaults to
+        # nitro, so this is set for two other reasons: it records the choice in
+        # one place the cluster can be inspected for, and it is what a cluster
+        # needing Kata changes (sandbox.runtime: kata in config.yaml) without
+        # editing any chart or overlay.
         kubectl --context {{.HUB_CLUSTER_NAME}} annotate secret {{.HUB_CLUSTER_NAME}} -n argocd --overwrite \
           sandbox_runtime="${RUNTIME}"
 
