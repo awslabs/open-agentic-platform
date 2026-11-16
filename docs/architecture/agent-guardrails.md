@@ -1699,7 +1699,10 @@ has been shown.
 - [ ] `onViolation` weaker than the profile floor is **rejected at admission**,
       with the floor named in the message
 - [ ] A known-injection prompt is blocked, the agent receives the profile's
-      refusal message, and **Bifrost records no call**
+      `response.message`, and **Bifrost records no call**
+- [ ] `guardrail_checks` is attributable to exactly one agent through the route
+      identifier (§D8, open question 13). This is the first thing to test,
+      because a failure here changes the dashboard design rather than a label
 - [ ] A prompt with PII under a `redact` profile reaches the model **masked**,
       proven by reading the trace's per-entry `action: ANONYMIZED` rather than
       `stopReason`
@@ -1723,9 +1726,16 @@ anything**
 
 **Failure behaviour**
 
-- [ ] With the guardrail API unreachable, a `block`-profile agent is refused and
-      `outcome="error_blocked"` increments — *not* `blocked`
-- [ ] A throttled call is retried within the budget and only then fails closed
+- [ ] **With the guardrail API unreachable, measure what actually happens.**
+      The expected result under §D4 option (a) is that the request is
+      **forwarded uninspected** and `guardrail_checks{action="FailOpen"}`
+      increments. An implementation that instead refuses would mean upstream
+      changed, and that is good news worth confirming rather than assuming
+- [ ] The fail-open rate is alertable, and the alert fires in a fault injection
+      test — this is the control that makes option (a) acceptable, so it is
+      verified rather than configured and trusted
+- [ ] A throttled call is retried within the gateway's budget before the
+      fail-open path is taken
 - [ ] Killing the **gateway** does not silently un-guard an agent: measure what the
       agent actually gets, and make it a refusal rather than a direct path
 
