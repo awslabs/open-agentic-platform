@@ -398,23 +398,79 @@ tasks:
           *) printf 'sandbox.runtime=%s is not valid; use "nitro" or "kata"\n' "$RUNTIME" >&2; exit 1 ;;
         esac
 
-        # WHY THE SECRET AND NOT enabled-addons.yaml. The hub's enable_<addon>
-        # labels come from the environment overlay
-        # (gitops/overlays/environments/control-plane/enabled-addons.yaml), which
-        # EVERY control-plane cluster shares — so enabling it there turns the
-        # addon on for other people's hubs. Applied here instead, the same way
-        # eks_oidc_provider is. Idempotent, re-applied on every install/upgrade.
-        kubectl --context {{.HUB_CLUSTER_NAME}} label secret {{.HUB_CLUSTER_NAME}} -n argocd --overwrite \
-          enable_agent_sandbox=true
+        # WHY THE CLUSTER SECRET AND NOT enabled-addons.yaml. The hub's
+        # enable_<addon> labels cannot come from
+        # gitops/overlays/environments/control-plane/enabled-addons.yaml for this
+        # one: that file is shared by EVERY control-plane cluster, so enabling it
+        # there turns the addon on for other people's hubs, including hubs that
+        # cannot run Nitro at all. It is therefore per-hub, and per-hub values
+        # live on the cluster secret.
+        #
+        # WRITTEN THROUGH hub/config, NOT WITH `kubectl label`. The cluster
+        # secret is rendered by the fleet-secret ExternalSecret from the
+        # <hub>/config entry in Secrets Manager, which is the path the platform
+        # already uses for per-cluster values (see aws_grafana_url in
+        # agentic:seed-grafana-url, which does exactly this). A `kubectl label`
+        # survives -- the ExternalSecret merges rather than replaces, verified on
+        # a live hub -- but it is invisible to git and to the platform, so a
+        # rebuilt hub comes back with the addon off and nothing records that it
+        # was ever on. One source, and it is the one the platform reads.
+        #
+        # Idempotent: re-applied on every install/upgrade, and a no-op when the
+        # value is already there.
+        CONFIG_KEY="{{.HUB_CLUSTER_NAME}}/config"
+        CONFIG_EXISTING=$(aws secretsmanager get-secret-value --secret-id "$CONFIG_KEY" \
+          --region {{.AWS_REGION}} --query "SecretString" --output text)
+        CONFIG_UPDATED=$(printf '%s' "$CONFIG_EXISTING" | RUNTIME="$RUNTIME" python3 -c "
+        import json, os, sys
+        d = json.loads(sys.stdin.read())
+        m = json.loads(d['metadata'])
+        # enable_agent_sandbox gates the addon (the appset selector matches this
+        # label); sandbox_runtime picks the warm pool's runtime for the
+        # agent-sandbox registry entry.
+        m['enable_agent_sandbox'] = 'true'
+        m['sandbox_runtime'] = os.environ['RUNTIME']
+        d['metadata'] = json.dumps(m)
+        print(json.dumps(d))
+        ")
+        aws secretsmanager put-secret-value \
+          --secret-id "$CONFIG_KEY" \
+          --secret-string "$CONFIG_UPDATED" \
+          --region {{.AWS_REGION}} >/dev/null
+        printf '✓ hub/config: enable_agent_sandbox=true sandbox_runtime=%s\n' "$RUNTIME"
 
-        # The runtime is an ANNOTATION, read by the agent-sandbox registry entry
-        # (gitops/addons/registry/sandbox.yaml). The chart already defaults to
-        # nitro, so this is set for two other reasons: it records the choice in
-        # one place the cluster can be inspected for, and it is what a cluster
-        # needing Kata changes (sandbox.runtime: kata in config.yaml) without
-        # editing any chart or overlay.
-        kubectl --context {{.HUB_CLUSTER_NAME}} annotate secret {{.HUB_CLUSTER_NAME}} -n argocd --overwrite \
-          sandbox_runtime="${RUNTIME}"
+        # Force the fleet-secret ExternalSecret to re-sync so the cluster secret
+        # picks the values up now rather than on its next interval. Discovered
+        # rather than hardcoded: the name is suffixed with the cluster name.
+        ES=$(kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd get externalsecret -o name 2>/dev/null \
+          | grep -i fleet-secret | grep {{.HUB_CLUSTER_NAME}} | head -1 || true)
+        if [ -n "$ES" ]; then
+          kubectl --context {{.HUB_CLUSTER_NAME}} annotate "$ES" -n argocd \
+            force-sync=$(date +%s) --overwrite >/dev/null
+          printf '✓ Fleet secret refresh triggered (%s)\n' "$ES"
+        else
+          printf '⚠ No fleet-secret ExternalSecret for %s — the cluster secret will\n' "{{.HUB_CLUSTER_NAME}}"
+          printf '  pick this up on its own refresh interval.\n'
+        fi
+
+        # VERIFY, because whether a hub/config metadata key becomes a cluster
+        # secret LABEL (which the addon selector needs) or an annotation is the
+        # fleet-secret chart's business, and that chart lives in the platform
+        # repo. If the label did not land, say so here with the fallback rather
+        # than reporting success and leaving the addon quietly off.
+        for _ in 1 2 3 4 5 6; do
+          GOT=$(kubectl --context {{.HUB_CLUSTER_NAME}} -n argocd get secret {{.HUB_CLUSTER_NAME}} \
+            -o "jsonpath={.metadata.labels.enable_agent_sandbox}" 2>/dev/null || true)
+          [ "$GOT" = "true" ] && break
+          sleep 10
+        done
+        if [ "$GOT" != "true" ]; then
+          printf '⚠ enable_agent_sandbox is in hub/config but has not appeared as a LABEL on\n'
+          printf '  argocd/%s. The fleet-secret chart may map metadata to annotations only.\n' "{{.HUB_CLUSTER_NAME}}"
+          printf '  The addon will not install until the label exists. As a stopgap:\n'
+          printf '    kubectl label secret %s -n argocd --overwrite enable_agent_sandbox=true\n' "{{.HUB_CLUSTER_NAME}}"
+          printf '  and please report it, because the stopgap is lost on a hub rebuild.\n'
+        fi
 
         printf '✓ agent sandbox enabled on {{.HUB_CLUSTER_NAME}} (runtime=%s)\n' "$RUNTIME"
 
