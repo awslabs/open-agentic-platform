@@ -31,3 +31,10 @@ __pycache__/
 # changes -- and belong in the Application that consumes them, not loose in the
 # repo root.
 *-cedar-policy.b64
+
+# Local agent scratch: session state and git worktrees. The worktrees are real
+# git repositories, so a `git add -A` turns them into gitlinks in a commit.
+.claude/
+
+# macOS
+.DS_Store
