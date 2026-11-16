@@ -787,14 +787,34 @@ implies otherwise is the fail-silent shape again.
 
 | Phase | Inspection | Streaming |
 |---|---|---|
-| **1** | **input only** | unaffected. No conflict exists on the request path |
+| **1** | **input only** — `promptGuard.request` | unaffected. No conflict exists on the request path, which is why @shapirov103's prototype saw streaming work with a request guard in place |
 | **2** | input + output, `onViolation: report` | unaffected — detection needs no buffering |
-| **2** | input + output, `onViolation: block` or `redact` | **the proxy buffers the completion, so this agent does not stream** |
+| **2** | input + output, `onViolation: block` | the gateway buffers, so **this agent does not stream** |
+| **2** | input + output, `onViolation: redact` **on a stream** | **not available at all** — see below |
 
-That last row is a **contract, not a surprise**: an agent whose profile blocks on
-output does not stream, the `+usage` text says so, and `oap_agent_guardrail_info`
-carries a `streaming="buffered"` label so it is visible on the dashboard rather
-than discovered in a latency graph.
+**agentgateway expresses this trade as a flag, and adds one constraint revision 3
+did not know about.** `AIPromptGuard.streaming` is an enum whose only non-default
+value is `Enabled`, documented as "Defaults to disabled to preserve streaming
+throughput unless explicitly enabled" — so response guards simply do not run on
+a stream until the platform opts in, which is the right default and matches
+Phase 1 doing nothing on the response path.
+
+The new constraint: **masking is not supported on the streaming path.** From
+`crates/agentgateway/src/llm/policy/mod.rs` at `v1.4.1`, the streaming response
+evaluator treats a mask outcome as a programming error —
+
+> `"streaming response guard unexpectedly returned Masked; streaming masking is not supported"`
+
+So on a stream the available verdicts are **allow or reject**, never redact.
+That is consistent with Bedrock's own `async` mode, which "doesn't support the
+masking of sensitive information", and it means D2's `onViolation: redact` and
+streaming are mutually exclusive rather than merely expensive.
+
+That is a **contract, not a surprise**: an agent whose profile blocks on output
+does not stream, an agent whose profile redacts on output cannot stream at all,
+the `+usage` text says both, and `oap_agent_guardrail_info` carries a
+`streaming="buffered"` label so it is visible on the dashboard rather than
+discovered in a latency graph.
 
 Starting with input only is also where the value is. Prompt injection, jailbreak
 attempts and a user pasting someone else's PII are all inbound, they are the
