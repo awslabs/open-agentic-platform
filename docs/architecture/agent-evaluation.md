@@ -1213,6 +1213,17 @@ own error counter (`loop="harness"`) and alerts, it is off by default
 can never take the online evaluation series down with it. The runner is a Job
 in the platform namespace, not part of the reconciler pod (see "Execution").
 
+**Why report mode does not hold promotion.** Nothing reads the score back into
+the Rollout. The reconciler publishes metrics and Events and never writes to
+the Rollout, so a 5/20 run left a held Rollout `Paused` and the Event said
+"promotion not affected". Whether a revision waits for a person is set by the
+agent's `autoPromotionEnabled` (default `true`: promote when healthy, score
+afterwards). With `false` the Rollout pauses on the preview, the harness scores
+the preview, and a person promotes or aborts. The hold has no time limit in
+the observed Argo Rollouts version. Both postures, the run-to-decision
+walkthrough and the caveats are in the
+[guide, section 3.6](../../applications/agent-evaluation/agent-harness.md#36-promotion-postures-dashcam-and-manual-gate).
+
 **Follow-up for gate mode: an exact revision check per reply.** In report mode
 a run is tied to its revision by timing only (the supersede rule under
 "Execution"). Once a result can block a promotion that is not enough: the agent
