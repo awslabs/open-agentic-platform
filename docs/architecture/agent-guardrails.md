@@ -4,10 +4,10 @@
 |---|---|
 | **Status** | Proposed — design only, nothing implemented |
 | **Author** | @elamaran11 |
-| **Reviewers** | TBD |
+| **Reviewers** | @shapirov103 (CHANGES_REQUESTED on rev 3, D1; addressed in rev 4) |
 | **Target** | `agent` component, new `agent-guardrails` addon, `bifrost` chart |
 | **Date** | 2026-11-11 |
-| **Revision** | 3 |
+| **Revision** | 4 — D1 reversed after @shapirov103's review |
 | **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
 | **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 and §3.10 |
 
@@ -65,30 +65,37 @@ guardrails:
   profile: standard
 ```
 
-From that, the platform routes the agent's model calls through an **OAP-owned
-inspection proxy** that screens the prompt with **Amazon Bedrock Guardrails**
-before Bifrost ever sees it, refuses the request on a violation, and reports
-every outcome as `oap_agent_guardrail_*` metrics next to the evaluation scores
-already on the dashboard. No vendor, ARN, region or key appears in the
-Application.
+From that, the platform points the agent at an **agentgateway AI route** whose
+`promptGuard` screens the prompt with **Amazon Bedrock Guardrails** before
+Bifrost ever sees it, refuses the request on a violation, and reports every
+outcome through the gateway's own `guardrail_checks` metric, surfaced as
+`oap_agent_guardrail_*` next to the evaluation scores already on the dashboard.
+No vendor, ARN, region or key appears in the Application — **and no new OAP
+component appears in the cluster.**
 
 **Five decisions carry the design, and three of them differ from #144 as
 drafted:**
 
 | | Decision | Why it is not what the issue proposed |
 |---|---|---|
-| D1 | Enforce at a **proxy in front of Bifrost**, not a Bifrost plugin | OAP runs upstream's public OSS image, which is statically linked and **cannot load plugins**; Bifrost's own guardrails are an **Enterprise-licensed image** and **fail open** by default |
+| D1 | Enforce at **agentgateway's native `promptGuard`** on an AI route in front of Bifrost | Not a Bifrost plugin: OAP runs upstream's public OSS image, which is statically linked and **cannot load plugins**, and Bifrost's own guardrails are an **Enterprise-licensed image**. Not an OAP proxy either — the pinned agentgateway v1.4.1 already does this, so **OAP ships no new component** |
 | D2 | The agent may only **tighten** the platform profile | `onViolation` as a free choice lets any developer switch enforcement off while the capability still reports as on |
 | D3 | **`ApplyGuardrail`**, behind a backend boundary that normalizes findings | The numeric `severityScore` shape #144 and #146 describe is a **different API** (`InvokeGuardrailChecks`), with different price, quota and Region coverage |
 | D4 | The verdict is **one function**, and fails **closed** | #146's ask, adopted. Every nearby precedent — Bifrost Enterprise, its judge guardrail, the reference plugin PR, OAP's own `authPolicy` — fails **open** |
 | D5 | **Input only** in Phase 1; blocking on output **costs streaming** | Buffer and lose the stream, or stream and lose the guarantee. There is no third option, and every vendor claiming otherwise leaks |
 
-**Two things this design says about itself, because the alternative is the
+**Three things this design says about itself, because the alternative is the
 failure mode OAP has already named:**
 
+- **`bedrockGuardrails` fails open, and there is no field to change that.** The
+  native guard inherits the `Guardrail` trait's `FailOpen` default; only the
+  `webhook` guard is `FailClosed`. So Phase 1 ships fail-open on a Bedrock error
+  — observably, since the gateway records `action="FailOpen"` as its own outcome
+  — and §D4 records the three ways to close it. **This is what not building a
+  proxy costs, and it is stated rather than engineered around.**
 - **The hop is not yet unbypassable.** `llmGatewayUrl` is a developer parameter,
   Bifrost needs no credential, and no egress mechanism exists in the repository.
-  Until §D7's three changes land, this is a control for cooperating agents and a
+  Until §D7's changes land, this is a control for cooperating agents and a
   detection for the rest.
 - **Content inspection does not close prompt injection, and cannot see tool
   calls at all.** Bedrock Guardrails evaluates neither `toolUse.input` nor
