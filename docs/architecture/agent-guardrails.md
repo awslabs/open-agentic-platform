@@ -1477,8 +1477,7 @@ flowchart LR
     classDef aws fill:#dcfce7,stroke:#16a34a,color:#14532d
 
     A["agent Rollout<br/>(agent namespace)"]:::dev
-    CM["ConfigMap<br/>&lt;agent&gt;-guardrails"]:::dev
-    GP["guardrail proxy<br/>OpenAI-compatible /v1<br/>★ NEW"]:::plat
+    AG["agentgateway<br/>AI route + promptGuard<br/>★ CONFIG ONLY"]:::plat
     CAT["profile catalog<br/>(chart values)<br/>★ NEW"]:::plat
     BF["Bifrost /v1"]:::plat
     BR["Amazon Bedrock<br/>models"]:::aws
@@ -1486,24 +1485,28 @@ flowchart LR
     AMP["AMP → AMG dashboard"]:::aws
     LF["Langfuse<br/>traces + scores"]:::plat
 
-    A -- "1. model call" --> GP
-    CM -- "watch" --> GP
-    CAT --> GP
-    GP -- "2. inspect prompt" --> GR
-    GR -- "3. assessment" --> GP
-    GP -- "4. forward if allowed" --> BF
+    A -- "1. model call" --> AG
+    CAT -- "renders route + policy" --> AG
+    AG -- "2. ApplyGuardrail<br/>source=INPUT" --> GR
+    GR -- "3. BLOCKED / ANONYMIZED" --> AG
+    AG -- "4. forward if allowed<br/>ai backend, host=Bifrost" --> BF
     BF --> BR
-    GP -- "/metrics" --> AMP
+    AG -- "guardrail_checks" --> AMP
     A -- "OTLP traces" --> LF
-    A -. "BYPASS: an agent may set<br/>llmGatewayUrl itself — §D7" .-> BF
+    A -. "BYPASS: llmGatewayUrl still<br/>reaches Bifrost directly — §D7" .-> BF
 
-    linkStyle 9 stroke:#dc2626,stroke-width:2px,color:#b91c1c
+    linkStyle 8 stroke:#dc2626,stroke-width:2px,color:#b91c1c
 ```
 
 Blue is the agent's own namespace, amber is in-cluster platform, green is AWS.
-Only the two boxes marked ★ are new; everything else already runs. The red dashed
-edge is the design's own stated weakness (§2.4, §D7), drawn rather than described
-so a reviewer sees it.
+**Only the profile catalog is new, and the gateway box is configuration rather
+than a component** — that is the whole content of D1's reversal, and it is the
+one thing this picture is for. Revision 3 had an extra amber box here, an
+OAP-owned proxy, and review was right that it did not need to exist.
+
+The red dashed edge is the design's own stated weakness (§2.4, §D7). It matters
+more than it did: with the guard on the gateway, an agent that keeps today's
+`llmGatewayUrl` is not partially guarded, it is unguarded.
 
 ### One request, in order
 
@@ -1511,40 +1514,45 @@ so a reviewer sees it.
 sequenceDiagram
     autonumber
     participant Ag as Agent
-    participant GP as Guardrail proxy
+    participant AG as agentgateway
     participant GR as Bedrock Guardrails
     participant BF as Bifrost
     participant BR as Bedrock
 
-    Ag->>GP: POST /v1/chat/completions
-    GP->>GP: resolve profile from the agent's ConfigMap
-    GP->>GR: ApplyGuardrail(source=INPUT, trace=enabled)
-    alt violation, verdict = block
-        GR-->>GP: action=GUARDRAIL_INTERVENED
-        GP->>GP: decide(findings, profile, ctx) → BLOCK
-        GP-->>Ag: 4xx + the profile's refusal message
-        Note over GP: Bifrost is never called. Metric outcome="blocked"
-    else violation, verdict = redact
-        GR-->>GP: assessments with action=ANONYMIZED
-        GP->>BF: forward the masked prompt
+    Ag->>AG: POST /v1/chat/completions
+    AG->>AG: route match selects the profile's promptGuard
+    AG->>GR: POST /guardrail/{id}/version/{v}/apply<br/>source=INPUT
+    alt blocked
+        GR-->>AG: assessment action=BLOCKED
+        AG-->>Ag: 403 + the profile's custom response
+        Note over AG: Bifrost is never called<br/>guardrail_checks{phase=Request,action=Reject}
+    else anonymized
+        GR-->>AG: assessment action=ANONYMIZED + masked outputs
+        AG->>BF: forward the masked prompt
         BF->>BR: inference
         BR-->>BF: completion
-        BF-->>GP: completion
-        GP-->>Ag: completion. Metric outcome="redacted"
+        BF-->>AG: completion
+        AG-->>Ag: completion<br/>guardrail_checks{action=Mask}
     else backend error or timeout
-        GR--xGP: ThrottlingException / 5xx
-        GP->>GP: bounded retry, then profile.onError
-        GP-->>Ag: 4xx when onError=block
-        Note over GP: outcome="error_blocked", its own alert
+        GR--xAG: ThrottlingException / 5xx
+        AG->>AG: bedrockGuardrails has no failureMode<br/>trait default is FailOpen
+        AG->>BF: forward UNINSPECTED
+        BF-->>AG: completion
+        AG-->>Ag: completion<br/>guardrail_checks{action=FailOpen}
+        Note over AG: §D4 option (a): observable, alerted,<br/>and genuinely an open door
     else clean
-        GR-->>GP: action=NONE
-        GP->>BF: forward verbatim
+        GR-->>AG: no blocked assessment
+        AG->>BF: forward verbatim
         BF->>BR: inference
         BR-->>BF: completion
-        BF-->>GP: completion
-        GP-->>Ag: completion. Metric outcome="allowed"
+        BF-->>AG: completion
+        AG-->>Ag: completion<br/>guardrail_checks{action=Allow}
     end
 ```
+
+The third branch is the one to read twice. Revision 3 drew a refusal there; the
+native guard forwards instead, and the design's accepted cost (§D4) is that this
+branch exists at all.
 
 ### Which concern is enforced at which hop
 
