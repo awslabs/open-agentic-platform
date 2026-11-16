@@ -416,8 +416,14 @@ class HarnessLoop:
         key_ok = self._ensure_judge_key(owner, delete_stale=not any_active)
         self._metrics.harness_judge_key_present.labels(cluster).set(1 if key_ok else 0)
         can_create = key_ok or not self._h.judge_key_required
-        if not key_ok:
-            ok = False  # an unreadable or unmintable key is an error even when optional
+        if not can_create:
+            ok = False  # a required key that cannot be created fails the pass
+        elif not key_ok and ok:
+            # An optional key (judge.virtualKey.required: false) that cannot be
+            # minted or read is still an error to count, but runs go on without
+            # it, so the pass stays successful. Skipped when ok is already False
+            # so run_once does not count the same pass twice.
+            self._metrics.errors.labels(cluster, "harness").inc()
 
         try:
             declarations, malformed = self._reader.list()

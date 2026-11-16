@@ -102,7 +102,7 @@ and real.
 | `AgentEvaluationRuleBudgetHigh` | The shared project is at 80% of `maxActiveRules` |
 | `AgentEvaluationJudgeKeyMissing` | Hub only: judge spend is un-budgeted |
 | `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m; also follows a missing required judge key |
-| `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m |
+| `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m; includes an optional judge key that cannot be minted (runs still start) |
 | `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; `warning` with `required: true` (no run starts while it fires), `info` with `required: false` (runs go on un-budgeted) |
 
 ## Harness (report mode)

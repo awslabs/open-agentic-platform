@@ -533,7 +533,11 @@ Secrets Manager from the hub.
   no new Job starts, each declaration gets a `HarnessJudgeKeyUnavailable`
   Event, `oap_agent_harness_judge_key_present` is 0, and the harness loop pass
   is not counted as successful. `required: false` lets runs start without a key,
-  so judge calls go through Bifrost unbudgeted.
+  so judge calls go through Bifrost unbudgeted. In that mode a key that cannot
+  be minted or read adds one to `errors_total` per pass but does not fail the
+  pass, so `last_success` keeps moving and `AgentHarnessStale` stays quiet;
+  `AgentHarnessReconcileErrors` and the `info` `AgentHarnessJudgeKeyMissing`
+  still fire.
 - **`mint: false`.** The reconciler only checks that Secret
   `agent-evaluation-harness-judge-key` holds a value. Use this when something
   else owns the key.

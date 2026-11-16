@@ -157,7 +157,8 @@ spec:
               The harness loop's Kubernetes Job, Rollout or Service calls, or
               its Bifrost management API calls for the judge key, have been
               failing for 30 minutes, so new agent revisions may not be run
-              against their harness datasets. Check the reconciler's logs in
+              against their harness datasets. With an optional judge key
+              runs still start, un-budgeted. Check the reconciler's logs in
               the {{ .Release.Namespace }} namespace and the
               HarnessJudgeKeyUnavailable Events.
 {{- $keyRequired := .Values.harness.judge.virtualKey.required }}

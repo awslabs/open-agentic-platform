@@ -922,8 +922,30 @@ def test_judge_key_not_required_still_runs(settings, harness_settings, catalog, 
     hs = dataclasses.replace(harness_settings, judge_key_required=False)
     loop, f = build(settings, hs, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
     f.custom.set_rollout("team-a", "assistant", "rev1")
-    loop.run_once()
+    assert loop.run_once() is True
     assert len(f.batch.created) == 1
+    # The failed mint is counted once and does not fail the pass, so
+    # AgentHarnessStale does not fire for the documented un-budgeted mode.
+    assert metrics.registry.get_sample_value(
+        "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
+    ) == 1
+
+
+def test_judge_key_failure_pass_result_depends_on_required(
+    settings, harness_settings, catalog, metrics
+):
+    optional = dataclasses.replace(harness_settings, judge_key_required=False)
+    loop, f = build(settings, optional, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
+    f.custom.set_rollout("team-a", "assistant", "rev1")
+    assert [loop.run_once() for _ in range(3)] == [True, True, True]
+    errors = lambda: metrics.registry.get_sample_value(
+        "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
+    )
+    assert errors() == 3
+    loop2, f2 = build(settings, harness_settings, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
+    f2.custom.set_rollout("team-a", "assistant", "rev1")
+    assert loop2.run_once() is False
+    assert errors() == 4
 
 
 def test_judge_key_mount_is_optional_only_when_the_key_is_not_required(
@@ -1514,7 +1536,7 @@ def test_bifrost_down_with_an_optional_key_counts_a_harness_error(
     hs = dataclasses.replace(harness_settings, judge_key_required=False)
     loop, f = build(settings, hs, catalog, metrics, [decl()], bifrost=FakeBifrost(fail=True))
     f.custom.set_rollout("team-a", "assistant", "rev1")
-    assert loop.run_once() is False
+    assert loop.run_once() is True
     assert _harness_errors(metrics) == 1
 def test_job_create_500_counts_a_harness_error(settings, harness_settings, catalog, metrics):
     from kubernetes.client.rest import ApiException
