@@ -673,27 +673,74 @@ MCP guardrail processor (`backend.mcp.guardrails.processors[].remote`, the hook
 #152 builds on) ships `failureMode` with **`FailClosed` as the documented
 default** — its table row reads "Fail closed (default) … Deny the request". So
 the posture argued for here is not novel; it is what the one adjacent
-implementation in OAP's own gateway already does, and the odd choice would be to
-depart from it.
+implementation in OAP's own gateway already does.
 
-So the profile declares it, and the platform default is `block`:
+##### The one thing D1's reversal costs, and it lands exactly here
+
+The LLM `promptGuard` path does **not** inherit the MCP path's posture. Verified
+in `crates/agentgateway/src/llm/policy/mod.rs` at `v1.4.1`:
+
+```rust
+/// Guard types without an explicit `failure_mode` field default to `FailOpen`.
+fn failure_mode(&self) -> FailureMode {
+    FailureMode::FailOpen
+}
+```
+
+Only **`webhook`** overrides it — `webhook.rs` sets `failure_mode:
+FailureMode::FailClosed`, and `Webhook` is the one guard type in `ai_policy.go`
+carrying a `failureMode` field at all, documented as "`FailOpen` allows the
+request to continue. `FailClosed` (default) rejects the request". The streaming
+evaluator repeats the same split: `ResponseGuardKind::Webhook(wh) =>
+wh.failure_mode, _ => FailureMode::FailOpen`.
+
+So **`bedrockGuardrails` fails open on a Bedrock error or timeout, and there is
+no field to change that.** This is not a quirk to note in passing: it is this
+design's central requirement — #144's "single most consequential choice" — and
+the chosen mechanism does not meet it out of the box.
+
+Three ways to close it, and the recommendation is not the obvious one:
+
+| | Approach | Cost |
+|---|---|---|
+| **a** | Ship native `bedrockGuardrails` and **record the fail-open honestly** | No new component. A real window where a Bedrock outage means unguarded traffic |
+| **b** | Put OAP's own check behind the **`webhook`** guard, which is fail-closed by default, and have it call `ApplyGuardrail` | Fail-closed natively, and it is the backend boundary @shapirov103 suggested. But it is a service again — far smaller than the proxy (no streaming, no OpenAI protocol, not on the completion path) yet still something to build, scale and upgrade |
+| **c** | Native guard **plus an upstream `failureMode` field** on `BedrockGuardrails` | The smallest real fix. It mirrors `Webhook`'s existing field exactly, so it is a plausible upstream contribution rather than a fork |
+
+**Recommended: (a) for Phase 1, with (c) opened upstream immediately, and (b)
+held in reserve.** The reasoning is that (a) is *observably* fail-open rather
+than silently so — agentgateway already emits `guardrail_checks{action="FailOpen"}`
+as an outcome distinct from `Allow`, which is the property §D8 demands of any
+verdict. A fail-open that is measured, alerted and bounded is a known risk; a
+proxy built to avoid it is a permanent cost. If the measured fail-open rate in
+Phase 1 is not acceptable, (b) is the fallback and (c) may have landed by then.
+
+Choosing (a) means this document no longer claims a fail-closed guarantee it
+cannot deliver. **Phase 1 ships fail-open on backend error, by upstream default,
+and says so in the capability's own documentation.** That is a worse control
+than revision 3 promised and an honest one, and the alternative — shipping (b)
+to keep the promise — is the thing review rejected.
+
+So the profile still declares the intent, and the platform default is `block`:
 
 ```yaml
-onError: block   # block | allow — what a backend error or timeout produces
+onError: block   # block | allow — the intent; today only the webhook guard can honour block
 ```
 
 Three properties keep this from being a slogan:
 
-- **`block` is the default for every shipped profile**, including `observe`.
+- **`block` is the intent for every shipped profile**, including `observe`.
   An `observe` profile reports violations and blocks nothing — but a backend it
   cannot reach is an *unknown*, not a clean result, and the one thing a
-  monitoring profile must never do is claim coverage it did not have.
-- **A fail-closed block is a distinct outcome in the metrics**, never counted as
-  a violation. `oap_agent_guardrail_errors_total` and a separate
-  `outcome="error_blocked"` label mean "the guardrail broke" never reads as
-  "the agent misbehaved".
-- **It has its own alert**, because a guardrail that is failing closed is both a
-  working control and an outage.
+  monitoring profile must never do is claim coverage it did not have. Under
+  option (a) this intent is **not enforced**, and the gap is the whole reason
+  (c) is worth opening upstream.
+- **A fail-open is a distinct outcome in the metrics**, never counted as a clean
+  allow. Upstream already does this (`action="FailOpen"`), so "the guardrail
+  broke" never reads as "the content was fine".
+- **It has its own alert**, because a guardrail that is failing is both a
+  degraded control and an outage, and under option (a) it is *also* an open
+  door, which raises the alert's severity rather than lowering it.
 
 #### Retry is part of the verdict, not a wrapper around it
 
