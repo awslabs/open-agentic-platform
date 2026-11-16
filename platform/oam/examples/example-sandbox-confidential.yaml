@@ -132,11 +132,10 @@ spec:
         # of a session is the worst place to pay it.
         warmPool: 2
 
-        # Shorter than the isolated example on purpose: an instance that holds
-        # decrypted regulated data in memory should not outlive the session that
-        # needed it.
-        idleTimeout: 5m
-        maxLifetime: 1h
+        # NO idleTimeout / maxLifetime: this component does not enforce them, so it
+        # does not offer them. For data this sensitive the short TTL matters, which
+        # is exactly why it belongs on the SandboxClaim the claimer creates, where it
+        # is actually applied, rather than on a card nothing reads.
 
         resources:
           requests:

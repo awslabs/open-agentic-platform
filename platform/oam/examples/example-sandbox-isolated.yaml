@@ -76,13 +76,14 @@ spec:
         # on-demand.
         warmPool: 2
 
-        # ── Lifecycle ─────────────────────────────────────────────────────────
-        # PUBLISHED, NOT ENFORCED HERE. The TTL lives on the per-session
-        # SandboxClaim, which the claimer creates at request time, so this
-        # component states the contract on the sandbox card and the claimer
-        # applies it. A claimer that ignores these leaks instances.
-        idleTimeout: 15m
-        maxLifetime: 4h
+        # ── Lifecycle: NOT DECLARED HERE, deliberately ───────────────────────
+        # There is no idleTimeout or maxLifetime on this component. They existed
+        # and did nothing: the TTL lives on the SandboxClaim, which a claimer
+        # creates at runtime, so the component could only write the numbers onto
+        # its card. A field that reclaims nothing reads like a guarantee.
+        #
+        # The claimer sets lifecycle.ttlSecondsAfterFinished on the claim -- see
+        # the worked claim at the bottom of this file.
 
         # ── Network ───────────────────────────────────────────────────────────
         # NOT network-isolated, because this sandbox is driven over HTTP by the
@@ -168,9 +169,9 @@ spec:
 #     warmPoolRef:
 #       name: code-session
 #     lifecycle:
-#       # The TTL this component DECLARED on its sandbox card, applied here.
-#       # The card exists so a claimer reads one value instead of hardcoding it:
-#       #   kubectl get cm code-session-sandbox -o jsonpath='{.data.idleTimeout}'
+#       # THE ONLY PLACE A TTL IS REAL. The component does not declare one -- it
+#       # could not enforce it -- so the claimer owns it, and a claimer that
+#       # omits it leaks the instance until something else reaps it.
 #       ttlSecondsAfterFinished: 900
 #     # Per-session input. The template must opt in - envVarsInjection: Allowed
 #     # (the component default) lets a claim ADD variables but not overwrite the

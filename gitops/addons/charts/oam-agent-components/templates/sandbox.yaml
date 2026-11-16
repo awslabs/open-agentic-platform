@@ -444,17 +444,16 @@ spec:
 
         	// Discovery for whoever creates the claims. A claimer -- the gateway, an
         	// agent, the Dark Factory orchestrator -- needs the pool name and the
-        	// lifecycle the developer declared, and must not have to parse this
-        	// component's rendered objects or hardcode a naming convention. Same role
-        	// as the agent's Agent Card ConfigMap, and the same cleanup story: it is a
-        	// KubeVela output, so deleting the Application deletes it.
+        	// template name, and must not have to parse this component's rendered
+        	// objects or hardcode a naming convention. Same role as the agent's Agent
+        	// Card ConfigMap, and the same cleanup story: it is a KubeVela output, so
+        	// deleting the Application deletes it.
         	//
-        	// idleTimeout and maxLifetime are PUBLISHED HERE RATHER THAN ENFORCED,
-        	// because the TTL lives on the SandboxClaim (lifecycle.shutdownTime,
-        	// ttlSecondsAfterFinished) and a claim is created per session at runtime.
-        	// A claimer that ignores these values leaks instances; the values being
-        	// declared in one place is what makes that a bug with an owner rather than
-        	// an unwritten convention.
+        	// IT CARRIES ONLY FACTS ABOUT WHAT WAS RENDERED. It used to also publish
+        	// idleTimeout and maxLifetime, which this component does not enforce and
+        	// cannot -- the TTL lives on a SandboxClaim created at runtime. A card
+        	// that mixes "this is the pool's name" with "this is a lifetime somebody
+        	// should apply" invites a claimer to read the second as binding.
         	sandboxCard: {
         		apiVersion: "v1"
         		kind:       "ConfigMap"
@@ -473,8 +472,6 @@ spec:
         			template:        context.name + "-template"
         			mode:            parameter.mode
         			runtimeClass:    _isolationClass
-        			idleTimeout:     parameter.idleTimeout
-        			maxLifetime:     parameter.maxLifetime
         			service:         "\(parameter.service)"
         			networkIsolated: "\(parameter.networkIsolated)"
         			warmReplicas:    "\(parameter.warmPool)"
@@ -613,16 +610,17 @@ spec:
         	// constraint first.
         	warmPool: *1 | int & >=0
 
-        	// +usage=How long an idle instance is kept before it is reclaimed, e.g.
-        	// 15m. PUBLISHED, NOT ENFORCED: the TTL lives on the per-session
-        	// SandboxClaim, which a claimer creates at runtime, so this component can
-        	// only state the contract. A claimer that ignores it leaks instances.
-        	idleTimeout: *"15m" | string
-
-        	// +usage=Hard ceiling on one instance's lifetime regardless of activity,
-        	// e.g. 4h. The backstop for a session that never goes idle. Published, not
-        	// enforced, for the same reason as idleTimeout.
-        	maxLifetime: *"4h" | string
+        	// NO idleTimeout / maxLifetime. They were here, defaulted, and did
+        	// NOTHING: the TTL lives on the SandboxClaim, which a claimer creates at
+        	// runtime, so the component could only write the numbers to its card and
+        	// hope. A developer setting idleTimeout: 15m got a field that reclaimed
+        	// nothing after 15 minutes, which is worse than no field -- it reads like
+        	// a guarantee.
+        	//
+        	// They come back when something enforces them. The claimer already has to
+        	// set lifecycle.ttlSecondsAfterFinished on the claim it creates (see the
+        	// worked claim in example-sandbox-isolated.yaml), so the honest place for
+        	// a declared default is next to whatever creates claims, not here.
 
         	// +usage=Whether a claim may ADD environment variables to the instance it
         	// binds. Allowed (default) lets a claim add but not override the
