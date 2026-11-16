@@ -556,36 +556,34 @@ evaluated against another.
 | Azure AI Content Safety | **integer** severity, `0/2/4/6` or the full `0-7` |
 | Google Model Armor | **string enum** `LOW_AND_ABOVE \| MEDIUM_AND_ABOVE \| HIGH`, and a boolean `matchState` for several filters |
 
-So the boundary's own `Assessment` is the contract, and it normalizes to the
-**four-level enum**, because that is what every backend can express:
+**Since D1's reversal, OAP does not write this normalizer — the gateway already
+is one.** `promptGuard`'s five guard types are the boundary, and the three
+managed services above each have their own entry (`bedrockGuardrails`,
+`openAIModeration`, `googleModelArmor`), with `webhook` as the escape hatch for
+anything else. Swapping a backend is a field change in the profile catalog, not
+a new Python module. That is the backend boundary @shapirov103 described, and it
+is better than the one revision 3 designed because upstream maintains it.
 
-```python
-@dataclass(frozen=True)
-class Finding:
-    category: str            # normalized: prompt_attack, pii, hate, denied_topic, ...
-    detected: bool
-    severity: Severity       # NONE | LOW | MEDIUM | HIGH  — always present
-    score: float | None      # 0-1 where the backend gives one; None otherwise
-    raw: Mapping[str, Any]   # the backend's own finding, unaltered, for the trace
-```
+What survives is the **catalog's** obligation, because the disagreement above is
+real and the gateway does not paper over it:
 
-Two rules bind every backend, and both exist because the alternative is a
-guardrail that reports clean when it did not run:
-
-- **A profile may not require `score`.** A policy that compares a number is
-  only valid on a backend that supplies one, so the catalog declares which
-  detectors a profile needs and the reconciler refuses a profile its backend
-  cannot satisfy, loudly, at startup.
-- **An unparsed response is an error, not a clean result.** Same rule
-  evaluation already carries: guessing across candidate key names turns a
-  vendor rename into "nothing detected". The backend raises, the verdict is the
-  profile's `onError` (D4), and a metric moves.
+- **A profile names its guard type explicitly**, and the catalog records which
+  detectors that type can express. `bedrockGuardrails` has no numeric score, so
+  a profile written against a threshold is invalid on it — the catalog refuses
+  such a profile at render time rather than at request time.
+- **Guard types are not interchangeable at equal strength.** Moving a profile
+  from `bedrockGuardrails` to `googleModelArmor` changes what "MEDIUM" means.
+  The catalog therefore pins the guard type per profile, and a change to it is
+  a reviewed chart edit with a new `profileVersion` (§D8).
+- **An unparsed backend response is an error, not a clean result.** The gateway
+  owns this now, and its answer is `action="FailOpen"` — which is honest, and is
+  precisely the fail-open §D4 records as this design's accepted cost.
 
 #### Why Bedrock Guardrails, and which of its two APIs
 
 | Option | Verdict |
 |---|---|
-| **Bedrock `ApplyGuardrail`** (**chosen, Phase 1**) | Same account OAP already calls for inference. One `bedrock:ApplyGuardrail` permission: "If you are using guardrails independently with the `ApplyGuardrail` API … you only need the `bedrock:ApplyGuardrail` permission." Covers injection, PII, toxicity and **denied topics** in one object, and is the only candidate that both enforces and takes natural-language topic definitions |
+| **Bedrock `ApplyGuardrail`** (**chosen, Phase 1 — and it is what the gateway already calls**) | Same account OAP already calls for inference. One `bedrock:ApplyGuardrail` permission: "If you are using guardrails independently with the `ApplyGuardrail` API … you only need the `bedrock:ApplyGuardrail` permission." Covers injection, PII, toxicity and **denied topics** in one object, and is the only candidate that both enforces and takes natural-language topic definitions. Independently confirmed by D1's reversal: agentgateway's `bedrockGuardrails` guard posts to `/guardrail/{identifier}/version/{version}/apply` — this API, this shape — so the choice needs no OAP code to realise it |
 | Bedrock `InvokeGuardrailChecks` | **Not Phase 1, but the answer to #146's score question.** It is where numeric `severityScore` actually lives, and it separates prompt attack into `JAILBREAK` / `PROMPT_INJECTION` / `PROMPT_LEAKAGE`. Against it: detect-only ("The API doesn't block, pass, or redact content"), no denied topics, and **7 Regions**. Adopt it behind the same boundary when a policy needs a number |
 | Azure AI Content Safety | A real option for a customer already on Azure. Standalone-only by design, which fits a gateway. Against it for OAP's default: cross-cloud egress and credentials, no PII in the standalone API (that is a second service, Azure AI Language, at ~2.7× the unit price), and a documented retirement of groundedness and custom categories on 2027-04-30 |
 | Google Model Armor | Also genuinely model-agnostic, and the only candidate with org-wide policy floors. Against it for OAP: cross-cloud hop, a **1,200 QPM per-project** quota, and streaming that is gRPC-only and cannot do PII de-identification |
@@ -606,12 +604,19 @@ is a real decision and not a naming detail.
 1. **Masking and blocking are indistinguishable from the top-level result.** A
    PII filter set to `ANONYMIZE` "reports the same `stopReason` as a block, so
    you can't distinguish the two from `stopReason` alone". Telling them apart
-   needs the trace's per-entry `action` (`ANONYMIZED` vs `BLOCKED`). So the proxy
-   always requests the trace and reads `action`, never the summary.
-2. **The trace contains the unredacted values.** "The trace returns the unmasked
-   values … treat the trace as sensitive data and don't log it alongside ordinary
-   responses." So `raw` above never reaches a log or a metric label; it reaches
-   the trace store that already holds prompts, and nothing else.
+   needs the per-entry `action` (`ANONYMIZED` vs `BLOCKED`). The gateway does
+   this correctly already — `bedrock_guardrails.rs` exposes `is_blocked()` and
+   `is_anonymized()` as separate predicates over the assessments, and the
+   dataplane maps them to distinct `Rejected` and `Masked` outcomes. Worth
+   recording because a reviewer would otherwise have to take it on trust that
+   the native guard does not collapse redaction into a block.
+2. **The response contains the unredacted values.** "The trace returns the
+   unmasked values … treat the trace as sensitive data and don't log it
+   alongside ordinary responses." Under D1's reversal this stops being OAP code
+   and becomes a **gateway logging-configuration requirement**: the guard's
+   response body must never reach an access log or a metric label. Phase 1 must
+   assert that, because the component holding the sensitive data is now one OAP
+   configures rather than one it writes.
 3. **Guardrails do not see tool-call content.** Verbatim: PII is "neither blocked
    nor masked" in `toolUse.input`, `toolResult`, or `toolSpec.description` /
    `inputSchema`. For an agent platform that is a large hole, and it is the
@@ -634,6 +639,14 @@ The two families share the `default` ProviderConfig and its Pod Identity
 credentials, exactly as `crossplane-agentcore` already documents. Pin the
 version in the chart and confirm the published package name before it goes in an
 install manifest.
+
+**Who holds `bedrock:ApplyGuardrail` changed with D1.** The guard authenticates
+through `policies.backendAuth.aws: {}`, which is the gateway's own AWS identity,
+so the permission belongs on the **`agentgateway` ServiceAccount** rather than
+on a new component's. That is a smaller surface than revision 3's — no new
+ServiceAccount, no new Pod Identity association — and a broader one in a way
+worth stating: the gateway's identity gains a Bedrock permission it did not have
+before. Scope it to the guardrail ARNs the catalog creates, not to `*`.
 
 ### D4. The verdict is a seam, and it fails closed
 
