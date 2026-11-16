@@ -304,11 +304,12 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 | Reason | Type | Meaning |
 |---|---|---|
 | `HarnessRunStarted` | Normal | a run started for a revision (`first-revision`, `new-revision` or `rollback`; a re-run says `run <n>`) |
-| `HarnessRunCompleted` | Normal | `revision <hash>: <passed>/<cases> passed on <dataset> (<errors> errors)`, then the run deadline note and the expectTools note when they apply, then `; failed: <id>, <id>` naming every failed case (the message is capped at 1000 characters, `+N more` for the rest; errored cases keep the count only) |
+| `HarnessRunCompleted` | Normal | also used for an `insufficient` run (judged cases below `minJudgedRatio`: the counts are shown, no ratio is published). `revision <hash>: <passed>/<cases> passed on <dataset> (<errors> errors)`, then the run deadline note and the expectTools note when they apply, then `; failed: <id>, <id>` naming every failed case (the message is capped at 1000 characters, `+N more` for the rest; errored cases keep the count only) |
 | `HarnessRunFailed` | Warning | the run errored (preview unreachable, dataset invalid, every case errored, timeout) |
 | `HarnessRunSuperseded` | Normal | the revision moved during the run; the result was discarded |
 | `UnknownDataset` | Warning | the dataset name is not in the platform catalog |
 | `InvalidHarnessDeclaration` | Warning | a field in the ConfigMap is invalid (the message names it) |
+| `HarnessAgentHasTools` | Warning | the agent declares `mcpServers` or `agents`; the shipped datasets assume none, so an action case may really run and a live-data case may fail. Recorded as each run starts, the run is not blocked |
 | `HarnessJudgeKeyUnavailable` | Warning | no run starts because the judge key is missing (platform issue) |
 | `HarnessWaitingForPreview` | Normal | no run yet: no Rollout named `<agent>` in the namespace, or its `status.blueGreen.previewSelector` is not set yet. A preview that simply has not switched to the newest revision yet records nothing |
 | `HarnessPreviewUnsupported` | Warning | the Rollout has no `spec.strategy.blueGreen.previewService` (for example a canary strategy), or the `<agent>-preview` Service is of type `ExternalName`, so no run starts |
