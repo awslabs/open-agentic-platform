@@ -1751,10 +1751,12 @@ anything**
    of a weakened `onViolation` a policy-engine job, and `kyverno` is off in every
    overlay. Ship the reconciler Event first and the hard rejection with Kyverno,
    or wait?
-2. **Is the extra hop acceptable, or should this be a Bifrost plugin after all?**
-   The proxy costs one in-cluster round trip and a service to run. A plugin costs
-   OAP owning a dynamically linked Bifrost build and a rebuild on every upgrade.
-   If upstream ships the planned webhook plugin path, the trade changes.
+2. ~~**Is the extra hop acceptable, or should this be a Bifrost plugin after
+   all?**~~ **Answered in review, and neither.** @shapirov103 showed that
+   agentgateway's native `promptGuard` does this in the version OAP already
+   pins, so there is no OAP-owned hop to justify and no Bifrost build to own.
+   The replacement question is question 12 below: what to do about the
+   fail-open.
 3. **Which profiles ship, and what does each mean?** `strict` / `standard` /
    `observe` is a guess. The denied-topic definitions in particular are
    product-specific and may not have a sensible platform default at all.
@@ -1805,3 +1807,20 @@ anything**
     The question is not whether v1.7.0 has the feature — it does — but whether
     the *chart* at that tag carries the API surface OAP already depends on,
     which only a pull-and-diff answers.
+12. **Which §D4 option, given that `bedrockGuardrails` fails open?** (a) ship
+    native and record the fail-open, (b) move the check behind the `webhook`
+    guard, which is `FailClosed` by default but is a service OAP would own, or
+    (c) ship native and ask upstream for a `failureMode` field mirroring
+    `Webhook`'s. The recommendation is (a) now, (c) opened immediately, (b) held
+    in reserve — but a reviewer who considers any fail-open window unacceptable
+    for this capability should say so, because that ruling selects (b) and
+    partially reopens the proxy question in a much smaller form.
+13. **Can `guardrail_checks` be attributed to a single agent?** §D8 assumes the
+    per-profile and per-agent HTTPRoute makes the route identifier a usable join
+    key in gateway telemetry. If it cannot, the dashboard loses its primary
+    dimension, and that is a larger loss than question 12's.
+14. **Does the gateway's AWS identity gaining `bedrock:ApplyGuardrail` need its
+    own review?** The permission moves from a would-be proxy ServiceAccount onto
+    the `agentgateway` ServiceAccount, which already terminates agent and MCP
+    traffic. Scoped to the catalog's guardrail ARNs it is narrow, but it is a new
+    class of permission on a component that previously held none for Bedrock.
