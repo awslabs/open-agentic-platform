@@ -33,10 +33,13 @@ publishes the result as `oap_agent_harness_*` metrics.
 
 Use the harness when you have a set of questions your agent must keep answering
 correctly (past failures, core tasks, safety refusals) and you want each new
-revision measured against them before you rely on it.
+revision measured against them.
 
 **Report mode only.** The harness scores each new revision and promotion goes
-ahead regardless of the score. `mode: gate` is reserved for a later phase and is
+ahead regardless of the score. By default (`autoPromotionEnabled: true`) the
+revision is promoted once its pods are healthy and the harness scores it
+afterwards; to hold a revision until you have read the score, see
+[section 3.6](#36-promotion-postures-dashcam-and-manual-gate). `mode: gate` is reserved for a later phase and is
 rejected at admission today. The score is published next to your threshold;
 nothing reads it back into the Rollout, so the harness never blocks or delays a
 promotion. Gate mode (hold promotion below the threshold) is not built: the
@@ -373,6 +376,143 @@ Event and on the result).
 Filter traces by the `oap-harness-` session prefix to see exactly what the agent did for a
 case. They carry tag `source:harness` on images built with the marking change,
 and `source:chat` on older images (section 7). They never get an online score.
+
+### 3.6 Promotion postures: Dashcam and Manual gate
+
+The harness never decides a promotion (report mode). What changes when the
+revision goes live is the agent's `autoPromotionEnabled` setting, a top-level
+property of the `agent` component, next to `harness`. It defaults to `true`.
+Two postures follow from it:
+
+| | Dashcam (default) | Manual gate |
+|---|---|---|
+| `autoPromotionEnabled` | `true` (not set) | `false` |
+| New revision | promotes once its pods are healthy | the Rollout pauses (phase `Paused`, `BlueGreenPause`); the old revision keeps serving on `<agent>-stable`, the new one runs on `<agent>-preview` |
+| When the harness scores it | after promotion (the score describes a revision already serving) | while the preview is held |
+| Who promotes | Argo Rollouts, automatically | a person, after reading the result |
+| Hold length | none | no time limit (13 minutes observed, no auto-promotion) |
+| Pick it when | you want the signal without changing the release flow | you want to read a score before a revision goes live, before `mode: gate` exists |
+| Example | [`example-agent-harness.yaml`](../../platform/oam/examples/example-agent-harness.yaml) | [`example-agent-harness-manual-gate.yaml`](../../platform/oam/examples/example-agent-harness-manual-gate.yaml) |
+
+In both postures the harness only reports. A 5/20 run on a held revision left
+the Rollout `Paused`, and the `HarnessRunCompleted` Event said "report mode:
+promotion not affected". The hold comes from `autoPromotionEnabled: false`,
+not from the harness. The rendered `autoPromotionSeconds` (default 10) did not
+promote a held revision: only "observed no auto-promotion" is documented
+for it with the gate off.
+
+#### Run to decision (Manual gate)
+
+Placeholders: `<hub-context>` is your kube context, `<agent>` the agent and
+Application name, `<ns>` its namespace. Plain `kubectl` is used. The
+`kubectl argo rollouts` plugin was not installed in the test, so the plugin
+commands below are the standard equivalents and were not run.
+
+1. **Push a new revision.** Apply a changed Application (any change to the
+   agent's pod template makes a revision).
+   ```bash
+   kubectl --context <hub-context> apply -f <agent>.yaml
+   ```
+   The preview switches to the new revision and the Rollout pauses:
+   ```bash
+   kubectl --context <hub-context> get rollout <agent> -n <ns> \
+     -o jsonpath='{.status.phase} {.status.message} {.status.blueGreen}'
+   # Paused BlueGreenPause {"activeSelector":"<old-hash>","previewSelector":"<new-hash>"}
+   ```
+   `<agent>-stable` still selects `<old-hash>`; `<agent>-preview` selects
+   `<new-hash>`.
+2. **The run starts.** The reconciler checks every `harness.intervalSeconds`
+   (default 60 s). In the live test the run started 5 s after the Rollout
+   paused. The Event is on the `<agent>-harness` ConfigMap:
+   ```bash
+   kubectl --context <hub-context> get events -n <ns> \
+     --field-selector involvedObject.name=<agent>-harness --sort-by=.lastTimestamp
+   ```
+   ```text
+   HarnessRunStarted  [<hub>] harness run oap-harness-<12 hex> started for revision <new-hash> on dataset <dataset> (new-revision, report mode: promotion not affected)
+   ```
+   The Job targets `<agent>-preview`, so the held revision is the one scored.
+3. **Wait.** A run takes at most `runTimeoutSeconds` (1800 s default). The
+   20-case `general-assistant-v1` runs took 22 to 34 s as Jobs in the test.
+4. **Read the verdict.** The Event names the pass ratio and every failed case
+   id:
+   ```text
+   HarnessRunCompleted  [<hub>] revision <new-hash>: 17/20 passed on <dataset> (0 errors), report mode: promotion not affected; failed: <case-id>, <case-id>, <case-id>
+   ```
+5. **Look at the cases.** Jobs and results are in `agent-evaluation`:
+   ```bash
+   kubectl --context <hub-context> get cm <job>-result -n agent-evaluation \
+     -o jsonpath='{.data.result\.json}' | jq '.caseResults[] | select(.status != "passed")'
+   ```
+   Each `caseResults[]` entry has `id`, `status`, `score`, `reason`,
+   `latencyMs` and `tags`:
+   ```json
+   {"id":"<case-id>","status":"failed","score":0.4,"latencyMs":748,"tags":["<tag>"],"reason":"expected-answer: <judge reasoning>"}
+   ```
+6. **You read it, and then you do what?** The harness gives you failed case
+   ids, the judge's `reason` for each, and the last three runs per agent
+   (`harness.historyLimit`, default 3). It sets no policy beyond that.
+   - **Promote** when you accept the result:
+     ```bash
+     kubectl --context <hub-context> patch rollout <agent> -n <ns> \
+       --subresource=status --type=merge -p '{"status":{"pauseConditions":null}}'
+     ```
+     Verified live: the phase went from `Paused` to `Healthy` within 4 s
+     and both Services moved to the new revision. The plugin equivalent is
+     `kubectl argo rollouts promote <agent>` (not run).
+   - **Abort** when you reject it:
+     ```bash
+     kubectl --context <hub-context> patch rollout <agent> -n <ns> \
+       --subresource=status --type=merge -p '{"status":{"abort":true}}'
+     ```
+     Verified live: the Rollout showed `Degraded` and the old revision kept
+     serving. The plugin equivalent is `kubectl argo rollouts abort <agent>`
+     (not run). Then push a fixed revision.
+   - **Real regression or judge variation?** Each case runs once, so one or
+     two cases of difference are within run-to-run variation. The same
+     revision scored 19/20 and then 17/20 when a rollback re-ran it. Read the
+     `reason` of each failed case and compare it with the kept earlier runs of
+     the same agent.
+   - **Re-run.** Report mode has no manual re-run command. A new verdict
+     needs a new revision (any change). Promoting or aborting starts no run.
+   - **`insufficient`.** If fewer than `minJudgedRatio` (default 0.8) of the
+     cases were judged, no verdict exists and no pass ratio is published. The
+     Event says how many cases were judged, for example `12 of 20 cases
+     judged, 80% needed for a pass ratio`. Typical causes are judge or Bifrost
+     errors and the run deadline. Fix the cause and push a new revision, or
+     decide without a score. **Not verified:** an `insufficient` run while a
+     revision is held (the live test covered it only without a hold).
+   - **Rollout state.** **Not verified:** the output of
+     `kubectl argo rollouts get rollout`, because the plugin was not
+     installed. The `jsonpath` line in step 1 and `kubectl get rollout <agent>
+     -o wide` were used instead.
+
+#### Caveats for the manual gate
+
+- **A second push replaces the first revision's verdict.** If a newer
+  revision reaches the preview while a run is active, or just after it
+  finishes, the first run is discarded: `HarnessRunSuperseded`, the Job and
+  its result are deleted, and the newest revision is scored. In the live test
+  the Event read `harness run for revision <hash-B> was discarded: it finished
+  after revision <hash-C> replaced it in the preview`. Pushing twice in quick
+  succession while you wait to promote loses the first verdict. The first
+  revision was not promoted.
+- **A finished run is kept when its revision is replaced later.** If the run
+  had finished before the next push was detected, it stays in history (the
+  last three runs). The published metric series follows the newest revision.
+- **`insufficient` publishes no ratio.** See step 6.
+- **After an abort.** The old revision keeps serving. `<agent>-preview` keeps
+  selecting the aborted revision's hash and has no endpoints. No run starts
+  for the aborted or the old revision. The metric series and dashboard keep
+  showing the last scored revision, which is the aborted one, until the next
+  revision is scored.
+- **The hold has no time limit.** Observed 13 minutes with no
+  auto-promotion, 12 of them after the run had finished.
+- **Reconciler restarts repeat Events.** After a restart `HarnessRunCompleted`
+  Events for finished runs can appear again. Do not read the Events list as an
+  exact one-per-run log.
+- **The first revision has no hold.** An agent's first revision goes live
+  at once, because nothing holds it, and is scored as the baseline.
 
 ## 4. For platform operators
 
