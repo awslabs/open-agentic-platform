@@ -85,20 +85,19 @@ spec:
         modelConfig:
           modelId: claude-sonnet
 
-        # PIN THE AGENT IMAGE BY DIGEST. The platform default (global.agentImage)
-        # is a tag, and a tag that moves produces a policy mismatch and a denied
-        # pod. In confidential mode the digest is part of the deployment
-        # artifact, so name it here and regenerate the policy when it changes.
+        # PINNED BY DIGEST, not by tag. The platform default (global.agentImage)
+        # is a tag, and confidential mode's Cedar policy pins the image -- so a
+        # tag that moves under you is a DENIED pod, not a new version. In this
+        # mode the digest is part of the deployment artifact: name it here and
+        # regenerate the policy in the same change.
         #
-        # Replace with the digest of the agent image your platform ships.
-        # PINNED BY DIGEST, because confidential mode's Cedar policy pins the
-        # image and a tag that moves under you is a denied pod, not a new
-        # version. This was the digest at the time of writing; re-resolve it for
-        # your own build and regenerate the policy in the same change:
+        # This is v1.7.0, the image global.agentImage points at after #160, so
+        # this agent has supervisor delegation like any other. Re-resolve it for
+        # your own build:
         #   skopeo inspect --format '{{.Digest}}' docker://<image:tag>
-        #   (or `crane digest`, or `docker buildx imagetools inspect`). Use the
-        #   MANIFEST LIST digest, not a per-platform one.
-        image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:996e1c19489b0515887fa55f86ae12907d8da03c8e7c7488fcb28fac3fabd5e0
+        #   (or `crane digest`, or `docker buildx imagetools inspect`)
+        # Use the MANIFEST LIST digest, not a per-platform one.
+        image: public.ecr.aws/z0a4o2j5/strands-agent@sha256:ba8b83ea10716fd1644fe94b15d7dfb55c4406899a7fdd6bc6e4f91062c3b08d
 
         # One replica, deliberately. Each replica is a separate microVM with its
         # own attestation, which is fine -- but every replica runs the same
