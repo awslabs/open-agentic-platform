@@ -28,3 +28,8 @@ image:
   tag: "5a2e0b8d"
 harness:
   enabled: true
+  # TEST ONLY - temporary, scenario 3d: cut runs short so they are insufficient.
+  # 75 - 60 margin = 15 s of work; caseTimeoutSeconds 10 keeps runTimeout > margin + caseTimeout.
+  caseTimeoutSeconds: 10
+  runTimeoutSeconds: 75
+  historyLimit: 5
