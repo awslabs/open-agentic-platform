@@ -148,8 +148,7 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
     mode = data.get("mode", "report")
     if mode not in VALID_MODES:
         raise HarnessDeclarationError(
-            f"{where}: mode {mode!r} is not supported; only {list(VALID_MODES)} "
-            "is implemented, so the harness never blocks a promotion"
+            f"{where}: mode {mode!r} is not supported; use one of {list(VALID_MODES)}"
         )
 
     preview_service = f"{agent}{PREVIEW_SUFFIX}"
@@ -210,3 +209,26 @@ class HarnessDeclarationReader:
                 )
         good.sort(key=lambda d: d.key)
         return good, bad
+
+    def read_one(self, namespace: str, agent: str):
+        """The declaration `<agent>-harness` in one namespace, for the verdict endpoint.
+
+        Returns (declaration, configmap, error). A missing ConfigMap, or one
+        that is not labelled for this agent, is (None, None, None); an invalid
+        one is (None, configmap, message). Other API errors propagate.
+        """
+        try:
+            cm = self._core.read_namespaced_config_map(
+                name=f"{agent}-harness", namespace=namespace
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return None, None, None
+            raise
+        labels = getattr(cm.metadata, "labels", None) or {}
+        if labels.get(LABEL_SELECTOR) != agent or LABEL_RESULT in labels:
+            return None, None, None
+        try:
+            return parse_harness_declaration(cm), cm, None
+        except HarnessDeclarationError as exc:
+            return None, cm, str(exc)

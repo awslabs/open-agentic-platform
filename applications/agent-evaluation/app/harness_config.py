@@ -1,4 +1,4 @@
-"""Configuration for the agent harness (issue #137, report mode).
+"""Configuration for the agent harness (issue #137).
 
 Kept apart from `config.Settings` on purpose: Settings is a frozen dataclass
 with no defaults that the tests build field by field, and with the harness off
@@ -87,7 +87,6 @@ class HarnessSettings:
     enabled: bool = False
     interval: int = 60
     max_concurrent_jobs: int = 2
-    history_limit: int = 3
     checks_path: str = f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}"
     datasets_dir: str = JOB_DATASETS_DIR
     catalog_configmap: str = "agent-evaluation-harness-catalog"
@@ -106,21 +105,21 @@ class HarnessSettings:
     min_judged_ratio: float = 0.8
     # '' means the catalog's judge default alias.
     judge_alias: str = ""
-    judge_key_mint: bool = True
     judge_key_required: bool = True
     judge_key_secret: str = "agent-evaluation-harness-judge-key"
-    bifrost_admin_url: str = "http://bifrost.bifrost.svc.cluster.local:8080"
-    judge_budget_usd: float = 20.0
-    judge_budget_reset: str = "1M"
-    judge_rate_limit_requests: int = 2000
-    judge_rate_limit_reset: str = "1h"
-    # Empty means [the resolved judge model].
-    judge_allowed_models: tuple[str, ...] = ()
+    # The verdict endpoint (harness_api): the port the Argo Rollouts controller
+    # calls, and how long a created Job may wait for a free slot. The run's
+    # total cap is run_timeout + slot_wait, and the AnalysisTemplate's poll
+    # count (160 x 15 s) must exceed it by at least 300 s.
+    api_port: int = 8081
+    slot_wait_seconds: int = 300
 
 
 # The runner stops starting work this long before the Job's activeDeadlineSeconds
 # (harness_runner re-exports it), so the Job can write a partial result.
 DEADLINE_MARGIN_SECONDS = 60
+# 160 polls x 15 s = 2400 s in the AnalysisTemplate, minus a 300 s margin.
+MAX_TOTAL_RUN_SECONDS = 2100
 
 
 def load_harness_settings() -> HarnessSettings:
@@ -148,9 +147,6 @@ def load_harness_settings() -> HarnessSettings:
             f"HARNESS_RUNNER_RESOURCES must be a JSON object, got {raw_resources!r}"
         )
 
-    budget = _env_float("HARNESS_JUDGE_BUDGET_USD", 20.0)
-    if budget <= 0:
-        raise ConfigError(f"HARNESS_JUDGE_BUDGET_USD must be > 0, got {budget}")
 
     case_timeout = _positive(
         "HARNESS_CASE_TIMEOUT_SECONDS", _env_int("HARNESS_CASE_TIMEOUT_SECONDS", 120)
@@ -166,14 +162,20 @@ def load_harness_settings() -> HarnessSettings:
             f"{DEADLINE_MARGIN_SECONDS} s deadline margin plus "
             f"HARNESS_CASE_TIMEOUT_SECONDS ({case_timeout})"
         )
+    slot_wait = _positive(
+        "HARNESS_SLOT_WAIT_SECONDS", _env_int("HARNESS_SLOT_WAIT_SECONDS", 300)
+    )
+    if run_timeout + slot_wait > MAX_TOTAL_RUN_SECONDS:
+        raise ConfigError(
+            f"HARNESS_RUN_TIMEOUT_SECONDS ({run_timeout}) + HARNESS_SLOT_WAIT_SECONDS "
+            f"({slot_wait}) must be at most {MAX_TOTAL_RUN_SECONDS}: the analysis polls "
+            "for 40 minutes and the verdict must end before it"
+        )
     return HarnessSettings(
         enabled=True,
         interval=_positive("HARNESS_INTERVAL_SECONDS", _env_int("HARNESS_INTERVAL_SECONDS", 60)),
         max_concurrent_jobs=_positive(
             "HARNESS_MAX_CONCURRENT_JOBS", _env_int("HARNESS_MAX_CONCURRENT_JOBS", 2)
-        ),
-        history_limit=_positive(
-            "HARNESS_HISTORY_LIMIT", _env_int("HARNESS_HISTORY_LIMIT", 3)
         ),
         checks_path=_env("HARNESS_CHECKS_PATH", f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}"),
         datasets_dir=_env("HARNESS_DATASETS_DIR", JOB_DATASETS_DIR),
@@ -200,25 +202,13 @@ def load_harness_settings() -> HarnessSettings:
         max_cases=_positive("HARNESS_MAX_CASES", _env_int("HARNESS_MAX_CASES", 50)),
         min_judged_ratio=_ratio("HARNESS_MIN_JUDGED_RATIO", 0.8),
         judge_alias=_env("HARNESS_JUDGE_ALIAS"),
-        judge_key_mint=_env_bool("HARNESS_JUDGE_KEY_MINT", True),
         judge_key_required=_env_bool("HARNESS_JUDGE_KEY_REQUIRED", True),
         judge_key_secret=_env(
             "HARNESS_JUDGE_KEY_SECRET", "agent-evaluation-harness-judge-key"
         ),
-        bifrost_admin_url=_env(
-            "BIFROST_ADMIN_URL", "http://bifrost.bifrost.svc.cluster.local:8080"
-        ).rstrip("/"),
-        judge_budget_usd=budget,
-        judge_budget_reset=_env("HARNESS_JUDGE_BUDGET_RESET", "1M"),
-        judge_rate_limit_requests=_positive(
-            "HARNESS_JUDGE_RATE_LIMIT_REQUESTS",
-            _env_int("HARNESS_JUDGE_RATE_LIMIT_REQUESTS", 2000),
-        ),
-        judge_rate_limit_reset=_env("HARNESS_JUDGE_RATE_LIMIT_RESET", "1h"),
-        judge_allowed_models=tuple(
-            m.strip()
-            for m in _env("HARNESS_JUDGE_ALLOWED_MODELS").split(",")
-            if m.strip()
+        api_port=_positive("HARNESS_API_PORT", _env_int("HARNESS_API_PORT", 8081)),
+        slot_wait_seconds=_positive(
+            "HARNESS_SLOT_WAIT_SECONDS", _env_int("HARNESS_SLOT_WAIT_SECONDS", 300)
         ),
     )
 

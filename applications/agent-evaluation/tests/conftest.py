@@ -172,6 +172,15 @@ class FakeReader:
     def list(self):
         return list(self._declarations), list(self._malformed)
 
+    def read_one(self, namespace, agent):
+        for decl in self._declarations:
+            if decl.namespace == namespace and decl.agent == agent:
+                return decl, make_configmap(namespace, decl.configmap, {}, {}), None
+        for cm, error in self._malformed:
+            if cm.metadata.namespace == namespace and cm.metadata.name == f"{agent}-harness":
+                return None, cm, error
+        return None, None, None
+
 
 def make_configmap(namespace: str, name: str, data: dict, labels: dict | None = None):
     return SimpleNamespace(
@@ -270,6 +279,7 @@ class FakeBatch:
         self.bodies: dict[str, dict] = {}
         self.created: list[dict] = []
         self.deleted: list[str] = []
+        self.patched: list[tuple] = []
         self._tick = 0
         self._generation: dict[str, int] = {}
 
@@ -292,8 +302,16 @@ class FakeBatch:
                 annotations=dict(meta.get("annotations") or {}),
                 creation_timestamp=datetime.fromtimestamp(1_000 + self._tick, timezone.utc),
             ),
+            spec=SimpleNamespace(suspend=bool((body.get("spec") or {}).get("suspend"))),
             status=SimpleNamespace(conditions=[], completion_time=None),
         )
+
+    def patch_namespaced_job(self, name, namespace, body):
+        if name not in self.jobs:
+            raise ApiException(status=404, reason="NotFound")
+        if "suspend" in (body.get("spec") or {}):
+            self.jobs[name].spec.suspend = bool(body["spec"]["suspend"])
+        self.patched.append((name, body))
 
     def create_namespaced_job(self, namespace, body):
         assert body["metadata"]["namespace"] == namespace
@@ -337,9 +355,27 @@ class FakeCustomObjects:
 
     def __init__(self):
         self.rollouts: dict[tuple[str, str], dict] = {}
+        self.analysis_runs: list[dict] = []
+
+    def list_cluster_custom_object(self, group, version, plural, label_selector=""):
+        assert (group, version, plural) == ("argoproj.io", "v1alpha1", "analysisruns")
+        return {
+            "items": [
+                run
+                for run in self.analysis_runs
+                if label_selector in ((run.get("metadata") or {}).get("labels") or {})
+            ]
+        }
 
     def set_rollout(
-        self, namespace, name, current, preview=None, abort=False, strategy="blueGreen"
+        self,
+        namespace,
+        name,
+        current,
+        preview=None,
+        abort=False,
+        strategy="blueGreen",
+        revision="1",
     ):
         """preview=None selects `current`; preview="" leaves previewSelector unset."""
         status = {"currentPodHash": current, "blueGreen": {}}
@@ -358,7 +394,15 @@ class FakeCustomObjects:
             }
         else:
             spec = {"strategy": {strategy: {"steps": []}}}
-        self.rollouts[(namespace, name)] = {"spec": spec, "status": status}
+        self.rollouts[(namespace, name)] = {
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "annotations": {"rollout.argoproj.io/revision": str(revision)},
+            },
+            "spec": spec,
+            "status": status,
+        }
 
     def get_namespaced_custom_object(self, group, version, namespace, plural, name):
         assert (group, version, plural) == ("argoproj.io", "v1alpha1", "rollouts")
