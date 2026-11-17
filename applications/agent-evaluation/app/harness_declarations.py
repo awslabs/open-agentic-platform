@@ -33,9 +33,11 @@ LABEL_RESULT = "harness.oap.io/result"
 # "key" means the label exists, "!key" that it does not (Kubernetes set-based selector).
 DECLARATION_SELECTOR = f"{LABEL_SELECTOR},!{LABEL_RESULT}"
 
-# Report mode only. `gate` is rejected by the CUE already; checking again here
-# means a hand-written ConfigMap cannot turn a report into a gate.
-VALID_MODES = ("report",)
+# `report` records the score; `gate` also makes the Rollout's analysis fail below
+# the threshold. The mode only changes what the AnalysisTemplate the agent
+# component emits does (dryRun or not). Checking the value here keeps a
+# hand-written ConfigMap from carrying a mode the component does not know.
+VALID_MODES = ("report", "gate")
 
 # The Job's target is derived, never read from the ConfigMap: the blue-green
 # preview Service `<agent>-preview` the agent component renders, on the

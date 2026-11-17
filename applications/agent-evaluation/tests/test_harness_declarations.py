@@ -39,9 +39,13 @@ def test_valid_declaration():
     assert (d.preview_service, d.preview_port) == ("assistant-preview", 8083)
 
 
-def test_gate_mode_is_rejected():
+def test_gate_mode_is_accepted():
+    assert parse_harness_declaration(cm(mode="gate")).mode == "gate"
+
+
+def test_unknown_mode_is_rejected():
     with pytest.raises(HarnessDeclarationError, match="mode"):
-        parse_harness_declaration(cm(mode="gate"))
+        parse_harness_declaration(cm(mode="block"))
 
 
 @pytest.mark.parametrize("threshold", ["0", "1.5", "x"])
