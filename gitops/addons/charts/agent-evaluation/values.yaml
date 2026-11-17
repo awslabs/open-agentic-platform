@@ -303,10 +303,17 @@ harness:
       # merge path, not on a fresh store, and a literal value would be a
       # credential in git.
       #
-      # The minting call relies on governance auth being off in-cluster (the
-      # current Bifrost config). Set mint: false when a platform minter (#18)
-      # owns the Secret instead.
-      mint: true
+      # The platform owns the key: the bifrost chart's minter (judgeKey.enabled in
+      # gitops/addons/charts/bifrost) writes the Secret named by secretRef. This
+      # reconciler holds no Bifrost credential. mint: true is the old behaviour
+      # (the reconciler calls the Bifrost management API) and needs that API open.
+      mint: false
+      # The minter's ServiceAccount. The Role below lets it write the one
+      # Secret named by secretRef in this namespace, and read Jobs to know when
+      # none is active.
+      minter:
+        namespace: bifrost
+        serviceAccountName: bifrost-vk-minter
       # Fail closed: while the key is unavailable no harness run starts, an
       # Event and oap_agent_harness_judge_key_present 0 report it, and the
       # AgentHarnessJudgeKeyMissing alert fires; the Jobs mount the Secret as

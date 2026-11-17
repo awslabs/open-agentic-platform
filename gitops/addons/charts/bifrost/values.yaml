@@ -12,6 +12,28 @@ podIdentity:
 adminInit:
   image: alpine/k8s:1.31.0   # needs kubectl
   username: admin
+# ── Harness judge key minter (templates/vk-minter.yaml) ──────────────────────
+# Off by default. Turn on in the clusters that run the agent harness
+# (agent-evaluation harness.enabled). A PostSync hook Job and a CronJob in this
+# namespace create a budgeted, rate-limited virtual key and write it to ONE
+# Secret in the evaluation namespace. The evaluation chart grants this
+# ServiceAccount access to that Secret name only.
+judgeKey:
+  enabled: false
+  image: python:3.12-alpine
+  schedule: "*/15 * * * *"
+  # Where the key goes. Must match harness.judge.virtualKey.secretRef in the
+  # agent-evaluation chart; the namespace is the agent-evaluation release namespace.
+  targetNamespace: agent-evaluation
+  secretName: agent-evaluation-harness-judge-key
+  # Bifrost model aliases the key may call.
+  models: [judge-default]
+  budget:
+    maxLimitUsd: 20
+    resetDuration: 1M
+  rateLimit:
+    requestMaxLimit: 2000
+    requestResetDuration: 1h
 # ── Pinned-ClusterIP Service (templates/static-service.yaml) ─────────────────
 # A SECOND Service pointing at the same pods, at a fixed address, for clients
 # that cannot use cluster DNS — today that is the Kata sandbox coder, which the

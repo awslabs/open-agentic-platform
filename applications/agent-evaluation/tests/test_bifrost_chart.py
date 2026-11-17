@@ -51,3 +51,29 @@ def test_admin_init_is_a_presync_hook_limited_to_one_secret():
 def test_admin_init_absent_when_auth_off():
     docs = _render("--set", "bifrost.bifrost.authConfig.isEnabled=false")
     assert not [d for d in docs if d["metadata"]["name"] == "bifrost-admin-init"]
+
+
+def test_minter_off_by_default():
+    docs = _render()
+    assert not [d for d in docs if "vk-minter" in d["metadata"]["name"]]
+
+
+def test_minter_renders_hook_job_and_cronjob_with_admin_secret_in_bifrost_only():
+    docs = _render("--set", "judgeKey.enabled=true")
+    job = next(d for d in docs if d["kind"] == "Job" and d["metadata"]["name"] == "bifrost-vk-minter")
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "PostSync"
+    cron = next(d for d in docs if d["kind"] == "CronJob")
+    assert cron["metadata"]["namespace"] == "bifrost"
+    env = {e["name"]: e for e in cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["BIFROST_ADMIN_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "bifrost-admin"
+    # No Role in the bifrost chart grants the minter anything: its only grants
+    # are in the evaluation namespace, rendered by the agent-evaluation chart.
+    assert not [d for d in docs if d["kind"] in ("Role", "RoleBinding") and "minter" in d["metadata"]["name"]]
+
+
+def test_minter_needs_admin_auth():
+    r = subprocess.run(
+        ["helm", "template", "b", str(CHART), "-n", "bifrost", "--set", "judgeKey.enabled=true"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode != 0 and "authConfig" in r.stderr

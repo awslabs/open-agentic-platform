@@ -136,3 +136,36 @@ def test_no_action_cases_ask_about_capability_not_ask_for_the_action(path):
     for case in load_dataset(path, max_cases=MAX_CASES).cases:
         if "no-action" in case.tags:
             assert case.input.lower().startswith("can you ") and case.input.endswith("?"), case.id
+
+
+EVAL_CHART_ARGS = [
+    "--set", "global.clusterName=c1", "--set", "langfuse.url=http://x",
+    "--set", "langfuse.secretManagerKey=p-hub/langfuse-otel",
+]
+
+
+def _render_eval(*extra):
+    out = subprocess.run(
+        ["helm", "template", "t", str(CHART), *EVAL_CHART_ARGS, *extra],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    return [d for d in yaml.safe_load_all(out) if d]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_minter_role_is_limited_to_the_judge_key_secret():
+    docs = _render_eval("--set", "harness.enabled=true")
+    role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "agent-evaluation-judge-key-minter")
+    scoped = [r for r in role["rules"] if r["resources"] == ["secrets"] and "get" in r["verbs"]]
+    assert scoped[0]["resourceNames"] == ["agent-evaluation-harness-judge-key"]
+    assert [r["verbs"] for r in role["rules"] if r["resources"] == ["secrets"] and "resourceNames" not in r] == [["create"]]
+    binding = next(d for d in docs if d["kind"] == "RoleBinding" and d["metadata"]["name"] == "agent-evaluation-judge-key-minter")
+    assert binding["subjects"][0]["namespace"] == "bifrost"
+    assert binding["subjects"][0]["name"] == "bifrost-vk-minter"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_minter_role_absent_when_harness_off_and_mint_default_false():
+    assert not [d for d in _render_eval() if "judge-key-minter" in d["metadata"]["name"]]
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert values["harness"]["judge"]["virtualKey"]["mint"] is False
