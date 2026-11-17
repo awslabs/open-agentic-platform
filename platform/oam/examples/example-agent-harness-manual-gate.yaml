@@ -15,8 +15,10 @@
 # an agent has nothing to hold it behind, so it goes live at once and is
 # scored as the baseline.
 #
-# The harness stays in report mode. It never promotes, aborts or blocks the
-# Rollout, whatever the score. A person reads the result and decides.
+# The harness stays in report mode (the analysis runs with dryRun before
+# promotion). It never promotes, aborts or blocks the Rollout, whatever the
+# score. A person reads the result and decides. For a hold that the score
+# decides, see example-agent-harness-gate.yaml.
 #
 # Adding the `harness` block is the whole change. The platform runs a fixed
 # dataset of cases against every new revision of this agent, including the
@@ -25,8 +27,6 @@
 # judged and the pass ratio is published as oap_agent_harness_* metrics next to
 # the threshold.
 #
-# Gate mode (the harness holds promotion below the threshold) is a later phase
-# and is rejected at admission for now.
 #
 # What the developer controls here: which dataset, which checks, and the
 # threshold the score is reported against.

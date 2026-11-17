@@ -1,0 +1,69 @@
+# Example: Agent with a per-revision harness, gate mode
+#
+# Same agent as example-agent-harness.yaml with one change: `mode: gate`.
+#
+# A new revision is scored on the preview Service BEFORE it is promoted, by an
+# Argo Rollouts pre-promotion analysis. It promotes only on a passing score:
+#   - pass (ratio at or above `threshold`): the revision is promoted.
+#   - fail, `insufficient` (too few cases judged), a missing judge key, a runner
+#     Job error, or no answer from the platform: the analysis fails and Rollouts
+#     ABORTS the revision. The stable revision keeps serving, and the Rollout
+#     shows Degraded until a new revision is pushed.
+# There is no automatic promotion timer in gate mode. `kubectl argo rollouts
+# retry` does not re-score; push a new revision instead.
+#
+# The first revision of an agent has no pre-promotion analysis in Rollouts and
+# goes live at once. Start a new dataset in `mode: report`, read the scores over
+# several revisions, then switch to gate where the score is steady.
+#
+# What the developer controls here: which dataset, which checks, and the
+# threshold the score is reported against.
+# What the platform controls: the dataset catalog, the judge and its prompt.
+# The judge runs through Bifrost on a platform-minted, budgeted virtual key.
+# Harness requests are marked, so they are excluded from online evaluation
+# (the `evaluation` block) and never counted as live traffic.
+# There is no account, region, endpoint or API key in this file.
+#
+# general-assistant-v1 has 20 cases for a general assistant WITHOUT tools,
+# like this one: every case is passable without a tool (time cases accept an
+# honest "I cannot access the current time"), so a good revision can reach the
+# threshold. It was written for the platform, not harvested from this agent's
+# failures; a real agent's dataset should come from its own traces.
+# example-smoke-v1 is the four-case format example.
+#
+# Prerequisites:
+# - the agent-evaluation addon on this cluster, with harness.enabled
+# - a judge key: gate needs harness.judge.virtualKey.required (the default)
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: harness-assistant-gate
+  namespace: default
+spec:
+  components:
+    - name: harness-assistant-gate
+      type: agent
+      properties:
+        description: "Assistant that must pass a fixed dataset before each new revision is promoted"
+        systemMessage: "You are a helpful assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+        harness:
+          enabled: true
+          # A platform catalog dataset name.
+          dataset: general-assistant-v1
+          # How each case is judged. expected-answer is the only check for now.
+          checks:
+            - expected-answer
+          # Fraction of cases that must pass, reported next to the score.
+          threshold: 0.8
+          # gate: abort a revision below the threshold or with no verdict.
+          mode: gate
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
