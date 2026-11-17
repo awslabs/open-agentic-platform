@@ -5,6 +5,13 @@ podIdentity:
   namespace: bifrost
   serviceAccountName: bifrost
 
+# ── Admin credential bootstrap (templates/admin-init.yaml) ───────────────────
+# Rendered when bifrost.bifrost.authConfig.isEnabled is true. A PreSync hook Job
+# creates the Secret named by authConfig.existingSecret with a random password,
+# only if the Secret is missing. Nothing is stored in git.
+adminInit:
+  image: alpine/k8s:1.31.0   # needs kubectl
+  username: admin
 # ── Pinned-ClusterIP Service (templates/static-service.yaml) ─────────────────
 # A SECOND Service pointing at the same pods, at a fixed address, for clients
 # that cannot use cluster DNS — today that is the Kata sandbox coder, which the
