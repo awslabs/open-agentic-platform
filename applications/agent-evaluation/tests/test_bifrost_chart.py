@@ -77,3 +77,35 @@ def test_minter_needs_admin_auth():
         capture_output=True, text=True,
     )
     assert r.returncode != 0 and "authConfig" in r.stderr
+
+
+OTEL_CHART = ROOT / "gitops/addons/charts/otel-collector"
+
+
+def test_metrics_proxy_serves_only_the_collector_namespace():
+    docs = _render()
+    net = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "bifrost-metrics")
+    sel = net["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"]
+    assert sel == {"kubernetes.io/metadata.name": "otel"}
+    dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "bifrost-metrics")
+    assert dep["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+
+
+def test_collector_scrapes_the_proxy_and_holds_no_credential():
+    for args in ([], ["--set", "amp.secretManagerKey=x"]):
+        out = subprocess.run(
+            ["helm", "template", "o", str(OTEL_CHART), "-n", "otel", *args],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        assert "bifrost-metrics.bifrost.svc.cluster.local:8080" in out
+        assert "basic_auth" not in out and "password" not in out.lower()
+
+
+def test_proxy_script_builds_basic_header(monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("metrics_proxy", CHART / "files/metrics-proxy.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("BIFROST_ADMIN_USERNAME", "u")
+    monkeypatch.setenv("BIFROST_ADMIN_PASSWORD", "p")
+    assert mod.auth_header() == "Basic dTpw"

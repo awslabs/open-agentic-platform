@@ -12,6 +12,16 @@ podIdentity:
 adminInit:
   image: alpine/k8s:1.31.0   # needs kubectl
   username: admin
+# ── Metrics proxy (templates/metrics-proxy.yaml) ─────────────────────────────
+# Serves /metrics to the OTel collector so the admin password stays in this
+# namespace. Rendered when bifrost.bifrost.authConfig.isEnabled is true. The
+# collector scrapes bifrost-metrics.<namespace>.svc (otel-collector chart,
+# bifrost.scrapeEndpoint).
+metricsProxy:
+  enabled: true
+  image: python:3.12-alpine
+  port: 8080
+  collectorNamespace: otel
 # ── Harness judge key minter (templates/vk-minter.yaml) ──────────────────────
 # Off by default. Turn on in the clusters that run the agent harness
 # (agent-evaluation harness.enabled). A PostSync hook Job and a CronJob in this
