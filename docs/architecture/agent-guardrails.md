@@ -1620,11 +1620,9 @@ sequenceDiagram
         AG-->>Ag: completion<br/>guardrail_checks{action=Mask}
     else backend error or timeout
         GR--xAG: ThrottlingException / 5xx
-        AG->>AG: bedrockGuardrails has no failureMode<br/>trait default is FailOpen
-        AG->>BF: forward UNINSPECTED
-        BF-->>AG: completion
-        AG-->>Ag: completion<br/>guardrail_checks{action=FailOpen}
-        Note over AG: §D4 option (a): observable, alerted,<br/>and genuinely an open door
+        AG->>AG: retry budget, then<br/>failureMode: FailClosed (v1.6.0+)
+        AG-->>Ag: request refused
+        Note over AG: Bifrost is never called<br/>counted as error_blocked, not blocked (§D8)
     else clean
         GR-->>AG: no blocked assessment
         AG->>BF: forward verbatim
