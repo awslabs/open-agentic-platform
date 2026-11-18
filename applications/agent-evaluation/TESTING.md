@@ -692,7 +692,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 Setup, behaviour and the tested hub example: [agent-harness.md](agent-harness.md).
 
 The harness (issue #137,
-[§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode))
+[design](../../docs/architecture/agent-harness.md))
 is covered by unit tests and `helm template`, and was run end to end on a hub
 cluster (setup in [agent-harness.md §6](agent-harness.md)). Every command
 below is read-only. Prerequisites: the addon with `harness.enabled: true` in
@@ -763,11 +763,11 @@ What to expect, and what each mismatch means:
 - A `HarnessRunSuperseded` Event "… was discarded: it finished after revision
   … replaced it in the preview" and no result for that revision: the revision
   moved before the reconciler saw the run finish, so the run is dropped and
-  the new revision runs on its own (§4b, "Superseded"). A run that ended just
-  before a rollout in the same pass interval is dropped too; that is the
-  accepted cost in report mode. Gate mode needs the exact per-reply revision
-  check in the §4b follow-up (the agent exposes its pod-template-hash through
-  the downward API, the runner checks it on every reply).
+  the new revision runs on its own (design D6). With the analysis-based harness
+  Argo Rollouts ends the older run and the endpoint deletes its Job. The exact
+  per-reply revision check stays a follow-up (the agent exposes its
+  pod-template-hash through the downward API, the runner checks it on every
+  reply).
 - Rollback (A -> B -> A): once `-preview` selects A again, a new Job for A
   appears with `trigger=rollback` and a higher run number, and after it
   finishes `oap_agent_harness_info` shows `revision=<A>,trigger="rollback"`.

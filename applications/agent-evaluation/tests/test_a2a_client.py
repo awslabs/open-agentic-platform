@@ -240,14 +240,14 @@ def test_request_is_message_send_with_the_harness_context():
 def test_context_ids_come_from_the_job_name():
     # Review C8: ids from the revision alone collided across datasets on one
     # revision and across agents sharing a pod hash. The Job name hashes
-    # namespace/agent/revision/dataset/run, and keeps the excluded marker.
+    # namespace/agent/revision/hash/dataset, and keeps the excluded marker.
     from app.cluster_loop import HARNESS_SESSION_MARKER
     from app.naming import harness_job_name
 
-    smoke = harness_job_name("team-a", "assistant", "abc123", "example-smoke-v1")
-    general = harness_job_name("team-a", "assistant", "abc123", "general-assistant-v1")
-    rerun = harness_job_name("team-a", "assistant", "abc123", "example-smoke-v1", run=2)
-    other_agent = harness_job_name("team-a", "other", "abc123", "example-smoke-v1")
+    smoke = harness_job_name("team-a", "assistant", "2", "abc123", "example-smoke-v1")
+    general = harness_job_name("team-a", "assistant", "2", "abc123", "general-assistant-v1")
+    rerun = harness_job_name("team-a", "assistant", "3", "abc123", "example-smoke-v1")
+    other_agent = harness_job_name("team-a", "other", "2", "abc123", "example-smoke-v1")
     ids = [context_id_for(job, "one") for job in (smoke, general, rerun, other_agent)]
     assert ids[0] == f"{smoke}-one"
     assert len(set(ids)) == 4

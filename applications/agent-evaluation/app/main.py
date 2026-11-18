@@ -24,7 +24,6 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import httpx
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from prometheus_client import generate_latest
@@ -33,10 +32,11 @@ from prometheus_client.core import CollectorRegistry
 from . import events
 from .cluster_loop import ClusterLoop
 from .config import ConfigError, load_catalog, load_settings
-from .bifrost_admin import BifrostAdmin
 from .declarations import DeclarationReader
 from .harness_config import load_checks, load_harness_settings
 from .harness_declarations import HarnessDeclarationReader
+from .harness_api import VerdictService, serve as serve_harness_api
+from .harness_job import JobFactory
 from .harness_loop import HarnessLoop
 from .langfuse_client import LangfuseClient
 from .metrics import Metrics
@@ -354,25 +354,39 @@ def main() -> int:
         )
     )
 
-    bifrost_http = None
+    harness_api = None
     if harness_settings.enabled:
         # Deliberately NOT a required readiness loop (_State): an unready pod
         # drops out of the metrics Service and would hide every oap_agent_eval_*
         # series. Harness health is last_success/errors_total{loop="harness"}.
-        bifrost_http = httpx.Client(timeout=30.0)
+        batch = k8s_client.BatchV1Api()
+        custom = k8s_client.CustomObjectsApi()
+        reader = HarnessDeclarationReader(core)
         harness_loop = HarnessLoop(
             settings,
             harness_settings,
-            catalog,
             metrics,
-            HarnessDeclarationReader(core),
+            reader,
             recorder,
-            k8s_client.BatchV1Api(),
-            k8s_client.CustomObjectsApi(),
+            batch,
+            custom,
             core,
-            BifrostAdmin(bifrost_http, harness_settings.bifrost_admin_url),
         )
-
+        # The verdict endpoint the harness AnalysisTemplate polls. Its own
+        # listener, so a failing endpoint cannot touch /metrics or the probes.
+        harness_api = serve_harness_api(
+            VerdictService(
+                settings,
+                harness_settings,
+                JobFactory(settings, harness_settings, catalog),
+                reader,
+                recorder,
+                batch,
+                custom,
+                core,
+            ),
+            harness_settings.api_port,
+        )
         def harness_pass() -> bool:
             if not kube["ready"]:
                 kube["ready"] = _load_kube()
@@ -401,8 +415,8 @@ def main() -> int:
     stop.wait()
     server.shutdown()
     langfuse.close()
-    if bifrost_http is not None:
-        bifrost_http.close()
+    if harness_api is not None:
+        harness_api.shutdown()
     logger.info("stopped")
     return 0
 

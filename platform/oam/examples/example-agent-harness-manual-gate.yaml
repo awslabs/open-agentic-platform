@@ -1,0 +1,82 @@
+# Example: Agent with a per-revision harness, manual promotion gate
+#
+# Same agent as example-agent-harness.yaml with one addition:
+# `autoPromotionEnabled: false`. This is the one difference between the two
+# examples.
+#
+# The trade. With the default (`true`, see example-agent-harness.yaml), Argo
+# Rollouts promotes a new revision as soon as its pods are healthy and the
+# harness scores it afterwards. With `false`, the Rollout pauses (phase Paused,
+# BlueGreenPause): the old revision keeps serving on <agent>-stable, the new
+# one runs on <agent>-preview, the harness scores the preview, and the
+# revision stays there until a person promotes it
+# (`kubectl argo rollouts promote <agent>`) or aborts it. The hold has no
+# time limit and this file promises no timed promotion. The first revision of
+# an agent has nothing to hold it behind, so it goes live at once and is
+# scored as the baseline.
+#
+# The harness stays in report mode (the analysis runs with dryRun before
+# promotion). It never promotes, aborts or blocks the Rollout, whatever the
+# score. A person reads the result and decides. For a hold that the score
+# decides, see example-agent-harness-gate.yaml.
+#
+# Adding the `harness` block is the whole change. The platform runs a fixed
+# dataset of cases against every new revision of this agent, including the
+# first one as a baseline and a revision that becomes current again after a
+# rollback, on the blue-green preview Service (<agent>-preview). Each case is
+# judged and the pass ratio is published as oap_agent_harness_* metrics next to
+# the threshold.
+#
+#
+# What the developer controls here: which dataset, which checks, and the
+# threshold the score is reported against.
+# What the platform controls: the dataset catalog, the judge and its prompt.
+# The judge runs through Bifrost on a platform-minted, budgeted virtual key.
+# Harness requests are marked, so they are excluded from online evaluation
+# (the `evaluation` block) and never counted as live traffic.
+# There is no account, region, endpoint or API key in this file.
+#
+# general-assistant-v1 has 20 cases for a general assistant WITHOUT tools,
+# like this one: every case is passable without a tool (time cases accept an
+# honest "I cannot access the current time"), so a good revision can reach the
+# threshold. It was written for the platform, not harvested from this agent's
+# failures; a real agent's dataset should come from its own traces.
+# example-smoke-v1 is the four-case format example.
+#
+# Prerequisites:
+# - the agent-evaluation addon on this cluster, with harness.enabled
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: harness-assistant-manual-gate
+  namespace: default
+spec:
+  components:
+    - name: harness-assistant-manual-gate
+      type: agent
+      properties:
+        description: "Assistant scored on a fixed dataset for each new revision"
+        systemMessage: "You are a helpful assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+        harness:
+          enabled: true
+          # A platform catalog dataset name.
+          dataset: general-assistant-v1
+          # How each case is judged. expected-answer is the only check for now.
+          checks:
+            - expected-answer
+          # Fraction of cases that must pass, reported next to the score.
+          threshold: 0.8
+          # report: score it, promote anyway.
+          mode: report
+        # Hold each new revision on the preview until a person promotes it.
+        autoPromotionEnabled: false
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi

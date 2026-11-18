@@ -1,0 +1,140 @@
+{{- /*
+  admin-init.yaml — creates the Bifrost admin credential Secret in this cluster.
+
+  The upstream subchart reads username and password from an existing Secret
+  (bifrost.bifrost.authConfig.existingSecret) and nothing creates it. The chart
+  used to render a Secret with a default password that was the same on every
+  cluster and public in git. This hook generates a random password in the
+  cluster instead, and only when the Secret does not exist, so a later sync
+  never rotates it. No password appears in git, in values, or in the rendered
+  manifests.
+
+  Runs as an Argo CD PreSync hook (and a Helm pre-install hook) so the Secret
+  exists before the Bifrost pod starts. Rendered only when admin auth is on.
+*/ -}}
+{{- $bf := .Values.bifrost | default dict -}}
+{{- $inner := $bf.bifrost | default dict -}}
+{{- $auth := $inner.authConfig | default dict -}}
+{{- $init := .Values.adminInit | default dict -}}
+{{- if $auth.isEnabled }}
+{{- $ns := .Release.Namespace | default "bifrost" }}
+{{- $secret := $auth.existingSecret | default "bifrost-admin" }}
+{{- $userKey := $auth.usernameKey | default "username" }}
+{{- $passKey := $auth.passwordKey | default "password" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bifrost-admin-init
+  namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bifrost-admin-init
+  namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  # `create` cannot be limited by resourceNames; the Job only ever creates the
+  # one Secret named below, and reads only that Secret.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secret | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bifrost-admin-init
+  namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bifrost-admin-init
+subjects:
+  - kind: ServiceAccount
+    name: bifrost-admin-init
+    namespace: {{ $ns }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bifrost-admin-init
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: bifrost
+    app.kubernetes.io/component: admin-init
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost
+        app.kubernetes.io/component: admin-init
+    spec:
+      serviceAccountName: bifrost-admin-init
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: {{ $init.image | default "alpine/k8s:1.31.0" | quote }}
+          env:
+            - name: SECRET_NAME
+              value: {{ $secret | quote }}
+            - name: USER_KEY
+              value: {{ $userKey | quote }}
+            - name: PASS_KEY
+              value: {{ $passKey | quote }}
+            - name: ADMIN_USER
+              value: {{ $init.username | default "admin" | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if kubectl get secret "$SECRET_NAME" -o name >/dev/null 2>&1; then
+                echo "secret $SECRET_NAME exists; leaving it unchanged"
+                exit 0
+              fi
+              pw="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
+              [ "${#pw}" -ge 32 ] || { echo "password generation failed" >&2; exit 1; }
+              kubectl create secret generic "$SECRET_NAME" \
+                --from-literal="$USER_KEY=$ADMIN_USER" \
+                --from-literal="$PASS_KEY=$pw" >/dev/null
+              echo "created secret $SECRET_NAME"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+{{- end }}

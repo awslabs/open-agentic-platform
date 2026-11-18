@@ -472,44 +472,44 @@ rolloutStrategy:
     scaleDownDelaySeconds: 30
 ```
 
-## Agent harness (per-revision dataset, report mode)
-
-The optional `harness` block runs a fixed dataset against each new revision of
-the agent on its blue-green preview Service (`<agent>-preview`) and publishes
-the result as `oap_agent_harness_*` metrics. It needs the agent-evaluation
-addon on the cluster with `harness.enabled`.
-
+## Agent harness (per-revision dataset, report or gate)
+The optional `harness` block scores each new revision of the agent on a fixed
+dataset, on its blue-green preview Service (`<agent>-preview`), and publishes
+the result as `oap_agent_harness_*` metrics. The component emits an Argo
+Rollouts `AnalysisTemplate` named `<agent>-harness` and wires it into the
+Rollout, so Argo Rollouts creates one AnalysisRun per revision. It needs the
+agent-evaluation addon on the cluster with `harness.enabled`.
 ```yaml
 harness:
   enabled: true
   dataset: general-assistant-v1
   checks: [expected-answer]
   threshold: 0.8
-  mode: report
+  mode: report   # or gate
 ```
-
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
 | `enabled` | `false` | Turn the harness on for this agent. |
 | `dataset` | required | Platform catalog dataset name (lowercase, hyphens, max 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and not accepted yet. |
 | `checks` | `[expected-answer]` | How each case is judged. `expected-answer` is the only check for now; an empty list is rejected. |
 | `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1), reported next to the score. |
-| `mode` | `report` (the only value) | `report` only: score the revision and promote anyway. `gate` is rejected at admission until the gating phase ships. |
-
-Report mode never blocks or delays promotion; the `rolloutStrategy` settings
-above behave exactly as without the harness. With the default
-`autoPromotionEnabled: true`, Argo usually promotes the revision before its run
-starts, so the run scores a revision that already serves users, not one waiting
-for promotion. On a first deploy the preview and
-stable Services select the same ReplicaSet, so the first run scores the initial
-revision and serves as the baseline for later revisions.
-
-The component renders a `<agent>-harness` ConfigMap labelled
-`harness.oap.io/agent`; it is only a declaration for the reconciler, and
-disabling the harness removes it. See
-[example-agent-harness.yaml](examples/example-agent-harness.yaml) and
-[docs/architecture/agent-evaluation.md](../../docs/architecture/agent-evaluation.md).
-
+| `mode` | `report` | `report`: record the score, never change the rollout. `gate`: abort a revision below the threshold, or with no verdict. |
+Where the analysis runs depends on the mode:
+| `mode` | `autoPromotionEnabled` | Analysis | Effect |
+|--------|------------------------|----------|--------|
+| `report` | `true` (default) | `postPromotionAnalysis`, `dryRun` | The revision promotes on health and is scored afterwards. Never delays promotion. |
+| `report` | `false` | `prePromotionAnalysis`, `dryRun` | The preview holds for a person; the score is recorded, never decisive. |
+| `gate` | any | `prePromotionAnalysis` | Promoted only on a passing score. Below the threshold, `insufficient`, a missing judge key or a runner error aborts the revision; the stable revision keeps serving. No `autoPromotionSeconds` is set. |
+The first revision of a Rollout has no analysis (Rollouts promotes it at once),
+so the first run in a new agent is the next revision. See
+[example-agent-harness.yaml](examples/example-agent-harness.yaml) (report, default),
+[example-agent-harness-manual-gate.yaml](examples/example-agent-harness-manual-gate.yaml)
+(report, `autoPromotionEnabled: false`),
+[example-agent-harness-gate.yaml](examples/example-agent-harness-gate.yaml) (gate) and the
+[design](../../docs/architecture/agent-harness.md).
+The component also renders a `<agent>-harness` ConfigMap labelled
+`harness.oap.io/agent`, a declaration for the reconciler, which publishes the
+metrics. Disabling the harness removes both objects.
 ## Troubleshooting
 
 ```bash

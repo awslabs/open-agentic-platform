@@ -54,6 +54,10 @@ global:
   # agent's <agent>-preview Service directly. Agents without a harness block do not.
   agentEvaluation:
     namespace: agent-evaluation
+    # Port of the verdict endpoint (Service agent-evaluation-harness-api) that the
+    # harness AnalysisTemplate calls. Must match harness.api.port in the
+    # agent-evaluation chart.
+    harnessApiPort: 8081
   # Kata RuntimeClass a sandboxed agent's pod selects (agent component,
   # properties.sandbox: true). Platform-owned: an application developer cannot set
   # this from their OAM, because the VMM is ambient environment config.

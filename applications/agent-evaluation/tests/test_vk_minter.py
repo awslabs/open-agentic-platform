@@ -1,0 +1,139 @@
+"""Decision logic of the bifrost chart's judge key minter, with fake clients."""
+from __future__ import annotations
+
+import base64
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).resolve().parents[3] / "gitops/addons/charts/bifrost/files/vk-minter.py"
+spec = importlib.util.spec_from_file_location("vk_minter", SCRIPT)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+CONFIG = {
+    "models": ["judge-default"], "budget_usd": "20", "budget_reset": "1M",
+    "rl_requests": "2000", "rl_reset": "1h",
+}
+NAME = m.vk_name(["judge-default"], "20", "1M", "2000", "1h")
+VALUE = "sk-bf-abc123"
+
+
+class FakeBifrost:
+    def __init__(self, keys=None, fail=None):
+        self.keys = list(keys or [])
+        self.fail = fail
+        self.created = []
+        self.deleted = []
+
+    def list_keys(self):
+        if self.fail:
+            raise m.MinterError("GET /x returned HTTP 500", 500)
+        return list(self.keys)
+
+    def create_key(self, name, *a):
+        if self.fail == "create":
+            raise m.MinterError("POST returned HTTP 500", 500)
+        self.created.append(name)
+        return {"id": "new", "name": name, "value": VALUE}
+
+    def delete_key(self, key_id):
+        self.deleted.append(key_id)
+
+
+class FakeKube:
+    def __init__(self, stored=None, active=False):
+        self.stored = stored
+        self.active = active
+        self.writes = []
+
+    def read_secret(self):
+        return self.stored
+
+    def harness_job_active(self):
+        return self.active
+
+    def write_secret(self, value, name, exists):
+        self.writes.append((value, name, exists))
+
+
+def test_creates_key_and_writes_secret_when_missing():
+    bf, kube = FakeBifrost(), FakeKube()
+    assert m.run(bf, kube, CONFIG) == 0
+    assert bf.created == [NAME]
+    assert kube.writes == [(VALUE, NAME, False)]
+
+
+def test_reuses_existing_key_and_does_not_rewrite_current_secret():
+    bf = FakeBifrost([{"id": "1", "name": NAME, "value": VALUE}])
+    kube = FakeKube(stored=(VALUE, NAME))
+    assert m.run(bf, kube, CONFIG) == 0
+    assert not bf.created and not kube.writes
+
+
+def test_value_withheld_reuses_the_secret_value():
+    bf = FakeBifrost([{"id": "1", "name": NAME}])
+    kube = FakeKube(stored=(VALUE, NAME))
+    assert m.run(bf, kube, CONFIG) == 0
+    assert not bf.created and not bf.deleted
+
+
+def test_value_withheld_and_unknown_replaces_key_when_no_job_active():
+    bf = FakeBifrost([{"id": "1", "name": NAME}])
+    kube = FakeKube()
+    assert m.run(bf, kube, CONFIG) == 0
+    assert bf.deleted == ["1"] and bf.created == [NAME]
+
+
+def test_value_withheld_and_unknown_waits_while_a_job_is_active():
+    bf = FakeBifrost([{"id": "1", "name": NAME}])
+    kube = FakeKube(active=True)
+    assert m.run(bf, kube, CONFIG) == 1
+    assert not bf.deleted and not bf.created and not kube.writes
+
+
+def test_bifrost_error_leaves_the_secret_untouched_and_fails():
+    kube = FakeKube(stored=(VALUE, NAME))
+    assert m.run(FakeBifrost(fail=True), kube, CONFIG) == 1
+    assert not kube.writes
+
+
+def test_create_error_leaves_the_secret_untouched_and_fails():
+    kube = FakeKube()
+    assert m.run(FakeBifrost(fail="create"), kube, CONFIG) == 1
+    assert not kube.writes
+
+
+def test_stale_keys_are_deleted_only_when_no_job_is_active():
+    old = {"id": "old", "name": m.PREFIX + "deadbeef", "value": "sk-bf-old"}
+    cur = {"id": "cur", "name": NAME, "value": VALUE}
+    bf = FakeBifrost([old, cur])
+    assert m.run(bf, FakeKube(stored=(VALUE, NAME), active=True), CONFIG) == 0
+    assert bf.deleted == []
+    bf = FakeBifrost([old, cur])
+    assert m.run(bf, FakeKube(stored=(VALUE, NAME), active=False), CONFIG) == 0
+    assert bf.deleted == ["old"]
+
+
+def test_changed_config_gets_a_new_name():
+    assert m.vk_name(["other"], "20", "1M", "2000", "1h") != NAME
+
+
+def test_output_never_contains_the_key_value(capsys):
+    m.run(FakeBifrost(), FakeKube(), CONFIG)
+    assert VALUE not in capsys.readouterr().out
+
+
+def test_secret_body_shape():
+    posted = {}
+
+    class H:
+        def request(self, method, path, body=None, params=None):
+            posted.update(method=method, path=path, body=body)
+            return {}
+
+    m.Kube(H(), "ns", "sec").write_secret(VALUE, NAME, exists=False)
+    assert posted["method"] == "POST" and posted["path"] == "/api/v1/namespaces/ns/secrets"
+    assert base64.b64decode(posted["body"]["data"][m.SECRET_KEY]).decode() == VALUE
+    assert posted["body"]["metadata"]["annotations"][m.ANN_KEY_NAME] == NAME

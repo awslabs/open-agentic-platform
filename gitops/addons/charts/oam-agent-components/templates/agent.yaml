@@ -76,6 +76,39 @@ spec:
         	},
         ]
 
+        // HARNESS (optional). Declared here, not next to the declaration ConfigMap,
+        // because the Rollout and the outputs both read it. A disabled block behaves
+        // like an absent one.
+        _harnessEnabled: *false | bool
+        if parameter.harness != _|_ {
+        	_harnessEnabled: parameter.harness.enabled
+        }
+
+        // Where the analysis runs and whether it may fail the rollout:
+        //   gate                                -> prePromotionAnalysis, no dryRun:
+        //                                          a run below the threshold, or with
+        //                                          no verdict, aborts the revision
+        //   report, autoPromotionEnabled        -> postPromotionAnalysis + dryRun:
+        //                                          scored after promotion, never delays it
+        //   report, not autoPromotionEnabled    -> prePromotionAnalysis + dryRun:
+        //                                          the preview waits for a person while the
+        //                                          score is recorded
+        // dryRun is what keeps a report-mode result from changing the rollout.
+        _harnessMode: *"report" | "gate"
+        if _harnessEnabled {
+        	_harnessMode: parameter.harness.mode
+        }
+        _harnessPre: _harnessMode == "gate" || !parameter.autoPromotionEnabled
+        _harnessAnalysis: {
+        	templates: [{templateName: context.name + "-harness"}]
+        	analysisRunMetadata: labels: "harness.oap.io/agent": context.name
+        	args: [
+        		{name: "agent", valueFrom: fieldRef: fieldPath: "metadata.name"},
+        		{name: "namespace", valueFrom: fieldRef: fieldPath: "metadata.namespace"},
+        		{name: "revision", valueFrom: fieldRef: fieldPath: "metadata.annotations['rollout.argoproj.io/revision']"},
+        		{name: "hash", valueFrom: podTemplateHashValue: "Latest"},
+        	]
+        }
         output: {
         	apiVersion: "argoproj.io/v1alpha1"
         	kind:       "Rollout"
@@ -97,8 +130,17 @@ spec:
         			activeService:        context.name + "-stable"
         			previewService:       context.name + "-preview"
         			autoPromotionEnabled: parameter.autoPromotionEnabled
-        			if parameter.autoPromotionSeconds != _|_ {
+        			// Gate: no automatic timer. Whether it can promote a revision before
+        			// the pre-promotion run ends is not verified (design P1), so a gate
+        			// agent never sets it and promotion waits for the analysis.
+        			if parameter.autoPromotionSeconds != _|_ && _harnessMode != "gate" {
         				autoPromotionSeconds: parameter.autoPromotionSeconds
+        			}
+        			if _harnessEnabled && _harnessPre {
+        				prePromotionAnalysis: _harnessAnalysis
+        			}
+        			if _harnessEnabled && !_harnessPre {
+        				postPromotionAnalysis: _harnessAnalysis
         			}
         			if parameter.scaleDownDelaySeconds != _|_ {
         				scaleDownDelaySeconds: parameter.scaleDownDelaySeconds
@@ -533,11 +575,50 @@ spec:
         	// output, so disabling the harness or deleting the Application removes it
         	// and the reconciler prunes that agent's runs. Same optional-field guard
         	// as evaluation, see the comment above _evaluationEnabled.
-        	_harnessEnabled: *false | bool
-        	if parameter.harness != _|_ {
-        		_harnessEnabled: parameter.harness.enabled
-        	}
         	if _harnessEnabled {
+        		// The Rollout's analysis runs this template once per revision. It asks
+        		// the agent-evaluation verdict endpoint to run the harness Job for the
+        		// revision and to answer pass, fail, insufficient, error or pending.
+        		// Report mode adds dryRun so a failed metric is recorded and never
+        		// changes the rollout. The platform namespace and port are platform
+        		// values (global.agentEvaluation), never the developer's. The Helm raw
+        		// strings in the url print the Argo placeholders unchanged.
+        		harnessAnalysisTemplate: {
+        			apiVersion: "argoproj.io/v1alpha1"
+        			kind:       "AnalysisTemplate"
+        			metadata: {
+        				name:      context.name + "-harness"
+        				namespace: context.namespace
+        				labels: {
+        					"harness.oap.io/agent":   context.name
+        					"app.kubernetes.io/name": context.name
+        				}
+        			}
+        			spec: {
+        				args: [{name: "agent"}, {name: "namespace"}, {name: "revision"}, {name: "hash"}]
+        				if _harnessMode == "report" {
+        					dryRun: [{metricName: "oap-harness"}]
+        				}
+        				metrics: [{
+        					name:     "oap-harness"
+        					interval: "15s"
+        					// 160 x 15 s = 40 minutes. The endpoint's own cap
+        					// (runTimeoutSeconds + slotWaitSeconds) is shorter and answers
+        					// error before the count runs out.
+        					count:                   160
+        					inconclusiveLimit:       160
+        					consecutiveSuccessLimit: 1
+        					consecutiveErrorLimit:   4
+        					successCondition:        "result.state == 'pass'"
+        					failureCondition:        "result.state in ['fail', 'insufficient', 'error']"
+        					provider: web: {
+        						method:         "POST"
+        						url:            "http://agent-evaluation-harness-api.{{ .Values.global.agentEvaluation.namespace }}.svc.cluster.local:{{ .Values.global.agentEvaluation.harnessApiPort }}/v1/verdict?namespace={{ `{{` }}args.namespace{{ `}}` }}&agent={{ `{{` }}args.agent{{ `}}` }}&revision={{ `{{` }}args.revision{{ `}}` }}&hash={{ `{{` }}args.hash{{ `}}` }}"
+        						timeoutSeconds: 20
+        					}
+        				}]
+        			}
+        		}
         		harnessSpec: {
         			apiVersion: "v1"
         			kind:       "ConfigMap"
@@ -759,11 +840,13 @@ spec:
         	}
 
         	// +usage=Per-revision exam of this agent on a fixed dataset. Each new
-        	// revision is scored on <agent>-preview and the result is published as
-        	// oap_agent_harness_* metrics. Report mode only: the score is reported,
-        	// and it never blocks or delays promotion. Gate mode (block promotion
-        	// below the threshold) is a later phase, so it is rejected at admission
-        	// for now rather than admitted and silently ignored.
+        	// revision is scored on <agent>-preview by an Argo Rollouts AnalysisRun (the
+        	// component emits the AnalysisTemplate) and the result is published as
+        	// oap_agent_harness_* metrics.
+        	//   mode: report  the score is recorded and never changes the rollout
+        	//                 (the analysis runs with dryRun)
+        	//   mode: gate    a score below the threshold, or no verdict, aborts the
+        	//                 revision before it is promoted
         	// Requires the agent-evaluation addon on the cluster with harness.enabled.
         	//
         	// A dataset is a platform catalog name. The <namespace>/<name> form is
@@ -777,8 +860,8 @@ spec:
         		checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
         		// +usage=Fraction of cases that must pass, reported next to the score.
         		threshold: *0.8 | number & >0 & <=1
-        		// +usage=report: score it, promote anyway. gate is not available yet.
-        		mode: "report"
+        		// +usage=report: record the score, never change the rollout. gate: abort a revision below the threshold or with no verdict.
+        		mode: *"report" | "gate"
         	}
 
         	// Same shape as #EvaluatorName, and a valid ConfigMap value and label value.

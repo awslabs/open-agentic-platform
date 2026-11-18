@@ -33,9 +33,11 @@ LABEL_RESULT = "harness.oap.io/result"
 # "key" means the label exists, "!key" that it does not (Kubernetes set-based selector).
 DECLARATION_SELECTOR = f"{LABEL_SELECTOR},!{LABEL_RESULT}"
 
-# Report mode only. `gate` is rejected by the CUE already; checking again here
-# means a hand-written ConfigMap cannot turn a report into a gate.
-VALID_MODES = ("report",)
+# `report` records the score; `gate` also makes the Rollout's analysis fail below
+# the threshold. The mode only changes what the AnalysisTemplate the agent
+# component emits does (dryRun or not). Checking the value here keeps a
+# hand-written ConfigMap from carrying a mode the component does not know.
+VALID_MODES = ("report", "gate")
 
 # The Job's target is derived, never read from the ConfigMap: the blue-green
 # preview Service `<agent>-preview` the agent component renders, on the
@@ -146,8 +148,7 @@ def parse_harness_declaration(cm) -> HarnessDeclaration:
     mode = data.get("mode", "report")
     if mode not in VALID_MODES:
         raise HarnessDeclarationError(
-            f"{where}: mode {mode!r} is not supported; only {list(VALID_MODES)} "
-            "is implemented, so the harness never blocks a promotion"
+            f"{where}: mode {mode!r} is not supported; use one of {list(VALID_MODES)}"
         )
 
     preview_service = f"{agent}{PREVIEW_SUFFIX}"
@@ -208,3 +209,26 @@ class HarnessDeclarationReader:
                 )
         good.sort(key=lambda d: d.key)
         return good, bad
+
+    def read_one(self, namespace: str, agent: str):
+        """The declaration `<agent>-harness` in one namespace, for the verdict endpoint.
+
+        Returns (declaration, configmap, error). A missing ConfigMap, or one
+        that is not labelled for this agent, is (None, None, None); an invalid
+        one is (None, configmap, message). Other API errors propagate.
+        """
+        try:
+            cm = self._core.read_namespaced_config_map(
+                name=f"{agent}-harness", namespace=namespace
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return None, None, None
+            raise
+        labels = getattr(cm.metadata, "labels", None) or {}
+        if labels.get(LABEL_SELECTOR) != agent or LABEL_RESULT in labels:
+            return None, None, None
+        try:
+            return parse_harness_declaration(cm), cm, None
+        except HarnessDeclarationError as exc:
+            return None, cm, str(exc)

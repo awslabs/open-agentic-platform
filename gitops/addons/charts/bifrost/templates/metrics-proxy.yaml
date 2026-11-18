@@ -1,0 +1,115 @@
+{{- /*
+  metrics-proxy.yaml — lets the OTel collector scrape Bifrost /metrics while the
+  management API requires a login.
+
+  The proxy holds the admin credential in namespace `bifrost` and serves only
+  GET /metrics. The collector scrapes the proxy, so no admin credential is
+  copied into namespace `otel`. Rendered when admin auth is on.
+*/ -}}
+{{- $mp := .Values.metricsProxy | default dict -}}
+{{- $bf := .Values.bifrost | default dict -}}
+{{- $inner := $bf.bifrost | default dict -}}
+{{- $auth := $inner.authConfig | default dict -}}
+{{- if and $auth.isEnabled (ne ($mp.enabled | toString) "false") }}
+{{- $ns := .Release.Namespace | default "bifrost" }}
+{{- $port := $mp.port | default 8080 }}
+{{- $upstreamPort := ($bf.service | default dict).port | default 8080 }}
+{{- $adminSecret := $auth.existingSecret | default "bifrost-admin" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifrost-metrics-proxy
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: bifrost-metrics-proxy
+data:
+  metrics-proxy.py: |
+{{ .Files.Get "files/metrics-proxy.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost-metrics
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: bifrost-metrics-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-metrics-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost-metrics-proxy
+      annotations:
+        checksum/script: {{ .Files.Get "files/metrics-proxy.py" | sha256sum | trunc 16 }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: proxy
+          image: {{ $mp.image | default "python:3.12-alpine" | quote }}
+          command: ["python", "/scripts/metrics-proxy.py"]
+          env:
+            - name: PORT
+              value: {{ $port | quote }}
+            - name: BIFROST_URL
+              value: {{ printf "http://bifrost.%s.svc.cluster.local:%v" $ns $upstreamPort | quote }}
+            - name: BIFROST_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef: {name: {{ $adminSecret | quote }}, key: {{ $auth.usernameKey | default "username" | quote }}}
+            - name: BIFROST_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $adminSecret | quote }}, key: {{ $auth.passwordKey | default "password" | quote }}}
+          ports:
+            - {name: metrics, containerPort: {{ $port }}}
+          readinessProbe:
+            tcpSocket: {port: metrics}
+          volumeMounts:
+            - {name: script, mountPath: /scripts, readOnly: true}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: script
+          configMap: {name: bifrost-metrics-proxy}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-metrics
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: bifrost-metrics-proxy
+spec:
+  selector:
+    app.kubernetes.io/name: bifrost-metrics-proxy
+  ports:
+    - {name: metrics, port: {{ $port }}, targetPort: metrics}
+---
+# Only the collector's namespace may reach the proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bifrost-metrics
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-metrics-proxy
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $mp.collectorNamespace | default "otel" | quote }}
+      ports:
+        - {protocol: TCP, port: {{ $port }}}
+{{- end }}

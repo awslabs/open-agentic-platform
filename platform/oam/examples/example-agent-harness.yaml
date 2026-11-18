@@ -1,15 +1,15 @@
 # Example: Agent with a per-revision harness (fixed dataset, report mode)
 #
-# Adding the `harness` block is the whole change. The platform runs a fixed
-# dataset of cases against every new revision of this agent, including the
-# first one as a baseline and a revision that becomes current again after a
-# rollback, on the blue-green preview Service (<agent>-preview). Each case is
-# judged and the pass ratio is published as oap_agent_harness_* metrics next to
-# the threshold.
+# Adding the `harness` block is the whole change. For every new revision of this
+# agent, Argo Rollouts runs an analysis (the component emits the AnalysisTemplate)
+# that scores a fixed dataset of cases on the blue-green preview Service
+# (<agent>-preview). Each case is judged and the pass ratio is published as
+# oap_agent_harness_* metrics next to the threshold.
 #
-# Report mode only: the harness scores the revision and promotion goes ahead
-# anyway. It never blocks or delays a rollout. Gate mode (hold promotion below
-# the threshold) is a later phase and is rejected at admission for now.
+# mode: report. The analysis runs with dryRun after promotion: the revision
+# promotes on health, the score is recorded, and the result never delays,
+# blocks or rolls back the rollout. See example-agent-harness-gate.yaml for
+# mode: gate, which aborts a revision below the threshold.
 #
 # What the developer controls here: which dataset, which checks, and the
 # threshold the score is reported against.
@@ -51,7 +51,7 @@ spec:
             - expected-answer
           # Fraction of cases that must pass, reported next to the score.
           threshold: 0.8
-          # report: score it, promote anyway.
+          # report: record the score, never change the rollout.
           mode: report
         registerWithGateway: false
         resources:

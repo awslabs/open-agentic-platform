@@ -57,19 +57,16 @@ _HARNESS_JOB_HASH_LEN = 12
 
 
 def harness_job_name(
-    namespace: str, agent: str, revision: str, dataset: str, run: int = 1
+    namespace: str, agent: str, revision: str, pod_hash: str, dataset: str
 ) -> str:
-    """Deterministic Job name for run `run` of one (agent, revision, dataset).
+    """Deterministic Job name for one (agent, Rollout revision, pod hash, dataset).
 
-    The Job object IS the "already ran" record: a restarted reconciler that
-    finds a Job with this name creates nothing. Run 1 keeps the name it had
-    before re-runs existed, so Jobs created by an older reconciler still
-    count; run n >= 2 (the revision became current again, a rollback) adds
-    the ordinal to the hash.
+    The Job object IS the "already ran" record for a revision: every poll of the
+    verdict endpoint for the same revision finds the same Job. The Rollout
+    revision number and the pod-template hash are both in the hash, so a rollback
+    (a new revision number) gets a new Job even when the pod hash repeats.
     """
-    payload = f"{namespace}/{agent}/{revision}/{dataset}"
-    if run != 1:
-        payload += f"/{run}"
+    payload = f"{namespace}/{agent}/{revision}/{pod_hash}/{dataset}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return HARNESS_JOB_PREFIX + digest[:_HARNESS_JOB_HASH_LEN]
 

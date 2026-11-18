@@ -47,17 +47,15 @@ Langfuse key pair would permit the write, so the program has to refuse it.
 | `project` | hub only | `RECONCILE_INTERVAL_SECONDS` | Publish catalog evaluators and the judge LLM connection |
 | `rules` | every instance | `RECONCILE_INTERVAL_SECONDS` | Diff this cluster's agents into evaluation rules |
 | `metrics` | every instance | `METRICS_INTERVAL_SECONDS` | Read score aggregates back and publish gauges |
-| `harness` | every instance, only with `HARNESS_ENABLED=true` | `HARNESS_INTERVAL_SECONDS` | Report-mode harness (#137): for each `<agent>-harness` declaration, start one Job per new Rollout revision in this namespace, publish its result as `oap_agent_harness_*`, prune old runs, and keep this cluster's harness judge key minted in Bifrost |
+| `harness` | every instance, only with `HARNESS_ENABLED=true` | `HARNESS_INTERVAL_SECONDS` | Harness (#137): publish `oap_agent_harness_*` and Events from finished Argo Rollouts AnalysisRuns, delete stale Jobs, and serve the verdict endpoint (`harness_api.py`, `harness.api.port`) that starts one Job per revision. The judge key is written by the bifrost chart's minter, not by this process |
 
 The harness Job runs this same image as `python -m app.harness_runner`: it sends
 the dataset's cases to `<agent>-preview` over A2A, judges each answer through
 Bifrost and writes one `<job>-result` ConfigMap. The `harness` loop is not one of
 the loops `/readyz` waits for; its health is
 `oap_agent_eval_last_success_timestamp_seconds{loop="harness"}`. See
-[§4b](../../docs/architecture/agent-evaluation.md#4b-the-agent-harness-phase-3-report-mode).
-The harness runs in report mode only: it scores each new revision and promotion
-goes ahead regardless of the score. `mode: gate` is reserved for a later phase
-and is rejected at admission today.
+[design](../../docs/architecture/agent-harness.md).
+Both modes run on an Argo Rollouts analysis: `mode: report` records the score and never changes a rollout, `mode: gate` aborts a revision below its threshold or with no verdict.
 
 Each pass is a full diff, so a restart loses nothing and an error is recovered by
 the next pass rather than by a retry.
@@ -126,7 +124,7 @@ Credentials read from `CREDENTIALS_DIR`:
   `is_vk_mandatory: false`; the judge then runs un-budgeted, which is logged as a
   warning and published as `oap_agent_eval_judge_key_present 0`.
 
-### Harness (report mode)
+### Harness
 
 Read only when `HARNESS_ENABLED=true`; the chart sets every one of these from
 `harness.*` values.
@@ -136,7 +134,8 @@ Read only when `HARNESS_ENABLED=true`; the chart sets every one of these from
 | `HARNESS_ENABLED` | `false` | Turns the harness loop on |
 | `HARNESS_INTERVAL_SECONDS` | `60` | Harness loop interval |
 | `HARNESS_MAX_CONCURRENT_JOBS` | `2` | Harness Jobs running at once on this cluster |
-| `HARNESS_HISTORY_LIMIT` | `3` | Finished runs kept per agent |
+| `HARNESS_API_PORT` | `8081` | Verdict endpoint port |
+| `HARNESS_SLOT_WAIT_SECONDS` | `300` | How long a created Job may wait for a free slot; `HARNESS_RUN_TIMEOUT_SECONDS + HARNESS_SLOT_WAIT_SECONDS` must be at most 2100 |
 | `HARNESS_CHECKS_PATH` | `/etc/agent-evaluation/harness-checks/checks.yaml` | Check prompts, validated at startup (exit 2 on error) |
 | `HARNESS_DATASETS_DIR` | `/etc/agent-evaluation/harness-datasets` | Shipped datasets; an unknown name is an `UnknownDataset` Event |
 | `HARNESS_CATALOG_CONFIGMAP` | `agent-evaluation-harness-catalog` | Mounted into each Job |
@@ -152,15 +151,8 @@ Read only when `HARNESS_ENABLED=true`; the chart sets every one of these from
 | `HARNESS_MAX_CASES` | `50` | More cases is a run error, never truncated |
 | `HARNESS_MIN_JUDGED_RATIO` | `0.8` | Share of cases that must be judged before a ratio is published; below it the run is `insufficient`. In (0, 1] |
 | `HARNESS_JUDGE_ALIAS` | catalog default | Judge alias from the catalog |
-| `HARNESS_JUDGE_KEY_MINT` | `true` | Mint the harness judge key in this cluster's Bifrost |
 | `HARNESS_JUDGE_KEY_REQUIRED` | `true` | Fail closed: no run without the key |
-| `HARNESS_JUDGE_KEY_SECRET` | `agent-evaluation-harness-judge-key` | Secret the key is written to, key `BIFROST_VIRTUAL_KEY` |
-| `BIFROST_ADMIN_URL` | `http://bifrost.bifrost.svc.cluster.local:8080` | Bifrost management API |
-| `HARNESS_JUDGE_BUDGET_USD` | `20` | Key budget |
-| `HARNESS_JUDGE_BUDGET_RESET` | `1M` | Budget period |
-| `HARNESS_JUDGE_RATE_LIMIT_REQUESTS` | `2000` | Key request limit |
-| `HARNESS_JUDGE_RATE_LIMIT_RESET` | `1h` | Rate-limit period |
-| `HARNESS_JUDGE_ALLOWED_MODELS` | the judge model | Comma-separated models the key may call |
+| `HARNESS_JUDGE_KEY_SECRET` | `agent-evaluation-harness-judge-key` | Secret the platform minter writes (this process only reads it), key `BIFROST_VIRTUAL_KEY` |
 
 ## Endpoints
 
