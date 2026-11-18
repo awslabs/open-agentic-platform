@@ -863,10 +863,9 @@ plan are in the research appendix, [§B](agent-guardrails-research.md#b-dogwood)
 #### What Phase 1 owes this option
 
 Nothing in Phase 1 depends on Dogwood, and Phase 1 must not wait for it. The
-whole debt is D4's signature: `decide()` takes the findings **and** a request
-context, returns a verdict, and is the only place a verdict is made. That is
-enough for Dogwood, Cedar or OPA to be substituted later without touching the
-OAM API, the ConfigMap contract or the metrics.
+whole debt is D4's seam: the verdict is made only by the profile's guards, so
+Dogwood, Cedar or OPA can be added later as a `webhook` guard on the same route
+without touching the OAM API, the route contract or the metrics.
 
 ### D7. Making the hop hard to skip, and saying plainly what it is not
 
