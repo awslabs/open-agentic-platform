@@ -19,12 +19,12 @@
 # answers NAME_UNKNOWN, which is the outstanding handoff ("Ask 2" on #104). At
 # that point the chart default is correct for every cluster and the hub needs no
 # override.
-# TEST ONLY - never merge. Private ECR image built from 5a2e0b8d
+# TEST ONLY - never merge. Private ECR image built from c3f56983
 # (multi-arch index digest
-# sha256:6f80582aeb858f3793af5394ceee1f647551ccc5b666a036db08673b6c5c2348;
+# sha256:915160a3d78971bd4c2ba3ba2621485d1f1202a6b2941b3b12c709e88c4b3bd5;
 # the chart pins by tag only, so the tag is used).
 image:
   repository: 257077212816.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
-  tag: "5a2e0b8d"
+  tag: "c3f56983"
 harness:
   enabled: true
