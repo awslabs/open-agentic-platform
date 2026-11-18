@@ -1282,7 +1282,7 @@ the regression #143 fixed.
 | Sees | the prompt and the completion | the JSON-RPC method, **the params — tool name and arguments** — and the result |
 | Question answered | "is this text acceptable?" | "is this caller allowed to call this tool, with these arguments, right now?" |
 | Decides with | detector findings + thresholds (`decide()`, §D4) | a policy engine over principal / action / resource / entities |
-| Fail mode | `onError: block` by default (§D4) | `failureMode: FailClosed`, already the documented default |
+| Fail mode | `failureMode: FailClosed`, set explicitly, from agentgateway v1.6.0 (§D4) | `failureMode: FailClosed`, already the documented default |
 
 Neither hop can do the other's job, and that is structural rather than a
 limitation to engineer away. A model call carries no tool name, so no guard on
