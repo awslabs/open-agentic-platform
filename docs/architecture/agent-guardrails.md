@@ -483,8 +483,9 @@ platform owns **how**. No vendor, ARN, region or key in the Application
 File: `platform/oam/definitions/components/agent.cue` (proposed `parameter` addition)
 
 ```cue
-// +usage=Runtime content and topic guardrails for this agent. Requires the
-// agent-guardrails addon on the cluster.
+// +usage=Runtime content and topic guardrails for this agent. Requires
+// agentgateway v1.6.0 or later with guardrail profiles enabled in the
+// agent-gateway chart.
 guardrails?: {
 	// +usage=Turn guardrails on for this agent.
 	enabled: *false | bool
