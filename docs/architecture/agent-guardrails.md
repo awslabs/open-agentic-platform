@@ -743,13 +743,13 @@ Three properties keep fail-closed from being a slogan:
 
 #### Retry is part of the verdict, not a wrapper around it
 
-Bedrock's documented `ApplyGuardrail` quota is **100 requests/second** in the
-larger Regions and **25/second elsewhere**, and throttling returns a
-`ThrottlingException` that AWS says to handle with "retries with exponential
-backoff and random jitter". A guardrail that treats a 429 as `onError` blocks
-real traffic during a burst, so the gateway's own retry budget applies and
-only then applies `onError`. The budget is a chart value and the remaining
-latency headroom is what bounds it (§5).
+Throttling returns a `ThrottlingException`, which AWS says to handle with
+"retries with exponential backoff and random jitter". With `FailClosed`, a
+throttle that is not retried is a **refused request**, so a burst turns
+straight into agent errors. The gateway's retry budget applies first, and only
+then does `failureMode` decide. The binding quota is text units per second,
+not requests, and it is shared across every cluster in the account and Region
+(§5).
 
 ### D5. Input first. Output inspection costs streaming, and that is a contract
 
