@@ -1954,10 +1954,13 @@ anything**
     One residue is open and is now in §D8: a fail-closed error has no
     `guardrail_checks` value of its own, so `error_blocked` must be derived
     until upstream adds one.
-13. **Can `guardrail_checks` be attributed to a single agent?** §D8 assumes the
-    per-profile and per-agent HTTPRoute makes the route identifier a usable join
-    key in gateway telemetry. If it cannot, the dashboard loses its primary
-    dimension, and that is a larger loss than question 12's.
+13. **Can `guardrail_checks` be attributed to a single agent?** Routes are per
+    profile, so the route does not name the agent. §D8 takes the agent from
+    `jwt.sub` through the frontend `metrics.attributes` CEL labels, documented
+    as added "to all Prometheus metrics". Whether that includes
+    `guardrail_checks`, whose own label struct is only `{phase, action}`, is the
+    first Phase 1 validation item. If it does not, the dashboard loses its
+    primary dimension.
 14. **Does the gateway's AWS identity gaining `bedrock:ApplyGuardrail` need its
     own review?** The permission moves from a would-be proxy ServiceAccount onto
     the `agentgateway` ServiceAccount, which already terminates agent and MCP
