@@ -562,33 +562,25 @@ accept the raw source in that form.
 
 #### The rendered output
 
-Same mechanism as evaluation: one guarded KubeVela output, so deleting the
-Application or setting `enabled: false` removes it and the reconciler converges
-by diff, with no finalizer.
+No new object. The block changes **one value** the agent already gets:
+`LLM_GATEWAY_URL` (`agent.cue:153`), which today comes from
+`modelConfig.llmGatewayUrl` and defaults to Bifrost. With guardrails on, it is
+the profile's route on the gateway instead:
 
 ```cue
-if parameter.guardrails != _|_ && parameter.guardrails.enabled {
-	outputs: guardrailSpec: {
-		apiVersion: "v1"
-		kind:       "ConfigMap"
-		metadata: {
-			name:      context.name + "-guardrails"
-			namespace: context.namespace
-			labels: "guardrails.oap.io/agent": context.name
-		}
-		data: {
-			agent:   context.name
-			profile: parameter.guardrails.profile
-			if parameter.guardrails.onViolation != _|_ {
-				onViolation: parameter.guardrails.onViolation
-			}
-			if parameter.guardrails.inspect != _|_ {
-				inspect: strings.Join(parameter.guardrails.inspect, ",")
-			}
-		}
-	}
-}
+_llmUrl: [
+	if parameter.guardrails != _|_ && parameter.guardrails.enabled {
+		"http://agentgateway-proxy.{{ .Values.global.agentGateway.namespace }}.svc.cluster.local:8080/llm/" +
+			parameter.guardrails.profile + "/v1"
+	},
+	parameter.modelConfig.llmGatewayUrl,
+][0]
+// env: {name: "LLM_GATEWAY_URL", value: _llmUrl}
 ```
+
+Revision 4 rendered an `<agent>-guardrails` declaration ConfigMap here. It is
+gone: only the deleted proxy read it. The gateway reads its own policy, and the
+dashboard takes the profile from the route (§D8).
 
 There is deliberately **no `tools:` key** (§2.2) and **no threshold number**: a
 threshold is a property of a detector, which the profile owns.
