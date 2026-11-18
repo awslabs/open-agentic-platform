@@ -1902,9 +1902,13 @@ anything**
 5. **Is Bedrock Guardrails entitled and reachable** in the accounts OAP deploys
    into, and is the Standard tier (which requires cross-Region inference)
    acceptable where denied-topic throughput matters?
-6. **Does the platform ever mandate guardrails?** A namespace label that makes
-   `enabled: false` a rejected declaration is the mechanism; whether the platform
-   should own that decision is a governance question, not a technical one.
+6. ~~**Does the platform ever mandate guardrails?**~~ **Answered in review:
+   yes, per namespace.** @shapirov103's suggestion is adopted: the platform
+   lists required namespaces and their minimum profile in
+   `oam-agent-components` values, CUE rejects `enabled: false` and a weaker
+   profile there, and the developer field stays for choosing a stricter
+   profile (§D2). Which namespaces to list is still a governance call per
+   environment.
 7. ~~**Who owns the tool-call content gap?**~~ **Answered by #152.** Bedrock
    Guardrails cannot see `toolUse.input` or `toolResult`, and the hop that can is
    agentgateway's ExtMCP processor, which receives the JSON-RPC params. Kept here
