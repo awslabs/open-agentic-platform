@@ -56,8 +56,9 @@ spec:
           enabled: true
 
           # Platform profile. What `standard` means — which detectors, at what
-          # strength, the weakest verdict allowed, and the behaviour when the
-          # backend errors — lives in the agent-guardrails chart, not here.
+          # strength, which text is checked — lives in the platform's profile
+          # catalog, not here. Choose a stricter profile to be stricter. A
+          # profile below this namespace's minimum is rejected at admission.
           profile: standard
 
           # OPTIONAL, and only ever STRICTER than the profile's floor:
