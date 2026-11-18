@@ -88,3 +88,13 @@ So the two Bifrost-native routes both fail a platform requirement:
 The third row closes the loop with D3. The score-shaped surface #146 describes is
 the **managed** AgentCore form,
 `ContentFilter(categories, contents)[...].confidenceScore.greaterThan(decimal("0.4"))`,
+backed by `InvokeGuardrailChecks`. The open-source corpus form takes its
+**arguments in the opposite order** and compares an enum. So "Dogwood consumes
+Bedrock findings" is true of two different, incompatible spellings, and a policy
+cannot move between them untouched.
+
+### Three properties that disqualify the interpreter from a request path
+
+Read in the source, not inferred from the README:
+
+1. **The in-memory temporal engine grows without bound and loses everything on
