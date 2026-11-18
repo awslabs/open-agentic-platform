@@ -108,3 +108,13 @@ Read in the source, not inferred from the README:
    interpreter over the whole trace so far, so unbounded growth and per-request
    replay compound.
 3. **Provider execution is unconditional.** "Provider execution is
+   **unconditional** … For every decision event, every provider invocation in
+   the policy set is evaluated" — not gated by the rule's action, its
+   principal/resource constraints, its conditions, or whether it could fire at
+   all. On a request path that is every guardrail call in every policy, on every
+   request.
+
+Three silent-weakening traps compound it, and each is this platform's named
+failure shape:
+
+- A field in the `logged` bag but not `request_context` (or the reverse)
