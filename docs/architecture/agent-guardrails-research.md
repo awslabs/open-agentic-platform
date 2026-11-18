@@ -271,3 +271,13 @@ The industry has converged on a shape, and it is worth stating because this
 design is an instance of it rather than an invention.
 
 **The enforcement point is a gateway, and every serious implementation is
+pre/post around the model call.** Bifrost, LiteLLM, Portkey, Kong AI Gateway and
+Cloudflare AI Gateway all expose the same two hooks — inspect the request before
+the provider, inspect the response after — and all of them treat the detector as
+a pluggable backend rather than something they implement. That is exactly the
+seam this design uses; the only question OAP has to answer differently is *how*
+to get a hook into its gateway (§D1).
+
+**The detector is almost always a managed service.** The four that matter:
+
+| | Bedrock Guardrails | Azure AI Content Safety | Google Model Armor |
