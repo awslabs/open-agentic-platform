@@ -208,3 +208,13 @@ OAP's traces means, per event:
 | An explicit `::request` / `::response` kind | One tool-call span becomes **two or more** lines: "its eventual `response` or `error` is a separate event" |
 | Fields in **both** bags | A field a policy reads *and* correlates on must appear in the trailing logged group **and** `request_context`, or the check silently weakens |
 | Fully-qualified quoted action ids | A mismatch makes temporal predicates silently not match |
+
+Whether OAP's Langfuse observations carry tool-call arguments and timestamps at
+all is the first thing to check, and it stays an open question (Q4).
+
+---
+
+## C. Relationship to #152
+
+### What this design takes from #152
+
