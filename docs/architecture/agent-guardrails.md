@@ -310,8 +310,8 @@ an assumption (§D2, §6).
 **Revision 4 reverses this decision.** Revision 3 proposed an OAP-owned
 inspection proxy. @shapirov103 pointed out in review that agentgateway is also an
 LLM gateway with native prompt guards, and prototyped it against Bifrost on a dev
-spoke. That is correct, it is in the version OAP already pins, and it removes the
-proxy entirely.
+spoke. That is correct, and it removes the proxy entirely. The guards exist in
+the version OAP pins; failing closed needs v1.6.0 (§D4).
 
 Revision 3's error is worth naming precisely, because it is a class of mistake
 rather than a detail: it observed that OAP routes only A2A and MCP traffic
