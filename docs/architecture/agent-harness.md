@@ -1,7 +1,7 @@
 # Agent Harness: Per-Revision Evaluation on Argo Rollouts Analysis
 | | |
 |---|---|
-| **Status** | Design for review. Report mode is implemented in PR #153 on the reconciler's own loop; this document is the design that PR is reworked to. The provider choice (D2) is pending reviewer confirmation. Until the implementation commit that follows this document, [agent-evaluation.md](agent-evaluation.md) §4b, its table rows "Harness judge key (§4b)" and "Harness RBAC (§4b ...)" in section 5, its phase row 3 in section 6, and the Agent Evaluation row in `README.md` describe the first cut. That commit replaces §4b with a pointer, updates those rows and adds the README design link. Where they differ, this document wins |
+| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested and render-checked; live validation (section 7) is the next step. The provider choice (D2, web provider with a platform endpoint) is still pending reviewer confirmation. The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
 | **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/`, `agent` component `platform/oam/definitions/components/agent.cue`, Bifrost chart `gitops/addons/charts/bifrost/` |
 | **Operator guide** | [`applications/agent-evaluation/agent-harness.md`](../../applications/agent-evaluation/agent-harness.md) |
 | **Parent design** | [Continuous Agent Evaluation](agent-evaluation.md) (this document was its §4b) |
@@ -1173,12 +1173,14 @@ it. The dashboard's run status shows it.
 | Phase | Delivers | Status |
 |---|---|---|
 | **3a** | Report mode on the reconciler's own loop (#137): `harness` block, declaration ConfigMap, platform datasets, Job per revision, `expected-answer` judge, metrics, dashboard row, alerts, online exclusion, two examples | Implemented in PR #153 (first cut). Replaced by 3b |
-| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); runner egress policy only if confirmed (section 8) | Design. Provider pending |
+| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); runner egress policy only if confirmed (section 8) | Implemented on the PR branch: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. Provider pending; live validation pending |
 | **3c** | Follow-ups: the agent image echoes its revision for the exact per-reply check; team-owned datasets (`<namespace>/<name>`); `expectTools`; k runs per case; hold-on-no-verdict through Inconclusive; a harvested dataset from real failures (shares ground with #146); a public image registry | Not scheduled |
-The order of work inside 3b: (1) Bifrost Option A and its live checks, because
-the minter and the key location do not depend on the provider; (2) this
-document; (3) after approval of D2: the CUE and reconciler changes, the
-endpoint, the runner exit code, and the gate live runs.
+The order of work inside 3b was: (1) Bifrost Option A, because the minter and
+the key location do not depend on the provider; (2) this document; (3) the CUE
+and reconciler changes and the endpoint. The runner is unchanged: it exits 0
+once a result is written, and the endpoint maps the result to the verdict. The
+live checks (section 7) come last. If D2 changes, only the pieces marked `[D2]`
+change (section 4.8).
 ---
 ## 7. Validation plan
 ### Verified (spike, Argo Rollouts v1.9.0, hub cluster)

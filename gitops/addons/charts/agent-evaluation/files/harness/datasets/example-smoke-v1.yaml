@@ -2,7 +2,7 @@
 # set: it shows the format and exists for tests. For a general assistant use
 # general-assistant-v1 (20 cases) instead.
 #
-# Schema (docs/architecture/agent-evaluation.md §4b, Contract 4): `name` must
+# Schema (docs/architecture/agent-harness.md, Contract 4): `name` must
 # equal this file's name without .yaml; each case needs a unique `id`, an
 # `input` sent to the agent and an `expected` reference the judge compares the
 # answer against. `expected` may contain {{asked}}, rendered as the UTC
