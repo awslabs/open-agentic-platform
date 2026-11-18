@@ -424,7 +424,7 @@ platform already uses for MCP:
 | Object | Who writes it | Precedent in the repo |
 |---|---|---|
 | `AgentgatewayBackend` of type `ai`, provider `openai`, `host`/`port` pointed at the Bifrost Service, `pathPrefix: /v1` | the `agent-gateway` chart, once per cluster | `backend.yaml` already renders the MCP backend this way |
-| `HTTPRoute` per guardrail profile on the existing gateway | the `agent-gateway` chart | `mcp-server.cue` renders one HTTPRoute per MCP server |
+| **One `HTTPRoute` per guardrail profile** on the existing gateway, in the gateway's own namespace, each gated by a `traffic.authorization` `Require` rule on `jwt.sub` | the `agent-gateway` chart | `mcp-server.cue` renders a `Require` on `jwt.sub in [...]` per MCP route; `mcp-access.yaml` renders platform grants from chart values |
 | `AgentgatewayPolicy` with `backend.ai.promptGuard`, `targetRefs` → that route | the `agent-gateway` chart, from the profile catalog | `mcp-access.yaml` renders platform-owned policies from chart values |
 | Bedrock `Guardrail` + `GuardrailVersion` | Crossplane, from the catalog (§D3) | unchanged from revision 3 |
 | `guardrails` block on the `agent` component → which profile's route the agent is pointed at | `agent.cue` | unchanged from revision 3 (§D2) |
