@@ -28,7 +28,3 @@ image:
   tag: "c3f56983"
 harness:
   enabled: true
-  # TEST ONLY - temporary: cut runs short so they are insufficient.
-  # 75 - 60 margin = 15 s of work; caseTimeoutSeconds 10 keeps runTimeout > margin + caseTimeout.
-  caseTimeoutSeconds: 10
-  runTimeoutSeconds: 75
