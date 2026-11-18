@@ -1891,10 +1891,8 @@ anything**
    `vela def render` accepts.
 2. ~~**Is the extra hop acceptable, or should this be a Bifrost plugin after
    all?**~~ **Answered in review, and neither.** @shapirov103 showed that
-   agentgateway's native `promptGuard` does this in the version OAP already
-   pins, so there is no OAP-owned hop to justify and no Bifrost build to own.
-   The replacement question is question 12 below: what to do about the
-   fail-open.
+   agentgateway's native `promptGuard` does this, so there is no OAP-owned hop
+   to justify and no Bifrost build to own.
 3. **Which profiles ship, and what does each mean?** `strict` / `standard` /
    `observe` is a guess. The denied-topic definitions in particular are
    product-specific and may not have a sensible platform default at all.
