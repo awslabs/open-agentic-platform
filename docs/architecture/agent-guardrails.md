@@ -1086,14 +1086,15 @@ to the `decentralized` + `evaluation` combination:
 
 | Rejected at admission | Why |
 |---|---|
-| `guardrails.onViolation` weaker than the profile's floor | the whole point of D2 |
+| `guardrails.profile` below the namespace minimum | the whole point of D2 |
 | `guardrails.enabled: false` on an agent in a namespace the platform marks as requiring guardrails | opt-out should be visible and reviewed, not a default |
 | An `mcpServers` entry with no matching `mcpAccess` grant | the adjacent gap #144 notes: today it surfaces as a 403 at call time |
 
-The component itself can enforce the first with CUE unification, the way
-`evaluation` already rejects a non-`centralized` observability mode. The second
-and third need a policy engine, and `kyverno` is `false` in every overlay today —
-so this is a real prerequisite, not a configuration flip.
+The component itself enforces the first two with CUE, from the platform values
+templated into it (§D2, *How admission rejects*), the way `evaluation` already
+rejects a non-`centralized` observability mode. No policy engine is needed for
+either. The third still needs one, and `kyverno` is `false` in every overlay
+today, so it stays a prerequisite, not a configuration flip.
 
 #### What content inspection cannot promise
 
