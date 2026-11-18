@@ -841,9 +841,9 @@ implies otherwise is the fail-silent shape again.
 | Phase | Inspection | Streaming |
 |---|---|---|
 | **1** | **input only** — `promptGuard.request` | unaffected. No conflict exists on the request path, which is why @shapirov103's prototype saw streaming work with a request guard in place |
-| **2** | input + output, `onViolation: report` | unaffected — detection needs no buffering |
-| **2** | input + output, `onViolation: block` | the gateway buffers, so **this agent does not stream** |
-| **2** | input + output, `onViolation: redact` **on a stream** | **not available at all** — see below |
+| **2** | input + output, a profile whose response guard uses `action: Audit` | unaffected — detection needs no buffering |
+| **2** | input + output, a profile whose response guard rejects | the gateway buffers, so **an agent on this profile does not stream** |
+| **2** | input + output, a profile whose response guard masks, **on a stream** | **not available at all** — see below |
 
 **agentgateway expresses this trade as a flag, and adds one constraint revision 3
 did not know about.** `AIPromptGuard.streaming` is an enum whose only non-default
