@@ -1576,9 +1576,33 @@ states:
 So this one belongs on a spoke. This branch touches neither the gateway chart
 nor its dev values (`git diff origin/main...HEAD --
 gitops/addons/charts/agent-gateway/ gitops/overlays/environments/dev/agent-gateway/`
-is empty), so there is no reason to expect it to behave differently once run
-where its prerequisites hold — but that is an expectation, not a result, and it
-is recorded as one. **Outstanding: run it on a spoke.**
+is empty), so there was no reason to expect it to behave differently once run
+where its prerequisites hold.
+
+### Run on the dev spoke — closed by review
+
+@shapirov103 ran it on `oap-dev` with both clusters pointed at this branch, the
+delegation fixture and the memory agent recreated
+([comment](https://github.com/awslabs/open-agentic-platform/pull/151#issuecomment-6968538240)):
+
+| Suite | Result |
+|---|---|
+| `tests/live/test_delegation.py` | **22 passed, 1 skipped** (`G2` is unit-only) |
+| `tests/live/test_identity.py` | **13 passed, 1 skipped** (`K1` needs a Keycloak mapper) |
+
+Two things that matter more than the counts:
+
+- **`N1` passed** — a direct call carrying a forged user is refused. So #85's
+  gateway-only NetworkPolicy still holds alongside the sandbox ingress policy
+  this branch adds, which was the interaction worth checking.
+- **`G1` passed there**, because the dev overlay sets `mcpAccess`. That confirms
+  the hub failure above was a missing cluster-side value and not a defect in
+  this branch.
+
+He also confirmed the spoke enablement works end to end: `oap-dev` picked up
+`enable_agent_sandbox: true` from the dev overlay, the operator and all four
+`Sandbox*` CRDs installed, and **no sandbox pod was scheduled** — which is the
+property blocking 2 was about. Clusters were returned to `main` afterwards.
 
 ## Rough edges I hit, neither of them blocking
 
