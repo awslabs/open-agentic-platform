@@ -291,3 +291,13 @@ to get a hook into its gateway (§D1).
 
 Two things follow. Bedrock is the only one of the three that both **enforces**
 and takes **natural-language topic definitions**, which is why it is the Phase 1
+backend for a Bedrock-based platform. And all three are detectors — the gateway
+is the policy enforcement point in every case, so the AI route in §D1 is doing the
+job these services assume someone is doing.
+
+**In-process libraries are the common mistake.** NeMo Guardrails, Guardrails AI,
+LlamaFirewall and Presidio are all good at detection and all live in the
+application image, which is precisely what makes them a convention rather than a
+control. The pattern that works is to put them *behind* a gateway hook, where the
+platform decides whether they ran.
+
