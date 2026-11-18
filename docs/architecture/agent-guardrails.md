@@ -408,7 +408,7 @@ So the two Bifrost-native routes both fail a platform requirement:
 
 | Option | Verdict |
 |---|---|
-| **agentgateway `promptGuard` on an AI route in front of Bifrost** (**chosen**) | Native in the pinned v1.4.1, implemented in the dataplane, calls `ApplyGuardrail`, emits guard metrics, and adds **no OAP-owned component at all**. The one qualification is the fail-open default in §D4 |
+| **agentgateway `promptGuard` on an AI route in front of Bifrost** (**chosen**) | Native, implemented in the dataplane, calls `ApplyGuardrail`, emits guard metrics, and adds **no OAP-owned component at all**. Needs agentgateway ≥ v1.6.0 to fail closed (§D4) |
 | An OAP-owned inspection proxy | **Rejected, and this is the reversal.** It builds and operates a service to do what the gateway already does. A platform that runs a gateway and then puts its own proxy beside it for one feature has two things to upgrade and one of them has no users but itself |
 | Bifrost Enterprise guardrails | Rejected as the default: commercial licence, private image, fails open. Still reasonable as an alternative backend for customers holding a licence (§D3) |
 | A custom Bifrost `.so` plugin | Rejected: OAP would own a Bifrost build and a per-upgrade rebuild, for a feature the gateway gives for free |
