@@ -424,11 +424,21 @@ tasks:
         CONFIG_UPDATED=$(printf '%s' "$CONFIG_EXISTING" | RUNTIME="$RUNTIME" python3 -c "
         import json, os, sys
         d = json.loads(sys.stdin.read())
+        # TWO DIFFERENT KEYS, because the fleet-secret chart renders them to two
+        # different places (appmod-blueprints
+        # platform-charts/fleet-secret/templates/external-secret.yaml):
+        #   d['addons']   -> cluster secret LABELS      (lines 74-75)
+        #   d['metadata'] -> cluster secret ANNOTATIONS (lines 28-29)
+        #
+        # So enable_agent_sandbox HAS to go in addons: the ApplicationSet
+        # selector matches a label, and an annotation of the same name never
+        # matches. Both keys hold a JSON STRING, not an object.
+        a = json.loads(d['addons'])
+        a['enable_agent_sandbox'] = 'true'
+        d['addons'] = json.dumps(a)
+        # sandbox_runtime stays in metadata, where an annotation is exactly what
+        # the agent-sandbox registry entry reads.
         m = json.loads(d['metadata'])
-        # enable_agent_sandbox gates the addon (the appset selector matches this
-        # label); sandbox_runtime picks the warm pool's runtime for the
-        # agent-sandbox registry entry.
-        m['enable_agent_sandbox'] = 'true'
         m['sandbox_runtime'] = os.environ['RUNTIME']
         d['metadata'] = json.dumps(m)
         print(json.dumps(d))
