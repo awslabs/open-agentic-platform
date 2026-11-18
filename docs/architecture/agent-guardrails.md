@@ -608,21 +608,18 @@ spec:
 
 Customers run different content-safety stacks, and three of the four candidates
 return mutually incompatible value types. So "which service judges the text" is
-a property of the addon, not something an agent or the platform's generic code
-knows — the same conclusion evaluation reached in its §4a.
+a property of the **profile**, not something an agent knows — the same
+conclusion evaluation reached in its §4a.
 
-```python
-class GuardrailBackend(ABC):
-    def publish_profiles(self, profiles) -> list[str]   # create/version backend objects
-    def inspect(self, text, direction, profile) -> Assessment
-```
+The boundary is the guard type on the profile's route. Nothing else in the
+design names a vendor:
 
 | Generic — outside the boundary | Backend-specific — behind it |
 |---|---|
-| reading `guardrails.oap.io/agent` ConfigMaps | how a profile is stored and versioned |
-| resolving a profile and its floor | how detectors and strengths are expressed |
-| turning an `Assessment` into a verdict (D4) | how findings are named and scored |
-| publishing `oap_agent_guardrail_*` metrics | what the service is called, and its quotas |
+| the profile name an agent declares, and its route | which guard type the profile uses (`bedrockGuardrails`, `googleModelArmor`, `openAIModeration`, `webhook`) |
+| the namespace minimum and the route grants (D2) | how detectors and strengths are expressed |
+| `failureMode: FailClosed` and `scope` (D4, §5) | how findings are named and scored |
+| `oap_agent_guardrail_*` recording rules (D8) | what the service is called, and its quotas |
 
 #### The normalization problem, and the contract that solves it
 
