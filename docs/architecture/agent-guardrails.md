@@ -695,72 +695,51 @@ default** — its table row reads "Fail closed (default) … Deny the request". 
 the posture argued for here is not novel; it is what the one adjacent
 implementation in OAP's own gateway already does.
 
-##### The one thing D1's reversal costs, and it lands exactly here
+##### This design requires agentgateway v1.6.0 or later
 
-The LLM `promptGuard` path does **not** inherit the MCP path's posture. Verified
-in `crates/agentgateway/src/llm/policy/mod.rs` at `v1.4.1`:
+At the pinned **v1.4.1** the LLM `promptGuard` path fails **open**: every guard
+type except `webhook` falls back to `FailOpen`, and `BedrockGuardrails` has no
+field to change it.
 
-```rust
-/// Guard types without an explicit `failure_mode` field default to `FailOpen`.
-fn failure_mode(&self) -> FailureMode {
-    FailureMode::FailOpen
-}
-```
+That is fixed upstream, so the design takes the fix rather than working around
+it. agentgateway/agentgateway#3618 ("add fail open/fail closed policy to all
+types", merged 2026-09-22) adds `failureMode` to `bedrockGuardrails`,
+`openAIModeration` and `googleModelArmor`. Verified at **v1.6.0**:
 
-Only **`webhook`** overrides it — `webhook.rs` sets `failure_mode:
-FailureMode::FailClosed`, and `Webhook` is the one guard type in `ai_policy.go`
-carrying a `failureMode` field at all, documented as "`FailOpen` allows the
-request to continue. `FailClosed` (default) rejects the request". The streaming
-evaluator repeats the same split: `ResponseGuardKind::Webhook(wh) =>
-wh.failure_mode, _ => FailureMode::FailOpen`.
+| Where | What it says |
+|---|---|
+| `controller/api/v1alpha1/agentgateway/ai_policy.go`, `type BedrockGuardrails struct` | `failureMode` — "`FailOpen` allows the request to continue; `FailClosed` (default) rejects it" |
+| `crates/agentgateway/src/llm/policy/mod.rs` | `RequestGuardKind::BedrockGuardrails(bg) => bg.failure_mode`, the same on the response side, and `_ => FailureMode::FailClosed` for the rest |
+| `FailureMode` enum | `#[default] FailClosed` |
 
-So **`bedrockGuardrails` fails open on a Bedrock error or timeout, and there is
-no field to change that.** This is not a quirk to note in passing: it is this
-design's central requirement — #144's "single most consequential choice" — and
-the chosen mechanism does not meet it out of the box.
+So the decision is:
 
-Three ways to close it, and the recommendation is not the obvious one:
+- **The capability requires agentgateway ≥ v1.6.0.** v1.7.0 is the latest
+  release and the recommended target, because it also brings `mcp.params` for
+  the tool hop (§3.10). OAP pins `v1.4.1` today, in
+  `gitops/addons/registry/gateway.yaml` for both `agentgateway-crds` and
+  `agentgateway`.
+- **Every guard the platform renders sets `failureMode: FailClosed`
+  explicitly.** The default is already `FailClosed`. Writing it anyway means
+  a future upstream default change cannot quietly flip the posture, and a
+  reader of the policy sees the posture without knowing the default.
+- **The upgrade is a separate PR, landed first.** Every agent and MCP call goes
+  through the gateway, so the upgrade has a far larger blast radius than this
+  capability. That PR runs the identity and delegation live tests
+  (`scripts/test-identity-matrix.sh`). Phase 1 of this design starts after it
+  merges.
 
-| | Approach | Cost |
-|---|---|---|
-| **a** | Ship native `bedrockGuardrails` and **record the fail-open honestly** | No new component. A real window where a Bedrock outage means unguarded traffic |
-| **b** | Put OAP's own check behind the **`webhook`** guard, which is fail-closed by default, and have it call `ApplyGuardrail` | Fail-closed natively, and it is the backend boundary @shapirov103 suggested. But it is a service again — far smaller than the proxy (no streaming, no OpenAI protocol, not on the completion path) yet still something to build, scale and upgrade |
-| **c** | Native guard **plus an upstream `failureMode` field** on `BedrockGuardrails` | The smallest real fix. It mirrors `Webhook`'s existing field exactly, so it is a plausible upstream contribution rather than a fork |
+Three properties keep fail-closed from being a slogan:
 
-**Recommended: (a) for Phase 1, with (c) opened upstream immediately, and (b)
-held in reserve.** The reasoning is that (a) is *observably* fail-open rather
-than silently so — agentgateway already emits `guardrail_checks{action="FailOpen"}`
-as an outcome distinct from `Allow`, which is the property §D8 demands of any
-verdict. A fail-open that is measured, alerted and bounded is a known risk; a
-proxy built to avoid it is a permanent cost. If the measured fail-open rate in
-Phase 1 is not acceptable, (b) is the fallback and (c) may have landed by then.
-
-Choosing (a) means this document no longer claims a fail-closed guarantee it
-cannot deliver. **Phase 1 ships fail-open on backend error, by upstream default,
-and says so in the capability's own documentation.** That is a worse control
-than revision 3 promised and an honest one, and the alternative — shipping (b)
-to keep the promise — is the thing review rejected.
-
-So the profile still declares the intent, and the platform default is `block`:
-
-```yaml
-onError: block   # block | allow — the intent; today only the webhook guard can honour block
-```
-
-Three properties keep this from being a slogan:
-
-- **`block` is the intent for every shipped profile**, including `observe`.
-  An `observe` profile reports violations and blocks nothing — but a backend it
-  cannot reach is an *unknown*, not a clean result, and the one thing a
-  monitoring profile must never do is claim coverage it did not have. Under
-  option (a) this intent is **not enforced**, and the gap is the whole reason
-  (c) is worth opening upstream.
-- **A fail-open is a distinct outcome in the metrics**, never counted as a clean
-  allow. Upstream already does this (`action="FailOpen"`), so "the guardrail
-  broke" never reads as "the content was fine".
-- **It has its own alert**, because a guardrail that is failing is both a
-  degraded control and an outage, and under option (a) it is *also* an open
-  door, which raises the alert's severity rather than lowering it.
+- **`FailClosed` holds for every shipped profile**, including `observe`. An
+  `observe` profile reports violations and blocks nothing. But a backend it
+  cannot reach is an *unknown*, not a clean result.
+- **A fail-open stays a distinct, alerted outcome.** The `FailOpen` alert is
+  kept for one case: someone sets `failureMode: FailOpen` on purpose. Upstream
+  records it as `action="FailOpen"`, not `Allow`, so it never reads as "the
+  content was fine".
+- **A fail-closed refusal has its own alert.** A guardrail that refuses because
+  Bedrock is unreachable is a working control *and* an outage.
 
 #### Retry is part of the verdict, not a wrapper around it
 
