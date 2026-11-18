@@ -968,6 +968,16 @@ template: {
 		// A useful isolated-mode case: generate with --deny-exec to stop operators
 		// shelling into an agent that handles regulated data, without taking on
 		// confidential mode's attestation and image-pinning work.
+		//
+		// SCOPE OF ONE POLICY: every cluster, but ONE REGION IF THIS AGENT USES
+		// aws-service-identity. The pod template is identical across clusters and
+		// across regions -- nothing in this component reads either, and
+		// test-isolation-features.sh rows F11 and F14 hold it that way. But the
+		// aws-service-identity trait injects AWS_REGION and AWS_DEFAULT_REGION
+		// from global.awsRegion, and a confidential policy pins the environment,
+		// so an agent carrying that trait needs one policy per region. An agent
+		// that calls AWS KMS needs the trait, which is most confidential agents.
+		// Without the trait, one policy covers every cluster in every region.
 		cedarPolicy: *"" | string
 
 		// +usage=Maximum simultaneous outbound connections per IP family for a
