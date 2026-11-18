@@ -7,7 +7,7 @@
 | **Reviewers** | @shapirov103 (CHANGES_REQUESTED on rev 3, D1; addressed in rev 4) |
 | **Target** | `agent` component, `agent-gateway` chart, `crossplane` providers — **no new addon and no new image** |
 | **Date** | 2026-11-11 |
-| **Revision** | 4 — D1 reversed after @shapirov103's review |
+| **Revision** | 5 — fail-closed via agentgateway ≥ v1.6.0, one gated route per profile, research moved to an appendix |
 | **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
 | **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 and §3.10 |
 
