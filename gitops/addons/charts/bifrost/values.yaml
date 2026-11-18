@@ -36,8 +36,15 @@ judgeKey:
   # agent-evaluation chart; the namespace is the agent-evaluation release namespace.
   targetNamespace: agent-evaluation
   secretName: agent-evaluation-harness-judge-key
-  # Bifrost model aliases the key may call.
-  models: [judge-default]
+  # Models the key may call. The harness runner sends the real model id of the
+  # judge alias (agent-evaluation judge.models), not the alias, and Bifrost checks
+  # the requested name, so each judge needs both its alias and its model id.
+  # Keep in step with the judge aliases in configs/bifrost/values.yaml.
+  models:
+    - judge-default
+    - judge-haiku
+    - us.amazon.nova-pro-v1:0
+    - us.anthropic.claude-haiku-5-5
   budget:
     maxLimitUsd: 20
     resetDuration: 1M
