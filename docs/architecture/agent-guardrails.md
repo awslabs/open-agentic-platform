@@ -1947,14 +1947,13 @@ anything**
     `cr.agentgateway.dev` charts version independently of upstream, so the
     upgrade PR must pull and diff the **chart** at the new tag, not trust the
     release tag.
-12. **Which §D4 option, given that `bedrockGuardrails` fails open?** (a) ship
-    native and record the fail-open, (b) move the check behind the `webhook`
-    guard, which is `FailClosed` by default but is a service OAP would own, or
-    (c) ship native and ask upstream for a `failureMode` field mirroring
-    `Webhook`'s. The recommendation is (a) now, (c) opened immediately, (b) held
-    in reserve — but a reviewer who considers any fail-open window unacceptable
-    for this capability should say so, because that ruling selects (b) and
-    partially reopens the proxy question in a much smaller form.
+12. ~~**Which §D4 option, given that `bedrockGuardrails` fails open?**~~
+    **Answered in review: none of them.** @shapirov103 found the upstream fix:
+    agentgateway#3618 adds `failureMode` with `FailClosed` as the default from
+    v1.6.0. The design requires that version and sets `FailClosed` explicitly.
+    One residue is open and is now in §D8: a fail-closed error has no
+    `guardrail_checks` value of its own, so `error_blocked` must be derived
+    until upstream adds one.
 13. **Can `guardrail_checks` be attributed to a single agent?** §D8 assumes the
     per-profile and per-agent HTTPRoute makes the route identifier a usable join
     key in gateway telemetry. If it cannot, the dashboard loses its primary
