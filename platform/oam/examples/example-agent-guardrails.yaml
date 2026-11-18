@@ -61,20 +61,11 @@ spec:
           # profile below this namespace's minimum is rejected at admission.
           profile: standard
 
-          # OPTIONAL, and only ever STRICTER than the profile's floor:
-          #   report < redact < block
-          # An attempt to weaken the profile is rejected at admission, with the
-          # profile's floor named in the message. Same semantics as mcpAccess,
-          # which can narrow a server's allowedAgents but never widen it.
-          onViolation: block
-
-          # OPTIONAL, and only ever ADDS to the profile's set.
-          # NOTE: output inspection is Phase 2. Blocking on output makes the
-          # gateway buffer the completion, so an agent that blocks on output
-          # DOES NOT STREAM — and `redact` on a stream is not available at all,
-          # because the gateway does not support masking on the streaming path.
-          # A contract, not a surprise; see the design, D5.
-          inspect: [input]
+          # There is no per-agent onViolation or inspect. Profiles are shared
+          # routes on the gateway, so every agent on `standard` gets the same
+          # guards. Output inspection is Phase 2: a profile that blocks on output
+          # does not stream, and one that masks output cannot stream at all.
+          # See the design, D2 and D5.
 
         # Guardrails block in flight; evaluation scores after the fact, on a
         # sample. They answer the same question at two different times, and the
