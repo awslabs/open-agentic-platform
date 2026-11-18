@@ -1962,7 +1962,7 @@ anything**
     first Phase 1 validation item. If it does not, the dashboard loses its
     primary dimension.
 14. **Does the gateway's AWS identity gaining `bedrock:ApplyGuardrail` need its
-    own review?** The permission moves from a would-be proxy ServiceAccount onto
-    the `agentgateway` ServiceAccount, which already terminates agent and MCP
+    own review?** The permission lands on the `agentgateway` ServiceAccount,
+    which already terminates agent and MCP
     traffic. Scoped to the catalog's guardrail ARNs it is narrow, but it is a new
     class of permission on a component that previously held none for Bedrock.
