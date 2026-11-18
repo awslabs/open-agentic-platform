@@ -29,10 +29,86 @@ spec:
       labels:
         {{- include "agent-sandbox.selectorLabels" . | nindent 8 }}
         agent-sandbox.io/role: coder
+      {{- /* Nitro pod annotations. They have to be on the POD TEMPLATE, never on
+             the SandboxTemplate's own metadata: nothing copies a parent object's
+             annotations onto the pods cloned from it, so a sandbox.amazonaws.com/
+             key placed there is accepted and then silently ignored.
+
+             Rendered only on the Nitro path, and only when set, so the Kata
+             output is byte-identical to before. */}}
+      {{- if eq .Values.runtime "nitro" }}
+      {{- if or .Values.nitro.cedarPolicy .Values.nitro.networkIsolated }}
+      annotations:
+        {{- with .Values.nitro.cedarPolicy }}
+        sandbox.amazonaws.com/policy: {{ . | quote }}
+        {{- end }}
+        {{- if .Values.nitro.networkIsolated }}
+        sandbox.amazonaws.com/network-isolated: "true"
+        {{- end }}
+      {{- end }}
+      {{- end }}
     spec:
-      {{- /* Warm-pool VMM selected by kata.vmm (a key of kata.runtimeClasses).
-             runtimeClassName + matching node scheduling both come from that one
-             entry, so flipping kata.vmm moves the pool onto the right pool. */ -}}
+      {{- if eq .Values.runtime "nitro" }}
+      {{- /* NITRO PATH. The class name is all this pod spec carries: the
+             RuntimeClass admission controller force-merges the class's
+             scheduling.nodeSelector (eks.amazonaws.com/nitro-sandbox) and applies
+             its overhead.podFixed, so there is deliberately NO nodeSelector and
+             NO toleration stamped here. Nitro classes carry no taint, so unlike
+             the Kata path there is nothing to tolerate.
+
+             Stamping the Kata nodeSelector here anyway -- which is what the
+             unbranched template did -- would make every Nitro warm pod Pending:
+             it would demand katacontainers.io/kata-runtime AND
+             eks.amazonaws.com/nitro-sandbox on one node, and no node has both. */}}
+      {{- $nrc := index .Values.nitro.runtimeClasses .Values.nitro.mode | required (printf "nitro.mode=%q has no matching entry in nitro.runtimeClasses" .Values.nitro.mode) }}
+      {{- if and (eq .Values.nitro.mode "confidential") (not .Values.nitro.cedarPolicy) }}
+      {{- fail "nitro.mode=confidential requires nitro.cedarPolicy: the Nitro runtime enforces default-deny, so with no policy annotation containerd refuses to create the sandbox and every warm pod loops in ContainerCreating (verified on a live node). Generate one with scripts/nitro/gen-cedar-policy.sh." }}
+      {{- end }}
+      {{- if and .Values.nitro.networkIsolated (eq .Values.nitro.mode "confidential") }}
+      {{- fail "nitro.networkIsolated cannot be combined with nitro.mode=confidential: confidential mode releases secrets only after the guest attests to AWS KMS, and a network-isolated sandbox has no route to KMS, no Pod Identity credentials and no IMDS." }}
+      {{- end }}
+      runtimeClassName: {{ $nrc.name }}
+      automountServiceAccountToken: false
+      {{- if eq .Values.nitro.mode "confidential" }}
+      {{- /* REQUIRED by the real generator on the confidential profile, not
+             hardening: eks-nitro-sandbox-genpolicy --profile confidential
+             refuses a manifest that leaves enableServiceLinks unset, because
+             the kubelet injects a <SVC>_PORT variable per Service in the
+             namespace and the pinned env set is then not knowable at
+             generation time. Without it the only way past the generator is
+             --allow-additional-env, which defeats the env pinning. */}}
+      enableServiceLinks: false
+      {{- end }}
+      {{- else }}
+      {{- /* FAIL on an unknown runtime rather than falling through to Kata. The
+             branch is a two-way if, so `runtime: nitr0` silently produced a Kata
+             pool -- isolation chosen by typo. */ -}}
+      {{- if ne .Values.runtime "kata" }}
+      {{- fail (printf "agent-sandbox: runtime=%q is not valid; use \"nitro\" or \"kata\" (per-cluster via the sandbox_runtime annotation)" .Values.runtime) }}
+      {{- end }}
+      {{- /* FAIL on the NITRO-ONLY values when the pool is Kata, rather than
+             dropping them. Kata does not read sandbox.amazonaws.com/policy and
+             gives a "network-isolated" pod an ordinary network device, so the
+             annotation block above is deliberately inside the Nitro branch --
+             which means setting these on a Kata pool previously rendered a
+             perfectly ordinary Kata pool with the guarantee silently absent.
+
+             nitro.mode is NOT checked: it is only read on the Nitro path and
+             its default is meaningful there, so a cluster that flips runtime to
+             kata should not have to also reset it. cedarPolicy and
+             networkIsolated are different -- neither has a default, so setting
+             either is always an explicit request for something Kata cannot
+             do. */ -}}
+      {{- if .Values.nitro.cedarPolicy }}
+      {{- fail "agent-sandbox: nitro.cedarPolicy is set but runtime=kata. A Cedar policy is enforced by the Nitro sandbox agent and measured into PCR17; kata-clh ignores the annotation entirely, so the pool would admit any container and attest nothing. Set runtime=nitro, or remove nitro.cedarPolicy." }}
+      {{- end }}
+      {{- if .Values.nitro.networkIsolated }}
+      {{- fail "agent-sandbox: nitro.networkIsolated=true but runtime=kata. Network isolation is a Nitro sandbox feature; a Kata pod gets a normal network device and full egress, so the pool would report isolation it does not have. Set runtime=nitro, or use a NetworkPolicy for the Kata pool." }}
+      {{- end }}
+      {{- /* KATA PATH, unchanged. Warm-pool VMM selected by kata.vmm (a key of
+             kata.runtimeClasses). runtimeClassName + matching node scheduling
+             both come from that one entry, so flipping kata.vmm moves the pool
+             onto the right pool. */ -}}
       {{- $rc := index .Values.kata.runtimeClasses .Values.kata.vmm | required (printf "kata.vmm=%q has no matching entry in kata.runtimeClasses" .Values.kata.vmm) }}
       runtimeClassName: {{ $rc.name }}
       automountServiceAccountToken: false
@@ -40,6 +116,7 @@ spec:
         {{- toYaml $rc.nodeSelector | nindent 8 }}
       tolerations:
         {{- toYaml $rc.tolerations | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

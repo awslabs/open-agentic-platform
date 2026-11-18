@@ -1,5 +1,22 @@
 # Sandbox-Isolated Agents — Kata MicroVM Isolation for the OAM `agent` Component
 
+> **SUPERSEDED AS THE DEFAULT, STILL SUPPORTED AS A PATH.** The platform's default isolation
+> runtime is now **AWS Nitro Sandboxes** (`isolated-sandbox`), and a second trust model
+> (`confidential-sandbox`, where the node operator is outside the boundary) is available to
+> developers. See **[`NITRO-DESIGN.md`](NITRO-DESIGN.md)**, which also covers per-user, per-session
+> isolation (issue #99).
+>
+> Read this document for the Kata path, which is unchanged and one cluster-secret annotation away
+> (`sandbox_runtime_class: kata-clh`) — and for the mechanism both paths share. Everything below
+> still holds; the one thing that changed is which RuntimeClass `global.sandboxRuntimeClass`
+> defaults to. That the swap cost a single value is a consequence of §2 and §6 option A here:
+> putting placement in the RuntimeClass admission controller rather than in the component.
+>
+> Two parts of this document are now stale on their own terms, and corrected in `NITRO-DESIGN.md`
+> rather than rewritten here: §4.2 and §5 give `kata-clh` as the chart default, and §5's closing
+> note that "EKS Auto Mode is irrelevant to this feature" was true of Kata and is the opposite of
+> true for Nitro, where Auto Mode is what removes the node layer entirely.
+
 > **Status:** Implemented **and verified on a live EKS cluster**. One opt-in boolean runs an OAM
 > `agent` inside a Kata microVM with a hardened `securityContext`. The workload stays an Argo
 > Rollout in both paths, so blue-green, `replicas`, Services and gateway routing are unchanged.

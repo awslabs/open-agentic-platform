@@ -16,6 +16,7 @@ spec:
         	"encoding/hex"
         	"strings"
         )
+
         // There is deliberately NO generated default for the interpreter name.
         //
         // The name is referenced from a second place, the MCP server's
