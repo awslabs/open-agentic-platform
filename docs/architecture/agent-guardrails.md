@@ -1116,26 +1116,33 @@ a counter labelled `phase` (`Request` / `Response`) and `action`:
 | Native `action` (v1.6.0) | This design's `outcome` |
 |---|---|
 | `Allow` | `allowed` |
-| `Reject` | `blocked` **and `error_blocked`** — see below |
+| `Reject` | `blocked` |
 | `Mask` | `redacted` |
 | `Audit` | `reported` — the `observe` profile |
 | `FailOpen` | `error_allowed`, kept distinct from `Allow` |
+| *(nothing)* | `error_blocked` — see below |
 
-**One gap this table exposes, and fail-closed is what creates it.** At v1.6.0 a
-guard that errors under `FailClosed` is recorded with
-`GuardrailAction::Reject` — the same label as a real content block
-(`mod.rs`, "failing closed", then `record_guardrail_trip(…, Reject)`). So a
-Bedrock throttle or outage would read on the dashboard as a spike of
-violations. That breaks the rule below that "a fail-closed block is never a
-violation". Two fixes, both small:
+**One gap this table exposes, and fail-closed is what creates it.** At v1.6.0
+a fail-closed error has **no `guardrail_checks` value of its own**:
 
-- **Upstream:** a distinct `FailClosed` value in `GuardrailAction`, mirroring
-  the existing `FailOpen`. It is a one-variant change in the shape #3618
-  already set.
-- **Until then:** take `error_blocked` from the gateway's own log line for the
-  error path, and alarm on `ApplyGuardrail` throttles and 5xx from the Bedrock
-  side. The `Reject` counter is then read as "blocked or failed closed", and
-  the dashboard says so.
+- On the **HTTP path** agents use, `apply_single_request_guard` handles only
+  `FailOpen` itself; a `FailClosed` error propagates (`result?`) and returns
+  *before* `record_guardrail`. It is **not counted at all**. The agent just
+  sees a failed request.
+- On the **realtime** (WebSocket) path it is counted as `Reject`, the same
+  label as a real content block.
+
+So a Bedrock throttle or outage is either invisible in the guard metric or
+reads as a spike of violations. Both break the rule below that "a fail-closed
+block is never a violation". Two fixes, both small:
+
+- **Upstream:** a distinct `FailClosed` value in `GuardrailAction`, recorded on
+  both paths, mirroring the existing `FailOpen`. It is a one-variant change in
+  the shape #3618 already set.
+- **Until then:** derive `error_blocked` from the gateway's failed-request
+  telemetry on the guarded routes, and alarm on `ApplyGuardrail` throttles and
+  5xx from the Bedrock side. Phase 1 validation confirms which status code the
+  agent actually receives.
 
 So OAP writes no instrumentation for the verdict. **The gap is attribution:**
 `GuardrailLabels` is `{phase, action}` and carries no agent, namespace or
