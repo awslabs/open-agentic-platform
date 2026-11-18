@@ -248,3 +248,13 @@ Three things, already folded in above rather than left as future work:
 - **Rate and frequency belong to neither engine.** #152 is right that "no more
   than N calls" is not an authorization question; agentgateway answers it
   natively at `spec.traffic.rateLimit`, and Bifrost answers the model-side
+  equivalent through `governance` once per-workload virtual keys exist (§2.3).
+  Neither this guard nor a policy engine should be made to count.
+
+### Sequencing
+
+They are independent and can land in either order. One soft dependency —
+#152's blocking task 2, whether caller identity actually reaches an
+ExtMCP processor — **resolves in #152's favour**, and §3.10 shows the evidence.
+The prose documents only "selected request headers", but `ext_mcp.proto` gives
+`McpRequest` a `metadata_context` field carrying "CEL-evaluated context from
