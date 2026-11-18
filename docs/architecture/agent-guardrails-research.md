@@ -218,3 +218,13 @@ all is the first thing to check, and it stays an open question (Q4).
 
 ### What this design takes from #152
 
+Three things, already folded in above rather than left as future work:
+
+| Taken | Where it landed |
+|---|---|
+| `FailClosed` as the default of the nearest adjacent implementation | §D4 — it turns "fail closed" from an argument into a convention already in use in OAP's own gateway |
+| Decision provenance: a verdict records the configuration that produced it | §D8 — `profileVersion` + `guardrailVersion`, and the skew metric |
+| The tool-call content gap has a hop that can see it | §D7, and the Scope list — it stops being an unanswered hole and becomes a boundary |
+
+### What this design owes #152, and one trap it should inherit
+
