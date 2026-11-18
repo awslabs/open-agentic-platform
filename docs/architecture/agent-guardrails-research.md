@@ -261,3 +261,13 @@ The prose documents only "selected request headers", but `ext_mcp.proto` gives
 gateway config, one field per config key": the gateway evaluates `jwt.sub`
 itself and ships the result. Identity arrives as data, not as a header that has
 to survive filtering. #152 can close that task on the wire format.
+
+---
+
+## D. How guardrails are done in practice
+
+
+The industry has converged on a shape, and it is worth stating because this
+design is an instance of it rather than an invention.
+
+**The enforcement point is a gateway, and every serious implementation is
