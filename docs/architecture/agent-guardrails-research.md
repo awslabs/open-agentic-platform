@@ -58,3 +58,13 @@ So the two Bifrost-native routes both fail a platform requirement:
   capability"). It also fails open by default.
 - **A custom `.so` plugin** needs OAP to build, publish and version its own
   dynamically linked Bifrost image, in lockstep with upstream's Go toolchain and
+  dependency graph, rebuilt on every upgrade. That replaces "wrap the upstream
+  chart" with "own a fork of the gateway", for one feature.
+
+
+---
+
+## B. Dogwood
+
+### What Dogwood is
+
