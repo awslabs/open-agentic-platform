@@ -188,3 +188,13 @@ So the option set is binary, and worth stating plainly:
 2. Write three policies — one stateless (reproducing something `authPolicy` does
    today, to prove no loss of expressiveness), one `formerly`-based, one
    `count`-based.
+3. Replay them over recorded traffic and report which rules the language
+   expressed, how often each would have denied real traffic, and a
+   false-positive read on the denials.
+
+**The gate is the trace format, and it is a converter rather than a mapping.**
+`dogwood replay` consumes a bespoke text format, one line per timepoint:
+
+```text
+@0 scope(principal: Drupe::OAuthUser::"alice", resource: Drupe::Gateway::"gw1") request_context(input: { shares: 5 }) Drupe::Action::"ApproveSale"::request(input: { shares: 5 }, callerPrincipal: Drupe::OAuthUser::"alice", requestId: "u1")
+```
