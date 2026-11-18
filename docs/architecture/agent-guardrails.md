@@ -1104,14 +1104,18 @@ which appears to cover something it does not is worse than none. So, plainly:
 
 - **Injection detection is a classifier, and classifiers are evadable.** It
   raises the cost of an attack. It does not close the class.
-- **Bedrock Guardrails does not see tool-call content at all.** Verbatim: PII is
-  "neither blocked nor masked" in `toolUse.input`, `toolResult`, or
-  `toolSpec.description` / `inputSchema`. For an agent platform, where the
-  interesting payloads are tool arguments and tool results, this is the largest
-  single gap in the capability.
-- **Indirect injection arrives through tools, which is exactly the unseen path.**
-  A poisoned document fetched by an MCP server reaches the model inside a tool
-  result the guardrail never inspected.
+- **Tool content is seen only as it passes through a model call.** Bedrock's
+  own Converse integration skips tool content: PII is "neither blocked nor
+  masked" in `toolUse.input`, `toolResult`, or `toolSpec.description`. The
+  gateway path is different, because the gateway extracts text itself and
+  sends it to `ApplyGuardrail`. With `scope` (v1.6.0+), **tool results are
+  checked by default** and tool arguments when `ToolInput` is listed. Tool
+  *schemas* and descriptions are not checked.
+- **Indirect injection is caught one step late, not never.** A poisoned
+  document fetched by an MCP server is checked when its tool result is sent
+  back to the model, before the model reads it. It is **not** checked when the
+  tool returns it, so anything that acts on a tool result without a model call
+  in between is unguarded by this hop.
 - **A guardrail is not an authorization control.** What an agent is *allowed to
   do* stays with the three layers in §2.2, and that separation is why this design
   adds no `tools:` key.
