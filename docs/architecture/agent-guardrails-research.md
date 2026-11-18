@@ -138,3 +138,13 @@ host validation … including internal/link-local addresses (`169.254.169.254`,
 
 **AgentCore Policy is GA and really is Dogwood.** AWS names it outright —
 "Dogwood is an open-source policy language … compatible with Cedar" — and
+recommends "**Write Dogwood.**" As a service it closes what the interpreter
+leaves open: session-scoped durability (24-hour idle timeout), per-caller
+isolation ("Two different callers supplying the same session ID get isolated
+sessions — the identity is part of the session key"), and service-assigned
+timestamps.
+
+**The timeline matters more than the GA badge.** Policy went GA on **2026-03-03**
+with Cedar only; Dogwood and temporal policies arrived on **2026-08-06**; Dogwood
+itself reached v1.0 on 2026-10-13. So "AgentCore Policy is GA" does **not** mean
+temporal policy carries GA-length production history — it is about three months
