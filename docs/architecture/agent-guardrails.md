@@ -1850,16 +1850,16 @@ anything**
 
 **Failure behaviour**
 
-- [ ] **With the guardrail API unreachable, measure what actually happens.**
-      The expected result under §D4 option (a) is that the request is
-      **forwarded uninspected** and `guardrail_checks{action="FailOpen"}`
-      increments. An implementation that instead refuses would mean upstream
-      changed, and that is good news worth confirming rather than assuming
-- [ ] The fail-open rate is alertable, and the alert fires in a fault injection
-      test — this is the control that makes option (a) acceptable, so it is
-      verified rather than configured and trusted
+- [ ] **With the guardrail API unreachable, the request is refused** and
+      Bifrost records no call. Record the status code the agent actually
+      receives, because `error_blocked` is derived from it (§D8)
+- [ ] That refusal is **not** counted as a content block: `error_blocked`
+      moves and `blocked` does not
+- [ ] A guard deliberately set to `failureMode: FailOpen` forwards the request,
+      increments `guardrail_checks{action="FailOpen"}`, and fires the FailOpen
+      alert in a fault-injection test
 - [ ] A throttled call is retried within the gateway's budget before the
-      fail-open path is taken
+      fail-closed refusal
 - [ ] Killing the **gateway** does not silently un-guard an agent: measure what the
       agent actually gets, and make it a refusal rather than a direct path
 
