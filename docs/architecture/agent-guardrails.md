@@ -495,13 +495,10 @@ guardrails?: {
 	// The profile owns the detectors, their thresholds, and the WEAKEST verdict
 	// allowed. A profile below the namespace's minimum is rejected at admission.
 	profile: *"standard" | =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$"
-	// +usage=Verdict on a violation. May only be STRICTER than the profile's
-	// floor, never weaker: report < redact < block. An attempt to weaken is
-	// rejected at admission with the profile's floor named in the message.
-	onViolation?: "report" | "redact" | "block"
-	// +usage=Which directions are inspected. May only ADD to the profile's set.
-	inspect?: [..."input" | "output"]
 }
+// No per-agent onViolation or inspect override. Profiles are shared routes
+// (§D1), so every agent on a profile gets that profile's guards. To be
+// stricter, an agent chooses a stricter profile.
 ```
 
 #### Why the agent may only tighten
