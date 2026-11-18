@@ -1691,9 +1691,9 @@ first.
 
 | Actor | Owns |
 |---|---|
-| Application developer | `guardrails.enabled`, which profile, and tightening within it |
-| Platform engineer | the profile catalog, the floor each profile sets, the backend, the Bedrock guardrail objects |
-| KubeVela | rendering the declaration ConfigMap |
+| Application developer | `guardrails.enabled`, and which profile, at or above the namespace minimum |
+| Platform engineer | the profile catalog, the profile order and namespace minimums, the route grants, the guard type, the Bedrock guardrail objects |
+| KubeVela | checking the profile at admission, and pointing `LLM_GATEWAY_URL` at the profile's route |
 | agentgateway | matching the route, running the guard, deciding, forwarding, emitting `guardrail_checks` |
 | grafana-operator | importing the dashboard |
 
