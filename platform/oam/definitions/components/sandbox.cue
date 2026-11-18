@@ -66,7 +66,7 @@ sandbox: {
 		// start, not a broken pool.
 		status: healthPolicy: "isHealth: *( context.output.status.readyReplicas >= context.output.spec.replicas ) | false"
 	}
-	description: "Per-session hardware-isolated sandbox (AWS Nitro Sandboxes by default, Kata supported): a SandboxTemplate plus a SandboxWarmPool, claimed per user session and destroyed on idle"
+	description: "Per-session hardware-isolated sandbox (AWS Nitro Sandboxes by default, Kata supported): a SandboxTemplate plus a SandboxWarmPool, claimed per user session and released when its SandboxClaim is deleted or its claim lifecycle TTL expires"
 	labels: {}
 	type: "component"
 }
