@@ -527,6 +527,39 @@ uses:
 A team that genuinely needs a weaker profile gets a grant, which is a reviewed
 chart edit with a name attached.
 
+#### How admission rejects a weaker profile
+
+CUE renders without reading the cluster, so it cannot look up a catalog. But it
+does not need to: the `oam-agent-components` chart already templates platform
+values into the rendered definition. `agent.cue` carries
+`{{ .Values.global.clusterName }}`,
+`{{ .Values.global.agentIdentity.propagateCallerToken }}` and
+`{{ .Values.global.agentGateway.namespace }}` today, and Helm fills them in.
+
+The same mechanism carries the guardrail policy into the CUE:
+
+```yaml
+# oam-agent-components values, per environment
+global:
+  guardrails:
+    order: [observe, standard, strict]   # weakest first
+    defaultProfile: standard
+    requiredNamespaces:                  # enabled: false is rejected here
+      team-payments: strict              # value = that namespace's minimum
+```
+
+The CUE then checks, with the message naming the minimum:
+
+- `profile` is a known name in `order`;
+- `profile` is at or above the minimum for `context.namespace` (or
+  `defaultProfile` for a namespace not listed);
+- in a required namespace, `enabled` is not `false`.
+
+One implementation risk to settle in Phase 1: today's templated values are all
+**strings** inside CUE strings, so the raw source still parses. A list or map
+has to arrive as a JSON string the CUE decodes, and `vela def render` must
+accept the raw source in that form.
+
 #### The rendered output
 
 Same mechanism as evaluation: one guarded KubeVela output, so deleting the
