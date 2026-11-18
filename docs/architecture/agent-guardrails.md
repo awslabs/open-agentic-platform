@@ -1113,12 +1113,29 @@ two read together.
 agentgateway emits `guardrail_checks` (`crates/agentgateway/src/telemetry/metrics.rs`),
 a counter labelled `phase` (`Request` / `Response`) and `action`:
 
-| Native `action` | This design's `outcome` |
+| Native `action` (v1.6.0) | This design's `outcome` |
 |---|---|
 | `Allow` | `allowed` |
-| `Reject` | `blocked` |
+| `Reject` | `blocked` **and `error_blocked`** — see below |
 | `Mask` | `redacted` |
-| `FailOpen` | `error_allowed` — and upstream already keeps it distinct from `Allow`, which is the §D8 rule this document was going to have to implement itself |
+| `Audit` | `reported` — the `observe` profile |
+| `FailOpen` | `error_allowed`, kept distinct from `Allow` |
+
+**One gap this table exposes, and fail-closed is what creates it.** At v1.6.0 a
+guard that errors under `FailClosed` is recorded with
+`GuardrailAction::Reject` — the same label as a real content block
+(`mod.rs`, "failing closed", then `record_guardrail_trip(…, Reject)`). So a
+Bedrock throttle or outage would read on the dashboard as a spike of
+violations. That breaks the rule below that "a fail-closed block is never a
+violation". Two fixes, both small:
+
+- **Upstream:** a distinct `FailClosed` value in `GuardrailAction`, mirroring
+  the existing `FailOpen`. It is a one-variant change in the shape #3618
+  already set.
+- **Until then:** take `error_blocked` from the gateway's own log line for the
+  error path, and alarm on `ApplyGuardrail` throttles and 5xx from the Bedrock
+  side. The `Reject` counter is then read as "blocked or failed closed", and
+  the dashboard says so.
 
 So OAP writes no instrumentation for the verdict. **The gap is attribution:**
 `GuardrailLabels` is `{phase, action}` and carries no agent, namespace or
