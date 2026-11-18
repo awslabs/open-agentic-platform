@@ -28,9 +28,3 @@ image:
   tag: "c3f56983"
 harness:
   enabled: true
-  # TEST ONLY - temporary: the endpoint NetworkPolicy admits no real pod, so the
-  # verdict endpoint is unreachable for the Rollouts controller (P6 / gate abort).
-  api:
-    controller:
-      podLabels:
-        app.kubernetes.io/name: p8-nobody
