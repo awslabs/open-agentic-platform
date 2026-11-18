@@ -333,6 +333,15 @@ check this document applies to every other claim.
 | Guard outcomes are already a metric: `guardrail_checks`, labelled `phase` (Request/Response) and `action` (**Allow / Mask / Reject / FailOpen**) | `crates/agentgateway/src/telemetry/metrics.rs` — `GuardrailLabels`, `GuardrailAction` |
 | The AI backend reaches Bifrost because `host` / `port` **"override the provider default"** for a managed provider, and `pathPrefix` overrides `/v1` | `agentgateway.dev_agentgatewaybackends.yaml` |
 
+Three fields this design depends on arrive in **v1.6.0** (verified at that tag
+and at v1.7.0):
+
+| Field | What it gives the design |
+|---|---|
+| `failureMode` on `bedrockGuardrails`, `openAIModeration`, `googleModelArmor` — `FailClosed` by default | the fail-closed posture of §D4 |
+| `action: Reject \| Audit` on the same guards — `Audit` "invokes the guard and records what it would have done without enforcing" | the `observe` profile, natively, with no extra logic |
+| `scope: [SystemPrompt, Messages, ToolOutput, ToolInput]` — default the first three | which text is checked on each call, and therefore what it costs (§5) |
+
 So the topology is `agent → agentgateway (AI route + promptGuard) → Bifrost → Bedrock`.
 Bifrost keeps its job — virtual keys, governance, provider fan-out — and the
 guardrail moves one hop earlier, onto infrastructure OAP already runs and
