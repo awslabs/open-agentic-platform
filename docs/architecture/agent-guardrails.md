@@ -1152,11 +1152,14 @@ answer.
 
 Two consequences:
 
-- **Per-agent attribution comes from the route, not the counter.** Because the
-  platform renders one HTTPRoute per profile and per agent (§D1), the route
-  identifier in the gateway's access logs and CEL-driven metrics is the join
-  key. `oap_agent_guardrail_*` therefore becomes a set of **recording rules over
-  gateway telemetry** rather than a counter OAP's own code increments.
+- **Per-agent attribution comes from the caller's token, not the route.**
+  Routes are per profile (§D1), so the route names the profile and not the
+  agent. The agent comes from `jwt.sub`, through the gateway's frontend
+  `metrics.attributes`: CEL expressions "evaluated per-request and added as
+  labels to all Prometheus metrics". The label set is bounded by the number of
+  agents, so it is safe for cardinality. `oap_agent_guardrail_*` is then a set
+  of **recording rules over gateway telemetry** rather than a counter OAP's own
+  code increments.
 - **That is a Phase 1 deliverable, not a detail.** A reviewer should read the
   table below as the contract the recording rules must produce, and the first
   validation item is that `guardrail_checks` can in fact be attributed to one
