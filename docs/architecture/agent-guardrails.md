@@ -1882,12 +1882,13 @@ anything**
 
 ## 8. Open questions
 
-1. **Does the profile floor belong in CUE or only in the reconciler?** CUE
-   renders without cluster reads, so it cannot see the catalog — the same
-   constraint `evaluation.evaluators` already hit. That makes admission rejection
-   of a weakened `onViolation` a policy-engine job, and `kyverno` is off in every
-   overlay. Ship the reconciler Event first and the hard rejection with Kyverno,
-   or wait?
+1. ~~**Does the profile floor belong in CUE or only in the reconciler?**~~
+   **Answered in review: CUE.** @shapirov103 suggested passing each profile's
+   floor into the `oam-agent-components` chart values, which already template
+   `global.*` values into `agent.cue`. §D2 *How admission rejects* uses that,
+   and no policy engine is needed. What remains is the implementation risk
+   recorded there: a structured value must arrive as a JSON string that
+   `vela def render` accepts.
 2. ~~**Is the extra hop acceptable, or should this be a Bifrost plugin after
    all?**~~ **Answered in review, and neither.** @shapirov103 showed that
    agentgateway's native `promptGuard` does this in the version OAP already
