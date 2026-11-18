@@ -148,3 +148,13 @@ timestamps.
 with Cedar only; Dogwood and temporal policies arrived on **2026-08-06**; Dogwood
 itself reached v1.0 on 2026-10-13. So "AgentCore Policy is GA" does **not** mean
 temporal policy carries GA-length production history — it is about three months
+old.
+
+**And it cannot be called as an authorization API.** Both surfaces were
+enumerated: the control plane has only `CreatePolicy` / `CreatePolicyEngine` /
+`UpdatePolicy` and their reads, and the data plane has no `Authorize`. There *are*
+`AuthorizeAction` and `PartiallyAuthorizeActions`, but they appear under
+"Permission-only actions" and are granted **to the Gateway execution role** — the
+service invokes them on your behalf. The capability is real; the wire protocol is
+private. A decision is reachable only by putting an **AgentCore Gateway on the
+data path**. AWS states the Kubernetes case explicitly: a request through "a
