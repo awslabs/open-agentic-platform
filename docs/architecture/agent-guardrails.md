@@ -1162,9 +1162,9 @@ Two consequences:
   code increments.
 - **That is a Phase 1 deliverable, not a detail.** A reviewer should read the
   table below as the contract the recording rules must produce, and the first
-  validation item is that `guardrail_checks` can in fact be attributed to one
-  agent. If it cannot, the dashboard loses its primary dimension and that is a
-  bigger loss than the fail-open in §D4.
+  validation item is that the `jwt.sub` label in fact reaches
+  `guardrail_checks`, whose own label struct is only `{phase, action}`. If it
+  does not, the dashboard loses its primary dimension.
 
 | Metric | Labels | Meaning |
 |---|---|---|
