@@ -1914,9 +1914,10 @@ anything**
    profile there, and the developer field stays for choosing a stricter
    profile (§D2). Which namespaces to list is still a governance call per
    environment.
-7. ~~**Who owns the tool-call content gap?**~~ **Answered by #152.** Bedrock
-   Guardrails cannot see `toolUse.input` or `toolResult`, and the hop that can is
-   agentgateway's ExtMCP processor, which receives the JSON-RPC params. Kept here
+7. ~~**Who owns the tool-call content gap?**~~ **Answered by #152.** This hop
+   checks tool results and arguments only as text inside a model call (§D7);
+   the hop that sees the call itself is agentgateway's ExtMCP processor, which
+   receives the JSON-RPC params. Kept here
    rather than deleted because the *answer* raises a narrower question for
    reviewers: should a content detector ever run at the MCP hop as well, sharing
    this design's profile catalog, or does tool-call inspection belong wholly to
