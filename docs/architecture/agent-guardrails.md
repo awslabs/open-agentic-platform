@@ -1125,10 +1125,10 @@ high-volume cases at a hop a developer does not control, and it makes the rest
 visible. The layers that actually bound damage are tool authorization, egress
 restriction, sandboxing and spend caps — three of which OAP already has.
 
-**The tool-call gap has a known mechanism, and it is not this hop.** The two
-bullets above are the same hole seen twice, and the reason is structural rather
-than a Bedrock limitation: a model call carries the prompt and the completion, so
-a guard on that hop can only ever see those. agentgateway's MCP guardrail
+**What remains of the tool-call gap has a known mechanism, and it is not this
+hop.** A model call carries tool content only as text on its way to or from
+the model. It never carries the tool *call* as it executes, so this hop cannot
+refuse an action, only the text around it. agentgateway's MCP guardrail
 processor sits at the JSON-RPC layer and receives "the JSON-RPC method name, the
 target backend, the request or response parameters, and selected request
 headers" — so it *does* see the tool name and its arguments, and in the response
