@@ -228,3 +228,13 @@ Three things, already folded in above rather than left as future work:
 
 ### What this design owes #152, and one trap it should inherit
 
+- **The verdict seam is per-hop, not shared.** §D4's guard entries are the content
+  verdict at the model hop. #152's engine is the authorization decision at the
+  tool hop. Sharing one engine across both sounds tidy and is wrong: the inputs,
+  the latency budget and the failure blast radius all differ. What they should
+  share is the *shape* — one place, fail-closed, provenance recorded.
+- **`redact` is a mutation, and mutations have an ordering trap.** #152 records
+  that a request-phase processor may rewrite `params` while CEL RBAC still checks
+  the **pre-mutation** values, so an authorization processor must run after every
+  mutating one. The wire format states it outright: `McpRequestResult.mutated`
+  "replaces JSON-RPC `params` before forwarding to the upstream MCP server" and
