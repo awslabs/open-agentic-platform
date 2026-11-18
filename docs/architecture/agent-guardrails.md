@@ -1534,8 +1534,8 @@ What it does own:
 
 | Owned here | Why it has to be shared rather than duplicated |
 |---|---|
-| **Tighten-only semantics** (§D2) | A per-agent `onViolation` that can weaken the platform floor is the same defect as a per-agent tool policy that can widen its own permissions. One rule, both hops |
-| **The fail-closed verdict shape** (§D4) | One function, one place, fails closed. `failureMode: FailClosed` at the tool hop and `onError: block` at the model hop are the same decision spelled twice |
+| **Tighten-only semantics** (§D2) | An agent that can pick a profile below its namespace minimum is the same defect as a per-agent tool policy that can widen its own permissions. One rule, both hops |
+| **The fail-closed verdict shape** (§D4) | One place, fails closed. `failureMode: FailClosed` at the tool hop and on every model-hop guard is the same decision, now spelled the same way too |
 | **Provenance** (§D8) | A tool-call denial has to record the policy-set version that denied it, exactly as a content block records `profileVersion` and `guardrailVersion`. Same metric family, one `hop` label |
 | **The schema, not the engine** | §3.9 argues against one engine across both hops — different inputs, latency budgets and blast radii. The *vocabulary* is the opposite case, and it already models the attribute dimension: `dogwood schema mcp --manifest tools.json` emits one Cedar action per tool and maps each tool's `inputSchema.properties` to `context.input` (§D6). The argument names a policy would constrain are therefore **derivable from the `tools/list` payload OAP already has** — no new authoring surface. Share the schema; run two engines |
 
