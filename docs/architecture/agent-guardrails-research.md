@@ -118,3 +118,13 @@ Three silent-weakening traps compound it, and each is this platform's named
 failure shape:
 
 - A field in the `logged` bag but not `request_context` (or the reverse)
+  **silently weakens** either the temporal or the Cedar check.
+- A qualified-action-name mismatch makes temporal predicates **silently not
+  match** while Cedar still authorizes.
+- A `pin` that is not universal and symmetric **silently keeps global
+  semantics**: "Nothing warns you — the schema builds and evaluates, just
+  without isolation." `pin` is the multi-tenancy lever, so getting it subtly
+  wrong means one principal's history authorising another's action.
+
+**One genuinely good finding.** A provider's `implementation` is optional, and a
+`ProviderResolver` trait lets the host supply the value from its own code: "the
