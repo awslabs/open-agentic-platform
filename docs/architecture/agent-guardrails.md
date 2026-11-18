@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Proposed — design only, nothing implemented |
 | **Author** | @elamaran11 |
-| **Reviewers** | @shapirov103 (CHANGES_REQUESTED on rev 3, D1; addressed in rev 4) |
+| **Reviewers** | @shapirov103 (rev 3: D1 reversed in rev 4; rev 4: fail-closed, routes and the smaller points addressed in rev 5) |
 | **Target** | `agent` component, `agent-gateway` chart, `crossplane` providers — **no new addon and no new image** |
 | **Date** | 2026-11-11 |
 | **Revision** | 5 — fail-closed via agentgateway ≥ v1.6.0, one gated route per profile, research moved to an appendix |
