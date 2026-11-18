@@ -199,6 +199,66 @@ into the CUE), extracts the pod template from the Rollout or SandboxTemplate, an
 policy plus the KMS condition block. `--from rollout/<name>` reads the live object instead, which is
 the post-webhook spec and therefore the one that matters once anything mutates pods.
 
+## 4.1 How far one Cedar policy travels
+
+A confidential policy pins the container's environment, so the question "which
+clusters is this policy valid on?" is the same question as "which parts of the
+pod template are ambient?". Measured rather than argued, and asserted in CI:
+
+| Varies | Pod template | One policy valid? | Held by |
+|---|---|---|---|
+| Cluster (`global.clusterName`) | identical | yes | `F11` |
+| Region (`global.awsRegion`) | identical | yes | `F14` |
+| **With the `aws-service-identity` trait** | **differs** | **no — one per region** | *nothing; see below* |
+
+The first row is what this design fixed: `CLUSTER_NAME` was a literal from
+`global.clusterName`, which made one Application's policy valid on exactly one
+cluster. It now comes from a `<name>-cluster-info` ConfigMap the component
+emits, so the template is identical everywhere and the differing value sits in
+an object the policy does not pin.
+
+The second row holds for free: nothing in `agent.cue` reads `global.awsRegion`.
+`F14` exists to keep it that way rather than to prove something that was in
+doubt.
+
+**The third row is a real limit and is not fixed.** The `aws-service-identity`
+trait injects `AWS_REGION` and `AWS_DEFAULT_REGION` from `global.awsRegion`
+(`.kiro/steering/oam-authoring.md` §1), so an agent carrying that trait has a
+region-dependent environment and needs **one policy, and one `PCR17` condition,
+per region**. Most confidential agents end up there, because reading a secret
+from AWS KMS through Pod Identity is what the trait is for.
+
+Why it is documented rather than tested: that trait is defined in
+`appmod-blueprints`, not here, so the offline harness cannot render it — the same
+reason the example rows that use it `SKIP`. A row built against a local stub
+would assert the stub's behaviour, not the trait's. The honest options were a
+doc or a stub, and this is the doc.
+
+Why it is not fixed the same way `CLUSTER_NAME` was: the trait is upstream and
+injects literals into the pod it attaches to. Changing where it sources the
+region is a change to `appmod-blueprints`, not to this component.
+
+### The follow-up that actually closes this
+
+Everything above is about *ambient* fields. A different and larger problem
+remains: a platform release that adds an env var to **every** agent makes every
+confidential policy stale, and the developer did nothing. `F11` and `F14` cannot
+see that — they vary the cluster and the region, not the platform version.
+
+The fix is to stop asking developers for the policy at all: have the platform
+generate it from the rendered pod (a KubeVela workflow step or init container
+running `eks-nitro-sandbox-genpolicy`), with the developer supplying only intent
+— deny exec, deny logs — and the image digest. Then the policy follows the pod
+template by construction, and a platform change regenerates it instead of
+breaking it.
+
+Tracked as a follow-up rather than attempted here: it needs a Linux binary with
+registry access running in-cluster, plus a path for the predicted `PCR17` to
+reach the KMS key policy before the pod starts. Until it lands, a confidential
+agent's policy is a deployment artifact that must be regenerated when its pinned
+fields change — stated in the `cedarPolicy` parameter, in
+`example-agent-sandbox-confidential.yaml`, and here.
+
 ## 5. `type: sandbox` — a claimable warm pool
 
 A component type for a pool of hardware-isolated execution environments: a
