@@ -128,3 +128,13 @@ failure shape:
 
 **One genuinely good finding.** A provider's `implementation` is optional, and a
 `ProviderResolver` trait lets the host supply the value from its own code: "the
+resolver never touches the Rhai sandbox, so it may do whatever a normal Rust
+function can (network calls, model invocations, …)". So an adoption **never has
+to ship Rhai**, which removes the `http_get` SSRF class — it "performs **no**
+host validation … including internal/link-local addresses (`169.254.169.254`,
+`127.0.0.1`, RFC-1918)" — and the script-sandbox question with it.
+
+### Where a production engine could live
+
+**AgentCore Policy is GA and really is Dogwood.** AWS names it outright —
+"Dogwood is an open-source policy language … compatible with Cedar" — and
