@@ -487,7 +487,9 @@ File: `platform/oam/definitions/components/agent.cue` (proposed `parameter` addi
 // agentgateway v1.6.0 or later with guardrail profiles enabled in the
 // agent-gateway chart.
 guardrails?: {
-	// +usage=Turn guardrails on for this agent.
+	// +usage=Turn guardrails on for this agent. Off by default, unless the
+	// platform requires guardrails in this namespace: then it is on, and false
+	// is rejected at admission.
 	enabled: *false | bool
 	// +usage=Platform profile name, resolved from the addon's catalog. The profile
 	// owns the detectors, their thresholds, and the WEAKEST verdict allowed.
