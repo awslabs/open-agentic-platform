@@ -1122,51 +1122,11 @@ that path can authorize a tool. An MCP call carries no prompt, so no processor o
 that path can judge what the user asked the model. **A platform that wants both
 needs both**, which is why these are two designs rather than one.
 
-#### What this design takes from #152
-
-Three things, already folded in above rather than left as future work:
-
-| Taken | Where it landed |
-|---|---|
-| `FailClosed` as the default of the nearest adjacent implementation | §D4 — it turns "fail closed" from an argument into a convention already in use in OAP's own gateway |
-| Decision provenance: a verdict records the configuration that produced it | §D8 — `profileVersion` + `guardrailVersion`, and the skew metric |
-| The tool-call content gap has a hop that can see it | §D7, and the Scope list — it stops being an unanswered hole and becomes a boundary |
-
-#### What this design owes #152, and one trap it should inherit
-
-- **The verdict seam is per-hop, not shared.** §D4's `decide()` is the content
-  verdict at the model hop. #152's engine is the authorization decision at the
-  tool hop. Sharing one engine across both sounds tidy and is wrong: the inputs,
-  the latency budget and the failure blast radius all differ. What they should
-  share is the *shape* — one function, fail-closed, provenance recorded.
-- **`redact` is a mutation, and mutations have an ordering trap.** #152 records
-  that a request-phase processor may rewrite `params` while CEL RBAC still checks
-  the **pre-mutation** values, so an authorization processor must run after every
-  mutating one. The wire format states it outright: `McpRequestResult.mutated`
-  "replaces JSON-RPC `params` before forwarding to the upstream MCP server" and
-  "**the gateway does not re-run other RBAC on the mutated request**". So a
-  mutating processor is not merely ordered before authorization — it can hand
-  the upstream arguments that no policy ever saw. This design has the same
-  hazard in miniature: a `redact` verdict
-  changes the prompt that Bifrost then sees. Today nothing downstream authorizes
-  on prompt content, so the trap is latent — but anything added that *does* must
-  run after redaction, and §D8's record is what makes the before/after visible.
-- **Rate and frequency belong to neither engine.** #152 is right that "no more
-  than N calls" is not an authorization question; agentgateway answers it
-  natively at `spec.traffic.rateLimit`, and Bifrost answers the model-side
-  equivalent through `governance` once per-workload virtual keys exist (§2.3).
-  Neither this guard nor a policy engine should be made to count.
-
-#### Sequencing
-
-They are independent and can land in either order. The soft dependency named in
-revision 2 — #152's blocking task 2, whether caller identity actually reaches an
-ExtMCP processor — **resolves in #152's favour**, and §3.10 shows the evidence.
-The prose documents only "selected request headers", but `ext_mcp.proto` gives
-`McpRequest` a `metadata_context` field carrying "CEL-evaluated context from
-gateway config, one field per config key": the gateway evaluates `jwt.sub`
-itself and ships the result. Identity arrives as data, not as a header that has
-to survive filtering. #152 can close that task on the wire format.
+What this design takes from #152 — the fail-closed default, decision
+provenance, and the tool-call boundary — and what it owes it, including the
+mutation-ordering trap and why rate limits belong to neither engine, are in the
+research appendix, [§C](agent-guardrails-research.md#c-relationship-to-152).
+The two designs are independent and can land in either order.
 
 ---
 
