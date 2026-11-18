@@ -281,3 +281,13 @@ to get a hook into its gateway (§D1).
 **The detector is almost always a managed service.** The four that matter:
 
 | | Bedrock Guardrails | Azure AI Content Safety | Google Model Armor |
+|---|---|---|---|
+| Standalone callable | yes (`ApplyGuardrail`) | yes — and *only* standalone; the integrated path needs an Azure-hosted model | yes (`:sanitizeUserPrompt`) |
+| Injection detection | yes (`PROMPT_ATTACK`) | yes (Prompt Shields, GA Aug 2024) | yes (`pi_and_jailbreak`) |
+| PII | yes, detect **and** mask | **not in this service** — PII is Azure AI Language, a second service at ~2.7× the unit price | yes, incl. de-identification |
+| Natural-language denied topics | yes — `definition` + up to 5 `examples` | blocklists and trainable custom categories (preview, retiring 2027-04-30) | no |
+| Enforces, or only detects | **enforces** (blocks, masks) | detects — "the API doesn't itself block or route content" | detects — the caller "is responsible for blocking" |
+| Throughput | 100 requests/s (25 in smaller Regions), but text units per second bind first (design §5) | 100 rps on S0, raised only by emailing support | **1,200 QPM** per project |
+
+Two things follow. Bedrock is the only one of the three that both **enforces**
+and takes **natural-language topic definitions**, which is why it is the Phase 1
