@@ -1468,8 +1468,10 @@ reference per tag:
 | **v1.7.0** (2026-10-27) | **present** — "Available only during request-phase CEL guardrails" | identity fields plus `methodName` |
 
 So in-process argument checks arrive in **v1.7.0** and the remote ExtMCP path
-works at **v1.4.1**. Phase a design on the second and treat the first as an
-optimization, not a plan.
+works at **v1.4.1**. The model hop already needs an upgrade to ≥ v1.6.0 (§D4),
+and v1.7.0 is its recommended target, so the same upgrade makes the in-process
+path available here too. The remote path stays the plan for anything a single
+CEL expression cannot express.
 
 One note on the upgrade, because it contradicts a deliberate comment.
 `gitops/addons/registry/gateway.yaml:63` pins v1.4.1 and explains that a higher
