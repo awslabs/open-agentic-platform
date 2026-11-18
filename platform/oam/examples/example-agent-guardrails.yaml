@@ -28,10 +28,12 @@
 # - Amazon Bedrock Guardrails reachable in the cluster's account, and
 #   bedrock:ApplyGuardrail on the agentgateway ServiceAccount
 #
-# Cost: one ApplyGuardrail call per model call — PER REQUEST, not sampled. At
-# $0.15 per 1,000 text units for content filters and denied topics, and a text
-# unit being up to 1,000 characters, a 2,000-character prompt costs ~$0.0003.
-# This is a different cost shape from evaluation's `coverage` dial.
+# Cost: one ApplyGuardrail call per model call — PER REQUEST, not sampled — at
+# $0.15 per 1,000 text units for content filters and denied topics. A model call
+# re-sends the whole conversation and its tool results, so what is charged is the
+# text the profile's `scope` selects, not just the latest message. The quota is
+# text units per second, shared by every cluster in the account and Region.
+# See the design, section 5.
 #
 # See the design: docs/architecture/agent-guardrails.md
 # Issues: #144 (content and topic control), #146 (Dogwood as the decision layer)
