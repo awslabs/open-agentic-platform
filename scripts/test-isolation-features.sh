@@ -309,6 +309,28 @@ for d in yaml.safe_load_all(open(sys.argv[1])):
         print(d['data']['clusterName'])
 " "$WORK/o-f11a.yaml")"
 
+# REGION, the other ambient value a confidential policy could be pinned to.
+#
+# Raised in review: F11 varies only global.clusterName, so it would not notice a
+# field that follows the REGION instead. Checked and encoded here: agent.cue
+# never reads global.awsRegion, so the pod template is identical across regions
+# and the component itself is region-independent. This row is what keeps that
+# true -- a future change that reads the region in the pod spec fails here.
+#
+# WHAT THIS ROW CANNOT SEE, and the docs say so instead: the
+# `aws-service-identity` trait injects AWS_REGION and AWS_DEFAULT_REGION from
+# global.awsRegion (.kiro/steering/oam-authoring.md §1), so a confidential agent
+# that uses that trait -- which one calling AWS KMS needs -- IS pinned to one
+# region, and its policy has to be regenerated per region. That trait is defined
+# in appmod-blueprints, not here, so this offline harness cannot render it; the
+# A rows above SKIP for exactly that reason. Asserting it against a stub would
+# test the stub. See NITRO-DESIGN.md and
+# example-agent-sandbox-confidential.yaml.
+D_OTHER_REGION="$(defs_for otherregion --set global.sandboxOperator=true --set global.awsRegion=eu-west-1)" || die_defs otherregion
+render "$f_conf" "$D_OTHER_REGION" "$WORK/o-f14.yaml" || { echo "FAIL F: confidential agent did not render (other region)"; FAILS=$((FAILS+1)); }
+row F14 "a confidential pod template is IDENTICAL in another region" identical \
+  "$(if [ "$(podtpl "$WORK/o-f11a.yaml")" = "$(podtpl "$WORK/o-f14.yaml")" ]; then echo identical; else echo differs; fi)"
+
 # =============================================================== H. type: sandbox
 echo
 f_pool="$(app h <<YAML
