@@ -238,7 +238,7 @@ Why it is not fixed the same way `CLUSTER_NAME` was: the trait is upstream and
 injects literals into the pod it attaches to. Changing where it sources the
 region is a change to `appmod-blueprints`, not to this component.
 
-### The follow-up that actually closes this
+### The follow-up that actually closes this — [#162](https://github.com/awslabs/open-agentic-platform/issues/162)
 
 Everything above is about *ambient* fields. A different and larger problem
 remains: a platform release that adds an env var to **every** agent makes every
@@ -252,7 +252,8 @@ running `eks-nitro-sandbox-genpolicy`), with the developer supplying only intent
 template by construction, and a platform change regenerates it instead of
 breaking it.
 
-Tracked as a follow-up rather than attempted here: it needs a Linux binary with
+Tracked as [#162](https://github.com/awslabs/open-agentic-platform/issues/162)
+rather than attempted here: it needs a Linux binary with
 registry access running in-cluster, plus a path for the predicted `PCR17` to
 reach the KMS key policy before the pod starts. Until it lands, a confidential
 agent's policy is a deployment artifact that must be regenerated when its pinned
