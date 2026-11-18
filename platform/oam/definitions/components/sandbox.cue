@@ -13,9 +13,9 @@
 // This component declares something an agent is NOT: a short-lived, claimable
 // execution environment with no Service identity of its own, no blue-green, no
 // gateway route and no conversation. One agent process serves many users; a
-// sandbox instance serves exactly one session and is destroyed on idle. Those
-// are different lifecycles, so they are different objects. It shares no fields
-// with the agent beyond the isolation primitives both sit on.
+// sandbox instance serves exactly one session and is released when its claim
+// goes away. Those are different lifecycles, so they are different objects. It
+// shares no fields with the agent beyond the isolation primitives both sit on.
 //
 // The shape follows the Kubernetes SIG agent-sandbox model, which the platform
 // already runs for the Dark Factory coder:
