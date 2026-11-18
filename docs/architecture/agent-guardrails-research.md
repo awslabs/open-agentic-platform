@@ -2,7 +2,7 @@
 
 Supporting research for [`agent-guardrails.md`](agent-guardrails.md). The
 design's decisions are stated there and stand without this file. What is here is
-the evidence behind three of them, moved out of the design so the decisions stay
+the evidence behind four of them, moved out of the design so the decisions stay
 short:
 
 | Appendix | Supports |
