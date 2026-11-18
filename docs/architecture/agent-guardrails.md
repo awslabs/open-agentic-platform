@@ -1742,6 +1742,52 @@ response is an **error, not a clean result**.
 | Throughput | The binding limit is **text units per second**, not requests — see *Quota* below. It is per account and Region, so every cluster in one account shares it, and with `FailClosed` a throttle the retry budget cannot absorb is a refused request |
 | Latency | AWS publishes **no** figure. Phase 1's exit criterion is a measured p50/p99 of the added request latency on real hub traffic, not an estimate. The gateway, not OAP, owns the timing instrumentation |
 
+### What text is checked on each call
+
+An agent does not send one prompt. On every model call it sends the system
+prompt, the whole conversation so far, and every tool result. The guard's
+`scope` (v1.6.0+, request guards) decides which of those are checked:
+
+| `scope` value | What it covers | Default |
+|---|---|---|
+| `SystemPrompt` | the system/developer prompt | on |
+| `Messages` | user and assistant messages, including plaintext reasoning | on |
+| `ToolOutput` | tool call results — the main indirect-injection path | on |
+| `ToolInput` | tool call arguments produced by the model | off |
+
+With the default, a conversation is re-checked in full on every turn, so cost
+grows with the **square** of the number of turns, not linearly. The design sets
+`scope` explicitly on every guard:
+
+- **`[Messages, ToolOutput]`** for the shipped profiles. The system prompt is
+  authored by the agent team and reviewed in git; re-checking it on every call
+  is pure cost.
+- **`ToolInput`** only in a profile that needs it, since in Completions-style
+  APIs a mask "has the potential to rewrite the arguments into invalid JSON".
+
+The real number is measured, not estimated: Phase 1 records text units per
+model call on a real multi-turn agent (§7).
+
+### Quota
+
+The limit that binds is not the 100 `ApplyGuardrail` requests per second. It is
+**text units per second**, per policy type, per account and Region. In
+`us-west-2`, Standard tier:
+
+| Policy | Text units / second | Burst |
+|---|---|---|
+| Content filters | 200 | 1,000 |
+| Denied topics | 200 | 1,000 |
+| Sensitive information (PII) | 500 | 1,000 |
+| Word filters | 500 | 1,000 |
+
+So a profile with content filters is capped at **200 text units per second**
+for the whole account in that Region. A 20,000-character multi-turn request is
+20 text units, which means roughly **10 guarded model calls per second across
+every cluster** in the account. All the quotas are adjustable, but the default
+is the ceiling Phase 1 meets first, and a two-cluster run is in the validation
+plan for exactly that reason.
+
 ---
 
 ## 6. Phases
