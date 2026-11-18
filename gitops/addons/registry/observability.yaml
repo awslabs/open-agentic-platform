@@ -114,7 +114,10 @@ otel-collector:
       secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}-hub/langfuse-otel'
     bifrost:
       enabled: true
-      scrapeEndpoint: 'bifrost.bifrost.svc.cluster.local:8080'
+      # The bifrost chart's metrics proxy (the management plane needs a login, so
+      # the collector cannot scrape the Bifrost Service directly). Must match the
+      # otel-collector chart default.
+      scrapeEndpoint: 'bifrost-metrics.bifrost.svc.cluster.local:8080'
     amp:
       enabled: true
       remoteWriteEndpoint: '{{with (index .metadata.annotations "amp_endpoint_url")}}{{.}}{{end}}'
