@@ -301,3 +301,13 @@ application image, which is precisely what makes them a convention rather than a
 control. The pattern that works is to put them *behind* a gateway hook, where the
 platform decides whether they ran.
 
+**Everyone fails open, and nearly nobody says so loudly.** This is the most
+useful thing the survey turned up, and it is why D4 exists:
+
+- Bifrost Enterprise: "Provider error or timeout | **Fails open**", no documented toggle
+- Azure OpenAI's filter: "If the content filtering system is down or otherwise unable to complete the operation in time, your request still completes **without content filtering**"
+- Google's inline Vertex integration: skipping sanitization on error or unavailability "can occasionally **expose unscreened prompts or responses**"
+- AWS: publishes **no** guidance either way for `ApplyGuardrail` failures
+
+**And everyone's streaming story leaks.** Covered in D5, but the short version
+is that the two vendors who document it most honestly both admit the gap: Azure
