@@ -848,151 +848,17 @@ reference interpreter on the request path.** Upstream says so itself, in bold:
 
 > This reference interpreter is **NOT** intended for production use.
 
-#### What Dogwood is
+#### Why, in short
 
 | | |
 |---|---|
-| Repo | `dogwood-policy/dogwood`, Apache-2.0, Rust, created 2026-07-27, latest `v1.1.1` (2026-11-06) |
-| Provenance | asserted inside the repo: `NOTICE` reads `Copyright Amazon.com, Inc. or its affiliates`, `SECURITY.md` routes to `aws-security@amazon.com` |
-| Relation to Cedar | "an intentional re-implementation of upstream Cedar (the grammar is a faithful translation of `cedar-policy-core` v4.11.0)". Policies **lower to standard Cedar**, temporal and provider terms becoming `context.*` slots filled at runtime |
-| Why it matters here | it is the only policy language that can put a content finding, a tool argument and *prior events* in one decision |
+| What it is | a Cedar-derived policy language with three temporal operators (`formerly`, `previous`, `since`) and windowed `count` / `sum` |
+| Why not on the request path | the reference interpreter's event store has no eviction and no persistence, every decision is O(trace length), and every provider runs on every request |
+| Where it could run | AgentCore Policy is GA and really is Dogwood, but has no callable authorization API; a decision is reachable only through an AgentCore Gateway on the data path |
+| What Phase 3 tests | offline replay over recorded traffic, gated on converting OTel traces to `dogwood replay`'s text format |
 
-#### Five corrections to #146, each of which changes something
-
-| #146 says | Verified |
-|---|---|
-| Operators are `formerly`, `previous`, `since`, `once`, `always` | **Exactly three**: "There are exactly **three** temporal operators … `formerly`, `previous`, and `since`." `once` is a *user-definable macro* (`def temporal once(?w, ?s) { formerly within ?w ?s }`) and an internal grammar rule name; **`always` does not exist** |
-| `when guardrails { … }` is a first-class clause | **Transparent sugar**: "`guardrails { E }` is transparent sugar for a bare `when { E }` … The tag is retained only for surface compatibility" |
-| The template's `ContentFilterFinding` etc. is "exactly the finding shape Bedrock Guardrails emits" | The types exist in the generated schema but **no policy in the repo uses them** — a code search for `ContentFilterFinding` across `.dw` files returns zero. The exercised pattern is a provider *output record*, and in the OSS corpus it compares an **enum**: `BedrockGuardrails::ContentFilter([…],["VIOLENCE"]).VIOLENCE.confidence in [BedrockGuardrails::Confidence::"MEDIUM", …]` |
-| Base actions are `CallTool`, `InvokeLLM`, `InvokeAgent` | **Six, with a hierarchy**: `Mcp` and `Http` are roots; `CallTool` and `UnknownTool` under `Mcp`; `InvokeLLM` and `InvokeAgent` under `Http` |
-| Windows like `within 1h` | True but **capped**: four units only (`s`/`m`/`h`/`d`, no week or month) and a schema `max_window` defaulting to **24h**, so `within 48h` is a validation error unless the schema raises it |
-
-The third row closes the loop with D3. The score-shaped surface #146 describes is
-the **managed** AgentCore form,
-`ContentFilter(categories, contents)[...].confidenceScore.greaterThan(decimal("0.4"))`,
-backed by `InvokeGuardrailChecks`. The open-source corpus form takes its
-**arguments in the opposite order** and compares an enum. So "Dogwood consumes
-Bedrock findings" is true of two different, incompatible spellings, and a policy
-cannot move between them untouched.
-
-#### Three properties that disqualify the interpreter from a request path
-
-Read in the source, not inferred from the README:
-
-1. **The in-memory temporal engine grows without bound and loses everything on
-   restart.** `InMemoryTemporalEngine::observe` is an unconditional
-   `trace.points.push(...)`; in partitioned mode it is
-   `traces.entry(key).or_default().points.push(...)` over a map whose partitions
-   are never reclaimed. No eviction, no size cap, no persistence. A
-   `formerly within 1h` **permit** therefore denies everything after a pod
-   restart — a control that silently inverts.
-2. **Every decision is O(trace length).** `evaluate` re-runs the temporal
-   interpreter over the whole trace so far, so unbounded growth and per-request
-   replay compound.
-3. **Provider execution is unconditional.** "Provider execution is
-   **unconditional** … For every decision event, every provider invocation in
-   the policy set is evaluated" — not gated by the rule's action, its
-   principal/resource constraints, its conditions, or whether it could fire at
-   all. On a request path that is every guardrail call in every policy, on every
-   request.
-
-Three silent-weakening traps compound it, and each is this platform's named
-failure shape:
-
-- A field in the `logged` bag but not `request_context` (or the reverse)
-  **silently weakens** either the temporal or the Cedar check.
-- A qualified-action-name mismatch makes temporal predicates **silently not
-  match** while Cedar still authorizes.
-- A `pin` that is not universal and symmetric **silently keeps global
-  semantics**: "Nothing warns you — the schema builds and evaluates, just
-  without isolation." `pin` is the multi-tenancy lever, so getting it subtly
-  wrong means one principal's history authorising another's action.
-
-**One genuinely good finding.** A provider's `implementation` is optional, and a
-`ProviderResolver` trait lets the host supply the value from its own code: "the
-resolver never touches the Rhai sandbox, so it may do whatever a normal Rust
-function can (network calls, model invocations, …)". So an adoption **never has
-to ship Rhai**, which removes the `http_get` SSRF class — it "performs **no**
-host validation … including internal/link-local addresses (`169.254.169.254`,
-`127.0.0.1`, RFC-1918)" — and the script-sandbox question with it.
-
-#### Where a production engine could live
-
-**AgentCore Policy is GA and really is Dogwood.** AWS names it outright —
-"Dogwood is an open-source policy language … compatible with Cedar" — and
-recommends "**Write Dogwood.**" As a service it closes what the interpreter
-leaves open: session-scoped durability (24-hour idle timeout), per-caller
-isolation ("Two different callers supplying the same session ID get isolated
-sessions — the identity is part of the session key"), and service-assigned
-timestamps.
-
-**The timeline matters more than the GA badge.** Policy went GA on **2026-03-03**
-with Cedar only; Dogwood and temporal policies arrived on **2026-08-06**; Dogwood
-itself reached v1.0 on 2026-10-13. So "AgentCore Policy is GA" does **not** mean
-temporal policy carries GA-length production history — it is about three months
-old.
-
-**And it cannot be called as an authorization API.** Both surfaces were
-enumerated: the control plane has only `CreatePolicy` / `CreatePolicyEngine` /
-`UpdatePolicy` and their reads, and the data plane has no `Authorize`. There *are*
-`AuthorizeAction` and `PartiallyAuthorizeActions`, but they appear under
-"Permission-only actions" and are granted **to the Gateway execution role** — the
-service invokes them on your behalf. The capability is real; the wire protocol is
-private. A decision is reachable only by putting an **AgentCore Gateway on the
-data path**. AWS states the Kubernetes case explicitly: a request through "a
-Kubernetes cluster … must forward the WAT header, and you must add custom logic
-to propagate the WAT through those hops."
-
-Four further limits bear on whether that is attractive:
-
-| Limit | Consequence for OAP |
-|---|---|
-| Policy evaluation is **MCP-tools-only** — "the gateway always allows MCP prompts … and resources" | Prompts and resources stay ungoverned |
-| "**Gateway application logs don't include policy decisions.**" Decisions appear only as CloudWatch metrics and as spans that require traces explicitly enabled | Per-decision audit is opt-in, not a property of turning policy on |
-| **400 KB** Cedar schema per engine, auto-generated from every tool across every attached gateway, non-adjustable | This, not policy count, is the sharding wall for a multi-team platform. AWS's own guidance: "consider using separate policy engines for different gateways" |
-| **20** temporal policies per engine, **3** temporal operators per policy, **24h** max window, all non-adjustable | A fleet-wide temporal policy set is small by construction |
-
-So the option set is binary, and worth stating plainly:
-
-| Option | Assessment |
-|---|---|
-| **Offline: author policies, replay recorded traffic** (**chosen, Phase 3**) | Exactly what the reference interpreter is for, zero production risk, and it answers "does this language express the rules we want" before anyone builds an engine |
-| Route OAP's MCP traffic through an AgentCore Gateway | The only route to managed Dogwood enforcement. A real option later, but it moves the tool hop off `agent-gateway` onto an AWS service — a platform-shape decision far beyond guardrails — and still leaves every `centralized` agent's **model** call untouched |
-| A Dogwood authorization provider in agentgateway | Best long-term shape, since `backend.mcp.authorization` already takes an `action` + expression form. Needs upstream work OAP does not control |
-| Build a durable temporal engine | `TemporalEngine` is the seam, and the crate ships its regression corpus behind a `corpus` feature specifically "so that an alternative implementation of the temporal engine can be checked against the same cases". Possible, and far more than this capability needs |
-| Ship the reference interpreter on the request path | **No.** See the three properties above |
-
-#### What Phase 3 does, and the one thing that gates it
-
-1. Generate the action schema from OAP's real MCP servers: `dogwood schema mcp
-   --manifest tools.json` takes an MCP `tools/list` payload and emits one Cedar
-   action per tool, mapping `inputSchema.properties` to `context.input`.
-2. Write three policies — one stateless (reproducing something `authPolicy` does
-   today, to prove no loss of expressiveness), one `formerly`-based, one
-   `count`-based.
-3. Replay them over recorded traffic and report which rules the language
-   expressed, how often each would have denied real traffic, and a
-   false-positive read on the denials.
-
-**The gate is the trace format, and it is a converter rather than a mapping.**
-`dogwood replay` consumes a bespoke text format, one line per timepoint:
-
-```text
-@0 scope(principal: Drupe::OAuthUser::"alice", resource: Drupe::Gateway::"gw1") request_context(input: { shares: 5 }) Drupe::Action::"ApproveSale"::request(input: { shares: 5 }, callerPrincipal: Drupe::OAuthUser::"alice", requestId: "u1")
-```
-
-There is no JSON, NDJSON or OTLP ingestion anywhere in the crate. Converting
-OAP's traces means, per event:
-
-| Requirement | Why it is work, not mapping |
-|---|---|
-| `i64` **seconds**, **strictly increasing** | OTel spans are nanosecond and overlap. "Timestamps measure temporal windows; they do not establish trace order" — trace *position* is the order, so the converter assigns timestamps rather than reusing span times |
-| An explicit `::request` / `::response` kind | One tool-call span becomes **two or more** lines: "its eventual `response` or `error` is a separate event" |
-| Fields in **both** bags | A field a policy reads *and* correlates on must appear in the trailing logged group **and** `request_context`, or the check silently weakens |
-| Fully-qualified quoted action ids | A mismatch makes temporal predicates silently not match |
-
-Whether OAP's Langfuse observations carry tool-call arguments and timestamps at
-all is the first thing to check, and it stays an open question (Q4).
+The five corrections to #146, the interpreter source reading and the Phase 3
+plan are in the research appendix, [§B](agent-guardrails-research.md#b-dogwood).
 
 #### What Phase 1 owes this option
 
