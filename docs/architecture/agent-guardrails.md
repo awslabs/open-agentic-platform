@@ -223,53 +223,13 @@ point hard to skip (§2.4).
 
 ### 2.3a How this is done in practice
 
-The industry has converged on a shape, and it is worth stating because this
-design is an instance of it rather than an invention.
-
-**The enforcement point is a gateway, and every serious implementation is
-pre/post around the model call.** Bifrost, LiteLLM, Portkey, Kong AI Gateway and
-Cloudflare AI Gateway all expose the same two hooks — inspect the request before
-the provider, inspect the response after — and all of them treat the detector as
-a pluggable backend rather than something they implement. That is exactly the
-seam this design uses; the only question OAP has to answer differently is *how*
-to get a hook into its gateway (§D1).
-
-**The detector is almost always a managed service.** The four that matter:
-
-| | Bedrock Guardrails | Azure AI Content Safety | Google Model Armor |
-|---|---|---|---|
-| Standalone callable | yes (`ApplyGuardrail`) | yes — and *only* standalone; the integrated path needs an Azure-hosted model | yes (`:sanitizeUserPrompt`) |
-| Injection detection | yes (`PROMPT_ATTACK`) | yes (Prompt Shields, GA Aug 2024) | yes (`pi_and_jailbreak`) |
-| PII | yes, detect **and** mask | **not in this service** — PII is Azure AI Language, a second service at ~2.7× the unit price | yes, incl. de-identification |
-| Natural-language denied topics | yes — `definition` + up to 5 `examples` | blocklists and trainable custom categories (preview, retiring 2027-04-30) | no |
-| Enforces, or only detects | **enforces** (blocks, masks) | detects — "the API doesn't itself block or route content" | detects — the caller "is responsible for blocking" |
-| Throughput | 100 rps (25 in smaller Regions), adjustable | 100 rps on S0, raised only by emailing support | **1,200 QPM** per project |
-
-Two things follow. Bedrock is the only one of the three that both **enforces**
-and takes **natural-language topic definitions**, which is why it is the Phase 1
-backend for a Bedrock-based platform. And all three are detectors — the gateway
-is the policy enforcement point in every case, so the AI route in §D1 is doing the
-job these services assume someone is doing.
-
-**In-process libraries are the common mistake.** NeMo Guardrails, Guardrails AI,
-LlamaFirewall and Presidio are all good at detection and all live in the
-application image, which is precisely what makes them a convention rather than a
-control. The pattern that works is to put them *behind* a gateway hook, where the
-platform decides whether they ran.
-
-**Everyone fails open, and nearly nobody says so loudly.** This is the most
-useful thing the survey turned up, and it is why D4 exists:
-
-- Bifrost Enterprise: "Provider error or timeout | **Fails open**", no documented toggle
-- Azure OpenAI's filter: "If the content filtering system is down or otherwise unable to complete the operation in time, your request still completes **without content filtering**"
-- Google's inline Vertex integration: skipping sanitization on error or unavailability "can occasionally **expose unscreened prompts or responses**"
-- AWS: publishes **no** guidance either way for `ApplyGuardrail` failures
-
-**And everyone's streaming story leaks.** Covered in D5, but the short version
-is that the two vendors who document it most honestly both admit the gap: Azure
-measured a blocked term escaping in "roughly the last 15 to 30 words" of a
-*buffered* stream, and Bedrock's async mode says outright that "response chunks
-may contain inappropriate content until guardrails scan completes".
+Every serious implementation puts a gateway hook around the model call and
+treats the detector as a pluggable managed service. This design is an instance
+of that shape, not an invention. Of the managed detectors, Bedrock Guardrails is
+the only one that both **enforces** and takes **natural-language denied topics**,
+which is why it is the Phase 1 backend. The survey — gateways, detectors,
+in-process libraries, and how each fails and streams — is in the research
+appendix, [§D](agent-guardrails-research.md#d-how-guardrails-are-done-in-practice).
 
 ### 2.4 The rule that decides the whole design, and how OAP currently fails it
 
