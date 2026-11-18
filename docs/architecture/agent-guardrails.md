@@ -695,11 +695,12 @@ is a real decision and not a naming detail.
    response body must never reach an access log or a metric label. Phase 1 must
    assert that, because the component holding the sensitive data is now one OAP
    configures rather than one it writes.
-3. **Guardrails do not see tool-call content.** Verbatim: PII is "neither blocked
-   nor masked" in `toolUse.input`, `toolResult`, or `toolSpec.description` /
-   `inputSchema`. For an agent platform that is a large hole, and it is the
-   single strongest argument that content inspection is one layer rather than
-   the answer (§D7).
+3. **Bedrock's Converse integration does not see tool-call content, but this
+   design does not use it.** Verbatim: PII is "neither blocked nor masked" in
+   `toolUse.input`, `toolResult`, or `toolSpec.description` / `inputSchema`.
+   The gateway calls `ApplyGuardrail` with text it extracts itself, so what is
+   checked is set by `scope`: tool results by default, tool arguments on
+   request (§5, §D7).
 
 #### Where the guardrail objects live
 
