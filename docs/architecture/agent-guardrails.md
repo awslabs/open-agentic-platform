@@ -96,10 +96,11 @@ failure mode OAP has already named:**
   Bifrost needs no credential, and no egress mechanism exists in the repository.
   Until §D7's changes land, this is a control for cooperating agents and a
   detection for the rest.
-- **Content inspection does not close prompt injection, and cannot see tool
-  calls at all.** Bedrock Guardrails evaluates neither `toolUse.input` nor
-  `toolResult` nor `toolSpec.description` — which on an agent platform is where
-  the interesting payloads live.
+- **Content inspection does not close prompt injection.** It narrows it. The
+  guard's `scope` decides which text is checked, and by default that includes
+  **tool output** as it is fed back to the model, the main indirect-injection
+  path. Tool *arguments* are checked only if `ToolInput` is listed, and the
+  tool call itself, at the MCP hop, is out of reach of this hop entirely (§3.9).
 
 Dogwood (#146) is **not** a Phase 1 dependency and should not be one: upstream's
 interpreter is explicitly not for production, its event store has no eviction and
