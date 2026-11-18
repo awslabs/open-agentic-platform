@@ -98,3 +98,13 @@ cannot move between them untouched.
 Read in the source, not inferred from the README:
 
 1. **The in-memory temporal engine grows without bound and loses everything on
+   restart.** `InMemoryTemporalEngine::observe` is an unconditional
+   `trace.points.push(...)`; in partitioned mode it is
+   `traces.entry(key).or_default().points.push(...)` over a map whose partitions
+   are never reclaimed. No eviction, no size cap, no persistence. A
+   `formerly within 1h` **permit** therefore denies everything after a pod
+   restart — a control that silently inverts.
+2. **Every decision is O(trace length).** `evaluate` re-runs the temporal
+   interpreter over the whole trace so far, so unbounded growth and per-request
+   replay compound.
+3. **Provider execution is unconditional.** "Provider execution is
