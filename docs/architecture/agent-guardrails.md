@@ -48,10 +48,10 @@
   that one class of rule it accepts cannot work, which is a doc fix, not a
   redesign
 - Running Dogwood's reference interpreter on the request path (§D6)
-- **Inspecting tool-call content, and the external policy engine that would do
-  it.** The model hop cannot see a tool call, and the hop that can is the MCP
-  hop, which has its own mechanism and its own issue (#152). §3.9 draws the
-  boundary and lists what the two designs owe each other
+- **Inspecting a tool call as it executes, and the external policy engine that
+  would do it.** This hop sees tool results and arguments only as text inside a
+  model call (§D7). The hop that sees the call itself is the MCP hop, which has
+  its own mechanism and its own issue (#152). §3.9 draws the boundary
 
 ---
 
