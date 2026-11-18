@@ -311,3 +311,6 @@ useful thing the survey turned up, and it is why D4 exists:
 
 **And everyone's streaming story leaks.** Covered in D5, but the short version
 is that the two vendors who document it most honestly both admit the gap: Azure
+measured a blocked term escaping in "roughly the last 15 to 30 words" of a
+*buffered* stream, and Bedrock's async mode says outright that "response chunks
+may contain inappropriate content until guardrails scan completes".
