@@ -1633,9 +1633,9 @@ sequenceDiagram
     end
 ```
 
-The third branch is the one to read twice. Revision 3 drew a refusal there; the
-native guard forwards instead, and the design's accepted cost (§D4) is that this
-branch exists at all.
+The third branch is the one that needs agentgateway v1.6.0. At v1.4.1 it
+forwards the request uninspected; from v1.6.0, with `failureMode: FailClosed`,
+it refuses (§D4).
 
 ### Which concern is enforced at which hop
 
