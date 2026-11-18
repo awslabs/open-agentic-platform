@@ -87,12 +87,11 @@ drafted:**
 **Three things this design says about itself, because the alternative is the
 failure mode OAP has already named:**
 
-- **`bedrockGuardrails` fails open, and there is no field to change that.** The
-  native guard inherits the `Guardrail` trait's `FailOpen` default; only the
-  `webhook` guard is `FailClosed`. So Phase 1 ships fail-open on a Bedrock error
-  — observably, since the gateway records `action="FailOpen"` as its own outcome
-  — and §D4 records the three ways to close it. **This is what not building a
-  proxy costs, and it is stated rather than engineered around.**
+- **It needs an agentgateway upgrade first.** OAP pins v1.4.1, where
+  `bedrockGuardrails` fails open with no field to change it. v1.6.0 adds
+  `failureMode` with `FailClosed` as the default, so the design requires
+  ≥ v1.6.0 and sets `FailClosed` explicitly. The upgrade is its own PR, because
+  every agent and MCP call goes through the gateway (§D4).
 - **The hop is not yet unbypassable.** `llmGatewayUrl` is a developer parameter,
   Bifrost needs no credential, and no egress mechanism exists in the repository.
   Until §D7's changes land, this is a control for cooperating agents and a
