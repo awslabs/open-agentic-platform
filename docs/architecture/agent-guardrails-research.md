@@ -68,3 +68,13 @@ So the two Bifrost-native routes both fail a platform requirement:
 
 ### What Dogwood is
 
+| | |
+|---|---|
+| Repo | `dogwood-policy/dogwood`, Apache-2.0, Rust, created 2026-07-27, latest `v1.1.1` (2026-11-06) |
+| Provenance | asserted inside the repo: `NOTICE` reads `Copyright Amazon.com, Inc. or its affiliates`, `SECURITY.md` routes to `aws-security@amazon.com` |
+| Relation to Cedar | "an intentional re-implementation of upstream Cedar (the grammar is a faithful translation of `cedar-policy-core` v4.11.0)". Policies **lower to standard Cedar**, temporal and provider terms becoming `context.*` slots filled at runtime |
+| Why it matters here | it is the only policy language that can put a content finding, a tool argument and *prior events* in one decision |
+
+### Five corrections to #146, each of which changes something
+
+| #146 says | Verified |
