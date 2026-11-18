@@ -1939,14 +1939,14 @@ anything**
     release — v1.6.0 already added `methodName` to the request phase), or leave
     it and rely on review. The first is nearly free and the recommendation; the
     second is the only one that actually stops the mistake.
-11. **Is an agentgateway upgrade on the table, and who verifies the chart?**
-    In-process CEL guardrails over `mcp.params` arrive in upstream **v1.7.0**,
-    which would give simple attribute rules with no external service and no
-    extra hop. OAP pins **v1.4.1** behind a deliberate note about the
-    `cr.agentgateway.dev` charts versioning independently of upstream (§3.10).
-    The question is not whether v1.7.0 has the feature — it does — but whether
-    the *chart* at that tag carries the API surface OAP already depends on,
-    which only a pull-and-diff answers.
+11. ~~**Is an agentgateway upgrade on the table?**~~ **Answered in review:
+    yes, as Phase 0.** Fail-closed guards need ≥ v1.6.0 (§D4), and v1.7.0 is
+    the target because it also brings `mcp.params` for §3.10. It lands as its
+    own PR that runs the identity and delegation live tests. What stays open is
+    the chart check: OAP pins v1.4.1 behind a deliberate note that the
+    `cr.agentgateway.dev` charts version independently of upstream, so the
+    upgrade PR must pull and diff the **chart** at the new tag, not trust the
+    release tag.
 12. **Which §D4 option, given that `bedrockGuardrails` fails open?** (a) ship
     native and record the fail-open, (b) move the check behind the `webhook`
     guard, which is `FailClosed` by default but is a service OAP would own, or
