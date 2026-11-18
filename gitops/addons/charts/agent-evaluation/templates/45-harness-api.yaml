@@ -7,6 +7,10 @@ nothing else, because the endpoint has no credential: reaching it can start a
 harness Job for a declared agent. Which pods are the controller is a value
 (harness.api.controller), since the controller chart belongs to the base
 platform. The NetworkPolicy takes effect only on clusters that enforce it.
+A policy that selects the reconciler pod isolates it for ingress, so the metrics
+port gets its own rule: the AMP scraper and the Prometheus-style scrapers reach
+the pod from outside any namespace selector, and without the rule the dashboard
+series stop arriving.
 */ -}}
 {{- if .Values.harness.enabled }}
 apiVersion: v1
@@ -48,4 +52,9 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.harness.api.port }}
+    {{- if .Values.metrics.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+    {{- end }}
 {{- end }}

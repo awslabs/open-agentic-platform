@@ -215,6 +215,8 @@ def test_endpoint_service_and_network_policy_admit_only_the_rollouts_controller(
         }
     ]
     assert rule["ports"] == [{"protocol": "TCP", "port": 8081}]
+    # The policy isolates the pod, so the metrics port needs its own rule (no `from`).
+    assert pol["spec"]["ingress"][1] == {"ports": [{"protocol": "TCP", "port": 9090}]}
     assert not [d for d in _render_eval() if d["metadata"]["name"] == "agent-evaluation-harness-api"]
 
 
