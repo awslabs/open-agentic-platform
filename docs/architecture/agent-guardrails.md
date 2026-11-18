@@ -491,8 +491,9 @@ guardrails?: {
 	// platform requires guardrails in this namespace: then it is on, and false
 	// is rejected at admission.
 	enabled: *false | bool
-	// +usage=Platform profile name, resolved from the addon's catalog. The profile
-	// owns the detectors, their thresholds, and the WEAKEST verdict allowed.
+	// +usage=Platform profile name, resolved from the platform's profile catalog.
+	// The profile owns the detectors, their thresholds, and the WEAKEST verdict
+	// allowed. A profile below the namespace's minimum is rejected at admission.
 	profile: *"standard" | =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$"
 	// +usage=Verdict on a violation. May only be STRICTER than the profile's
 	// floor, never weaker: report < redact < block. An attempt to weaken is
