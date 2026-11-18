@@ -1702,27 +1702,23 @@ first.
 ## 4a. The backend boundary, and the two public contracts
 
 Same structure as evaluation's §4a, and for the same reason: a second backend
-must be one module, not a branch at every call site.
+must be one field, not a branch at every call site.
 
-### Contract 1 — the declaration ConfigMap
+### Contract 1 — the profile route
 
-Written by the `agent` component as a KubeVela output, named
-`<agent>-guardrails`, in the agent's own namespace. Discovered **only** by the
-label.
+One route per profile on the existing gateway, rendered by the `agent-gateway`
+chart from the profile catalog. An agent reaches it through `LLM_GATEWAY_URL`.
 
 | | |
 |---|---|
-| label | `guardrails.oap.io/agent: <agent>` (required) |
+| path | `/llm/<profile>/v1`, OpenAI-compatible, forwarded to Bifrost |
+| gate | one `traffic.authorization` `Require` on `jwt.sub`: every agent for a profile at or above the default, granted agents only below it (§D1) |
+| guards | `backend.ai.promptGuard`, every entry with `failureMode: FailClosed` and an explicit `scope` (§D4, §5) |
 
-| Data key | Required | Meaning |
-|---|---|---|
-| `agent` | yes | agent name |
-| `profile` | yes | catalog profile name |
-| `onViolation` | no | `report` \| `redact` \| `block`; may only tighten the profile's floor |
-| `inspect` | no | comma-separated `input`, `output`; may only add to the profile's set |
-
-There is deliberately no `backend` key, no threshold and no vendor identifier:
-each is the addon's concern, not the agent's.
+There is deliberately no agent-side backend key, threshold or vendor
+identifier: each is the profile's concern, not the agent's. Revision 4's
+`<agent>-guardrails` declaration ConfigMap is removed: only the deleted proxy
+read it.
 
 ### Contract 2 — the metrics
 
