@@ -79,7 +79,7 @@ drafted:**
 | | Decision | Why it is not what the issue proposed |
 |---|---|---|
 | D1 | Enforce at **agentgateway's native `promptGuard`** on an AI route in front of Bifrost | Not a Bifrost plugin: OAP runs upstream's public OSS image, which is statically linked and **cannot load plugins**, and Bifrost's own guardrails are an **Enterprise-licensed image**. Not an OAP proxy either — agentgateway already does this, and from v1.6.0 it fails closed, so **OAP ships no new component** |
-| D2 | The agent may only **tighten** the platform profile | `onViolation` as a free choice lets any developer switch enforcement off while the capability still reports as on |
+| D2 | The agent may only pick its namespace's **minimum profile or a stricter one** | A free choice of profile lets any developer switch enforcement off while the capability still reports as on. Checked at admission and again at the gateway route |
 | D3 | **`ApplyGuardrail`**, behind a backend boundary that normalizes findings | The numeric `severityScore` shape #144 and #146 describe is a **different API** (`InvokeGuardrailChecks`), with different price, quota and Region coverage |
 | D4 | The verdict is made in **one place**, and fails **closed** | #146's ask, adopted. Every nearby precedent — Bifrost Enterprise, its judge guardrail, the reference plugin PR, OAP's own `authPolicy` — fails **open**. agentgateway ≥ v1.6.0 fails closed by default, and every guard sets `failureMode: FailClosed` explicitly |
 | D5 | **Input only** in Phase 1; blocking on output **costs streaming** | Buffer and lose the stream, or stream and lose the guarantee. There is no third option, and every vendor claiming otherwise leaks |
