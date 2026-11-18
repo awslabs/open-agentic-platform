@@ -852,16 +852,18 @@ throughput unless explicitly enabled" — so response guards simply do not run o
 a stream until the platform opts in, which is the right default and matches
 Phase 1 doing nothing on the response path.
 
-The new constraint: **masking is not supported on the streaming path.** From
-`crates/agentgateway/src/llm/policy/mod.rs` at `v1.4.1`, the streaming response
-evaluator treats a mask outcome as a programming error —
+The new constraint: **masking is not supported on the streaming path.** It
+holds at v1.6.0 and v1.7.0, where the CRD documents it on the streaming flag:
 
-> `"streaming response guard unexpectedly returned Masked; streaming masking is not supported"`
+> A guard can reject a streamed response, but `Mask` actions are not applied
+> to streamed content.
 
-So on a stream the available verdicts are **allow or reject**, never redact.
-That is consistent with Bedrock's own `async` mode, which "doesn't support the
-masking of sensitive information", and it means D2's `onViolation: redact` and
-streaming are mutually exclusive rather than merely expensive.
+and the dataplane refuses to count a masked stream as a pass ("Streaming cannot
+apply masking; do not report this as a passed check"). So on a stream the
+available verdicts are **allow or reject**, never redact. That is consistent
+with Bedrock's own `async` mode, which "doesn't support the masking of
+sensitive information", and it means a masking profile and streaming are
+mutually exclusive rather than merely expensive.
 
 That is a **contract, not a surprise**: an agent whose profile blocks on output
 does not stream, an agent whose profile redacts on output cannot stream at all,
