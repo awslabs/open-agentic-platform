@@ -48,6 +48,21 @@
 #   3. EKS Pod Identity on this agent's ServiceAccount, so the guest can reach
 #      KMS. IMDS inside a sandbox serves only placement metadata -- IAM
 #      credentials are NOT available through it.
+#
+# HOW FAR ONE POLICY TRAVELS
+#   Every cluster, and -- for THIS file as written -- every region too. The pod
+#   template does not depend on either: CLUSTER_NAME comes from a ConfigMap the
+#   component emits rather than a literal, and nothing in the component reads
+#   the region. Asserted in CI, not assumed (test-isolation-features.sh F11,
+#   F14).
+#
+#   ONE REGION ONCE YOU ADD aws-service-identity. That trait injects AWS_REGION
+#   and AWS_DEFAULT_REGION from the cluster's region, and a confidential policy
+#   pins the environment -- so the policy becomes valid in that region only, and
+#   a second region needs its own policy and its own PCR17 condition. Most
+#   confidential agents end up there, because reading a secret from AWS KMS with
+#   Pod Identity is what the trait is for. This example deliberately carries only
+#   gateway-identity, so the question does not arise until you add it.
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
