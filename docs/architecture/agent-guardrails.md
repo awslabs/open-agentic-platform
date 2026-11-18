@@ -598,11 +598,10 @@ spec:
           modelId: claude-sonnet
         guardrails:
           enabled: true
-          # What `standard` means — which detectors, at what strength, and the
-          # weakest verdict allowed — is in the agent-guardrails chart.
+          # What `standard` means — which detectors, at what strength — is in
+          # the platform's profile catalog. Choose a stricter profile to be
+          # stricter; a weaker one than the namespace minimum is rejected.
           profile: standard
-          # Optional, and only ever stricter than the profile's floor.
-          onViolation: block
 ```
 
 ### D3. The detection backend: behind a boundary, Bedrock Guardrails first
