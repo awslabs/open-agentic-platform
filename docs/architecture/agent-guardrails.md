@@ -1867,9 +1867,13 @@ anything**
 
 - [ ] Measured added p50/p99 from `guardrailProcessingLatency` and from the
       gateway's own latency telemetry, on real hub traffic
-- [ ] Measured cost per 1,000 requests against the $0.15/$0.10 per-text-unit rates
-- [ ] Sustained request rate against the 100/sec `ApplyGuardrail` quota, with the
-      throttle path exercised
+- [ ] **Text units per model call on a real multi-turn agent**, over a full
+      conversation, for the default `scope` and for `[Messages, ToolOutput]`,
+      priced against the $0.15/$0.10 per-text-unit rates (§5)
+- [ ] **A two-cluster run in one account and Region**, driving both clusters at
+      once until the text-units-per-second quota throttles. Show the throttle is
+      shared, that the retry budget absorbs bursts, and what share of requests
+      is refused under `FailClosed` once it cannot (§5)
 - [ ] The dashboard appears in AMG with no manual import, and a newly guarded
       agent appears on the next scrape
 - [ ] The `PrometheusRule` is absent, and the chart still renders, on a cluster
