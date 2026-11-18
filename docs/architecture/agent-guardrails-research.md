@@ -168,3 +168,13 @@ Four further limits bear on whether that is attractive:
 | Policy evaluation is **MCP-tools-only** — "the gateway always allows MCP prompts … and resources" | Prompts and resources stay ungoverned |
 | "**Gateway application logs don't include policy decisions.**" Decisions appear only as CloudWatch metrics and as spans that require traces explicitly enabled | Per-decision audit is opt-in, not a property of turning policy on |
 | **400 KB** Cedar schema per engine, auto-generated from every tool across every attached gateway, non-adjustable | This, not policy count, is the sharding wall for a multi-team platform. AWS's own guidance: "consider using separate policy engines for different gateways" |
+| **20** temporal policies per engine, **3** temporal operators per policy, **24h** max window, all non-adjustable | A fleet-wide temporal policy set is small by construction |
+
+So the option set is binary, and worth stating plainly:
+
+| Option | Assessment |
+|---|---|
+| **Offline: author policies, replay recorded traffic** (**chosen, Phase 3**) | Exactly what the reference interpreter is for, zero production risk, and it answers "does this language express the rules we want" before anyone builds an engine |
+| Route OAP's MCP traffic through an AgentCore Gateway | The only route to managed Dogwood enforcement. A real option later, but it moves the tool hop off `agent-gateway` onto an AWS service — a platform-shape decision far beyond guardrails — and still leaves every `centralized` agent's **model** call untouched |
+| A Dogwood authorization provider in agentgateway | Best long-term shape, since `backend.mcp.authorization` already takes an `action` + expression form. Needs upstream work OAP does not control |
+| Build a durable temporal engine | `TemporalEngine` is the seam, and the crate ships its regression corpus behind a `corpus` feature specifically "so that an alternative implementation of the temporal engine can be checked against the same cases". Possible, and far more than this capability needs |
