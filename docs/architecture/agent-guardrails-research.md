@@ -178,3 +178,13 @@ So the option set is binary, and worth stating plainly:
 | Route OAP's MCP traffic through an AgentCore Gateway | The only route to managed Dogwood enforcement. A real option later, but it moves the tool hop off `agent-gateway` onto an AWS service — a platform-shape decision far beyond guardrails — and still leaves every `centralized` agent's **model** call untouched |
 | A Dogwood authorization provider in agentgateway | Best long-term shape, since `backend.mcp.authorization` already takes an `action` + expression form. Needs upstream work OAP does not control |
 | Build a durable temporal engine | `TemporalEngine` is the seam, and the crate ships its regression corpus behind a `corpus` feature specifically "so that an alternative implementation of the temporal engine can be checked against the same cases". Possible, and far more than this capability needs |
+| Ship the reference interpreter on the request path | **No.** See the three properties above |
+
+### What Phase 3 does, and the one thing that gates it
+
+1. Generate the action schema from OAP's real MCP servers: `dogwood schema mcp
+   --manifest tools.json` takes an MCP `tools/list` payload and emits one Cedar
+   action per tool, mapping `inputSchema.properties` to `context.input`.
+2. Write three policies — one stateless (reproducing something `authPolicy` does
+   today, to prove no loss of expressiveness), one `formerly`-based, one
+   `count`-based.
