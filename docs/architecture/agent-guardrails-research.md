@@ -238,3 +238,13 @@ Three things, already folded in above rather than left as future work:
   the **pre-mutation** values, so an authorization processor must run after every
   mutating one. The wire format states it outright: `McpRequestResult.mutated`
   "replaces JSON-RPC `params` before forwarding to the upstream MCP server" and
+  "**the gateway does not re-run other RBAC on the mutated request**". So a
+  mutating processor is not merely ordered before authorization — it can hand
+  the upstream arguments that no policy ever saw. This design has the same
+  hazard in miniature: a `redact` verdict
+  changes the prompt that Bifrost then sees. Today nothing downstream authorizes
+  on prompt content, so the trap is latent — but anything added that *does* must
+  run after redaction, and §D8's record is what makes the before/after visible.
+- **Rate and frequency belong to neither engine.** #152 is right that "no more
+  than N calls" is not an authorization question; agentgateway answers it
+  natively at `spec.traffic.rateLimit`, and Bifrost answers the model-side
