@@ -239,13 +239,16 @@ catalog:
       output: output
       tool_calls: tool_calls
 
-# The agent harness (Phase 3, issue #137), REPORT MODE ONLY. When an agent's
-# Rollout gets a new revision, the reconciler runs that agent's `harness`
-# dataset against its `<agent>-preview` Service and publishes the result as
-# oap_agent_harness_* metrics. See docs/architecture/agent-evaluation.md §4b.
+# The agent harness (issue #137). Argo Rollouts scores each new revision of an
+# agent with a `harness` block: the agent component emits an AnalysisTemplate and
+# wires it into the Rollout, and Rollouts creates one AnalysisRun per revision.
+# The run polls the verdict endpoint below, which starts the runner Job against
+# the agent's `<agent>-preview` Service and answers pass, fail, insufficient,
+# error or pending. This reconciler publishes the result as oap_agent_harness_*
+# metrics and Events. Design: docs/architecture/agent-harness.md.
 #
-# Report mode never blocks or delays a promotion: nothing reads the result back
-# into the Rollout. Gate mode and an Argo Rollouts AnalysisTemplate are deferred.
+#   mode: report  the analysis runs with dryRun; the score never changes a rollout
+#   mode: gate    a revision below the threshold, or with no verdict, is aborted
 #
 # Each run is one batch/v1 Job in THIS namespace (the agent-evaluation release
 # namespace), never in the agent's namespace, so no credential or RBAC reaches
@@ -254,18 +257,32 @@ harness:
   # Off by default. Nothing harness-specific renders while this is false.
   # Turning it off after it was on: harness Jobs, their results and the judge
   # key Secret are owned by the harness catalog ConfigMap, so the garbage
-  # collector deletes them once Argo prunes it. The minted Bifrost key is not
-  # a Kubernetes object: delete it by hand (agent-harness.md section 4.1).
+  # collector deletes them once Argo prunes it. The Bifrost key is not a
+  # Kubernetes object: turn off judgeKey.enabled in the bifrost chart and delete
+  # the key by hand (agent-harness.md section 4.1).
   enabled: false
-  # How often the harness loop looks for new revisions.
+  # How often the reader publishes metrics from finished AnalysisRuns.
   intervalSeconds: 60
-  # Harness Jobs allowed to run at once on this cluster. A new revision waits
-  # for a free slot; it is never dropped. Free slots go to the longest-waiting
-  # revision first (in memory; after a restart, namespace/agent order).
+  # Harness Jobs allowed to run at once on this cluster. A new revision's Job
+  # is created suspended and waits for a free slot (up to slotWaitSeconds).
   maxConcurrentJobs: 2
-  # Finished Jobs (and their result ConfigMaps) kept per agent. The newest run
-  # is what the metrics show; older ones are kept for `kubectl logs`.
-  historyLimit: 3
+  # The verdict endpoint the AnalysisTemplate polls (Service
+  # agent-evaluation-harness-api). Must match global.agentEvaluation.harnessApiPort
+  # in the oam-agent-components chart. Only the Argo Rollouts controller may
+  # reach it (NetworkPolicy), and it has no credential.
+  api:
+    port: 8081
+    # Who may call it. Defaults match the Argo Rollouts chart's controller
+    # labels; check them on your cluster (design P5) and override here.
+    controller:
+      namespace: argo-rollouts
+      podLabels:
+        app.kubernetes.io/name: argo-rollouts
+  # How long a created Job may wait for a free slot (maxConcurrentJobs) before
+  # the endpoint answers error. The run's total cap is runTimeoutSeconds plus
+  # this, and must stay at or below 2100 s: the AnalysisTemplate polls for
+  # 40 minutes (160 x 15 s) and the endpoint answers error before the count ends.
+  slotWaitSeconds: 300
   # Cases sent to the agent at once within one run.
   caseConcurrency: 2
   # Per call: the agent call and each judge call get this timeout (a judge
@@ -293,8 +310,8 @@ harness:
       # The HARNESS judge key, a separate key from the ONLINE judge key in
       # `judge.virtualKey`, which stays hub-only.
       #
-      # It is minted in THIS cluster's Bifrost by the reconciler through the
-      # in-cluster management API, because a Bifrost virtual key is only valid
+      # It is minted in THIS cluster's Bifrost by the platform minter (bifrost
+      # chart), because a Bifrost virtual key is only valid
       # in the Bifrost that minted it and every cluster runs its own Bifrost.
       # That is why the Secrets Manager + ExternalSecret pattern the Langfuse
       # keys use cannot carry it: there is no Secrets Manager entry and no hub
@@ -305,8 +322,8 @@ harness:
       #
       # The platform owns the key: the bifrost chart's minter (judgeKey.enabled in
       # gitops/addons/charts/bifrost) writes the Secret named by secretRef. This
-      # reconciler holds no Bifrost credential. mint: true is the old behaviour
-      # (the reconciler calls the Bifrost management API) and needs that API open.
+      # reconciler holds no Bifrost credential and the Bifrost management API
+      # needs a login. mint: true was the old behaviour and is refused at render.
       mint: false
       # The minter's ServiceAccount. The Role below lets it write the one
       # Secret named by secretRef in this namespace, and read Jobs to know when
@@ -314,23 +331,16 @@ harness:
       minter:
         namespace: bifrost
         serviceAccountName: bifrost-vk-minter
-      # Fail closed: while the key is unavailable no harness run starts, an
-      # Event and oap_agent_harness_judge_key_present 0 report it, and the
-      # AgentHarnessJudgeKeyMissing alert fires; the Jobs mount the Secret as
-      # required, so a pod never starts without it. false runs the judge
-      # un-budgeted through Bifrost instead (the mount is then optional).
+      # Fail closed: while the key is unavailable no harness run starts (the
+      # endpoint answers error), an Event and oap_agent_harness_judge_key_present 0
+      # report it, and the AgentHarnessJudgeKeyMissing alert fires; the Jobs mount
+      # the Secret as required, so a pod never starts without it. false runs the
+      # judge un-budgeted through Bifrost instead (the mount is then optional).
+      # mode: gate needs true: a gate agent with false is answered error.
       required: true
-      # Secret in this namespace the reconciler writes and every Job mounts.
+      # Secret in this namespace that the platform minter writes and every Job
+      # mounts. The reconciler may read it and nothing else.
       secretRef: agent-evaluation-harness-judge-key
-      bifrostAdminUrl: http://bifrost.bifrost.svc.cluster.local:8080
-      # Models the key may call. Empty means only the resolved judge model.
-      allowedModels: []
-      budget:
-        maxLimitUsd: 20
-        resetDuration: 1M
-      rateLimit:
-        requestMaxLimit: 2000
-        requestResetDuration: 1h
   # Harness checks. `prompt` names a file under files/harness/checks/. These are
   # NOT part of `catalog`, so the hub never publishes them to Langfuse.
   # A case passes when the judge score is >= casePassScore.

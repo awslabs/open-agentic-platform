@@ -19,14 +19,16 @@ ConfigMap and no access to platform logs.
 
 The harness (harness.enabled, off by default) adds, and nothing else renders
 without it:
-- cluster-wide READ of argoproj.io rollouts, to see an agent's current
-  revision (status.currentPodHash) and whether -preview already selects it.
+- cluster-wide GET of argoproj.io rollouts (the verdict endpoint checks the
+  caller's revision and pod hash) and READ of analysisruns (the reader
+  publishes metrics from finished runs).
 - cluster-wide GET (no list/watch) of services, to read the derived
   <agent>-preview Service before a run and refuse an ExternalName one or one
   that does not select the revision.
-- a Role in THIS namespace only for the reconciler: create/delete the harness
-  Jobs, delete their result ConfigMaps, and write the one harness judge-key
-  Secret (create cannot be scoped by name in RBAC, get/update/patch are).
+- a Role in THIS namespace only for the reconciler: create, patch and delete
+  the harness Jobs, delete their result ConfigMaps, and GET the one harness
+  judge-key Secret. It cannot write any Secret: the platform minter in
+  namespace bifrost owns the key (a separate Role below).
 - a separate ServiceAccount for the Job pods whose only grant is creating its
   result ConfigMap in this namespace.
 No write is granted in any agent namespace; the only new access there is the
@@ -62,9 +64,15 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch", "get"]
   {{- if .Values.harness.enabled }}
-  # Harness: read an agent's Rollout to detect a new revision. Read only.
+  # Harness: the verdict endpoint reads the Rollout named in a poll to check the
+  # caller's revision and pod hash. get only; no list, no watch.
   - apiGroups: ["argoproj.io"]
     resources: ["rollouts"]
+    verbs: ["get"]
+  # Harness: the reader lists the AnalysisRuns the agent component's template
+  # makes (label harness.oap.io/agent) to publish metrics. Read only.
+  - apiGroups: ["argoproj.io"]
+    resources: ["analysisruns"]
     verbs: ["get", "list", "watch"]
   # Harness: read the agent's <agent>-preview Service before a run, to refuse
   # an ExternalName Service and one that does not select the revision. get only.
@@ -98,24 +106,21 @@ metadata:
   labels:
     {{- include "agent-evaluation.labels" . | nindent 4 }}
 rules:
-  # One Job per agent revision; finished ones are pruned to harness.historyLimit
-  # and a superseded run is deleted.
+  # One Job per agent revision, created suspended by the verdict endpoint
+  # (patch unsuspends it); stale ones are deleted by the reader.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "delete"]
-  # Prune the Jobs' result ConfigMaps. get/list come from the ClusterRole.
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  # Delete the Jobs' result ConfigMaps. get/list come from the ClusterRole.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["delete"]
-  # The harness judge key the reconciler mints in this cluster's Bifrost.
-  # create cannot be limited by resourceNames in RBAC, so it is a separate rule.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create"]
+  # The harness judge key, written by the platform minter. Read only here, to
+  # publish judge_key_present and to fail closed.
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames: [{{ .Values.harness.judge.virtualKey.secretRef | quote }}]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -169,3 +169,77 @@ def test_minter_role_absent_when_harness_off_and_mint_default_false():
     assert not [d for d in _render_eval() if "judge-key-minter" in d["metadata"]["name"]]
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["harness"]["judge"]["virtualKey"]["mint"] is False
+
+
+def _fails(*extra):
+    r = subprocess.run(
+        ["helm", "template", "t", str(CHART), *EVAL_CHART_ARGS, "--set", "harness.enabled=true", *extra],
+        capture_output=True, text=True,
+    )
+    return r
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_reconciler_role_cannot_write_secrets_and_reads_one():
+    docs = _render_eval("--set", "harness.enabled=true")
+    role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "agent-evaluation-harness")
+    secret_rules = [r for r in role["rules"] if "secrets" in r["resources"]]
+    assert secret_rules == [
+        {"apiGroups": [""], "resources": ["secrets"], "resourceNames": ["agent-evaluation-harness-judge-key"], "verbs": ["get"]}
+    ]
+    jobs = next(r for r in role["rules"] if "jobs" in r["resources"])
+    assert "patch" in jobs["verbs"] and "create" in jobs["verbs"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_cluster_role_reads_analysis_runs_and_gets_rollouts_only():
+    docs = _render_eval("--set", "harness.enabled=true")
+    cr = next(d for d in docs if d["kind"] == "ClusterRole" and d["metadata"]["name"] == "agent-evaluation-reconciler")
+    by_res = {tuple(r["resources"]): r["verbs"] for r in cr["rules"]}
+    assert by_res[("rollouts",)] == ["get"]
+    assert by_res[("analysisruns",)] == ["get", "list", "watch"]
+    assert by_res[("services",)] == ["get"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_endpoint_service_and_network_policy_admit_only_the_rollouts_controller():
+    docs = _render_eval("--set", "harness.enabled=true")
+    svc = next(d for d in docs if d["kind"] == "Service" and d["metadata"]["name"] == "agent-evaluation-harness-api")
+    assert svc["spec"]["type"] == "ClusterIP" and svc["spec"]["ports"][0]["port"] == 8081
+    pol = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    rule = pol["spec"]["ingress"][0]
+    assert rule["from"] == [
+        {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "argo-rollouts"}},
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "argo-rollouts"}},
+        }
+    ]
+    assert rule["ports"] == [{"protocol": "TCP", "port": 8081}]
+    assert not [d for d in _render_eval() if d["metadata"]["name"] == "agent-evaluation-harness-api"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_deployment_carries_no_bifrost_admin_or_mint_settings():
+    docs = _render_eval("--set", "harness.enabled=true")
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    env = {e["name"]: e.get("value") for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+    for gone in ("HARNESS_JUDGE_KEY_MINT", "BIFROST_ADMIN_URL", "HARNESS_JUDGE_BUDGET_USD",
+                 "HARNESS_JUDGE_RATE_LIMIT_REQUESTS", "HARNESS_JUDGE_ALLOWED_MODELS", "HARNESS_HISTORY_LIMIT"):
+        assert gone not in env
+    assert env["HARNESS_API_PORT"] == "8081" and env["HARNESS_SLOT_WAIT_SECONDS"] == "300"
+    ports = {p["name"]: p["containerPort"] for p in dep["spec"]["template"]["spec"]["containers"][0]["ports"]}
+    assert ports["harness-api"] == 8081
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_render_fails_on_replicas_run_time_cap_and_mint():
+    assert "replicaCount 1" in _fails("--set", "replicaCount=2").stderr
+    assert "at most 2100" in _fails("--set", "harness.slotWaitSeconds=400").stderr
+    assert "no longer supported" in _fails("--set", "harness.judge.virtualKey.mint=true").stderr
+    assert _fails().returncode == 0
+
+
+def test_dashboard_json_copies_are_identical():
+    a = CHART / "files/agent-evaluation-dashboard.json"
+    b = CHART.parents[3] / "docs/architecture/diagrams/src/agent-evaluation-dashboard.json"
+    assert a.read_bytes() == b.read_bytes()
