@@ -38,3 +38,13 @@ Why the guard belongs at the gateway rather than one hop later, inside Bifrost.
 OAP does not build Bifrost. The `bifrost` chart is an umbrella over the upstream
 chart as a vendored dependency, and the image is upstream's public OSS build:
 
+```yaml
+# gitops/addons/charts/bifrost/Chart.yaml
+dependencies:
+  - name: bifrost
+    version: 2.1.16
+    repository: https://maximhq.github.io/bifrost/helm-charts
+# charts/bifrost-2.1.16.tgz → values.yaml
+image:
+  repository: docker.io/maximhq/bifrost   # OAP pins tag v1.5.0
+```
