@@ -503,22 +503,29 @@ guardrails?: {
 
 #### Why the agent may only tighten
 
-`onViolation` as a free per-agent choice means any developer can set `report` and
-switch enforcement off for their agent while the capability still reports as on.
-That is the failure shape this platform has already named: a control that
-produces the appearance of coverage.
+A free choice of profile would let any developer pick `observe` and switch
+enforcement off for their agent while the capability still reports as on. That
+is the failure shape this platform has already named: a control that produces
+the appearance of coverage.
 
-So the profile carries a floor and the agent may only move inward. This is not a
-new idea in OAP — it is exactly the semantics `mcp-access.yaml` already uses:
+So profiles are **ordered** (`observe` < `standard` < `strict`), each namespace
+has a **minimum**, and an agent may pick that profile or a stricter one. It is
+enforced twice, and the two checks are independent:
+
+| Where | What it checks |
+|---|---|
+| Admission, in the agent's CUE | the declared `profile` is at or above the namespace minimum (§D2, *How admission rejects*) |
+| The gateway, on the route | a route below the default admits only agents named in a platform grant (§D1) |
+
+This is not a new idea in OAP. It is the semantics `mcp-access.yaml` already
+uses:
 
 > Both are `Require` rules, so a caller must be in both lists: when the server
 > has an allowlist, mcpAccess can only narrow it and cannot add an agent the
 > server did not list.
 
-The result keeps the developer-facing field #144 proposes and #146 endorses,
-while making "turn it down" a platform decision rather than an application one.
-A team that genuinely needs a weaker verdict changes the profile it uses, which
-is a reviewed chart edit with a name attached.
+A team that genuinely needs a weaker profile gets a grant, which is a reviewed
+chart edit with a name attached.
 
 #### The rendered output
 
