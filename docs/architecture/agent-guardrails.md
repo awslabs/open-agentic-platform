@@ -1248,7 +1248,7 @@ every non-`allowed` decision:
 
 | Recorded | Why it moves on its own |
 |---|---|
-| `profileVersion` | the catalog is a chart value, so it changes on an addon release |
+| `profileVersion` | the catalog is a chart value, so it changes on an `agent-gateway` chart release |
 | `guardrailVersion` | Bedrock guardrails are **versioned objects**, and `ApplyGuardrail` takes `guardrailVersion` as a required path parameter. The platform can publish a new version without the chart changing at all |
 
 So a decision record is the verdict **plus** the findings **plus** that pair, and
