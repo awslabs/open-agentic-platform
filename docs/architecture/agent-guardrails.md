@@ -1813,11 +1813,12 @@ has been shown.
 
 **Correctness**
 
-- [ ] CUE renders with `guardrails` absent, off, and on; a `profile` the catalog
-      does not define is rejected by the reconciler with an Event on the agent's
-      own ConfigMap, not silently ignored
-- [ ] `onViolation` weaker than the profile floor is **rejected at admission**,
-      with the floor named in the message
+- [ ] CUE renders with `guardrails` absent, off, and on, with the platform
+      values templated in; a `profile` not in the catalog's `order` is
+      **rejected at admission**, not silently ignored
+- [ ] A `profile` below the namespace minimum, and `enabled: false` in a
+      required namespace, are both **rejected at admission**, with the minimum
+      named in the message
 - [ ] A known-injection prompt is blocked, the agent receives the profile's
       `response.message`, and **Bifrost records no call**
 - [ ] `guardrail_checks` is attributable to exactly one agent through the route
