@@ -1821,9 +1821,12 @@ has been shown.
       named in the message
 - [ ] A known-injection prompt is blocked, the agent receives the profile's
       `response.message`, and **Bifrost records no call**
-- [ ] `guardrail_checks` is attributable to exactly one agent through the route
-      identifier (§D8, open question 13). This is the first thing to test,
-      because a failure here changes the dashboard design rather than a label
+- [ ] `guardrail_checks` carries the caller's `jwt.sub` from the frontend
+      `metrics.attributes` label (§D8, open question 13). This is the first
+      thing to test, because a failure here changes the dashboard design rather
+      than a label
+- [ ] **An agent without a grant gets 403 on the `observe` route**, a granted
+      agent gets 200, and any agent gets 200 on `standard` and `strict` (§D1)
 - [ ] A prompt with PII under a `redact` profile reaches the model **masked**,
       proven by reading the trace's per-entry `action: ANONYMIZED` rather than
       `stopReason`
