@@ -662,18 +662,14 @@ that turns findings into a verdict is inlined at the call site, a finding can
 never be combined with anything else, and "block only if severity is high **and**
 no human approved in the last hour" stays unwritable forever.
 
-So the verdict is **one function**, and nothing else may decide:
-
-```python
-def decide(assessment: Assessment, profile: Profile, ctx: RequestContext) -> Verdict:
-    """The ONLY place a block/redact/report decision is made."""
-```
+So the verdict is made in **one place**, and nothing else may decide: the
+`promptGuard` entries on the profile's route, rendered from the catalog.
 
 | | |
 |---|---|
-| Phase 1 implementation | threshold comparison against the profile's per-category minimum severity |
-| What it buys | a policy engine (Dogwood, Cedar, OPA) is substituted here with **no change** to the OAM API, the ConfigMap contract or the metrics |
-| What `ctx` is for | the request's agent, caller identity and session — the inputs a stateful policy would need. Phase 1 ignores it; passing it now is what keeps the signature stable |
+| Phase 1 | the native `bedrockGuardrails` guard. Bedrock's own guardrail configuration holds the per-category strengths |
+| How a policy engine plugs in later | as a `webhook` guard on the same route, with **no change** to the OAM API, the ConfigMap contract or the metrics |
+| What the webhook receives | the request text and selected headers, and identity through CEL. That is what a stateful policy (Dogwood, Cedar, OPA) would need |
 
 #### Fail-closed, per profile, and stated in the open
 
