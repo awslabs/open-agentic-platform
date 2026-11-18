@@ -435,6 +435,39 @@ adds no second writer to `backend.mcp.authorization` and does not reintroduce
 instead, and the platform owns it — which is exactly how D2's tighten-only rule
 gets enforced rather than merely asserted.
 
+#### What stops an agent calling a weaker profile's route
+
+Without a gate, a per-profile route is a bypass: any agent with a token could
+send its model calls to the `observe` route, and "only stricter" would be gone
+without touching `llmGatewayUrl`. The gate follows directly from tighten-only:
+
+| Route | `Require` rule | Why |
+|---|---|---|
+| A profile **at or above** the platform default (`standard`, `strict`) | admits every agent ServiceAccount | moving to a stricter profile is always allowed, so it needs no grant |
+| A profile **below** the default (`observe`) | admits only the agents named in a platform grant: `jwt.sub in [...]` | a weaker profile is a platform decision, never a developer's |
+
+The grants live in `agent-gateway` chart values per environment, exactly like
+`mcpAccess`:
+
+```yaml
+guardrailAccess:
+  observe:
+    - team-a/eval-sandbox        # <namespace>/<agent>, rendered as
+                                 # system:serviceaccount:team-a:eval-sandbox
+```
+
+Three properties follow:
+
+- **The routes live in the gateway's namespace.** An agent team cannot create,
+  edit or relabel them, so the only way onto a weaker route is a reviewed
+  chart change.
+- **One expression per route.** `traffic.authorization` rules from different
+  policies on the same route are merged and ANDed, as `mcp-server.cue` already
+  records, so each route carries one `Require` listing every admitted subject.
+- **A refused route is a 403 at the gateway**, before any guard or model call.
+  The agent's CUE also rejects a weaker profile at admission (§D2), so in
+  practice the 403 only fires for an agent that sets `llmGatewayUrl` by hand.
+
 **One property still makes this incomplete, and it is now load-bearing rather
 than a hardening item:** an agent that points `llmGatewayUrl` at Bifrost
 directly skips the gateway and therefore the guard. Under the proxy design that
