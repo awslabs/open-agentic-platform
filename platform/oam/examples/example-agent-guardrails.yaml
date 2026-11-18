@@ -21,13 +21,12 @@
 # There is no account, region, ARN, endpoint or API key in this file.
 #
 # Prerequisites:
+# - agentgateway v1.6.0 or later (v1.7.0 recommended). OAP pins v1.4.1 today,
+#   where the bedrockGuardrails guard fails open; from v1.6.0 every guard sets
+#   failureMode: FailClosed, so a Bedrock error refuses the request. See D4.
 # - guardrail profiles enabled in the agent-gateway chart on this cluster
 # - Amazon Bedrock Guardrails reachable in the cluster's account, and
 #   bedrock:ApplyGuardrail on the agentgateway ServiceAccount
-#
-# KNOWN LIMIT: the bedrockGuardrails guard FAILS OPEN on a Bedrock error or
-# timeout, and upstream exposes no field to change that. A backend outage means
-# uninspected traffic, recorded as guardrail_checks{action="FailOpen"}. See D4.
 #
 # Cost: one ApplyGuardrail call per model call — PER REQUEST, not sampled. At
 # $0.15 per 1,000 text units for content filters and denied topics, and a text
