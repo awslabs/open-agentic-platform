@@ -48,3 +48,13 @@ dependencies:
 image:
   repository: docker.io/maximhq/bifrost   # OAP pins tag v1.5.0
 ```
+
+So the two Bifrost-native routes both fail a platform requirement:
+
+- **Enterprise guardrails** need a licensed image from a private registry. OAP is
+  an open-source reference platform; a capability that only works for customers
+  holding a commercial Bifrost licence is not a platform capability
+  (`platform-portability.md`: "Every platform capability is a customer
+  capability"). It also fails open by default.
+- **A custom `.so` plugin** needs OAP to build, publish and version its own
+  dynamically linked Bifrost image, in lockstep with upstream's Go toolchain and
