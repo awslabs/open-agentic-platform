@@ -198,3 +198,13 @@ So the option set is binary, and worth stating plainly:
 ```text
 @0 scope(principal: Drupe::OAuthUser::"alice", resource: Drupe::Gateway::"gw1") request_context(input: { shares: 5 }) Drupe::Action::"ApproveSale"::request(input: { shares: 5 }, callerPrincipal: Drupe::OAuthUser::"alice", requestId: "u1")
 ```
+
+There is no JSON, NDJSON or OTLP ingestion anywhere in the crate. Converting
+OAP's traces means, per event:
+
+| Requirement | Why it is work, not mapping |
+|---|---|
+| `i64` **seconds**, **strictly increasing** | OTel spans are nanosecond and overlap. "Timestamps measure temporal windows; they do not establish trace order" — trace *position* is the order, so the converter assigns timestamps rather than reusing span times |
+| An explicit `::request` / `::response` kind | One tool-call span becomes **two or more** lines: "its eventual `response` or `error` is a separate event" |
+| Fields in **both** bags | A field a policy reads *and* correlates on must appear in the trailing logged group **and** `request_context`, or the check silently weakens |
+| Fully-qualified quoted action ids | A mismatch makes temporal predicates silently not match |
