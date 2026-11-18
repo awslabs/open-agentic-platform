@@ -1286,7 +1286,7 @@ the regression #143 fixed.
 | Mechanism | `backend.ai.promptGuard` on an AI route in front of Bifrost (§D1) | `backend.mcp.guardrails.processors[].remote` — the same gateway, the other backend type |
 | Sees | the prompt and the completion | the JSON-RPC method, **the params — tool name and arguments** — and the result |
 | Question answered | "is this text acceptable?" | "is this caller allowed to call this tool, with these arguments, right now?" |
-| Decides with | detector findings + thresholds (`decide()`, §D4) | a policy engine over principal / action / resource / entities |
+| Decides with | the profile's `promptGuard` entries (§D4) | a policy engine over principal / action / resource / entities |
 | Fail mode | `failureMode: FailClosed`, set explicitly, from agentgateway v1.6.0 (§D4) | `failureMode: FailClosed`, already the documented default |
 
 Neither hop can do the other's job, and that is structural rather than a
