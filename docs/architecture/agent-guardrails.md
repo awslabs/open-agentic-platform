@@ -1739,7 +1739,7 @@ response is an **error, not a clean result**.
 | A guardrail that silently stops working | `failureMode: FailClosed` on every guard, so a broken guard refuses rather than passes. `error_blocked` is derived separately from `blocked` (§D8), and staleness has its own alert |
 | Bypass | Narrowed in Phase 1, not closed. `LLM_GATEWAY_URL` points at the profile route by default, and a weaker route is gated. An agent can still set `llmGatewayUrl` to Bifrost by hand until egress policy or mandatory virtual keys land in Phase 2 (§D7) |
 | Cost | Content filters and denied topics **$0.15 / 1,000 text units**; PII **$0.10**; word filters and regex **free**. A text unit is up to 1,000 characters, and it is charged **per request**, not sampled. What is charged is set by the guard's `scope`, below — not by the length of the latest user message |
-| Throughput | `ApplyGuardrail` is **100 requests/second** in the larger Regions, **25** elsewhere, adjustable. At input-only that is one call per model call, so the quota is the platform's request ceiling and belongs in the validation plan |
+| Throughput | The binding limit is **text units per second**, not requests — see *Quota* below. It is per account and Region, so every cluster in one account shares it, and with `FailClosed` a throttle the retry budget cannot absorb is a refused request |
 | Latency | AWS publishes **no** figure. Phase 1's exit criterion is a measured p50/p99 of the added request latency on real hub traffic, not an estimate. The gateway, not OAP, owns the timing instrumentation |
 
 ---
