@@ -158,3 +158,13 @@ enumerated: the control plane has only `CreatePolicy` / `CreatePolicyEngine` /
 service invokes them on your behalf. The capability is real; the wire protocol is
 private. A decision is reachable only by putting an **AgentCore Gateway on the
 data path**. AWS states the Kubernetes case explicitly: a request through "a
+Kubernetes cluster … must forward the WAT header, and you must add custom logic
+to propagate the WAT through those hops."
+
+Four further limits bear on whether that is attractive:
+
+| Limit | Consequence for OAP |
+|---|---|
+| Policy evaluation is **MCP-tools-only** — "the gateway always allows MCP prompts … and resources" | Prompts and resources stay ungoverned |
+| "**Gateway application logs don't include policy decisions.**" Decisions appear only as CloudWatch metrics and as spans that require traces explicitly enabled | Per-decision audit is opt-in, not a property of turning policy on |
+| **400 KB** Cedar schema per engine, auto-generated from every tool across every attached gateway, non-adjustable | This, not policy count, is the sharding wall for a multi-team platform. AWS's own guidance: "consider using separate policy engines for different gateways" |
