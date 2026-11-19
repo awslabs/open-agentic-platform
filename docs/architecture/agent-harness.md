@@ -230,11 +230,18 @@ then waits for the person.
 | Endpoint unreachable, HTTP error, timeout | none | Error. After `consecutiveErrorLimit` + 1 consecutive errors (default 12, so 13) the run is Error | abort |
 | Job still waiting for a slot after `slotWaitSeconds`, or running past `runTimeoutSeconds + slotWaitSeconds` (the Job is deleted) | `error` | failure | abort |
 | Run still going | `pending` | inconclusive | keeps polling |
-`pending` counts as an inconclusive measurement. A metric that ends its `count`
-with inconclusive results not above `inconclusiveLimit` ends `Successful` (the
-spike saw this). With `count: 160` and `inconclusiveLimit: 160`, 160 `pending`
-answers would end the run as a pass, and a gate would promote an unscored
-revision. So the endpoint, not the template, owns the clock:
+`pending` counts as an inconclusive measurement. Without
+`consecutiveSuccessLimit`, a metric that ends its `count` with inconclusive
+results not above `inconclusiveLimit` ends `Successful` (the spike saw this).
+The template sets `consecutiveSuccessLimit: 1`, and then Argo Rollouts v1.9.0
+ends a metric that reaches its count without that success as `Inconclusive`
+(`analysis/analysis.go:616-632`, "ConsecutiveSuccessLimit Not Reached and
+FailureLimit Not Violated"); an Inconclusive pre-promotion run pauses the
+Rollout rather than promoting it. So 160 `pending` answers would not promote
+an unscored revision. An earlier version of this section said they would end
+the run as a pass, which was wrong. The endpoint still owns the clock, so the
+run ends with a verdict (`error`, an abort) well before the count runs out,
+and the paused-and-unscored state is never reached:
 - At the first poll for a revision the endpoint creates the Job (suspended when no
   slot is free, Contract 6 step 5) and stamps it with the annotation
   `harness.oap.io/first-seen`. The Job's `creationTimestamp` is the same moment.
