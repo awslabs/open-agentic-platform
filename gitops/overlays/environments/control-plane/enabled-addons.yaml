@@ -145,16 +145,23 @@ enabledAddons:
   # registry entry derives role=hub from this cluster having an
   # ingress_domain_name, so no flag here chooses the role.
   #
-  # OFF UNTIL THE IMAGE IS PUBLISHED. The chart's default image,
-  # public.ecr.aws/z0a4o2j5/agent-evaluation, does not exist in the public
-  # registry yet -- the repository itself answers NAME_UNKNOWN, so there is no
-  # tag to fall back to. Enabling it here puts the reconciler in
-  # ImagePullBackOff the moment this environment syncs the chart: a stuck
-  # addon, not a degraded one. Same reasoning as judge.virtualKey.enabled
-  # defaulting off -- a dangling dependency is a worse first-run experience
-  # than an addon a cluster opts into.
-  # Flip to true in the same change that points image.tag at the published tag.
-  agent_evaluation: false
+  # ON, against a per-account image rather than the unpublished public one.
+  #
+  # The chart's default, public.ecr.aws/z0a4o2j5/agent-evaluation, still does
+  # not exist -- that repository answers NAME_UNKNOWN and the tag 404s, so
+  # enabling against it would put the reconciler in ImagePullBackOff: a stuck
+  # addon, not a degraded one. That is why this was off.
+  #
+  # The registry entry (gitops/addons/registry/observability.yaml) now points
+  # the addon at <aws_account_id>.dkr.ecr.<aws_region>.amazonaws.com/
+  # agent-evaluation, templated from the cluster secret so no account ID lands
+  # in this repo. Build and publish it per applications/agent-evaluation
+  # (./build.sh --push) before enabling in a new account; a multi-arch image is
+  # required because OAP fleets mix arm64 and amd64 nodes.
+  #
+  # Per the original instruction, the flag and the image pointer move in the
+  # SAME change -- see that registry entry for the tag lockstep rule.
+  agent_evaluation: true
   agent_core: true
   agent_gateway: true
   oam_components: true
