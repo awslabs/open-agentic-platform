@@ -215,7 +215,7 @@ spec:
           enabled: true
           dataset: general-assistant-v1   # a platform catalog dataset name
           checks: [expected-answer]   # the only check today
-          threshold: 0.8              # reported next to the score
+          threshold: 0.8              # report: recorded next to the score; gate: the pass bar
           mode: report                # report | gate
 ```
 
@@ -224,7 +224,7 @@ spec:
 | `enabled` | `false` | bool. `false` or no block renders nothing |
 | `dataset` | none, required | `^[a-z0-9]([a-z0-9]\|-[a-z0-9])*$`, at most 63 characters. Must name a dataset the platform ships, or the reconciler records `UnknownDataset` and starts no run |
 | `checks` | `["expected-answer"]` | non-empty list; `expected-answer` is the only value |
-| `threshold` | `0.8` | number in (0, 1] |
+| `threshold` | `0.8` | number in (0, 1]. Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision |
 | `mode` | `report` | `report` or `gate` (section 3.6). Anything else is rejected |
 
 Prerequisite: the cluster your agent runs on must have the `agent-evaluation`

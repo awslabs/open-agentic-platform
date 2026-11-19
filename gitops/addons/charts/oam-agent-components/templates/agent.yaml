@@ -1274,7 +1274,7 @@ spec:
         		dataset: #DatasetName
         		// +usage=How each case is judged. First cut: expected-answer only.
         		checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
-        		// +usage=Fraction of cases that must pass, reported next to the score.
+        		// +usage=Fraction of cases that must pass. Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision.
         		threshold: *0.8 | number & >0 & <=1
         		// +usage=report: record the score, never change the rollout. gate: abort a revision below the threshold or with no verdict.
         		mode: *"report" | "gate"
