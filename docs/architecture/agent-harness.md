@@ -227,7 +227,7 @@ then waits for the person.
 | Runner Job failed, deadline exceeded, or result unreadable | `error` | failure | abort |
 | Preview Service no longer selects the revision | `error` | failure | abort |
 | Declaration missing or invalid, dataset unknown, `ExternalName` preview | `error` | failure | abort |
-| Endpoint unreachable, HTTP error, timeout | none | Error. After 5 consecutive errors (`consecutiveErrorLimit` 4) the run is Error | abort |
+| Endpoint unreachable, HTTP error, timeout | none | Error. After `consecutiveErrorLimit` + 1 consecutive errors (default 12, so 13) the run is Error | abort |
 | Job waited for a slot, or ran, past `runTimeoutSeconds + slotWaitSeconds` | `error` | failure | abort |
 | Run still going | `pending` | inconclusive | keeps polling |
 `pending` counts as an inconclusive measurement. A metric that ends its `count`
@@ -261,12 +261,20 @@ single Ready condition, so it would only work by taking Langfuse out of
 alerts. While the pod is starting, before the endpoint listens, a poll is
 refused and counts as an error, as before.
 
-A restart of that pod longer than
-about 75 seconds (5 polls at 15 s) ends every in-flight gate run in Error and
-aborts it. Restart the reconciler (including an Argo CD sync that changes its
-Deployment, which stops the old pod first because the chart uses `Recreate`)
-only when no gate run is active, or raise `consecutiveErrorLimit`
-above the Deployment's rollout time at the cost of a slower abort.
+A restart of that pod (including an Argo CD sync that changes any harness
+value, which stops the old pod first because the chart uses `Recreate`) must
+end before `consecutiveErrorLimit` + 1 polls in a row go unanswered, or every
+in-flight gate run ends in Error and aborts. The limit is the platform value
+`global.agentEvaluation.harnessConsecutiveErrorLimit` on the
+oam-agent-components chart, default 12: 13 polls, about 195 s when the
+connection is refused, and up to 13 x 35 s (interval plus the web provider's
+20 s timeout) when polls time out. The default is provisional until the
+reconciler's restart time (to Ready and to the first answered poll) is
+measured on the hub; the value is the measured gap plus 60 s of margin,
+divided by the 15 s interval. A higher limit slows the abort when the
+endpoint is really down. Errors use polls too, so `count x interval -
+(limit + 1) x interval` must stay at or above `runTimeoutSeconds +
+slotWaitSeconds` (2100 s at most); a render test checks it at the default.
 
 In report mode every row above is recorded and none of them is meant to change
 the rollout. For `failed` metrics `dryRun` is verified. For the `Error` outcome

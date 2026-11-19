@@ -1,5 +1,6 @@
 // Agent ComponentDefinition with blue-green deployment and pluggable memory
 import (
+	"strconv"
 	"strings"
 	"encoding/json"
 	"list"
@@ -932,7 +933,14 @@ template: {
 						count:                   160
 						inconclusiveLimit:       160
 						consecutiveSuccessLimit: 1
-						consecutiveErrorLimit:   4
+						// Platform value (global.agentEvaluation.harnessConsecutiveErrorLimit,
+						// a string like every global). Errors are polls the endpoint did not
+						// answer, e.g. during a reconciler restart (Recreate, on every
+						// harness value change); the run errors after limit+1 in a row, so
+						// the limit must cover the reconciler's start-up time. Errors use
+						// polls too: count x interval - (limit+1) x interval must stay at or
+						// above runTimeoutSeconds + slotWaitSeconds (a render test checks it).
+						consecutiveErrorLimit: strconv.Atoi("{{ .Values.global.agentEvaluation.harnessConsecutiveErrorLimit }}")
 						successCondition:        "result.state == 'pass'"
 						failureCondition:        "result.state in ['fail', 'insufficient', 'error']"
 						provider: web: {
