@@ -63,7 +63,7 @@ Rollout (evidence: `.agents/tasks/agent-harness/analysis-spike.md`):
 | New revision | One AnalysisRun per revision, named `<rollout>-<pod hash>-<revision number>-pre` or `-post`. A retry adds `.N` |
 | First revision of a Rollout | No AnalysisRun, pre or post |
 | Second push during a run | The old run gets `spec.terminate: true` and ends with phase `Successful` and message `Run Terminated`. A new run starts |
-| Rollback to an older revision | A new run starts, with a new revision number. With `spec.rollbackWindow`, a previously promoted revision is promoted in about 14 seconds with no run |
+| Rollback to an older revision | A new run starts, with a new revision number, unless the ReplicaSet it returns to is still running (within `scaleDownDelaySeconds`, default 30 s): then no run starts. With `spec.rollbackWindow`, a previously promoted revision is promoted in about 14 seconds with no run |
 | History | `spec.analysis.successfulRunHistoryLimit` and `unsuccessfulRunHistoryLimit` (default 5 each) prune old runs |
 | Pre-promotion failure | The Rollout aborts (`Degraded`), the stable Service selector does not change |
 | `dryRun` | The failed metric is recorded with `dryRun: true`, the run ends `Successful`, the Rollout is not affected |
@@ -663,6 +663,7 @@ cannot cover. Each row gives what is lost, why, and what replaces it.
 | 12 | Metrics survive AnalysisRun pruning | Rollouts keeps 5 successful and 5 unsuccessful runs by default | The series follow the highest-revision finished run, which is always kept. A run pruned before the reconciler reads it (a restart gap over 5 revisions) is not published |
 | 13 | Gate on a revision with no AnalysisRun | Rollouts creates no run for the first revision of a Rollout, and none for the first push after gate is enabled when the template does not change | Not scored, promoted on health. A gate agent's first revision is unprotected. A revision promoted unscored can return unscored inside `rollbackWindow` (D7) |
 | 14 | Report mode never changes a rollout during an endpoint outage | `dryRun` is verified for a `Failed` metric, not for a measurement `Error` (P6) | If P6 fails, Dashcam needs `consecutiveErrorLimit` above the reconciler's start-up time, set in the template (D3) |
+| 15 | Score for a fast revert | A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running returns with no AnalysisRun (observed in pass 8, report mode) | Not scored, and in gate mode not re-gated. Safe, because that ReplicaSet was the promoted stable. Gate variant not verified. After scale-down a rollback gets a run |
 Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
@@ -1191,6 +1192,10 @@ change (section 4.8).
   kept reading the new revision for about 25 seconds.
 - A rollback to an older revision creates a new run. `rollbackWindow` skips the
   run for a promoted revision and does not skip a previously failed one.
+- Pass 8: a rollback within `scaleDownDelaySeconds` (30 s by default) of the
+  previous promotion, while the old ReplicaSet is still up, creates no run.
+  After scale-down, a rollback creates a run again (report mode, observed).
+  The gate variant of the fast revert is not verified.
 - `dryRun` with the web and the job provider: the metric is `Failed` with
   `dryRun: true`, the run ends `Successful`, the Rollout is unaffected.
   `postPromotionAnalysis` without `dryRun` rolls live traffic back.
@@ -1258,7 +1263,9 @@ Rollout state recorded:
    preview is scored and waits.
 10. A second push mid-run: the older Job is deleted within one poll of the new run's first call (record the seconds from push to deletion),
     `HarnessRunSuperseded`, nothing published for the older revision.
-11. Rollback to an older revision: a new run; with `rollbackWindow`, none.
+11. Rollback to an older revision: a new run; with `rollbackWindow`, none; within
+    `scaleDownDelaySeconds` to the ReplicaSet still running, none (observed in
+    pass 8, report mode).
     Also roll back to the current stable template mid-flight: it should return
     to stable with no run (documented, not yet run).
 12. `kubectl argo rollouts retry rollout` after a failed gate: the same verdict
