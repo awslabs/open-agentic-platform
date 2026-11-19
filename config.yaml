@@ -54,6 +54,12 @@ hub:
 # hub cluster-secret annotation `agent_gateway_host` (e.g. `agents-b.<parent>`, still
 # covered by `*.<parent>`). There is no config key for it yet — tracked in OAP issue
 # https://github.com/awslabs/open-agentic-platform/issues/168
+#
+# The shared `platform` ALB (all hub UIs) is internet-facing and open by default. To reduce
+# the exposed surface, restrict source IPs with the `inboundCidrs` allowlist on the shared
+# `platform` ingress — see appmod-blueprints docs/platform/alb-ip-allowlist.md. Include the NAT
+# egress IPs of the hub and of the OAP spokes, or in-cluster callers (SSO, agent traffic) are
+# locked out.
 domain: ""
 resourcePrefix: ""
 

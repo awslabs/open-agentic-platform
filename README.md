@@ -106,7 +106,7 @@ self-managing.
 
 ### Gotchas for a custom-domain / agentic install
 
-Five things that are easy to get wrong on a real own-domain install; each is annotated at its key
+Six things that are easy to get wrong on a real own-domain install; each is annotated at its key
 in [`config.yaml`](config.yaml).
 
 - **Don't pin a `platform.ref` TAG yet.** The first clone takes a tag, but a resumed install
@@ -133,6 +133,13 @@ in [`config.yaml`](config.yaml).
   hubs in one zone collide on that Route53 record. To run more than one hub in one zone, set a
   distinct `agent_gateway_host` annotation on each hub's cluster-secret (e.g. `agents-b.<parent>`);
   there is no `config.local.yaml` key for it yet (tracked in [#168](https://github.com/awslabs/open-agentic-platform/issues/168)).
+- **The shared `platform` ALB is internet-facing and open by default.** All hub UIs sit behind one
+  internet-facing ALB that accepts any source IP out of the box. To reduce the exposed surface,
+  restrict it with the `inboundCidrs` allowlist on the shared `platform` ingress — see the platform
+  base's [`docs/platform/alb-ip-allowlist.md`](https://github.com/aws-samples/appmod-blueprints/blob/main/docs/platform/alb-ip-allowlist.md).
+  Include the NAT egress IPs of the hub and of the OAP spokes in the list, or in-cluster callers
+  (SSO, agent traffic) are locked out
+  ([pitfall 1](https://github.com/aws-samples/appmod-blueprints/blob/main/docs/platform/alb-ip-allowlist.md#1-include-the-nat-egress-ips-of-the-hub-and-of-oap-spokes)).
 - **Making a spoke agentic in your own fleet repo** is a per-cluster overlay — see
   [Use your own fleet repo](#use-your-own-fleet-repo).
 
