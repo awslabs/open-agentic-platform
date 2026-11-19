@@ -266,8 +266,9 @@ With OAP's **stock** overlays the `dev` environment is **already agentic** — a
 with the agentic capabilities on and needs no extra step (this is what the no-`fleetRepo` path
 gives you; see `gitops/overlays/environments/dev/enabled-addons.yaml`). You only need a per-cluster
 override to turn the agentic tier on for a spoke whose **environment overlay does not already enable
-it** — for example a spoke in your **own fleet repo** whose `dev` overlay you keep agent-free, or a
-`prod` spoke. Add it at your fleet repo's **root** (not under `gitops/`):
+it** — for example a spoke in your **own fleet repo** whose environment overlay you keep agent-free.
+(All of OAP's stock overlays — `dev`, `prod`, `control-plane` — are already agentic, so a spoke on a
+stock overlay needs no override.) Add it at your fleet repo's **root** (not under `gitops/`):
 
 ```
 overlays/clusters/<spoke>/addon-overrides.yaml
