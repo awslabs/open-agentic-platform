@@ -27,5 +27,3 @@ image:
   tag: "3e0448a3"
 harness:
   enabled: true
-  # TEST ONLY (B3 live check) - reverted right after.
-  maxConcurrentJobs: 1
