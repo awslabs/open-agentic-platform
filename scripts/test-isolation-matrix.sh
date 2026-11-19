@@ -806,6 +806,49 @@ row C20 "sandbox: all-zero placeholder image digest" _imageDigestPlaceholder "$(
 
 # ------------------------------------------------- D. object-name collisions
 echo
+# ================================================= E. the agent-sandbox chart
+echo
+echo "== E. agent-sandbox chart: the warm pool is gated, whatever the value's TYPE =="
+
+# WHY TYPE, NOT JUST VALUE. warmPool.enabled reaches this chart from an
+# ApplicationSet valuesObject (gitops/addons/registry/sandbox.yaml), and an
+# ApplicationSet renders its values through Go templates -- so the chart
+# receives the STRING "false", never a boolean. Helm's `if` treats any non-empty
+# string as true, so `{{ if .Values.warmPool.enabled }}` fired on "false" and
+# stood up the Dark Factory coder warm pool on a cluster with dark_factory off.
+#
+# That is the exact failure the warmPool default was changed to prevent, and it
+# shipped anyway because every local check used --set (a real bool) while the
+# cluster used --set-string semantics. These four rows check BOTH shapes, which
+# is the only way this stays fixed.
+pool_count() { # pool_count <--set|--set-string> <value>
+  helm template oap-matrix "$OAP/gitops/addons/charts/agent-sandbox" \
+    --set coderTemplate.image=placeholder "$1" "warmPool.enabled=$2" 2>/dev/null \
+    | grep -c '^kind: SandboxWarmPool' || true
+}
+
+row E1 "string \"false\" (what an ApplicationSet actually sends) emits no pool" 0 "$(pool_count --set-string false)"
+row E2 "string \"true\" (dark_factory on) emits the pool"                        1 "$(pool_count --set-string true)"
+row E3 "bool false (the values.yaml default) emits no pool"                     0 "$(pool_count --set false)"
+row E4 "bool true (an overlay or --set) emits the pool"                          1 "$(pool_count --set true)"
+
+# THE FRESH-INSTALL SHAPE: this addon enabled for the Sandbox* CRDs alone, which
+# is what warmPool.enabled: false means and what both spokes now do.
+#
+# The coder's SandboxTemplate `required`s coderTemplate.image, so while it
+# rendered unconditionally a CRDs-only install failed the WHOLE chart on a Dark
+# Factory image that cluster will never pull. Gating it on the pool is what makes
+# "enable it for the CRDs" an actually reachable configuration.
+fresh_render() { # fresh_render -> "ok" if the chart renders with NO coder image
+  if helm template oap-matrix "$OAP/gitops/addons/charts/agent-sandbox" \
+       --set-string warmPool.enabled=false >/dev/null 2>&1; then echo ok; else echo fails; fi
+}
+row E5 "pool off + NO coderTemplate.image still renders (CRDs-only install)" ok "$(fresh_render)"
+row E6 "...and emits no coder SandboxTemplate to demand one"                0 \
+  "$(helm template oap-matrix "$OAP/gitops/addons/charts/agent-sandbox" --set-string warmPool.enabled=false 2>/dev/null | grep -c '^kind: SandboxTemplate' || true)"
+row E7 "dark_factory on still gets the coder template"                      1 \
+  "$(helm template oap-matrix "$OAP/gitops/addons/charts/agent-sandbox" --set-string warmPool.enabled=true --set coderTemplate.image=placeholder 2>/dev/null | grep -c '^kind: SandboxTemplate' || true)"
+
 echo "== D. no two components or Applications emit the same object =="
 
 # An agent and a sandbox sharing one component name BOTH own ServiceAccount
