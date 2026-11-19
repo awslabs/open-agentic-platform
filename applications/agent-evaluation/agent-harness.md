@@ -130,6 +130,9 @@ Step by step, with the code that does it:
    revision with a new revision number and is scored like any other, unless it
    returns within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet that
    is still running. Then Rollouts creates no run and the revision is not scored.
+   The same holds for a return to an aborted or superseded revision whose
+   ReplicaSet is still up: in gate mode it is promoted without a pass (section
+   3.6, "What a gate does not cover").
 4. **The verdict endpoint** (`harness_api.py`, port 8081, Service
    `agent-evaluation-harness-api`) answers `POST /v1/verdict?namespace=&agent=&revision=&hash=`.
    It reads the Rollout first and refuses any call that is not for the current
@@ -431,9 +434,13 @@ revision left the Rollout `Paused`, and the `HarnessRunCompleted` Event said
 `autoPromotionEnabled: false`, not from the harness.
 
 **How a gate fails.** After an abort the Rollout shows `Degraded` until a new
-revision (or the stable template) is pushed. `kubectl argo rollouts retry`
-does not re-score: the retried run reads the verdict the endpoint already gave.
-To re-score, push a new revision. A platform fault (no judge key, endpoint
+revision (or the stable template) is pushed. A gate renders
+`abortScaleDownDelaySeconds: 0`, so the aborted preview has no scale-down
+deadline and stays scaled up until the next revision replaces it. Without
+that setting, a `kubectl argo rollouts retry` within 30 s of the abort
+promoted the failed revision with no new run (reproduced on the hub). With it,
+a retry makes Rollouts create a new run, which reads the verdict the endpoint
+already gave, so a retry does not re-score. To re-score, push a new revision. A platform fault (no judge key, endpoint
 unreachable for five polls in a row) therefore blocks the team's rollout; the
 reason is in the `HarnessGateAborted` and `HarnessJudgeKeyUnavailable` Events.
 
@@ -449,7 +456,21 @@ running agent, so those revisions promote on health, unscored. A revision that
 was promoted before and returns inside `spec.rollbackWindow` (not set by the
 component) also comes back unscored. So does a rollback inside
 `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running: no
-analysis, no re-gate. That ReplicaSet was the promoted stable, so it is safe. After a second push, the older run's Job
+analysis, no re-gate.
+
+**Do not revert to a failed or superseded gate revision within
+`scaleDownDelaySeconds` (default 30 s) of the push that replaced it.** Argo
+Rollouts v1.9.0 promotes any revision whose ReplicaSet still has a scale-down
+deadline, without checking its analysis. On the hub, a revert to an aborted
+revision 14 s after the abort, and a revert to a superseded revision 9 s after
+the supersede, both promoted a revision that never passed. The gate setting
+`abortScaleDownDelaySeconds: 0` does not close these two paths, because after
+the newer push the old ReplicaSet gets the `scaleDownDelaySeconds` deadline
+(TODO(live): confirm with the retest). Wait for the old ReplicaSet to scale
+down, or push a changed template. If it happens, the reconciler writes a
+`HarnessStableRevisionUnverified` Warning on `<agent>-harness`, sets
+`oap_agent_harness_unverified_stable`, and `AgentHarnessGateUnverifiedStable`
+fires; roll back by pushing a known good template. After a second push, the older run's Job
 can still send a few cases to the new pods for up to about 25 seconds before
 Rollouts ends the run; its result is discarded.
 
@@ -529,8 +550,11 @@ commands below are the standard equivalents and were not run.
      `reason` of each failed case and compare it with the earlier runs of the
      same agent.
    - **Re-run.** There is no manual re-run command. A new verdict needs a new
-     revision (any change). Promoting or aborting starts no run, and
-     `kubectl argo rollouts retry` returns the verdict already given.
+     revision (any change). Promoting or aborting starts no run. After an
+     abort, `kubectl argo rollouts retry` within the aborted preview's
+     scale-down deadline (30 s by default in report mode) brings the revision
+     back with no new run; after it, the new run returns the verdict already
+     given.
    - **`insufficient`.** If fewer than `minJudgedRatio` (default 0.8) of the
      cases were judged, no verdict exists and no pass ratio is published. The
      Event says how many cases were judged, for example `12 of 20 cases
@@ -839,7 +863,7 @@ tests, the offline render checks and the validation plan in the design document
 |---|---|
 | One run per revision | Argo Rollouts creates one AnalysisRun per revision. The endpoint creates one Job per revision, named from the namespace, agent, revision number, pod hash and dataset, so repeated polls and a reconciler restart create nothing new |
 | First revision | No analysis runs for an agent's first revision (and none for the first push after a gate is turned on), so it is not scored. The first scored revision is the second one |
-| Rollback | A rollback is a push of an older template: a new revision number, a new AnalysisRun, a new Job. The exception is a fast revert: within `scaleDownDelaySeconds` (default 30 s) of the previous promotion, while the old ReplicaSet is still running, Rollouts creates no AnalysisRun, so that rollback is not scored and, in gate mode, not re-gated (seen live in report mode; the gate case is not verified). `trigger` in `oap_agent_harness_info` is always `new-revision`. With `spec.rollbackWindow` set by hand, a previously promoted revision inside the window comes back with no run |
+| Rollback | A rollback is a push of an older template: a new revision number, a new AnalysisRun, a new Job. The exception is a fast revert: within `scaleDownDelaySeconds` (default 30 s) of the previous promotion, while the old ReplicaSet is still running, Rollouts creates no AnalysisRun, so that rollback is not scored and, in gate mode, not re-gated (seen live in report mode). A return to an aborted or superseded gate revision whose ReplicaSet is still up is promoted the same way, without a pass (section 3.6). `trigger` in `oap_agent_harness_info` is always `new-revision`. With `spec.rollbackWindow` set by hand, a previously promoted revision inside the window comes back with no run |
 | Report never changes a rollout | The AnalysisTemplate has `dryRun`: a failed metric is recorded and the Rollout is untouched. Verified for a failed metric. An endpoint outage (a measurement error) is not verified under `dryRun` (design P6) |
 | Gate never promotes on "unknown" | Only a `pass` verdict promotes. `fail`, `insufficient`, a missing judge key, a Job error, a preview that no longer selects the revision, and a run past its time cap all fail the metric and abort the revision. Five endpoint errors in a row do the same |
 | The endpoint owns the clock | It answers `error` once a Job has existed longer than `runTimeoutSeconds + slotWaitSeconds`, so 160 `pending` answers cannot end as a pass |

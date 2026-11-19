@@ -9,8 +9,13 @@
 #     Job error, or no answer from the platform: the analysis fails and Rollouts
 #     ABORTS the revision. The stable revision keeps serving, and the Rollout
 #     shows Degraded until a new revision is pushed.
-# There is no automatic promotion timer in gate mode. `kubectl argo rollouts
-# retry` does not re-score; push a new revision instead.
+# There is no automatic promotion timer in gate mode. The component sets
+# abortScaleDownDelaySeconds: 0 for a gate, so an aborted preview stays up with
+# no scale-down deadline and a retry gets a new run with the same verdict (no
+# re-score); push a new revision instead. Do not revert to a failed or
+# superseded revision within scaleDownDelaySeconds (30 s) of the push that
+# replaced it: Argo Rollouts promotes it without a pass (the reconciler then
+# writes a HarnessStableRevisionUnverified Event).
 #
 # The first revision of an agent has no pre-promotion analysis in Rollouts and
 # goes live at once. Start a new dataset in `mode: report`, read the scores over

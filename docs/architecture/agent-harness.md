@@ -64,6 +64,7 @@ Rollout (evidence: `.agents/tasks/agent-harness/analysis-spike.md`):
 | First revision of a Rollout | No AnalysisRun, pre or post |
 | Second push during a run | The old run gets `spec.terminate: true` and ends with phase `Successful` and message `Run Terminated`. A new run starts |
 | Rollback to an older revision | A new run starts, with a new revision number, unless the ReplicaSet it returns to is still running (within `scaleDownDelaySeconds`, default 30 s): then no run starts. With `spec.rollbackWindow`, a previously promoted revision is promoted in about 14 seconds with no run |
+| Return to a ReplicaSet that still has a scale-down deadline | Promoted at once with no new run, whatever its own run said: a failed or terminated run does not stop it (fast-track, D7) |
 | History | `spec.analysis.successfulRunHistoryLimit` and `unsuccessfulRunHistoryLimit` (default 5 each) prune old runs |
 | Pre-promotion failure | The Rollout aborts (`Degraded`), the stable Service selector does not change |
 | `dryRun` | The failed metric is recorded with `dryRun: true`, the run ends `Successful`, the Rollout is not affected |
@@ -208,8 +209,12 @@ For `gate`, anything that is not a passing verdict fails the metric, and Argo
 Rollouts aborts the revision. The stable revision keeps serving, and the Rollout
 shows `Degraded` until a new revision (or the stable template) is pushed. A
 platform fault therefore blocks a team's rollout, and the team pushes a new
-revision. `kubectl argo rollouts retry` does not re-score: the retried run asks
-for the same Job and receives the verdict it already has. A person who wants a hold uses
+revision. When `kubectl argo rollouts retry` makes Rollouts create a new run
+(`.N`), that run asks for the same Job and receives the same verdict, so a
+retry does not re-score. A retry inside the aborted preview's scale-down
+deadline created no run at all and promoted the failed revision (D7); for a
+gate the component sets `abortScaleDownDelaySeconds: 0` so that the aborted
+preview has no deadline. A person who wants a hold uses
 `autoPromotionEnabled: false`: the revision must still pass the analysis, and
 then waits for the person.
 | Situation | Endpoint answers | Metric result | Gate outcome |
@@ -352,12 +357,14 @@ the revision it was asked for. Analysis covers most of that and not all.
 What Rollouts guarantees:
 - A run can reach only the revision under analysis, because Rollouts injects the
   pod-template hash into the preview Service selector.
-- Only the AnalysisRun created for a revision can promote it, and Rollouts
-  terminates that run when the revision changes. So a revision that gets an
-  AnalysisRun is never promoted by another revision's score. This is the property
-  gate needs. It does not cover a revision that gets no run: the first revision
-  of a Rollout, and the first push after gate is enabled on a running agent
-  (section 4.7, row 13).
+- Only the AnalysisRun created for a revision can promote it through analysis,
+  and Rollouts terminates that run when the revision changes. So a revision is
+  never promoted by another revision's score. It does not cover a revision that
+  gets no run: the first revision of a Rollout, and the first push after gate is
+  enabled on a running agent (section 4.7, row 13). It also does not cover
+  the fast-track in D7: a return to a ReplicaSet that still has a scale-down
+  deadline is promoted without checking its run, so a revision whose run failed
+  or was terminated can go live.
 What it does not guarantee: after a second push, the old run's Job kept getting
 replies from the new revision for about 25 seconds before Rollouts ended it.
 Rollouts discards that run's result, so nothing wrong is promoted, but a runner
@@ -401,9 +408,43 @@ cases do not run:
   documentation and is not run yet (live check 11).
 - A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet
   that is still running returns with no AnalysisRun. It is not scored and, in
-  gate mode, not re-gated. This was observed in pass 8 in report mode. The gate
-  variant is not verified. It is safe because that ReplicaSet was the promoted
-  stable. After scale-down a rollback gets a run.
+  gate mode, not re-gated. This was observed in pass 8 in report mode. After
+  scale-down a rollback gets a run. Earlier versions of this document called
+  this path safe because that ReplicaSet was the promoted stable. That holds
+  only for the previous stable; the next bullet shows the same mechanism
+  promoting revisions that never passed.
+- **Fast-track of a ReplicaSet with a scale-down deadline (not safe for a
+  gate).** In Argo Rollouts v1.9.0, `isBlueGreenFastTracked`
+  (`rollout/bluegreen.go:113-116`) is true for any new ReplicaSet that carries a
+  `scale-down-deadline` annotation, and `reconcileActiveService`
+  (`rollout/service.go:105-107`) then switches the active Service to it without
+  checking `completedPrePromotionAnalysis`. Three kinds of ReplicaSet carry
+  that deadline: the previous stable after a promotion (`scaleDownDelaySeconds`),
+  an aborted preview (`abortScaleDownDelaySeconds`, default 30 s), and any
+  other old ReplicaSet still scaled up, such as a superseded preview
+  (`scaleDownDelaySeconds`, `scaleDownDelayHelper` in `rollout/replicaset.go`).
+  The reviewer reproduced it on kind, and it was reproduced on the hub on
+  2026-11-19 with PR head 4572ba8f, on a gate agent whose every run failed:
+
+  | Path | Before the fix (4572ba8f) | With `abortScaleDownDelaySeconds: 0` |
+  |---|---|---|
+  | 1. `kubectl argo rollouts retry` 4 s after the abort | Promoted the failed revision with no new AnalysisRun; the old stable was scaled down | TODO(live): expected closed, because the aborted preview has no deadline (the reviewer verified this on kind) |
+  | 2. Push a new revision, revert to the aborted one 14 s after the abort | Promoted; its only run is the Failed one | TODO(live): expected open. After the push the aborted ReplicaSet is an old ReplicaSet that is still scaled up, so it gets the `scaleDownDelaySeconds` deadline, counted from the push |
+  | 3. Supersede a revision mid-analysis, revert to it 9 s later | Promoted; its only run was terminated with no verdict (phase `Successful`, `Run Terminated`) | TODO(live): expected open (`scaleDownDelaySeconds`) |
+  | Control: retry 46 s after the abort | Aborted again: the new run `.1` Failed | TODO(live) |
+
+  What the platform does: a gate renders `abortScaleDownDelaySeconds: 0`, which
+  closes path 1. The cost is that an aborted gate preview stays scaled up until
+  the next revision replaces it. The component does not change
+  `scaleDownDelaySeconds` for a gate: 0 there would also remove the fast
+  rollback to the previous stable, which is a trade-off for the maintainers.
+  For the paths that stay open, the reader raises
+  `HarnessStableRevisionUnverified`, `oap_agent_harness_unverified_stable` and
+  the `AgentHarnessGateUnverifiedStable` alert when a gate Rollout's stable
+  revision has harness runs and none passed. The guide tells operators not to
+  return to a failed or superseded gate revision within `scaleDownDelaySeconds`
+  of the push that replaced it. The upstream report for Argo Rollouts is
+  drafted and not yet filed.
 The `trigger` label of `oap_agent_harness_info` was `first-revision`,
 `new-revision` or `rollback`. Analysis cannot tell these apart, so the value is
 always `new-revision`. The label stays so the dashboard row and any query keep
@@ -609,7 +650,9 @@ flowchart TD
   OKM -->|gate| GP["Promoted<br/>(or paused for a person<br/>if autoPromotionEnabled false)"]
   OKM -->|report| RP["Score published.<br/>Promotion follows its posture"]
   BAD --> BADM{"mode"}
-  BADM -->|gate| AB["Rollout aborts, Degraded.<br/>Stable keeps serving.<br/>HarnessGateAborted"]
+  BADM -->|gate| AB["Rollout aborts, Degraded.<br/>Stable keeps serving.<br/>HarnessGateAborted.<br/>abortScaleDownDelaySeconds 0:<br/>no scale-down deadline, so a retry<br/>gets a new run with the same verdict"]
+  AB -.->|"another push, then a revert to this revision<br/>within scaleDownDelaySeconds"| FT["Fast-tracked: promoted with no new run.<br/>The revision never passed.<br/>HarnessStableRevisionUnverified"]
+  TERM -.->|"revert to the superseded revision<br/>within scaleDownDelaySeconds"| FT
   BADM -->|report| RF["Failure recorded with dryRun.<br/>Rollout unaffected.<br/>Score published"]
   GP --> PUB
   RP --> PUB
@@ -619,7 +662,13 @@ flowchart TD
 A rollback is a push in this diagram: a new revision number, a new run. The
 flow ends with no score for the first revision and for the cases in D7 (a fast
 revert, a `rollbackWindow` return, a return to stable while another revision is
-in flight).
+in flight). The dotted branch is the fast-track in D7: a return to a revision
+whose ReplicaSet still has a scale-down deadline is promoted with no new run,
+even after an abort or a supersede. A gate's aborted preview gets no deadline
+(`abortScaleDownDelaySeconds: 0`), so a retry no longer takes that branch; a
+revert to an aborted or superseded revision within `scaleDownDelaySeconds` of
+the push that replaced it still does, and the reader then raises
+`HarnessStableRevisionUnverified`.
 ### 4.4 Components, in prose
 **The `agent` component** renders the Rollout, the `<agent>-harness`
 declaration, the AnalysisTemplate (when `harness.enabled`), the NetworkPolicy
@@ -667,11 +716,11 @@ cannot cover. Each row gives what is lost, why, and what replaces it.
 | 8 | Case results, digests and counts in the AnalysisRun | The AnalysisRun keeps only the verdict body and phase | The reconciler still reads the result ConfigMap by the Job name in the verdict |
 | 9 | Rollback re-run when `spec.rollbackWindow` is set | The fast path promotes with no run | The component does not set it. One data point lost if a team does |
 | 10 | Hold for a person on no verdict | Only the web provider can return Inconclusive. The job provider cannot | Abort (D3). A hold comes from `autoPromotionEnabled: false` |
-| 11 | Run numbers (`n` >= 2) for one revision, and re-scoring on `kubectl argo rollouts retry` | One AnalysisRun per revision. A retry makes a new run `.N` of the same revision, and the web call carries no run name | A retry reuses the delivered verdict, except after a slot timeout, where the Job is deleted and a retry starts a new run. To re-score, push a new revision (or delete the Job in `agent-evaluation` by hand). A retry that re-scores is a follow-up, only after a live test |
+| 11 | Run numbers (`n` >= 2) for one revision, and re-scoring on `kubectl argo rollouts retry` | One AnalysisRun per revision. A retry makes a new run `.N` of the same revision, and the web call carries no run name | When the retry creates a run `.N`, it reuses the delivered verdict, except after a slot timeout, where the Job is deleted and a retry starts a new run. A retry inside the aborted preview's scale-down deadline created no run and promoted (row 15); a gate sets `abortScaleDownDelaySeconds: 0` against that. To re-score, push a new revision (or delete the Job in `agent-evaluation` by hand). A retry that re-scores is a follow-up, only after a live test |
 | 12 | Metrics survive AnalysisRun pruning | Rollouts keeps 5 successful and 5 unsuccessful runs by default | The series follow the highest-revision finished run, which is always kept. A run pruned before the reconciler reads it (a restart gap over 5 revisions) is not published |
 | 13 | Gate on a revision with no AnalysisRun | Rollouts creates no run for the first revision of a Rollout, and none for the first push after gate is enabled when the template does not change | Not scored, promoted on health. A gate agent's first revision is unprotected. A revision promoted unscored can return unscored inside `rollbackWindow` (D7) |
 | 14 | Report mode never changes a rollout during an endpoint outage | `dryRun` is verified for a `Failed` metric, not for a measurement `Error` (P6) | If P6 fails, Dashcam needs `consecutiveErrorLimit` above the reconciler's start-up time, set in the template (D3) |
-| 15 | Score for a fast revert | A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running returns with no AnalysisRun (observed in pass 8, report mode) | Not scored, and in gate mode not re-gated. Safe, because that ReplicaSet was the promoted stable. Gate variant not verified. After scale-down a rollback gets a run |
+| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0` (closes the retry path); the reverts inside `scaleDownDelaySeconds` stay open (see the D7 table). The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run |
 Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
@@ -849,7 +898,8 @@ agents with `maxConcurrentJobs: 1` and asserts that one Job is unsuspended.
    `error` to `error`, `insufficient` to `insufficient`, `completed` to `pass`
    when `passRatio >= threshold` and to `fail` below it. A repeated poll for the
    same Job returns the same verdict. There is no retry rule: a retried
-   AnalysisRun reads the delivered verdict (section 4.7 row 11).
+   AnalysisRun, when Rollouts creates one, reads the delivered verdict
+   (section 4.7 row 11; a retry inside a scale-down deadline creates none, D7).
 The `threshold` and `mode` are read at step 3 on every poll. Changing only the
 threshold therefore changes a verdict not yet delivered, and nothing else.
 ### Contract 4: the dataset schema
@@ -1205,7 +1255,11 @@ change (section 4.8).
 - Pass 8: a rollback within `scaleDownDelaySeconds` (30 s by default) of the
   previous promotion, while the old ReplicaSet is still up, creates no run.
   After scale-down, a rollback creates a run again (report mode, observed).
-  The gate variant of the fast revert is not verified.
+- 2026-11-19, hub, gate agent, PR head 4572ba8f: a retry 4 s after an abort, a
+  revert to an aborted revision 14 s after the abort, and a revert to a
+  superseded revision 9 s after the supersede all promoted a revision that
+  never passed, with no new AnalysisRun. A retry 46 s after the abort aborted
+  again (D7, section 4.7 row 15).
 - `dryRun` with the web and the job provider: the metric is `Failed` with
   `dryRun: true`, the run ends `Successful`, the Rollout is unaffected.
   `postPromotionAnalysis` without `dryRun` rolls live traffic back.
@@ -1294,8 +1348,13 @@ Rollout state recorded:
     pass 8, report mode).
     Also roll back to the current stable template mid-flight: it should return
     to stable with no run (documented, not yet run).
-12. `kubectl argo rollouts retry rollout` after a failed gate: the same verdict
-    comes back (no re-score), as section 4.7 row 11 says.
+12. `kubectl argo rollouts retry rollout` after a failed gate, once inside the
+    abort's scale-down window and once after it: inside, with
+    `abortScaleDownDelaySeconds: 0`, the retry must create a run and not
+    promote; after it, the same verdict comes back (no re-score), as section
+    4.7 row 11 says. Pass 8 (G9) retried only after the 30 s window, so it did
+    not exercise the fast-track path, and this document then called that path
+    safe. That was wrong (D7).
     Calls with another team's `namespace` and `agent` and a wrong revision or hash
     start nothing, delete nothing and write no Event (Contract 6 step 2). A call
     with a stale revision gets `pending`.
@@ -1324,7 +1383,8 @@ NetworkPolicy (and the egress one when its values are set), and `basic_auth` abs
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
 - P1 with `autoPromotionSeconds` set on a gate agent (the component omits it).
-- A gate rollback inside `scaleDownDelaySeconds` (seen in report mode only).
+- The D7 fast-track paths with `abortScaleDownDelaySeconds: 0` (the retest
+  fills the D7 table).
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
@@ -1332,8 +1392,8 @@ the AnalysisTemplate and the Rollout fragment.
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
-- `kubectl argo rollouts promote`, `abort` and `retry` plugin commands (status
-  patches were used).
+- `kubectl argo rollouts promote` and `abort` plugin commands (status patches
+  were used; `retry` was used in the 2026-11-19 reproduction).
 - A Job in another namespace calling into a NetworkPolicy-restricted agent: not
   needed for the web provider's design, tested in the existing manual-gate run.
 - Behaviour on a spoke.
