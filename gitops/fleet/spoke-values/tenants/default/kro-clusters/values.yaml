@@ -40,12 +40,19 @@ clusters:
     region: us-west-2
     # 1.37, matching the hub.
     #
-    # This was pinned at 1.35, and the reason was sound AT THE TIME: the value feeds
-    # ACK Cluster.spec.version under adopt-or-create (appmod rg-eks.yaml), EKS
-    # upgrades only ONE minor per call, and bumping a LIVE 1.35 spoke straight to
-    # 1.37 parks it in error. That constraint applies to an in-place upgrade of a
-    # running spoke. It does not apply here: the fleet was torn down, so every spoke
-    # this file creates is fresh and is created AT this version in one call.
+    # ACTION REQUIRED IF YOUR oap-dev IS ALREADY LIVE ON 1.35. This value feeds ACK
+    # Cluster.spec.version under adopt-or-create (appmod rg-eks.yaml), and EKS
+    # upgrades only ONE minor per call, so a running 1.35 spoke cannot take this
+    # change directly -- it goes to error. Pick one:
+    #
+    #   - RECREATE the spoke at 1.37 (simplest), or
+    #   - UPGRADE ONE MINOR AT A TIME: set 1.36, let the spoke reach ACTIVE, then
+    #     set 1.37 and let it reach ACTIVE again.
+    #
+    # Editing this file from 1.35 straight to 1.37 on a live spoke is the one thing
+    # not to do. A spoke CREATED fresh at 1.37 is unaffected, because it is created
+    # at this version in a single call -- that is the only case where the one-minor
+    # rule does not apply.
     #
     # 1.36 IS A FLOOR, NOT A PREFERENCE. Both the dev and prod overlays set
     # agent_sandbox: true, and the addon registry hands every spoke
@@ -53,10 +60,7 @@ clusters:
     # below Kubernetes 1.36. A 1.35 spoke therefore installs the Sandbox CRDs, admits
     # a `sandbox: true` agent, and then leaves its pod Pending forever: the isolation
     # is requested and never delivered. Nitro Sandboxes require 1.36+ in a US
-    # commercial region.
-    #
-    # IF YOU UPGRADE A LIVE SPOKE, the one-minor rule returns: stage it
-    # 1.35 -> 1.36 -> 1.37 rather than editing this value in one step.
+    # commercial region. So staying on 1.35 is not a neutral choice either.
     k8sVersion: "1.37"
     # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
     # kro-clusters chart resolves both via `default $.Values.global.accountId`
@@ -92,8 +96,12 @@ clusters:
     # 1.37, matching the hub and oap-dev. 1.36 is a hard floor rather than a
     # preference: agent_sandbox is enabled on the prod overlay and the registry
     # hands this spoke sandbox_runtime_class: isolated-sandbox, a RuntimeClass that
-    # does not exist below 1.36. See the note on oap-dev above for why the old 1.35
-    # pin does not apply to a freshly created spoke.
+    # does not exist below 1.36.
+    #
+    # No upgrade caveat applies here the way it does to oap-dev: this spoke does not
+    # exist yet anywhere, so it is always created fresh at this version. If you later
+    # raise this value on a LIVE oap-prod, the one-minor-per-call rule applies --
+    # see the oap-dev note above.
     k8sVersion: "1.37"
     # accountId/managementAccountId deliberately OMITTED, exactly as for oap-dev:
     # appmod-blueprints' kro-clusters chart resolves both via
