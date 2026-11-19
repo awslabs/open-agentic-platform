@@ -52,6 +52,13 @@ vars:
     sh: yq -r '.insecure // false' {{.CONFIG_FILE}}
   RESOURCE_PREFIX:
     sh: yq -r '.resourcePrefix' {{.CONFIG_FILE}}
+  # Optional install-time source-IP allowlist for the shared hub "platform" ALB. Read as a
+  # YAML list OR a comma-separated string and normalised to a comma-separated string, then
+  # forwarded into the generated appmod config.local.yaml (platform:configure) ONLY when
+  # non-empty, so a config without it renders exactly as before. The appmod kind-kro-ack /
+  # kind-crossplane providers apply it; see docs/platform/alb-ip-allowlist.md.
+  ALB_INBOUND_CIDRS:
+    sh: yq -r '[.albInboundCidrs] | flatten | map(select(. != null)) | join(",")' {{.CONFIG_FILE}}
   INGRESS_NAME:
     sh: yq -r '.ingressName // ""' {{.CONFIG_FILE}}
   IDC_INSTANCE_ARN:
@@ -189,6 +196,12 @@ tasks:
         domain: "{{.DOMAIN}}"
         insecure: {{.INSECURE}}
         resourcePrefix: "{{.RESOURCE_PREFIX}}"
+        {{- if .ALB_INBOUND_CIDRS }}
+        # Install-time source-IP allowlist for the shared platform ALB, forwarded from the OAP
+        # config. Comma-separated; the appmod provider concatenates it with any fleet-overlay
+        # inboundCidrs/extraInboundCidrs. See docs/platform/alb-ip-allowlist.md.
+        albInboundCidrs: "{{.ALB_INBOUND_CIDRS}}"
+        {{- end }}
         identityCenter:
           instanceArn: "{{.IDC_INSTANCE_ARN}}"
           region: "{{.IDC_REGION}}"

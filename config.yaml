@@ -24,6 +24,20 @@ hub:
 domain: ""
 resourcePrefix: ""
 
+# Source-IP allowlist for the shared hub "platform" ALB (all hub UIs: Backstage, Keycloak,
+# Argo Workflows, Kargo, JupyterHub, Grafana, agent gateway, …). Hardening: restrict the
+# internet-facing ALB to known networks FROM INSTALL TIME instead of leaving it open to any
+# source IP. Forwarded unchanged into the platform (appmod-blueprints) config by
+# `task install`; applied by the kind-kro-ack / kind-crossplane providers. A YAML list or a
+# comma-separated string of IPv4 CIDRs. ALWAYS include the NAT egress IP(s) of the hub and of
+# every spoke running agentic (OAP) addons, or in-cluster SSO to the public Keycloak issuer
+# breaks (the hub NAT is appended automatically on those providers). Do NOT set it with
+# insecure: true (internal ALB behind CloudFront). Empty/omitted => ALB open, unchanged.
+# See the platform's docs/platform/alb-ip-allowlist.md.
+# albInboundCidrs:
+#   - 203.0.113.0/24      # corporate / VPN egress range (example)
+#   - 203.0.113.201/32    # NAT egress IP of a spoke running OAP addons (example)
+
 # AWS Identity Center
 identityCenter:
   instanceArn: ""
