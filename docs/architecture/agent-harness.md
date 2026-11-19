@@ -339,8 +339,9 @@ budgets. This closes in three steps. Details and scratch evidence:
    harness). The evaluation chart keeps `harness.judge.virtualKey.secretRef` and
    `required`. The minter's rule on each run: list keys with the admin credential and look
    for the name. If the key exists, copy its value into the Secret (the list API
-   returns key values; this is how a Secret deleted by hand is rebuilt, and why
-   the CronJob can heal it). If the key does not exist, create it and write the
+   returns key values; this is how a Secret emptied or deleted by hand is
+   rebuilt, and why the CronJob can heal it: Argo CD recreates the empty
+   Secret, the next minter run fills it). If the key does not exist, create it and write the
    Secret. If the key exists and the list does not return its value, delete that
    key and mint a new one under the name with a counter appended
    (`oap-harness-judge-<config hash>-2`, then `-3`), and the Secret carries the
@@ -368,9 +369,19 @@ budgets. This closes in three steps. Details and scratch evidence:
 |---|---|---|
 | Runner Job pod | `agent-evaluation` | Mounts the Secret as a file (kubelet, no RBAC) |
 | Reconciler | `agent-evaluation` | `get` on that one Secret, to publish `judge_key_present` and fail closed. No write |
-| Minter (`bifrost:bifrost-vk-minter`) | `agent-evaluation` | `create` on secrets (RBAC cannot scope `create` by name); `get`, `update`, `patch` on the one Secret; `list` on `jobs` for the delete guard |
+| Minter (`bifrost:bifrost-vk-minter`) | `agent-evaluation` | `get`, `update`, `patch` on the one Secret, which the evaluation chart pre-creates empty (no `create`: RBAC cannot scope it by name); `list` on `jobs` for the delete guard |
 | Bifrost admin credential | `bifrost` only | Secret `bifrost-admin`, mounted by Bifrost, the minter, the metrics proxy and the init hook |
 | Team namespaces | none | No key, no admin credential |
+The evaluation chart pre-creates the Secret with no `data`
+(`35-harness-judge-key-secret.yaml`), and the minter fills `data` and the
+`harness.oap.io/judge-key-name` annotation with a merge patch. Argo CD syncs
+with ServerSideApply, so it does not own and does not reset those fields, and
+the registry entry ignores `/data` and that annotation in the diff (the same
+`ignoreDifferences` pattern as the `ExternalSecret` there); `helm lookup` was
+the alternative and cannot work, because Argo CD renders with `helm template`,
+where lookup returns nothing. A missing Secret is a minter error that the next
+run retries. An empty Secret is "key missing" for the reconciler and the
+endpoint, so no Job starts and nothing mounts it while it is empty.
 The evaluation chart renders the Role and RoleBinding in `agent-evaluation` and
 binds them to the minter's ServiceAccount, since it owns the namespace and the
 Secret name. With the job provider alternative the key would also be copied into
@@ -1211,7 +1222,7 @@ with the change and bumping its pin makes both clauses effective.
 | Reconciler | ClusterRole | `configmaps` get/list/watch; `events` create/patch/get; `analysisruns` (argoproj.io) get/list/watch; `services` get; `rollouts` (argoproj.io) get, for the endpoint's argument check. **Not granted:** list, watch, or any write on Rollouts |
 | Reconciler | Role in `agent-evaluation` | `jobs` create/get/list/watch/delete/patch (`patch` is new, to unsuspend a Job); `configmaps` delete; `secrets` get on `agent-evaluation-harness-judge-key` only. **Removed:** `secrets` create/update/patch |
 | Runner pod | Role in `agent-evaluation` | `configmaps` create (its result). Unchanged |
-| Minter | Role in `agent-evaluation`, rendered by the evaluation chart | `secrets` create; `secrets` get/update/patch on the one Secret; `jobs` list |
+| Minter | Role in `agent-evaluation`, rendered by the evaluation chart | `secrets` get/update/patch on the one Secret (pre-created by the chart); `jobs` list. **Removed:** `secrets` create |
 | Minter, init hook, metrics proxy | namespace `bifrost` | `bifrost-admin` read (mounted); the init hook also creates that Secret |
 | Team namespaces | | Nothing is added. The component renders its own objects there, as before |
 The reconciler cannot read the Bifrost admin credential: it is in another

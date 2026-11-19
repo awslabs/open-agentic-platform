@@ -255,9 +255,9 @@ catalog:
 # an agent namespace.
 harness:
   # Off by default. Nothing harness-specific renders while this is false.
-  # Turning it off after it was on: harness Jobs, their results and the judge
-  # key Secret are owned by the harness catalog ConfigMap, so the garbage
-  # collector deletes them once Argo prunes it. The Bifrost key is not a
+  # Turning it off after it was on: Argo prunes the judge key Secret (a chart
+  # object) and the harness catalog ConfigMap, which owns the harness Jobs and
+  # their results, so the garbage collector deletes those. The Bifrost key is not a
   # Kubernetes object: turn off judgeKey.enabled in the bifrost chart and delete
   # the key by hand (agent-harness.md section 4.1).
   enabled: false
@@ -325,9 +325,9 @@ harness:
       # reconciler holds no Bifrost credential and the Bifrost management API
       # needs a login. mint: true was the old behaviour and is refused at render.
       mint: false
-      # The minter's ServiceAccount. The Role below lets it write the one
-      # Secret named by secretRef in this namespace, and read Jobs to know when
-      # none is active.
+      # The minter's ServiceAccount. The Role lets it get/update/patch the one
+      # Secret named by secretRef in this namespace (the chart pre-creates it
+      # empty; no create), and list Jobs to know when none is unfinished.
       minter:
         namespace: bifrost
         serviceAccountName: bifrost-vk-minter
@@ -338,8 +338,10 @@ harness:
       # judge un-budgeted through Bifrost instead (the mount is then optional).
       # mode: gate needs true: a gate agent with false is answered error.
       required: true
-      # Secret in this namespace that the platform minter writes and every Job
-      # mounts. The reconciler may read it and nothing else.
+      # Secret in this namespace that this chart pre-creates empty, the platform
+      # minter fills, and every Job mounts. The reconciler may read it and
+      # nothing else. Empty reads as "key missing". If you rename it, rename the
+      # Secret entry in the registry's agent-evaluation ignoreDifferences too.
       secretRef: agent-evaluation-harness-judge-key
   # Harness checks. `prompt` names a file under files/harness/checks/. These are
   # NOT part of `catalog`, so the hub never publishes them to Langfuse.

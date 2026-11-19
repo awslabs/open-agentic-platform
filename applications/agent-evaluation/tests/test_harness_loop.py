@@ -539,6 +539,13 @@ def test_judge_key_present_metric_and_required_failure(settings, harness_setting
     assert metrics.registry.get_sample_value("oap_agent_harness_judge_key_present", {"cluster": "dev"}) == 0
 
 
+def test_empty_pre_created_judge_key_secret_reads_as_missing(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()], key=False)
+    f.core.create_namespaced_secret(PLATFORM_NS, {"metadata": {"name": KEY_SECRET, "namespace": PLATFORM_NS}})
+    assert loop.run_once() is False
+    assert metrics.registry.get_sample_value("oap_agent_harness_judge_key_present", {"cluster": "dev"}) == 0
+
+
 def test_optional_missing_judge_key_counts_no_error(settings, harness_settings, catalog, metrics):
     import dataclasses
     optional = dataclasses.replace(harness_settings, judge_key_required=False)

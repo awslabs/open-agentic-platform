@@ -10,7 +10,7 @@ The check prompts live under files/harness/checks/, NOT files/evaluators/, and
 are not in .Values.catalog, so the hub never publishes them to Langfuse.
 DO NOT DELETE OR RENAME the catalog ConfigMap below (agent-evaluation-harness-catalog),
 and do not delete and re-create the Argo CD application that renders it. It owns
-every harness Job, every result ConfigMap and the judge key Secret through
+every harness Job and, through them, every result ConfigMap through
 ownerReferences, so deleting or renaming it garbage-collects all of them and the
 run history with them. Change its content in place.
 

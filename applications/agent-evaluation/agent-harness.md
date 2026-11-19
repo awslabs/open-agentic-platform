@@ -682,12 +682,12 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `checks.expected-answer.casePassScore` | 0.7 | judge score a case needs |
 | `runner.resources` | 50m / 128Mi request, 256Mi limit | Job container |
 
-**Turning the harness off.** Every harness Job and the judge-key Secret carry an
-`ownerReference` to the chart's `agent-evaluation-harness-catalog` ConfigMap,
-which renders only with `harness.enabled: true`; each result ConfigMap is owned
-by its Job. Set `harness.enabled: false` and, once Argo CD prunes the chart
-objects, the Kubernetes garbage collector deletes the Jobs, their results and
-the Secret. While the verdict endpoint cannot read that ConfigMap it creates no Job. The Bifrost virtual key is not a
+**Turning the harness off.** Every harness Job carries an `ownerReference` to
+the chart's `agent-evaluation-harness-catalog` ConfigMap, which renders only
+with `harness.enabled: true`; each result ConfigMap is owned by its Job. The
+judge-key Secret is a chart object itself. Set `harness.enabled: false` and
+Argo CD prunes the Secret and the ConfigMap, and the Kubernetes garbage
+collector deletes the Jobs and their results. While the verdict endpoint cannot read that ConfigMap it creates no Job. The Bifrost virtual key is not a
 Kubernetes object, so delete it by hand: turn off `judgeKey.enabled` in the
 bifrost chart, then list the harness keys with
 `GET <bifrost>/api/governance/virtual-keys?search=oap-harness-judge-` using the
@@ -775,15 +775,17 @@ Secrets Manager from the hub. The platform owns it:
   `bifrost-admin`, create the key `oap-harness-judge-<8 hex>` if it is missing
   (provider `bedrock`, `allowed_models` from `judgeKey.models`, budget
   `judgeKey.budget` default 20 USD per `1M`, rate limit 2000 requests per `1h`)
-  and write it to Secret `agent-evaluation-harness-judge-key`. The key name
+  and write it into Secret `agent-evaluation-harness-judge-key`, which the
+  agent-evaluation chart pre-creates empty (a merge patch of `data` and one
+  annotation; Argo CD ignores those fields). The key name
   hashes its configuration, so a changed budget or model list creates a new key.
   On any Bifrost or Kubernetes API failure the Secret is left as it was, the
   Job fails and logs the status code. Older keys are deleted only when no
   harness Job is active, because a running Job keeps the value it mounted.
 - **Where the credentials are.** The admin credential exists only in namespace
   `bifrost`. The minter's ServiceAccount (`bifrost:bifrost-vk-minter`) can
-  create Secrets in `agent-evaluation` and get, update and patch only
-  `agent-evaluation-harness-judge-key` there. The reconciler can only `get` that
+  get, update and patch only `agent-evaluation-harness-judge-key` in
+  `agent-evaluation`, and cannot create Secrets. The reconciler can only `get` that
   Secret. No team namespace holds a key or an admin credential. The collector
   scrapes Bifrost `/metrics` through the `bifrost-metrics` proxy in namespace
   `bifrost` instead of holding the password.
@@ -807,7 +809,7 @@ From `templates/10-rbac.yaml`, only with `harness.enabled: true`:
 |---|---|---|
 | `agent-evaluation-reconciler` (ClusterRole, added) | cluster | `get` on `argoproj.io` `rollouts` (the endpoint checks a caller's revision and pod hash); `get`, `list`, `watch` on `argoproj.io` `analysisruns` (the reader); `get` on `services` (the `<agent>-preview` check) |
 | `agent-evaluation-reconciler` (Role `agent-evaluation-harness`) | `agent-evaluation` only | `batch` `jobs`: `create`, `get`, `list`, `watch`, `patch`, `delete`; `configmaps`: `delete`; `secrets`: `get` on `agent-evaluation-harness-judge-key` only. No Secret write |
-| `bifrost:bifrost-vk-minter` (Role `agent-evaluation-judge-key-minter`) | `agent-evaluation` only | `secrets`: `create`, and `get`, `update`, `patch` on `agent-evaluation-harness-judge-key` only; `jobs`: `list` |
+| `bifrost:bifrost-vk-minter` (Role `agent-evaluation-judge-key-minter`) | `agent-evaluation` only | `secrets`: `get`, `update`, `patch` on `agent-evaluation-harness-judge-key` only (no `create`; the chart pre-creates it); `jobs`: `list` |
 | `agent-evaluation-harness-runner` (Job pods, Role `agent-evaluation-harness-runner`) | `agent-evaluation` only | `configmaps`: `create` only (no read, no update) |
 
 The reconciler's existing ClusterRole already grants cluster-wide
