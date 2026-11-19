@@ -250,7 +250,18 @@ revision. So the endpoint, not the template, owns the clock:
 The Job's `activeDeadlineSeconds` still ends a running Job at
 `runTimeoutSeconds`, which is a second bound on the run itself.
 
-The endpoint lives in the reconciler pod. A restart of that pod longer than
+The endpoint lives in the reconciler pod, but its availability does not
+depend on that pod's readiness. `/readyz` requires the Langfuse rules loop, so
+a Langfuse outage makes the pod NotReady after about 90 s (6 x 15 s). The
+verdict Service sets `publishNotReadyAddresses: true`, so polls still reach the
+endpoint, which does not use Langfuse. The smaller alternative, a readiness
+check of the endpoint's own, cannot help: Service endpoints follow the pod's
+single Ready condition, so it would only work by taking Langfuse out of
+`/readyz`, which would hide a Langfuse fault from the metrics Service and the
+alerts. While the pod is starting, before the endpoint listens, a poll is
+refused and counts as an error, as before.
+
+A restart of that pod longer than
 about 75 seconds (5 polls at 15 s) ends every in-flight gate run in Error and
 aborts it. Restart the reconciler (including an Argo CD sync that changes its
 Deployment, which stops the old pod first because the chart uses `Recreate`)
@@ -807,7 +818,7 @@ Started with the harness loop (`harness.enabled`), on its own listener, so a
 failing endpoint cannot touch `/metrics` or the probes.
 | | |
 |---|---|
-| Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port). Not the metrics port, not in `/readyz` |
+| Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port, `publishNotReadyAddresses: true`). Not the metrics port. The pod's `/readyz` requires the Langfuse rules loop (`main.py`, on a spoke the hub's Langfuse), and Service endpoints follow that one Ready condition. So the verdict Service publishes not-ready addresses: a Langfuse outage that turns the pod NotReady (after 6 x 15 s) does not stop verdicts, and the pod's own readiness stays honest for the metrics Service and the Langfuse alerts |
 | Request | `POST /v1/verdict?namespace=<ns>&agent=<agent>&revision=<n>&hash=<hash>`. No body. Any other path or method is 404 or 405 |
 | Caller | Only the Argo Rollouts controller. A NetworkPolicy enforces it (section 5). There is no credential |
 Input validation (every field is required; the endpoint fails with HTTP 400

@@ -22,6 +22,13 @@ metadata:
     {{- include "agent-evaluation.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
+  # The pod's readiness is /readyz, which requires the Langfuse rules loop (on a
+  # spoke, the hub's Langfuse). A Langfuse outage turns the pod NotReady after
+  # the probe's 6 x 15 s, and without this field every verdict poll would then
+  # fail and abort every gate revision in flight. The endpoint does not use
+  # Langfuse, so its Service routes to the pod whether it is Ready or not; the
+  # metrics Service and the pod's own readiness are unchanged.
+  publishNotReadyAddresses: true
   selector:
     {{- include "agent-evaluation.selectorLabels" . | nindent 4 }}
   ports:

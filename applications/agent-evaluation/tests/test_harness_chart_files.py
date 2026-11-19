@@ -245,3 +245,14 @@ def test_dashboard_json_copies_are_identical():
     a = CHART / "files/agent-evaluation-dashboard.json"
     b = CHART.parents[3] / "docs/architecture/diagrams/src/agent-evaluation-dashboard.json"
     assert a.read_bytes() == b.read_bytes()
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_verdict_service_routes_to_a_not_ready_pod_and_metrics_service_does_not():
+    docs = _render_eval("--set", "harness.enabled=true")
+    services = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Service"}
+    assert services["agent-evaluation-harness-api"]["spec"]["publishNotReadyAddresses"] is True
+    others = [n for n in services if n != "agent-evaluation-harness-api"]
+    assert others and all("publishNotReadyAddresses" not in services[n]["spec"] for n in others)
+    off = [d for d in _render_eval() if d["kind"] == "Service"]
+    assert "agent-evaluation-harness-api" not in {d["metadata"]["name"] for d in off}
