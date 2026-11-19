@@ -148,7 +148,10 @@ Step by step, with the code that does it:
    full `runTimeoutSeconds`. A finished Job gives `pass`, `fail`
    (below the threshold), `insufficient` or `error`. The endpoint takes the
    dataset, checks, threshold and mode from the declaration, never from the call.
-   `backoffLimit: 0`, so a failed run is reported and never retried.
+   `backoffLimit: 0`, so a failed run is reported and never retried. The
+   runner pod carries `karpenter.sh/do-not-disrupt: "true"`, and a pod the
+   cluster evicts (`DisruptionTarget`) is replaced without counting as a
+   failure (`podFailurePolicy`).
 5. **Cases.** The Job runs the reconciler image as `python -m app.harness_runner`
    under ServiceAccount `agent-evaluation-harness-runner`. It waits up to
    `harness.readyTimeoutSeconds` (600 s) for the preview's A2A agent card, then

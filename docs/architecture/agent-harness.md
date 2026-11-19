@@ -1126,7 +1126,16 @@ with the change and bumping its pin makes both clauses effective.
   them, writes one `<job>-result` ConfigMap (`result.json`), and **exits 0**.
   `backoffLimit: 0` and `activeDeadlineSeconds: harness.runTimeoutSeconds`: a
   failed run is reported, never retried by the Job, because a retry would drive
-  the agent again.
+  the agent again and the result ConfigMap is create-only. Two settings keep a
+  node change from failing a run (a failed Job aborts a gate): the pod carries
+  `karpenter.sh/do-not-disrupt: "true"`, so Karpenter and EKS Auto Mode do not
+  consolidate or drift its node, and `podFailurePolicy` ignores a pod failure
+  with the `DisruptionTarget` condition (drain, preemption, a disruption the
+  annotation did not stop), so the Job starts a new pod without counting it,
+  inside the same run deadline. `backoffLimit: 1` was the alternative; it
+  would also retry a real failure, which re-drives the agent with the same
+  cases for no gain. Both fields were accepted by a Kubernetes 1.35 API server;
+  `podFailurePolicy` is GA since 1.31.
 - **Result ownership** is as before. The runner gives its result ConfigMap an
   `ownerReference` to its Job (the Job's uid comes from the pod label
   `batch.kubernetes.io/controller-uid` through the downward API;

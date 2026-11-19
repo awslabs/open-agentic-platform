@@ -88,6 +88,12 @@ def test_first_poll_creates_a_suspended_job_and_answers_pending(settings, harnes
     assert body["metadata"]["labels"]["harness.oap.io/revision-number"] == "2"
     assert "harness.oap.io/first-seen" in body["metadata"]["annotations"]
     assert body["spec"]["backoffLimit"] == 0
+    assert body["spec"]["podFailurePolicy"] == {
+        "rules": [{"action": "Ignore", "onPodConditions": [{"type": "DisruptionTarget"}]}]
+    }
+    assert body["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+    assert body["spec"]["template"]["metadata"]["annotations"]["karpenter.sh/do-not-disrupt"] == "true"
+    assert "karpenter.sh/do-not-disrupt" not in body["metadata"]["annotations"]
     assert body["spec"]["activeDeadlineSeconds"] == harness_settings.run_timeout
     env = {e["name"]: e.get("value") for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["HARNESS_TARGET_URL"] == "http://assistant-preview.team-a.svc.cluster.local:8083/"

@@ -266,13 +266,28 @@ class JobFactory:
             "metadata": metadata,
             "spec": {
                 # A failed run is reported, never retried: a retry would drive
-                # the agent again with the same cases.
+                # the agent again with the same cases, and the result ConfigMap
+                # is create-only. The one exception is a pod the cluster took
+                # away (drain, consolidation, preemption): podFailurePolicy
+                # ignores it, so the Job starts a new pod without counting a
+                # failure, within the same absolute run deadline. Without it a
+                # node consolidation would fail the Job and abort a gate.
                 "backoffLimit": 0,
+                "podFailurePolicy": {
+                    "rules": [
+                        {"action": "Ignore", "onPodConditions": [{"type": "DisruptionTarget"}]}
+                    ]
+                },
                 # Created suspended; the deadline counts from the unsuspend.
                 "suspend": suspend,
                 "activeDeadlineSeconds": h.run_timeout,
                 "template": {
-                    "metadata": {"labels": {**labels, LABEL_JOB: name}},
+                    "metadata": {
+                        "labels": {**labels, LABEL_JOB: name},
+                        # Karpenter (and EKS Auto Mode) does not consolidate or
+                        # drift a node while this pod runs.
+                        "annotations": {"karpenter.sh/do-not-disrupt": "true"},
+                    },
                     "spec": {
                         "restartPolicy": "Never",
                         "serviceAccountName": h.runner_service_account,
