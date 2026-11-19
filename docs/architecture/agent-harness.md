@@ -243,8 +243,8 @@ the run as a pass, which was wrong. The endpoint still owns the clock, so the
 run ends with a verdict (`error`, an abort) well before the count runs out,
 and the paused-and-unscored state is never reached:
 - At the first poll for a revision the endpoint creates the Job (suspended when no
-  slot is free, Contract 6 step 5) and stamps it with the annotation
-  `harness.oap.io/first-seen`. The Job's `creationTimestamp` is the same moment.
+  slot is free, Contract 6 step 5). Its `creationTimestamp` starts the slot
+  wait and the total cap.
 - Every poll computes `now - creationTimestamp`. A Job still suspended past
   `harness.slotWaitSeconds` is deleted and the answer is `error` ("no slot in
   time"). A running Job past `harness.runTimeoutSeconds +
@@ -945,8 +945,7 @@ agents with `maxConcurrentJobs: 1` and asserts that one Job is unsuspended.
    `false`, answer `error`. Check the judge key Secret (`error` and
    `HarnessJudgeKeyUnavailable` if missing and `required`). Only now, after
    steps 2 and 3 passed, delete the active Jobs of the same agent with a lower revision
-   number. Create the Job with `suspend: true`, the annotation
-   `harness.oap.io/first-seen` and `activeDeadlineSeconds`
+   number. Create the Job with `suspend: true` and `activeDeadlineSeconds`
    (a 409 conflict means another poll created it), record `HarnessRunStarted`,
    and answer `pending`. A suspended Job is the wait for a slot; its age is
    the wait.

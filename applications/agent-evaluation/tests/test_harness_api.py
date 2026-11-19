@@ -52,7 +52,7 @@ def make(settings, harness_settings, catalog, declarations=(), malformed=(), key
             {"metadata": {"name": KEY_SECRET, "namespace": PLATFORM_NS}, "data": {"BIFROST_VIRTUAL_KEY": "c2s="}},
         )
     f.service = VerdictService(
-        settings, hs, JobFactory(settings, hs, catalog, clock=f.clock), f.reader, f.events,
+        settings, hs, JobFactory(settings, hs, catalog), f.reader, f.events,
         f.batch, f.custom, f.core, clock=f.clock,
     )
     return f
@@ -86,7 +86,10 @@ def test_first_poll_creates_a_suspended_job_and_answers_pending(settings, harnes
     assert body["metadata"]["labels"]["harness.oap.io/run"] == "true"
     assert body["metadata"]["labels"]["harness.oap.io/revision"] == "hash2"
     assert body["metadata"]["labels"]["harness.oap.io/revision-number"] == "2"
-    assert "harness.oap.io/first-seen" in body["metadata"]["annotations"]
+    # The run's clock is the Job's creationTimestamp; no annotation of its own.
+    assert "harness.oap.io/first-seen" not in body["metadata"]["annotations"]
+    env_names = [e["name"] for e in body["spec"]["template"]["spec"]["containers"][0]["env"]]
+    assert "HARNESS_RUN_NUMBER" not in env_names
     assert body["spec"]["backoffLimit"] == 0
     assert body["spec"]["podFailurePolicy"] == {
         "rules": [{"action": "Ignore", "onPodConditions": [{"type": "DisruptionTarget"}]}]

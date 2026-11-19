@@ -123,7 +123,7 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
             batch=FakeBatch(), custom=custom, core=FakeCore(custom), events=FakeEvents()
         )
     fakes.reader = FakeReader(declarations, malformed)
-    fakes.factory = JobFactory(settings, harness_settings, catalog, clock=lambda: 5_000.0)
+    fakes.factory = JobFactory(settings, harness_settings, catalog)
     if (PLATFORM_NS, harness_settings.catalog_configmap) not in fakes.core.configmaps:
         fakes.core.create_namespaced_config_map(
             PLATFORM_NS,

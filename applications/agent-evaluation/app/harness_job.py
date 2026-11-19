@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 
 from .config import Catalog, Settings
 from .harness_config import (
@@ -44,8 +43,6 @@ ANN_THRESHOLD = "harness.oap.io/threshold"
 ANN_CHECKS = "harness.oap.io/checks"
 ANN_MODE = "harness.oap.io/mode"
 ANN_JUDGE_MODEL = "harness.oap.io/judge-model"
-# Set when the endpoint first creates the Job; the run's clock starts here.
-ANN_FIRST_SEEN = "harness.oap.io/first-seen"
 # Pod-template annotation the endpoint sets when it unsuspends the Job: the
 # absolute time (epoch seconds) the run must end. The runner reads it through
 # the downward API, so the clock starts at the unsuspend, not at the create.
@@ -142,11 +139,10 @@ def _ts(value) -> float | None:
 class JobFactory:
     """Builds harness Job bodies from the platform settings."""
 
-    def __init__(self, settings: Settings, harness_settings: HarnessSettings, catalog: Catalog, clock=time.time):
+    def __init__(self, settings: Settings, harness_settings: HarnessSettings, catalog: Catalog):
         self._s = settings
         self._h = harness_settings
         self._catalog = catalog
-        self._clock = clock
 
     @property
     def judge_model(self) -> str:
@@ -169,7 +165,6 @@ class JobFactory:
         wait). The run's clock starts when the endpoint unsuspends it.
         """
         trigger = TRIGGER_NEW
-        run_number = 1
         h = self._h
         checks = json.dumps(list(decl.checks))
         target = (
@@ -186,7 +181,6 @@ class JobFactory:
             "HARNESS_THRESHOLD": str(decl.threshold),
             "HARNESS_MODE": decl.mode,
             "HARNESS_TRIGGER": trigger,
-            "HARNESS_RUN_NUMBER": str(run_number),
             "HARNESS_RESULT_CONFIGMAP": result_configmap_name(name),
             "CLUSTER_NAME": self._s.cluster,
             "BIFROST_URL": self._s.bifrost_url,
@@ -253,7 +247,6 @@ class JobFactory:
                 ANN_CHECKS: checks,
                 ANN_MODE: decl.mode,
                 ANN_JUDGE_MODEL: self.judge_model,
-                ANN_FIRST_SEEN: str(int(self._clock())),
             },
         }
         if owner is not None:

@@ -350,7 +350,7 @@ def test_cases_send_job_name_context_ids():
     run_cases(
         dataset("a", "b"),
         CHECKS,
-        runner_settings(result_configmap="oap-harness-fedcba987654-result", run_number=2),
+        runner_settings(result_configmap="oap-harness-fedcba987654-result"),
         agent,
         judge_fn({"good": 0.9}),
     )

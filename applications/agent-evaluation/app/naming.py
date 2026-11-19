@@ -48,10 +48,9 @@ JUDGE_SEPARATOR = "--"
 _TOKEN_LEN = 8
 _TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % _TOKEN_LEN)
 
-# Harness objects (issue #137). The judge virtual key lives in this cluster's
-# Bifrost; the Jobs and their result ConfigMaps live in the reconciler's own
-# namespace. Both are recognised by prefix, and only this reconciler writes them.
-HARNESS_VK_PREFIX = "oap-harness-judge-"
+# Harness objects (issue #137). The Jobs and their result ConfigMaps live in
+# the reconciler's own namespace, are recognised by prefix, and only this
+# reconciler writes them.
 HARNESS_JOB_PREFIX = "oap-harness-"
 _HARNESS_JOB_HASH_LEN = 12
 
