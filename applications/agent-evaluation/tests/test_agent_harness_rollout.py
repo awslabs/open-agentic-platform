@@ -97,6 +97,23 @@ def test_gate_runs_before_promotion_with_no_dry_run_and_no_timer(render):
     assert tpl["metadata"]["name"] == "harness-assistant-gate-harness"
 
 
+def test_gate_aborts_with_no_scale_down_deadline(render):
+    # 0, not absent: absent means the 30 s default, which leaves the
+    # fast-track promotion path open (rollout/bluegreen.go isBlueGreenFastTracked).
+    bg = _bg(render(_app(GATE)))
+    assert "abortScaleDownDelaySeconds" in bg and bg["abortScaleDownDelaySeconds"] == 0
+
+
+@pytest.mark.parametrize("path,harness", [
+    (REPORT, {}),
+    (MANUAL, {}),
+    (REPORT, {"_drop": True}),
+    (GATE, {"enabled": False}),
+])
+def test_only_a_gate_sets_abort_scale_down_delay(render, path, harness):
+    assert "abortScaleDownDelaySeconds" not in _bg(render(_app(path, **harness)))
+
+
 def test_dashcam_report_scores_after_promotion_with_dry_run(render):
     docs = render(_app(REPORT))
     bg = _bg(docs)

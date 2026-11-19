@@ -319,6 +319,18 @@ template: {
 				if parameter.scaleDownDelaySeconds != _|_ {
 					scaleDownDelaySeconds: parameter.scaleDownDelaySeconds
 				}
+				// Gate: an aborted preview gets no scale-down deadline. Argo Rollouts
+				// v1.9 fast-tracks any ReplicaSet that carries one
+				// (rollout/bluegreen.go isBlueGreenFastTracked), and the active
+				// Service then switches to it without checking the pre-promotion
+				// analysis (rollout/service.go reconcileActiveService). With the
+				// default 30 s, a retry within that window promoted a failed or
+				// unscored revision with no new AnalysisRun. 0 closes that path; the
+				// cost is that an aborted preview stays scaled up until the next
+				// revision replaces it.
+				if _harnessEnabled && _harnessMode == "gate" {
+					abortScaleDownDelaySeconds: 0
+				}
 			}
 			selector: matchLabels: {
 				"app.kubernetes.io/name": context.name
