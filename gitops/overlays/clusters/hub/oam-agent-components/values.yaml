@@ -1,0 +1,5 @@
+# TEST ONLY - never merge. The hub runs the agent harness, so the agent
+# component accepts harness.mode: gate here.
+global:
+  agentEvaluation:
+    harnessEnabled: "true"
