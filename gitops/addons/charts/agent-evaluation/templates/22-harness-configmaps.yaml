@@ -1,5 +1,5 @@
 {{- /*
-The harness catalog and datasets (issue #137, report mode). Rendered only when
+The harness catalog and datasets (issue #137, gate and report mode). Rendered only when
 harness.enabled is true.
 Both are platform policy, like the evaluator catalog: the check prompts and the
 datasets live in this chart, so changing a case or a prompt is a reviewed chart

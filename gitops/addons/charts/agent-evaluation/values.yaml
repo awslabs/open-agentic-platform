@@ -34,7 +34,7 @@ image:
   # NOTE: this repository does not exist in the public registry yet -- it answers
   # NAME_UNKNOWN -- which is why agent_evaluation defaults to false in all three
   # environment overlays. 0.2.1-0.2.3 exist only in a private ECR used for
-  # testing. 0.3.0 adds the report-mode harness (#137) and is not published
+  # testing. 0.3.0 adds the harness (#137, gate and report mode) and is not published
   # anywhere yet; publishing it publicly is the outstanding handoff ("Ask 2").
   tag: "0.3.0"
   pullPolicy: IfNotPresent

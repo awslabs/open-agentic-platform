@@ -2,8 +2,9 @@
 
 One Job runs one dataset against one agent revision through the agent's
 `-preview` Service, judges each case, and writes one result ConfigMap in the
-platform namespace. Report mode: the result is published as metrics and Events
-and never affects promotion.
+platform namespace. The runner has no mode logic: the verdict endpoint maps the
+result to pass or fail (a gate aborts below the threshold, report mode only
+records it), and the reader publishes it as metrics and Events.
 
 Case classification (review B1): an agent reply that is not a usable answer
 (failed Task, JSON-RPC error, error payload, any non-2xx HTTP status, timeout,
