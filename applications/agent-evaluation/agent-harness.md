@@ -127,7 +127,9 @@ Step by step, with the code that does it:
 3. **Trigger.** Every new revision of the Rollout gets one AnalysisRun, which
    Rollouts creates and ends itself. The first revision of a Rollout gets no
    run, so the first scored revision is the second one. A rollback is a new
-   revision with a new revision number and is scored like any other.
+   revision with a new revision number and is scored like any other, unless it
+   returns within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet that
+   is still running. Then Rollouts creates no run and the revision is not scored.
 4. **The verdict endpoint** (`harness_api.py`, port 8081, Service
    `agent-evaluation-harness-api`) answers `POST /v1/verdict?namespace=&agent=&revision=&hash=`.
    It reads the Rollout first and refuses any call that is not for the current
@@ -443,7 +445,9 @@ agent's runs answer `error`.
 revision of a Rollout, or for the first push after a gate is turned on for a
 running agent, so those revisions promote on health, unscored. A revision that
 was promoted before and returns inside `spec.rollbackWindow` (not set by the
-component) also comes back unscored. After a second push, the older run's Job
+component) also comes back unscored. So does a rollback inside
+`scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running: no
+analysis, no re-gate. That ReplicaSet was the promoted stable, so it is safe. After a second push, the older run's Job
 can still send a few cases to the new pods for up to about 25 seconds before
 Rollouts ends the run; its result is discarded.
 
