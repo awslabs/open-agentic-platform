@@ -385,8 +385,9 @@ by the end check or by Rollouts' termination.
 ### D7. Rollback
 A rollback is a push of an older template. Rollouts treats it as a new
 revision with a new revision number, creates a new AnalysisRun, and the harness
-scores it like any other revision. The Job name includes the revision number, so
-the earlier run's Job and result are not reused. Two cases do not run:
+scores it like any other revision, with three exceptions. The Job name includes
+the revision number, so the earlier run's Job and result are not reused. Three
+cases do not run:
 - With `spec.rollbackWindow` set on the Rollout, a previously promoted revision
   inside the window is promoted in about 14 seconds with no run. The component
   does not set `rollbackWindow`. A team that adds it by hand loses one data
@@ -398,6 +399,11 @@ the earlier run's Job and result are not reused. Two cases do not run:
 - Rolling back to the current stable template while another revision is in
   flight returns to stable with no run. This comes from the Argo Rollouts
   documentation and is not run yet (live check 11).
+- A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet
+  that is still running returns with no AnalysisRun. It is not scored and, in
+  gate mode, not re-gated. This was observed in pass 8 in report mode. The gate
+  variant is not verified. It is safe because that ReplicaSet was the promoted
+  stable. After scale-down a rollback gets a run.
 The `trigger` label of `oap_agent_harness_info` was `first-revision`,
 `new-revision` or `rollback`. Analysis cannot tell these apart, so the value is
 always `new-revision`. The label stays so the dashboard row and any query keep
@@ -611,7 +617,9 @@ flowchart TD
   RF --> PUB["Reconciler publishes oap_agent_harness_*<br/>and HarnessRunCompleted or HarnessRunFailed"]
 ```
 A rollback is a push in this diagram: a new revision number, a new run. The
-first-revision row is the one place the flow ends with no score.
+flow ends with no score for the first revision and for the cases in D7 (a fast
+revert, a `rollbackWindow` return, a return to stable while another revision is
+in flight).
 ### 4.4 Components, in prose
 **The `agent` component** renders the Rollout, the `<agent>-harness`
 declaration, the AnalysisTemplate (when `harness.enabled`), the NetworkPolicy
