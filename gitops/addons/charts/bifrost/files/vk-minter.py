@@ -12,9 +12,16 @@ Rules:
   budget and rate limit, so a changed value creates a new key.
 - The Secret is written only when it changes. Any Bifrost or Kubernetes
   failure leaves it untouched and exits non-zero.
-- Older keys with the prefix are deleted only when no harness Job is active.
-  A running Job keeps the value it mounted, so deleting its key would fail
-  its judge calls.
+- Never delete a key while any harness Job is unfinished (no Complete or
+  Failed condition; a suspended Job waiting for a slot counts), and list the
+  Jobs again immediately before deleting. A Job keeps the value it mounted
+  when its pod started, so deleting its key would fail its judge calls. The
+  Secret is written before any delete, so a Job whose pod starts after that
+  write mounts the current key; a Job that started earlier is unfinished at
+  the re-check and blocks the delete.
+- With judgeKey.enabled but no harness on the agent-evaluation side, the
+  Role is absent and the Secret read is refused (403): nothing to do, exit 0,
+  so the PostSync hook does not fail the Bifrost sync.
 - Nothing printed contains a key value or the admin password.
 """
 from __future__ import annotations
@@ -41,6 +48,10 @@ class MinterError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class HarnessNotEnabled(MinterError):
+    """The Secret read is forbidden: the harness Role is not rendered there."""
 
 
 def log(message: str) -> None:
@@ -157,6 +168,12 @@ class Kube:
                     "chart pre-creates it (harness.enabled); retried on the next run",
                     404,
                 ) from None
+            if exc.status == 403:
+                raise HarnessNotEnabled(
+                    f"harness not enabled in {self._ns} (GET {self._secret_path(self._secret)} "
+                    "returned HTTP 403); nothing to do",
+                    403,
+                ) from None
             raise
         ann = (sec.get("metadata") or {}).get("annotations") or {}
         raw = (sec.get("data") or {}).get(SECRET_KEY, "")
@@ -188,12 +205,22 @@ class Kube:
                 ) from None
             raise
 
-    def harness_job_active(self) -> bool:
+    def unfinished_harness_job(self) -> bool:
+        """True while any harness Job has no Complete or Failed condition.
+
+        Listed again on every call: the answer is only good for the delete
+        that follows it.
+        """
         reply = self._http.request(
             "GET", f"/apis/batch/v1/namespaces/{self._ns}/jobs", params={"labelSelector": LABEL_RUN}
         )
         for job in reply.get("items") or []:
-            if (job.get("status") or {}).get("active"):
+            conditions = (job.get("status") or {}).get("conditions") or []
+            finished = any(
+                c.get("type") in ("Complete", "Failed") and str(c.get("status")) == "True"
+                for c in conditions
+            )
+            if not finished:
                 return True
         return False
 
@@ -205,7 +232,6 @@ def run(bifrost, kube, config: dict) -> int:
     )
     try:
         stored = kube.read_secret()
-        job_active = kube.harness_job_active()
         keys = bifrost.list_keys()
         known = stored if stored[1] == name and stored[0].startswith(VALUE_PREFIX) else None
         value = ""
@@ -220,10 +246,10 @@ def run(bifrost, kube, config: dict) -> int:
             else:
                 # Ours by name, value unreadable here and in the Secret.
                 # Replace it, but not while a Job holds the old value.
-                if job_active:
+                if kube.unfinished_harness_job():
                     raise MinterError(
-                        f"key {name} has no readable value and a harness Job is active; "
-                        "replaced when none is active"
+                        f"key {name} has no readable value and a harness Job is unfinished; "
+                        "replaced when none is"
                     )
                 log(f"key {name} has no readable value; replacing it")
                 bifrost.delete_key(key.get("id"))
@@ -243,11 +269,18 @@ def run(bifrost, kube, config: dict) -> int:
             log("judge key Secret written")
         else:
             log("judge key Secret is current")
-        if not job_active:
-            for key in keys:
-                if key.get("name") != name:
+        stale = [key for key in keys if key.get("name") != name]
+        if stale:
+            # Checked now, after the Secret write, not at the start of the run.
+            if kube.unfinished_harness_job():
+                log("stale judge keys kept: a harness Job is unfinished")
+            else:
+                for key in stale:
                     log("deleting a stale judge key")
                     bifrost.delete_key(key.get("id"))
+        return 0
+    except HarnessNotEnabled as exc:
+        log(str(exc))
         return 0
     except MinterError as exc:
         # Method, path and status only; never a body, key value or password.

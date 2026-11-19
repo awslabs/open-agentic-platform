@@ -781,7 +781,10 @@ Secrets Manager from the hub. The platform owns it:
   hashes its configuration, so a changed budget or model list creates a new key.
   On any Bifrost or Kubernetes API failure the Secret is left as it was, the
   Job fails and logs the status code. Older keys are deleted only when no
-  harness Job is active, because a running Job keeps the value it mounted.
+  harness Job is unfinished (a suspended one counts), checked again right
+  after the Secret write, because a running Job keeps the value it mounted.
+  Where the harness is not enabled the minter cannot read the Secret (403),
+  logs "harness not enabled" and exits 0, so the Bifrost sync stays green.
 - **Where the credentials are.** The admin credential exists only in namespace
   `bifrost`. The minter's ServiceAccount (`bifrost:bifrost-vk-minter`) can
   get, update and patch only `agent-evaluation-harness-judge-key` in

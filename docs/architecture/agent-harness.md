@@ -347,9 +347,20 @@ budgets. This closes in three steps. Details and scratch evidence:
    (`oap-harness-judge-<config hash>-2`, then `-3`), and the Secret carries the
    new value. Any Bifrost or Kubernetes API failure leaves the Secret as it was,
    fails the Job and logs the status code at ERROR. A config change makes a new
-   key, rewrites the Secret and deletes the older key, and only on a run where no Job labelled
-   `harness.oap.io/run=true` is active in `agent-evaluation`, because a running
-   Job mounts the old value with `subPath` and never sees an update.
+   key, rewrites the Secret and deletes the older key, and only when no Job
+   labelled `harness.oap.io/run=true` in `agent-evaluation` is unfinished (no
+   `Complete` or `Failed` condition, so a suspended Job waiting for a slot
+   counts), because a running Job mounts the value with `subPath` when its pod
+   starts and never sees an update. The rule against the race (a Job starting
+   between the check and the delete): the minter writes the Secret first and
+   lists the Jobs again immediately before deleting. A Job whose pod starts
+   after the write mounts the current key; a Job that started earlier is
+   unfinished at that re-check and blocks the delete, which the next run
+   retries. With `judgeKey.enabled` but no harness in `agent-evaluation`, the
+   minter's Role is absent, the Secret read gets 403, and the minter logs
+   "harness not enabled" and exits 0, so the PostSync hook does not mark the
+   Bifrost sync Failed. A 404 (Role present, Secret not yet created) is an
+   error that the hook's retries and the CronJob repeat.
 3. **The collector scrapes `/metrics` without holding the admin credential.**
    With auth on, `/metrics` needs the admin credential, and the otel-collector
    runs in namespace `otel`. A `basic_auth` block there would copy the admin
