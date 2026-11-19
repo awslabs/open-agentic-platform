@@ -76,7 +76,9 @@ def _renderer(tmp: Path, *helm_args: str):
 
 @pytest.fixture(scope="module")
 def render(tmp_path_factory):
-    return _renderer(tmp_path_factory.mktemp("agent-rollout"))
+    return _renderer(
+        tmp_path_factory.mktemp("agent-rollout"), "--set", "global.agentEvaluation.harnessEnabled=true"
+    )
 
 
 def _app(path: Path, **harness) -> dict:
@@ -206,5 +208,32 @@ def test_consecutive_error_limit_comes_from_the_platform_value(render):
 
 
 def test_consecutive_error_limit_can_be_set_per_cluster(tmp_path):
-    render = _renderer(tmp_path, "--set", "global.agentEvaluation.harnessConsecutiveErrorLimit=30")
+    render = _renderer(
+        tmp_path,
+        "--set", "global.agentEvaluation.harnessEnabled=true",
+        "--set", "global.agentEvaluation.harnessConsecutiveErrorLimit=30",
+    )
     assert _metric(render(_app(GATE)))["consecutiveErrorLimit"] == 30
+
+
+# A gate needs the harness on the cluster; the chart default says it is not.
+
+
+@pytest.fixture(scope="module")
+def render_without_harness(tmp_path_factory):
+    return _renderer(tmp_path_factory.mktemp("agent-rollout-noharness"))
+
+
+def test_gate_is_rejected_on_a_cluster_without_the_harness(render_without_harness):
+    result = render_without_harness.fails(_app(GATE))
+    assert result.returncode != 0
+    assert "_harnessPlatformRequired" in result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("path", [REPORT, MANUAL])
+def test_report_mode_still_renders_on_a_cluster_without_the_harness(render_without_harness, path):
+    assert "AnalysisTemplate" in render_without_harness(_app(path))
+
+
+def test_disabled_gate_renders_on_a_cluster_without_the_harness(render_without_harness):
+    assert "AnalysisTemplate" not in render_without_harness(_app(GATE, enabled=False))

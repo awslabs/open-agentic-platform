@@ -601,7 +601,7 @@ commands below are the standard equivalents and were not run.
 
 ### 4.1 Enable the addon and the harness per cluster
 
-Two switches, both per cluster or environment:
+Three switches, all per cluster or environment:
 
 1. **The addon.** `agent_evaluation: true` in the environment's
    `gitops/overlays/environments/<env>/enabled-addons.yaml`
@@ -645,6 +645,22 @@ Two switches, both per cluster or environment:
    `0.2.4`: the RBAC, ConfigMaps and alerts render, but the `0.2.4` image has
    no harness loop, so no run ever starts and `AgentHarnessStale` is the only
    sign.
+3. **Gate on this cluster.** `global.agentEvaluation.harnessEnabled: "true"` on
+   the `oam-agent-components` addon, in the same overlay layer:
+   ```yaml
+   # gitops/overlays/clusters/<cluster>/oam-agent-components/values.yaml
+   global:
+     agentEvaluation:
+       harnessEnabled: "true"
+   ```
+   With the default `"false"` the agent component rejects `harness.mode: gate`
+   at render (`_harnessPlatformRequired`), because without the verdict
+   endpoint every revision of a gate agent aborts after a few polls. Report
+   mode still renders and only loses its score. Set switches 2 and 3 together:
+   the two charts deploy separately and neither can read the other's values.
+   A cluster-secret label is not used, because the registry's `valuesObject`
+   would override the overlay. A string, because the component compares it as
+   text.
 
 Useful `harness.*` values (`values.yaml`; all have working defaults):
 
