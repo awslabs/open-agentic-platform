@@ -1,3 +1,16 @@
+{{- if eq (toString .Values.warmPool.enabled) "true" }}
+{{- /*
+GATED ON THE WARM POOL. This is the Dark Factory coder's podTemplate, which only
+the pool clones, and it `required`s coderTemplate.image -- so rendering it on a
+cluster that enabled this addon for the Sandbox* CRDs alone (the default shape
+since warmPool.enabled became false, and what both spokes now do) failed the
+whole chart on an image that cluster will never pull.
+
+The pool, this template and the coder secret therefore share one condition. A
+cluster that turns dark_factory on gets all three; one that wants only the CRDs
+gets the RuntimeClasses and the network policies, and nothing that demands a
+coder image.
+*/ -}}
 {{- /*
 SandboxTemplate — the podTemplate the warm pool (and Dark Factory claims) are
 cloned from. Encodes the isolation invariants for running untrusted,
@@ -152,7 +165,7 @@ spec:
               mountPath: /tmp
             {{- /* Same gate as 05-externalsecret-github.yaml: without the warm pool the
                    ExternalSecret is not rendered, so mounting it here would dangle. */}}
-            {{- if and .Values.coderTemplate.secretsMount.enabled .Values.warmPool.enabled }}
+            {{- if and .Values.coderTemplate.secretsMount.enabled (eq (toString .Values.warmPool.enabled) "true") }}
             # Short-TTL GitHub token (+ optional Bifrost key) the coder reads at
             # /etc/secrets — mode 0400, never in env. The coder uses gh-token to
             # clone/push + open the PR; Bifrost auth is optional on this platform.
@@ -172,9 +185,10 @@ spec:
             sizeLimit: {{ .Values.coderTemplate.workspaceSizeGi }}Gi
         - name: tmp
           emptyDir: {}
-        {{- if and .Values.coderTemplate.secretsMount.enabled .Values.warmPool.enabled }}
+        {{- if and .Values.coderTemplate.secretsMount.enabled (eq (toString .Values.warmPool.enabled) "true") }}
         - name: coder-secrets
           secret:
             secretName: {{ .Values.coderTemplate.secretsMount.secretName }}
             defaultMode: 0400
         {{- end }}
+{{- end }}
