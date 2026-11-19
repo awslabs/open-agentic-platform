@@ -112,7 +112,7 @@ in [`config.yaml`](config.yaml).
 - **Don't pin a `platform.ref` TAG yet.** The first clone takes a tag, but a resumed install
   re-fetches with `+refs/heads/<ref>:...` (branches only), so a tag then fails with
   `couldn't find remote ref refs/heads/<tag>` (exit 128). Use a **branch** until the re-fetch is
-  made tag-tolerant (tracked in an OAP issue to be filed). On a resumable install this is the
+  made tag-tolerant (tracked in [#165](https://github.com/awslabs/open-agentic-platform/issues/165)). On a resumable install this is the
   common case, not an edge case.
 - **`aws.profile` and the AWS account.** On a laptop, your configured profile in `~/.aws/config`
   is used as-is — set a **named** profile whose account equals `aws.accountId`. On an EC2 / Cloud
@@ -132,7 +132,7 @@ in [`config.yaml`](config.yaml).
   cert. Every hub under the **same parent zone** derives the **same** `agents.<parent>`, so two
   hubs in one zone collide on that Route53 record. To run more than one hub in one zone, set a
   distinct `agent_gateway_host` annotation on each hub's cluster-secret (e.g. `agents-b.<parent>`);
-  there is no `config.local.yaml` key for it yet (tracked in an OAP issue to be filed).
+  there is no `config.local.yaml` key for it yet (tracked in [#168](https://github.com/awslabs/open-agentic-platform/issues/168)).
 - **Making a spoke agentic in your own fleet repo** is a per-cluster overlay — see
   [Use your own fleet repo](#use-your-own-fleet-repo).
 

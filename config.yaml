@@ -12,7 +12,7 @@ platform:
   # resumed install (the common case) aborts. Until this is fixed, prefer a BRANCH
   # here. Workaround for a tag: make the re-fetch tag-tolerant in platform:clone
   # (add `|| git fetch origin +refs/tags/<ref>:...` and a tag-aware checkout).
-  # Tracked in an OAP issue (to be filed).
+  # Tracked in OAP issue https://github.com/awslabs/open-agentic-platform/issues/165
   # Cluster provider (appmod-blueprints cluster-providers/<name>). Default: kind-kro-ack.
   # Other selectable providers: kind-crossplane, terraform, byoc. Override in config.local.yaml.
   clusterProvider: "kind-kro-ack"
@@ -52,8 +52,8 @@ hub:
 # zone collide on that record (external-dns gives it to whichever hub owns it first).
 # To run more than one hub in one parent zone, give each its own agent host via the
 # hub cluster-secret annotation `agent_gateway_host` (e.g. `agents-b.<parent>`, still
-# covered by `*.<parent>`). There is no config key for it yet — tracked in an OAP
-# issue (to be filed).
+# covered by `*.<parent>`). There is no config key for it yet — tracked in OAP issue
+# https://github.com/awslabs/open-agentic-platform/issues/168
 domain: ""
 resourcePrefix: ""
 
