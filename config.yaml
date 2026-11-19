@@ -21,14 +21,16 @@ platform:
 aws:
   region: "us-west-2"
   accountId: ""
-  # On a laptop with a configured profile this is used as-is. On an EC2 / Cloud
-  # Desktop host, the name "default" has no entry in ~/.aws/config, so it resolves
-  # to the HOST INSTANCE ROLE through IMDS — which is often a DIFFERENT account.
-  # The installer guards this: if the resolved identity is not on aws.accountId it
-  # stops with an error rather than provisioning in the wrong account. Set a NAMED
-  # profile whose account equals aws.accountId. (Both Taskfiles resolve this value
-  # from config and apply it to their own AWS calls, so you don't export AWS_PROFILE
-  # by hand.)
+  # Laptop (no IMDS): your configured profile in ~/.aws/config is used as-is — set
+  # a NAMED profile whose account equals aws.accountId.
+  # EC2 / Cloud Desktop (IMDS answers): the entrypoint regenerates AWS_CONFIG_FILE
+  # to a '[default]' config that resolves through the HOST INSTANCE ROLE and SHADOWS
+  # ~/.aws/config, so a named SSO/role profile there is NOT picked up and the
+  # effective identity is the instance role (often a DIFFERENT account). The platform
+  # provider guards this: if the resolved identity is not on aws.accountId it STOPS
+  # rather than provisioning in the wrong account. So on such a host, run on an
+  # instance whose role is in aws.accountId. Both Taskfiles resolve aws.profile from
+  # config, so you don't export AWS_PROFILE by hand.
   profile: "default"
 
 # Hub cluster

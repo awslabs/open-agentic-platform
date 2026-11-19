@@ -114,12 +114,15 @@ in [`config.yaml`](config.yaml).
   `couldn't find remote ref refs/heads/<tag>` (exit 128). Use a **branch** until the re-fetch is
   made tag-tolerant (tracked in an OAP issue to be filed). On a resumable install this is the
   common case, not an edge case.
-- **`aws.profile` on an EC2 / Cloud Desktop host.** `"default"` has no entry in `~/.aws/config`
-  there, so it resolves to the **host instance role** via IMDS — usually a different account. The
-  installer stops if the resolved identity is not on `aws.accountId` rather than provisioning in
-  the wrong account. Set a **named** profile whose account equals `aws.accountId`. Both Taskfiles
-  resolve `aws.profile` from config and apply it to their own AWS calls, so you set it in config
-  rather than exporting `AWS_PROFILE` by hand.
+- **`aws.profile` and the AWS account.** On a laptop, your configured profile in `~/.aws/config`
+  is used as-is — set a **named** profile whose account equals `aws.accountId`. On an EC2 / Cloud
+  Desktop host where IMDS answers, the entrypoint regenerates `AWS_CONFIG_FILE` to a `[default]`
+  instance-role config that **shadows** `~/.aws/config`, so a named SSO/role profile there is not
+  picked up and the effective identity is the **host instance role** (often a different account).
+  The platform provider guards this: it stops if the resolved identity is not on `aws.accountId`
+  rather than provisioning in the wrong account. On such a host, run on an instance whose role is
+  in `aws.accountId`. Both Taskfiles resolve `aws.profile` from config, so you don't export
+  `AWS_PROFILE` by hand.
 - **`identityCenter` is required, and may be cross-region.** Empty IdC → ack + kro come up but the
   ArgoCD capability is never created and the install fails later (the root ApplicationSet CRD never
   appears). `identityCenter.region` is where the **IdC instance** lives and may differ from
@@ -259,9 +262,12 @@ platform and agentic addons.
 
 #### Make a spoke agentic
 
-A spoke's addon set comes from its `environment` overlay, which is **agent-free** by default. To
-turn the agentic capabilities on for **one** spoke, add a per-cluster override at your fleet
-repo's **root** (not under `gitops/`):
+With OAP's **stock** overlays the `dev` environment is **already agentic** — a `dev` spoke comes up
+with the agentic capabilities on and needs no extra step (this is what the no-`fleetRepo` path
+gives you; see `gitops/overlays/environments/dev/enabled-addons.yaml`). You only need a per-cluster
+override to turn the agentic tier on for a spoke whose **environment overlay does not already enable
+it** — for example a spoke in your **own fleet repo** whose `dev` overlay you keep agent-free, or a
+`prod` spoke. Add it at your fleet repo's **root** (not under `gitops/`):
 
 ```
 overlays/clusters/<spoke>/addon-overrides.yaml
@@ -289,8 +295,6 @@ enabledAddons:
   oam_components: true
 ```
 
-This is the agentic delta over the agent-free `dev` overlay; `agent_evaluation`, `agent_sandbox`
-and the kata keys stay off, matching this repo's own `gitops/overlays/environments/dev/enabled-addons.yaml`.
 The same file placed under a **hub** cluster turns the hub agentic the same way.
 
 ---
