@@ -336,6 +336,7 @@ kubectl get events -n <ns> --field-selector involvedObject.name=<agent>-harness
 | `HarnessRunFailed` | Warning | the run errored (preview unreachable, dataset invalid, every case errored, timeout), or ended with no verdict |
 | `HarnessGateAborted` | Warning | `mode: gate` and the run did not pass; Argo Rollouts aborted the revision. The message carries the verdict (`fail`, `insufficient`, `error`) |
 | `HarnessRunSuperseded` | Normal | Argo Rollouts ended the run because a newer revision arrived; nothing was published |
+| `HarnessStableRevisionUnverified` | Warning | `mode: gate` and the revision now serving (the Rollout's stable ReplicaSet) has harness runs and none passed: it was promoted without a pass. Written once per Rollout and revision per reconciler process. Check how it was promoted, and roll back if it should not serve |
 | `UnknownDataset` | Warning | the dataset name is not in the platform catalog |
 | `InvalidHarnessDeclaration` | Warning | a field in the ConfigMap is invalid (the message names it) |
 | `HarnessAgentHasTools` | Warning | the agent declares `mcpServers` or `agents`; the shipped datasets assume none, so an action case may really run and a live-data case may fail. Recorded as each run starts, the run is not blocked |
@@ -376,6 +377,7 @@ characters), `latencyMs`, `tags`.
 | `oap_agent_harness_last_run_timestamp_seconds` | when the latest run finished |
 | `oap_agent_harness_info` | always 1, extra labels `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` (a dataset or prompt edited without a rename shows as a new digest) |
 | `oap_agent_harness_judge_key_present` | label `cluster` only; 1 when the judge key is available |
+| `oap_agent_harness_unverified_stable` | labels `cluster`, `namespace`, `agent`, `revision` (pod-template hash); 1 while a gate agent serves a revision whose harness runs all failed or ended with no verdict; absent otherwise |
 | `oap_agent_harness_runs_total` | labels `cluster`, `result` (`completed`, `insufficient`, `error`, `superseded`) |
 
 Series are **absent, not zero**: an agent with no finished run has none, and an
@@ -780,6 +782,7 @@ is on and the `monitoring.coreos.com/v1` PrometheusRule CRD exists:
 | `AgentHarnessStale` | `time() - max by (cluster) (oap_agent_eval_last_success_timestamp_seconds{loop="harness"}) > max(3 x intervalSeconds, 900)` | 15m | warning |
 | `AgentHarnessReconcileErrors` | `sum by (cluster) (rate(oap_agent_eval_errors_total{loop="harness"}[15m])) > 0` | 30m | warning |
 | `AgentHarnessJudgeKeyMissing` | `max by (cluster) (oap_agent_harness_judge_key_present) == 0` | 30m | `warning` with `harness.judge.virtualKey.required: true` (no run starts), `info` with `false` (runs go on with an un-budgeted judge) |
+| `AgentHarnessGateUnverifiedStable` | `max by (cluster, namespace, agent, revision) (oap_agent_harness_unverified_stable) == 1` | 5m | warning |
 
 `AgentHarnessReconcileErrors` means the harness reader's Kubernetes AnalysisRun,
 Job or Secret calls are failing. A judge key Secret that is missing counts here

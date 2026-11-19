@@ -742,6 +742,7 @@ team reads its runs in its own namespace:
 | `HarnessRunFailed` | Warning | reader | A finished run with an `error` verdict, or one that ended with no verdict (endpoint unreachable) |
 | `HarnessRunSuperseded` | Normal | reader | The AnalysisRun was terminated (a newer revision, or an abort). The endpoint deletes the older Job and writes no Event |
 | `HarnessGateAborted` | Warning | reader | `mode: gate` and the run did not pass. The Rollout aborted. The message carries the verdict |
+| `HarnessStableRevisionUnverified` | Warning | reader | `mode: gate` and the Rollout's `status.stableRS` hash has harness AnalysisRuns, none with a `pass` verdict: the revision became stable without a pass (Argo Rollouts fast-track, section 4.7 row 15, or a manual promote). Once per Rollout UID and hash per process (the D8 rule). A stable hash with no run at all is not flagged: the reader cannot tell it from a revision promoted before the harness was enabled |
 | `HarnessJudgeKeyUnavailable` | Warning | endpoint | The judge key Secret is missing and `required` is true |
 | `UnknownDataset`, `InvalidHarnessDeclaration` | Warning | endpoint, reader | Refusals |
 | `HarnessPreviewUnsupported` | Warning | endpoint | `ExternalName` or missing preview Service, or no `previewService` on the Rollout |
@@ -941,6 +942,7 @@ series.
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
 | `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `mode` is `gate` or `report`; `trigger` is always `new-revision` (analysis cannot tell a first revision or a rollback apart, D7), `status` `completed`, `insufficient` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
+| `oap_agent_harness_unverified_stable` | `cluster`, `namespace`, `agent`, `revision` (the stable pod-template hash) | 1 while a gate agent's stable revision has harness runs and none passed (same rule as `HarnessStableRevisionUnverified`). Absent, not 0, when the stable revision passed or has no run. Alert `AgentHarnessGateUnverifiedStable` |
 | `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `insufficient`, `error`, `superseded`. A counter that increments once per AnalysisRun UID per process (D8); a restart can count a still-listed run again, so use `increase()` over a window longer than a restart. A gate run that did not pass is also in `oap_agent_harness_info{mode="gate"}` with its status |
 
 The two rules of Contract 2 bind these too:

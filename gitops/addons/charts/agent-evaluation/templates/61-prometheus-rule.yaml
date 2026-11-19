@@ -191,5 +191,25 @@ spec:
               {{ .Release.Namespace }} namespace. Check that judgeKey.enabled is
               set in the bifrost chart, the bifrost-vk-minter Job logs in
               namespace bifrost, and the HarnessJudgeKeyUnavailable Events.
+        - alert: AgentHarnessGateUnverifiedStable
+          # A gate agent's stable revision has harness runs and none passed:
+          # Argo Rollouts promoted it without a pass (fast-track inside the
+          # scale-down window, or a manual promote).
+          expr: max by (cluster, namespace, agent, revision) (oap_agent_harness_unverified_stable) == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              Gate agent {{ `{{ $labels.namespace }}/{{ $labels.agent }}` }}
+              serves revision {{ `{{ $labels.revision }}` }}, which never passed
+              the harness.
+            description: >-
+              The Rollout's stable ReplicaSet has harness AnalysisRuns and none
+              of them passed, so the gate did not hold. Read the
+              HarnessStableRevisionUnverified Event on the agent's
+              -harness ConfigMap, check how the revision was promoted, and
+              roll back if it should not serve.
 {{- end }}
 {{- end }}

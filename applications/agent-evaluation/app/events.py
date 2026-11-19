@@ -40,6 +40,10 @@ REASON_HARNESS_RUN_FAILED = "HarnessRunFailed"
 REASON_HARNESS_RUN_SUPERSEDED = "HarnessRunSuperseded"
 # mode: gate and the run did not pass: Argo Rollouts aborted the revision.
 REASON_HARNESS_GATE_ABORTED = "HarnessGateAborted"
+# mode: gate and the Rollout's stable revision has harness runs, none of which
+# passed: it became stable without a pass (Argo Rollouts fast-track promotion
+# inside the scale-down window, or a manual promote).
+REASON_HARNESS_STABLE_UNVERIFIED = "HarnessStableRevisionUnverified"
 REASON_UNKNOWN_DATASET = "UnknownDataset"
 REASON_INVALID_HARNESS_DECLARATION = "InvalidHarnessDeclaration"
 REASON_HARNESS_JUDGE_KEY_UNAVAILABLE = "HarnessJudgeKeyUnavailable"
