@@ -496,7 +496,7 @@ harness:
 | `enabled` | `false` | Turn the harness on for this agent. |
 | `dataset` | required | Platform catalog dataset name (lowercase, hyphens, max 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and not accepted yet. |
 | `checks` | `[expected-answer]` | How each case is judged. `expected-answer` is the only check for now; an empty list is rejected. |
-| `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1), reported next to the score. |
+| `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1). Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision. |
 | `mode` | `report` | `report`: record the score, never change the rollout. `gate`: abort a revision below the threshold, or with no verdict. |
 Where the analysis runs depends on the mode:
 | `mode` | `autoPromotionEnabled` | Analysis | Effect |

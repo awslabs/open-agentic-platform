@@ -18,8 +18,10 @@ Rules this module keeps:
   declaration, never from the request.
 - Every step is idempotent, so a repeated poll is safe. One process-wide lock
   covers the Job lookup, the creation and the slot count.
-- The endpoint owns the clock: past run timeout plus slot wait it answers
-  `error`, so a run of `pending` answers can never end as a pass.
+- The endpoint owns the clock: a Job still suspended after slotWaitSeconds,
+  or running past run timeout plus slot wait, is deleted and answers `error`,
+  so a run of `pending` answers can never end as a pass, and a Job past the
+  cap stops calling the agent and the judge.
 - Nothing returned or logged carries the judge key.
 """
 
@@ -45,6 +47,7 @@ from .harness_declarations import (
     PREVIEW_SUFFIX,
 )
 from .harness_job import (
+    ANN_RUN_DEADLINE,
     LABEL_AGENT,
     LABEL_AGENT_NS,
     LABEL_REVISION_NUMBER,
@@ -242,10 +245,15 @@ class VerdictService:
         if state == "Complete":
             return self._complete(decl, job, pod_hash, name)
         suspended = bool(getattr(getattr(job, "spec", None), "suspend", False))
-        if age > cap:
-            if suspended:
-                self._delete(name)
-                return _answer("error", "no slot in time", name)
+        if suspended and age > self._h.slot_wait_seconds:
+            # No slot within slotWaitSeconds. Deleted, so a later retry starts
+            # a new Job.
+            self._delete(name)
+            return _answer("error", "no slot in time", name)
+        if not suspended and age > cap:
+            # Deleted, so it stops calling the agent and the judge and frees
+            # its slot.
+            self._delete(name)
             return _answer("error", "the run exceeded its total time limit", name)
         if suspended:
             active = sum(
@@ -255,8 +263,18 @@ class VerdictService:
                 and not bool(getattr(getattr(j, "spec", None), "suspend", False))
             )
             if active < self._h.max_concurrent_jobs:
+                # One request: the run deadline goes on the pod template (the
+                # runner reads it through the downward API) as the Job starts.
+                deadline = str(int(self._clock() + self._h.run_timeout))
                 self._batch.patch_namespaced_job(
-                    name=name, namespace=ns, body={"spec": {"suspend": False}}
+                    name=name,
+                    namespace=ns,
+                    body={
+                        "spec": {
+                            "suspend": False,
+                            "template": {"metadata": {"annotations": {ANN_RUN_DEADLINE: deadline}}},
+                        }
+                    },
                 )
                 return _answer("pending", "the run started", name)
             return _answer("pending", "waiting for a free slot", name)

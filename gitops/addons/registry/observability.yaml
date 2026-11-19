@@ -216,3 +216,13 @@ agent-evaluation:
       kind: ExternalSecret
       jsonPointers:
         - /spec/dataFrom
+    # The harness judge key Secret: the chart pre-creates it empty and the
+    # bifrost chart's minter fills data and the key-name annotation. Argo CD
+    # syncs with ServerSideApply and does not own those fields; ignoring them
+    # keeps the app Synced. The name must match harness.judge.virtualKey.secretRef.
+    - group: ""
+      kind: Secret
+      name: agent-evaluation-harness-judge-key
+      jsonPointers:
+        - /data
+        - /metadata/annotations/harness.oap.io~1judge-key-name

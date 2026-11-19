@@ -58,6 +58,21 @@ global:
     # harness AnalysisTemplate calls. Must match harness.api.port in the
     # agent-evaluation chart.
     harnessApiPort: 8081
+    # Whether this cluster runs the agent harness: set it to "true" together with
+    # harness.enabled on the agent-evaluation addon, in the same cluster overlay
+    # (gitops/overlays/clusters/<cluster>/oam-agent-components/values.yaml). With
+    # "false" the agent component REJECTS harness.mode: gate at render, because
+    # without the verdict endpoint every revision would abort. A string, because
+    # it is substituted into CUE as text.
+    harnessEnabled: "false"
+    # consecutiveErrorLimit of the harness AnalysisTemplate's verdict poll (every
+    # 15 s). The run errors, and a gate revision aborts, after limit+1 polls in a
+    # row get no answer, so this must exceed the agent-evaluation reconciler's
+    # restart time (Recreate: the old pod stops first). 12 tolerates 13 polls,
+    # 195 s when the connection is refused, up to 13 x 35 s when polls time out.
+    # PROVISIONAL: the live step sets this from the measured reconciler start-up
+    # time. A string, like the other globals (KubeVela reads it with strconv).
+    harnessConsecutiveErrorLimit: "12"
   # RuntimeClass a sandboxed agent's pod selects for the DEFAULT trust model
   # (agent component, properties.sandbox: true, sandboxMode: isolated).
   # Platform-owned: an application developer cannot set this from their OAM,

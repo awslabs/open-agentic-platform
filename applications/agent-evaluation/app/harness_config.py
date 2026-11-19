@@ -238,8 +238,6 @@ class RunnerSettings:
     checks_path: str
     datasets_dir: str
     credentials_dir: str
-    # 1 for a revision's first run; n >= 2 when it became current again.
-    run_number: int = 1
     # See HarnessSettings.min_judged_ratio.
     min_judged_ratio: float = 0.8
     # The Job's activeDeadlineSeconds: the runner stops before it and writes a
@@ -306,7 +304,6 @@ def load_runner_settings() -> RunnerSettings:
         checks_path=_env("HARNESS_CHECKS_PATH", f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}"),
         datasets_dir=_env("HARNESS_DATASETS_DIR", JOB_DATASETS_DIR),
         credentials_dir=credentials_dir,
-        run_number=_positive("HARNESS_RUN_NUMBER", _env_int("HARNESS_RUN_NUMBER", 1)),
         run_timeout=_positive(
             "HARNESS_RUN_TIMEOUT_SECONDS", _env_int("HARNESS_RUN_TIMEOUT_SECONDS", 1800)
         ),

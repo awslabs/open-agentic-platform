@@ -158,7 +158,12 @@ def test_minter_role_is_limited_to_the_judge_key_secret():
     role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "agent-evaluation-judge-key-minter")
     scoped = [r for r in role["rules"] if r["resources"] == ["secrets"] and "get" in r["verbs"]]
     assert scoped[0]["resourceNames"] == ["agent-evaluation-harness-judge-key"]
-    assert [r["verbs"] for r in role["rules"] if r["resources"] == ["secrets"] and "resourceNames" not in r] == [["create"]]
+    # No create: the chart pre-creates the Secret and the minter only patches it.
+    assert [r for r in role["rules"] if r["resources"] == ["secrets"]] == [
+        {"apiGroups": [""], "resources": ["secrets"],
+         "resourceNames": ["agent-evaluation-harness-judge-key"], "verbs": ["get", "update", "patch"]}
+    ]
+    assert not [r for r in role["rules"] if "create" in r["verbs"]]
     binding = next(d for d in docs if d["kind"] == "RoleBinding" and d["metadata"]["name"] == "agent-evaluation-judge-key-minter")
     assert binding["subjects"][0]["namespace"] == "bifrost"
     assert binding["subjects"][0]["name"] == "bifrost-vk-minter"
@@ -245,3 +250,44 @@ def test_dashboard_json_copies_are_identical():
     a = CHART / "files/agent-evaluation-dashboard.json"
     b = CHART.parents[3] / "docs/architecture/diagrams/src/agent-evaluation-dashboard.json"
     assert a.read_bytes() == b.read_bytes()
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_verdict_service_routes_to_a_not_ready_pod_and_metrics_service_does_not():
+    docs = _render_eval("--set", "harness.enabled=true")
+    services = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Service"}
+    assert services["agent-evaluation-harness-api"]["spec"]["publishNotReadyAddresses"] is True
+    others = [n for n in services if n != "agent-evaluation-harness-api"]
+    assert others and all("publishNotReadyAddresses" not in services[n]["spec"] for n in others)
+    off = [d for d in _render_eval() if d["kind"] == "Service"]
+    assert "agent-evaluation-harness-api" not in {d["metadata"]["name"] for d in off}
+
+
+def test_bifrost_judge_key_models_match_the_judge_aliases_and_ids():
+    # The judge key may call only judgeKey.models. The runner sends the model
+    # id of the judge alias (judge.models), and Bifrost checks the requested
+    # name, so a list that drifts from judge.models makes every judge call a
+    # 403 and aborts every gate revision.
+    judge = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))["judge"]["models"]
+    bifrost = CHART.parent / "bifrost" / "values.yaml"
+    key_models = yaml.safe_load(bifrost.read_text(encoding="utf-8"))["judgeKey"]["models"]
+    assert sorted(key_models) == sorted(set(judge) | set(judge.values()))
+    assert len(key_models) == len(set(key_models))
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_judge_key_secret_is_pre_created_empty_only_with_the_harness():
+    name = "agent-evaluation-harness-judge-key"
+    secrets = [d for d in _render_eval("--set", "harness.enabled=true") if d["kind"] == "Secret" and d["metadata"]["name"] == name]
+    assert len(secrets) == 1
+    assert secrets[0]["type"] == "Opaque"
+    assert "data" not in secrets[0] and "stringData" not in secrets[0]
+    assert not [d for d in _render_eval() if d["kind"] == "Secret" and d["metadata"]["name"] == name]
+
+
+def test_registry_ignores_the_minter_written_secret_fields():
+    registry = yaml.safe_load((CHART.parents[1] / "registry/observability.yaml").read_text(encoding="utf-8"))
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    secret = next(i for i in registry["agent-evaluation"]["ignoreDifferences"] if i.get("kind") == "Secret")
+    assert secret["name"] == values["harness"]["judge"]["virtualKey"]["secretRef"]
+    assert "/data" in secret["jsonPointers"]

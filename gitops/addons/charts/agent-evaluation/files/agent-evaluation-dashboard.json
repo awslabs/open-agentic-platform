@@ -821,7 +821,7 @@
     {
       "id": 14,
       "type": "row",
-      "title": "Harness (per-revision dataset, report mode)",
+      "title": "Harness (per-revision dataset, gate and report mode)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -835,7 +835,7 @@
       "id": 15,
       "type": "stat",
       "title": "Harness pass ratio",
-      "description": "Share of the judged cases in the latest harness run for this agent's newest revision that passed: passed / (passed + failed). Case errors (judge or infrastructure errors, cases not run before the run deadline) are left out. One colour on purpose: each agent declares its own threshold, so read this against the Threshold and Threshold met panels. Report mode: this never blocks a promotion. Empty when the agent has no harness block, no run has completed yet, or the latest run is insufficient (too few judged cases: the counts are shown, no ratio is published), never 0.",
+      "description": "Share of the judged cases in the latest harness run for this agent's newest revision that passed: passed / (passed + failed). Case errors (judge or infrastructure errors, cases not run before the run deadline) are left out. One colour on purpose: each agent declares its own threshold, so read this against the Threshold and Threshold met panels. In report mode this never blocks a promotion; in gate mode a ratio below the threshold aborted the revision. Empty when the agent has no harness block, no run has completed yet, or the latest run is insufficient (too few judged cases: the counts are shown, no ratio is published), never 0.",
       "gridPos": {
         "h": 6,
         "w": 6,
@@ -1131,7 +1131,7 @@
       "id": 20,
       "type": "stat",
       "title": "Threshold met",
-      "description": "Whether the latest completed run's pass ratio reached the declared threshold. Informational in report mode. Empty for an errored run and for an insufficient one (too few judged cases for a ratio).",
+      "description": "Whether the latest completed run's pass ratio reached the declared threshold. For a gate agent this is the pass bar (not met: the revision was aborted); informational in report mode. Empty for an errored run and for an insufficient one (too few judged cases for a ratio).",
       "gridPos": {
         "h": 4,
         "w": 6,

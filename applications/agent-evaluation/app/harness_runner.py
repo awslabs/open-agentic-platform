@@ -2,8 +2,9 @@
 
 One Job runs one dataset against one agent revision through the agent's
 `-preview` Service, judges each case, and writes one result ConfigMap in the
-platform namespace. Report mode: the result is published as metrics and Events
-and never affects promotion.
+platform namespace. The runner has no mode logic: the verdict endpoint maps the
+result to pass or fail (a gate aborts below the threshold, report mode only
+records it), and the reader publishes it as metrics and Events.
 
 Case classification (review B1): an agent reply that is not a usable answer
 (failed Task, JSON-RPC error, error payload, any non-2xx HTTP status, timeout,
@@ -113,10 +114,12 @@ def utc_now_iso(clock) -> str:
 def run_deadline(settings: RunnerSettings, started_at: float) -> float:
     """When the runner stops starting work.
 
-    activeDeadlineSeconds counts from the Job's start, so scheduling, image pull
-    and Python startup are already spent when the runner starts. The reconciler
-    passes the absolute time the Job expires; the runner's own start is only
-    the fallback when it was not given one.
+    activeDeadlineSeconds counts from the Job's start (the endpoint's
+    unsuspend), so scheduling, image pull and Python startup are already spent
+    when the runner starts. The endpoint stamps the absolute time the Job
+    expires on the pod template when it unsuspends the Job (annotation
+    harness.oap.io/run-deadline, read through the downward API); the runner's
+    own start is only the fallback when it was not given one.
     """
     if settings.run_deadline_epoch > 0:
         return settings.run_deadline_epoch - DEADLINE_MARGIN_SECONDS

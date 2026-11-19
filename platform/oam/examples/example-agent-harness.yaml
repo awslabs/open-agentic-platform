@@ -12,7 +12,7 @@
 # mode: gate, which aborts a revision below the threshold.
 #
 # What the developer controls here: which dataset, which checks, and the
-# threshold the score is reported against.
+# threshold, recorded next to the score (in gate mode it is the pass bar).
 # What the platform controls: the dataset catalog, the judge and its prompt.
 # The judge runs through Bifrost on a platform-minted, budgeted virtual key.
 # Harness requests are marked, so they are excluded from online evaluation
@@ -49,7 +49,7 @@ spec:
           # How each case is judged. expected-answer is the only check for now.
           checks:
             - expected-answer
-          # Fraction of cases that must pass, reported next to the score.
+          # Fraction of cases that must pass, recorded next to the score.
           threshold: 0.8
           # report: record the score, never change the rollout.
           mode: report

@@ -214,7 +214,7 @@ there, the reconciler's ServiceAccount included, can send `X-Forwarded-User` to 
 with an enabled harness block. Through a harness-enabled supervisor that header is then
 delegated on to its sub-agents. "Cannot name a user" holds for the runner's code, not
 for the policy. Closing it needs the runner's identity checked, for example at the
-gateway, and stays open until gate mode.
+gateway; until that check exists it stays open, in report and gate mode alike.
 
 The stronger model, verifying the user's own token at the gateway (token exchange, ADR-6
 in `docs/architecture/agent-identity-and-token-exchange.md`), is a follow-up issue.

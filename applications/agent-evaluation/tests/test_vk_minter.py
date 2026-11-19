@@ -43,26 +43,34 @@ class FakeBifrost:
 
 
 class FakeKube:
-    def __init__(self, stored=None, active=False):
+    """The pre-created Secret: ("", "") while empty."""
+
+    def __init__(self, stored=("", ""), active=False, unfinished=None):
         self.stored = stored
         self.active = active
+        # Answers for successive unfinished_harness_job() calls; then `active`.
+        self.unfinished = list(unfinished or [])
+        self.job_checks = 0
         self.writes = []
 
     def read_secret(self):
         return self.stored
 
-    def harness_job_active(self):
+    def unfinished_harness_job(self):
+        self.job_checks += 1
+        if self.unfinished:
+            return self.unfinished.pop(0)
         return self.active
 
-    def write_secret(self, value, name, exists):
-        self.writes.append((value, name, exists))
+    def write_secret(self, value, name):
+        self.writes.append((value, name))
 
 
 def test_creates_key_and_writes_secret_when_missing():
     bf, kube = FakeBifrost(), FakeKube()
     assert m.run(bf, kube, CONFIG) == 0
     assert bf.created == [NAME]
-    assert kube.writes == [(VALUE, NAME, False)]
+    assert kube.writes == [(VALUE, NAME)]
 
 
 def test_reuses_existing_key_and_does_not_rewrite_current_secret():
@@ -125,15 +133,121 @@ def test_output_never_contains_the_key_value(capsys):
     assert VALUE not in capsys.readouterr().out
 
 
-def test_secret_body_shape():
-    posted = {}
+class RecordingHttp:
+    """Kubernetes API calls, with a fixed status per (method, path) when given."""
 
-    class H:
-        def request(self, method, path, body=None, params=None):
-            posted.update(method=method, path=path, body=body)
-            return {}
+    def __init__(self, replies=None, statuses=None):
+        self.calls = []
+        self.replies = replies or {}
+        self.statuses = statuses or {}
 
-    m.Kube(H(), "ns", "sec").write_secret(VALUE, NAME, exists=False)
-    assert posted["method"] == "POST" and posted["path"] == "/api/v1/namespaces/ns/secrets"
-    assert base64.b64decode(posted["body"]["data"][m.SECRET_KEY]).decode() == VALUE
-    assert posted["body"]["metadata"]["annotations"][m.ANN_KEY_NAME] == NAME
+    def request(self, method, path, body=None, params=None, content_type="application/json"):
+        self.calls.append(dict(method=method, path=path, body=body, params=params, content_type=content_type))
+        status = self.statuses.get((method, path))
+        if status:
+            raise m.MinterError(f"{method} {path} returned HTTP {status}", status)
+        return self.replies.get((method, path), {})
+
+
+SECRET_PATH = "/api/v1/namespaces/ns/secrets/sec"
+JOBS_PATH = "/apis/batch/v1/namespaces/ns/jobs"
+
+
+def test_secret_is_merge_patched_never_created():
+    http = RecordingHttp()
+    m.Kube(http, "ns", "sec").write_secret(VALUE, NAME)
+    [call] = http.calls
+    assert call["method"] == "PATCH" and call["path"] == SECRET_PATH
+    assert call["content_type"] == "application/merge-patch+json"
+    assert base64.b64decode(call["body"]["data"][m.SECRET_KEY]).decode() == VALUE
+    assert call["body"]["metadata"] == {"annotations": {m.ANN_KEY_NAME: NAME}}
+    assert "kind" not in call["body"]
+
+
+def test_empty_pre_created_secret_reads_as_no_key():
+    http = RecordingHttp(replies={("GET", SECRET_PATH): {"metadata": {"name": "sec"}}})
+    assert m.Kube(http, "ns", "sec").read_secret() == ("", "")
+
+
+def test_missing_secret_is_an_error_and_nothing_is_created():
+    bf = FakeBifrost()
+    http = RecordingHttp(statuses={("GET", SECRET_PATH): 404})
+    assert m.run(bf, m.Kube(http, "ns", "sec"), CONFIG) == 1
+    assert not bf.created
+    assert [c["method"] for c in http.calls] == ["GET"]
+
+
+def test_full_run_patches_the_empty_secret_and_never_posts():
+    http = RecordingHttp(
+        replies={("GET", SECRET_PATH): {"metadata": {"name": "sec"}}, ("GET", JOBS_PATH): {"items": []}}
+    )
+    assert m.run(FakeBifrost(), m.Kube(http, "ns", "sec"), CONFIG) == 0
+    methods = [c["method"] for c in http.calls]
+    assert "POST" not in methods and "PUT" not in methods and methods.count("PATCH") == 1
+
+
+def test_a_job_that_starts_after_the_first_check_still_blocks_the_delete():
+    # The old code checked once at the start and deleted on that answer.
+    old = {"id": "old", "name": m.PREFIX + "deadbeef", "value": "sk-bf-old"}
+    bf = FakeBifrost([old])  # no current key: one is created, the Secret written
+    kube = FakeKube(unfinished=[True])
+    assert m.run(bf, kube, CONFIG) == 0
+    assert kube.writes == [(VALUE, NAME)]
+    assert bf.deleted == []
+
+
+def test_the_job_check_runs_after_the_secret_write():
+    order = []
+    old = {"id": "old", "name": m.PREFIX + "deadbeef", "value": "sk-bf-old"}
+
+    class Ordered(FakeKube):
+        def write_secret(self, value, name):
+            order.append("write")
+            super().write_secret(value, name)
+
+        def unfinished_harness_job(self):
+            order.append("check")
+            return False
+
+    bf = FakeBifrost([old])
+    assert m.run(bf, Ordered(), CONFIG) == 0
+    assert order == ["write", "check"] and bf.deleted == ["old"]
+
+
+def test_no_job_check_when_there_is_nothing_to_delete():
+    bf = FakeBifrost([{"id": "cur", "name": NAME, "value": VALUE}])
+    kube = FakeKube(stored=(VALUE, NAME))
+    assert m.run(bf, kube, CONFIG) == 0
+    assert kube.job_checks == 0
+
+
+def _job(**status):
+    return {"metadata": {"name": "j"}, "status": status}
+
+
+@pytest.mark.parametrize("job,unfinished", [
+    (_job(), True),  # suspended: no pods, no conditions
+    (_job(active=1), True),
+    (_job(conditions=[{"type": "Suspended", "status": "True"}]), True),
+    (_job(conditions=[{"type": "Complete", "status": "True"}]), False),
+    (_job(conditions=[{"type": "Failed", "status": "True"}]), False),
+])
+def test_unfinished_means_no_complete_or_failed_condition(job, unfinished):
+    http = RecordingHttp(replies={("GET", JOBS_PATH): {"items": [job]}})
+    assert m.Kube(http, "ns", "sec").unfinished_harness_job() is unfinished
+    assert http.calls[0]["params"] == {"labelSelector": m.LABEL_RUN}
+
+
+def test_harness_not_enabled_is_a_no_op(capsys):
+    bf = FakeBifrost()
+    http = RecordingHttp(statuses={("GET", SECRET_PATH): 403})
+    assert m.run(bf, m.Kube(http, "ns", "sec"), CONFIG) == 0
+    assert not bf.created and not bf.deleted
+    assert [c["method"] for c in http.calls] == ["GET"]
+    assert "harness not enabled in ns" in capsys.readouterr().out
+
+
+def test_other_secret_errors_still_fail():
+    for status in (401, 500):
+        http = RecordingHttp(statuses={("GET", SECRET_PATH): status})
+        assert m.run(FakeBifrost(), m.Kube(http, "ns", "sec"), CONFIG) == 1

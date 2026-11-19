@@ -19,12 +19,15 @@ Per pass:
 4. Per agent, the finished run with the highest revision number is published,
    whatever the Rollout is doing now, so the series of revision N-1 stay while
    the run for N is going.
-5. Delete Jobs and results of agents that no longer declare a harness, of runs
+5. For each gate agent, read the Rollout: when its stable revision has harness
+   runs and none passed, publish oap_agent_harness_unverified_stable and write
+   one HarnessStableRevisionUnverified Warning per (Rollout uid, hash).
+6. Delete Jobs and results of agents that no longer declare a harness, of runs
    that are older than the published one, and of finished runs whose AnalysisRun
    Rollouts has pruned.
 
 State is the cluster's: the only memory kept here is the set of AnalysisRun
-uids already recorded, so a finished run (listed until Rollouts prunes it) is
+uids (and unverified stable hashes) already recorded, so a finished run (listed until Rollouts prunes it) is
 announced once per process. A restart repeats the Events of the runs still
 listed.
 """
@@ -70,6 +73,9 @@ logger = logging.getLogger(__name__)
 METRIC_NAME = "oap-harness"
 ROLLOUT_REVISION_ANNOTATION = "rollout.argoproj.io/revision"
 FINISHED_PHASES = ("Successful", "Failed", "Error", "Inconclusive")
+# Argo Rollouts labels each AnalysisRun with the pod-template hash it scores.
+POD_HASH_LABEL = "rollouts-pod-template-hash"
+_RUNNING = "running"
 
 
 @dataclass
@@ -157,6 +163,9 @@ class HarnessLoop:
         self._core = core_api
         # AnalysisRun uids already recorded (Event and counter), per process.
         self._reported: set[str] = set()
+        # (Rollout uid, stable pod hash) already reported as unverified, per
+        # process: the same once-only rule as _reported.
+        self._unverified_reported: set[tuple[str, str]] = set()
 
     # ── the pass ─────────────────────────────────────────────────────────
 
@@ -235,6 +244,10 @@ class HarnessLoop:
 
         finished: list[_Finished] = []
         known_revisions: set[tuple[str, int]] = set()
+        # (agent key, pod hash) -> what each of its runs ended with: a verdict
+        # state, None (no verdict, including runs Rollouts terminated), or
+        # _RUNNING.
+        by_hash: dict[tuple[str, str], list[str | None]] = {}
         for item in analysis_runs:
             meta = item.get("metadata") or {}
             labels = meta.get("labels") or {}
@@ -246,13 +259,17 @@ class HarnessLoop:
                 continue
             known_revisions.add((f"{namespace}/{agent}", number))
             decl = by_key.get(f"{namespace}/{agent}")
+            states = by_hash.setdefault((f"{namespace}/{agent}", _hash_of(item)), [])
             if (item.get("spec") or {}).get("terminate"):
+                states.append(_verdict_of(item)[0])
                 self._superseded(uid, decl, number)
                 self._delete_run_jobs(f"{namespace}/{agent}", number, jobs, results)
                 continue
             if _phase_of(item) not in FINISHED_PHASES:
+                states.append(_RUNNING)
                 continue
             state, message, job = _verdict_of(item)
+            states.append(state)
             run = _Run(
                 uid=uid,
                 namespace=namespace,
@@ -269,6 +286,8 @@ class HarnessLoop:
                 finished.append(parsed)
 
         self._publish(declarations, finished, held)
+        if not self._check_stable(declarations, by_hash):
+            ok = False
         try:
             self._prune(jobs, results, finished, set(by_key) | set(held), known_revisions)
         except ApiException as exc:
@@ -427,6 +446,54 @@ class HarnessLoop:
                 f"({run.state or 'no verdict'}: {run.message}); Argo Rollouts aborted the revision",
             )
 
+    # ── gate: a stable revision with no pass ─────────────────────────────
+
+    def _check_stable(self, declarations: list, by_hash: dict) -> bool:
+        """Flag gate agents whose stable revision has runs and none passed.
+
+        Argo Rollouts v1.9 can promote a revision without a passing
+        pre-promotion run: it fast-tracks any ReplicaSet that still carries a
+        scale-down deadline, which a superseded preview does for
+        scaleDownDelaySeconds. A stable hash with no run at all is not flagged:
+        a revision promoted before the harness was enabled looks the same.
+        """
+        ok = True
+        rows: list[tuple[str, str, str, str]] = []
+        for d in declarations:
+            if d.mode != "gate":
+                continue
+            try:
+                rollout = self._custom.get_namespaced_custom_object(
+                    "argoproj.io", "v1alpha1", d.namespace, "rollouts", d.agent
+                )
+            except ApiException as exc:
+                if exc.status != 404:
+                    ok = False
+                    logger.warning(
+                        "harness: cannot read Rollout %s/%s: %s", d.namespace, d.agent, exc.status
+                    )
+                continue
+            stable = str(((rollout or {}).get("status") or {}).get("stableRS") or "")
+            states = by_hash.get((d.key, stable)) if stable else None
+            if not states or "pass" in states or _RUNNING in states:
+                continue
+            rows.append((self._s.cluster, d.namespace, d.agent, stable))
+            uid = str(((rollout or {}).get("metadata") or {}).get("uid") or d.key)
+            if (uid, stable) in self._unverified_reported:
+                continue
+            self._unverified_reported.add((uid, stable))
+            seen = ", ".join(sorted({s or "no verdict" for s in states}))
+            self._recorder.warn(
+                d.namespace,
+                d.configmap,
+                events.REASON_HARNESS_STABLE_UNVERIFIED,
+                f"stable revision {stable} of Rollout {d.agent} has {len(states)} harness "
+                f"run(s) and none passed ({seen}): it became stable without a pass. "
+                "Check how it was promoted, and roll back if it should not serve.",
+            )
+        self._metrics.publish_unverified_stable(rows)
+        return ok
+
     # ── metrics ──────────────────────────────────────────────────────────
 
     def _publish(self, declarations: list, finished: list[_Finished], held: dict) -> None:
@@ -565,6 +632,18 @@ class HarnessLoop:
             if job_name and job_name not in jobs:
                 self._delete_result(cm_name)
                 results.pop(cm_name, None)
+
+
+def _hash_of(analysis_run: dict) -> str:
+    """The pod-template hash a run scores: Rollouts' label, else the hash arg."""
+    meta = analysis_run.get("metadata") or {}
+    label = (meta.get("labels") or {}).get(POD_HASH_LABEL)
+    if label:
+        return str(label)
+    for arg in (analysis_run.get("spec") or {}).get("args") or []:
+        if arg.get("name") == "hash" and arg.get("value"):
+            return str(arg["value"])
+    return ""
 
 
 def _number(annotations) -> int:

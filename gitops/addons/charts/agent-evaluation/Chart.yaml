@@ -15,7 +15,7 @@ type: application
 #                the VERSION default in that package's build.sh.
 #
 # The image line was 0.2.x (0.2.1-0.2.4 exist in a private ECR); 0.3.0 adds the
-# report-mode harness (#137). Chart 0.2.0 adds the harness templates. An earlier
+# harness (#137, gate and report mode). Chart 0.2.0 adds the harness templates. An earlier
 # pass wrongly aligned the build script and README down to 0.1.0, which was the
 # CHART version, not the image's.
 version: 0.2.0

@@ -57,13 +57,14 @@ Four things are decided here that the PR reviews asked about:
 ## 2. Background
 ### 2.1 What Argo Rollouts already does for each revision
 Measured on Argo Rollouts v1.9.0 on a hub cluster, with a scratch
-Rollout (evidence: `.agents/tasks/agent-harness/analysis-spike.md`):
+Rollout (the spike results are listed in section 7, "Verified"):
 | Need | What Rollouts does |
 |---|---|
 | New revision | One AnalysisRun per revision, named `<rollout>-<pod hash>-<revision number>-pre` or `-post`. A retry adds `.N` |
 | First revision of a Rollout | No AnalysisRun, pre or post |
 | Second push during a run | The old run gets `spec.terminate: true` and ends with phase `Successful` and message `Run Terminated`. A new run starts |
 | Rollback to an older revision | A new run starts, with a new revision number, unless the ReplicaSet it returns to is still running (within `scaleDownDelaySeconds`, default 30 s): then no run starts. With `spec.rollbackWindow`, a previously promoted revision is promoted in about 14 seconds with no run |
+| Return to a ReplicaSet that still has a scale-down deadline | Promoted at once with no new run, whatever its own run said: a failed or terminated run does not stop it (fast-track, D7) |
 | History | `spec.analysis.successfulRunHistoryLimit` and `unsuccessfulRunHistoryLimit` (default 5 each) prune old runs |
 | Pre-promotion failure | The Rollout aborts (`Degraded`), the stable Service selector does not change |
 | `dryRun` | The failed metric is recorded with `dryRun: true`, the run ends `Successful`, the Rollout is not affected |
@@ -208,8 +209,12 @@ For `gate`, anything that is not a passing verdict fails the metric, and Argo
 Rollouts aborts the revision. The stable revision keeps serving, and the Rollout
 shows `Degraded` until a new revision (or the stable template) is pushed. A
 platform fault therefore blocks a team's rollout, and the team pushes a new
-revision. `kubectl argo rollouts retry` does not re-score: the retried run asks
-for the same Job and receives the verdict it already has. A person who wants a hold uses
+revision. When `kubectl argo rollouts retry` makes Rollouts create a new run
+(`.N`), that run asks for the same Job and receives the same verdict, so a
+retry does not re-score. A retry inside the aborted preview's scale-down
+deadline created no run at all and promoted the failed revision (D7); for a
+gate the component sets `abortScaleDownDelaySeconds: 0` so that the aborted
+preview has no deadline. A person who wants a hold uses
 `autoPromotionEnabled: false`: the revision must still pass the analysis, and
 then waits for the person.
 | Situation | Endpoint answers | Metric result | Gate outcome |
@@ -222,20 +227,40 @@ then waits for the person.
 | Runner Job failed, deadline exceeded, or result unreadable | `error` | failure | abort |
 | Preview Service no longer selects the revision | `error` | failure | abort |
 | Declaration missing or invalid, dataset unknown, `ExternalName` preview | `error` | failure | abort |
-| Endpoint unreachable, HTTP error, timeout | none | Error. After 5 consecutive errors (`consecutiveErrorLimit` 4) the run is Error | abort |
-| Job waited for a slot, or ran, past `runTimeoutSeconds + slotWaitSeconds` | `error` | failure | abort |
+| Endpoint unreachable, HTTP error, timeout | none | Error. After `consecutiveErrorLimit` + 1 consecutive errors (default 12, so 13) the run is Error | abort |
+| Job still waiting for a slot after `slotWaitSeconds`, or running past `runTimeoutSeconds + slotWaitSeconds` (the Job is deleted) | `error` | failure | abort |
 | Run still going | `pending` | inconclusive | keeps polling |
-`pending` counts as an inconclusive measurement. A metric that ends its `count`
-with inconclusive results not above `inconclusiveLimit` ends `Successful` (the
-spike saw this). With `count: 160` and `inconclusiveLimit: 160`, 160 `pending`
-answers would end the run as a pass, and a gate would promote an unscored
-revision. So the endpoint, not the template, owns the clock:
+`pending` counts as an inconclusive measurement. Without
+`consecutiveSuccessLimit`, a metric that ends its `count` with inconclusive
+results not above `inconclusiveLimit` ends `Successful` (the spike saw this).
+The template sets `consecutiveSuccessLimit: 1`, and then Argo Rollouts v1.9.0
+ends a metric that reaches its count without that success as `Inconclusive`
+(`analysis/analysis.go:616-632`, "ConsecutiveSuccessLimit Not Reached and
+FailureLimit Not Violated"); an Inconclusive pre-promotion run pauses the
+Rollout rather than promoting it. So 160 `pending` answers would not promote
+an unscored revision. An earlier version of this section said they would end
+the run as a pass, which was wrong. The endpoint still owns the clock, so the
+run ends with a verdict (`error`, an abort) well before the count runs out,
+and the paused-and-unscored state is never reached:
 - At the first poll for a revision the endpoint creates the Job (suspended when no
-  slot is free, Contract 6 step 5) and stamps it with the annotation
-  `harness.oap.io/first-seen`. The Job's `creationTimestamp` is the same moment.
-- Every poll computes `now - creationTimestamp`. Past
-  `harness.runTimeoutSeconds + harness.slotWaitSeconds` the answer is `error`,
-  whether the Job waited for a slot or ran. Defaults: 1800 s and 300 s, so 2100 s.
+  slot is free, Contract 6 step 5). Its `creationTimestamp` starts the slot
+  wait and the total cap.
+- Every poll computes `now - creationTimestamp`. A Job still suspended past
+  `harness.slotWaitSeconds` is deleted and the answer is `error` ("no slot in
+  time"). A running Job past `harness.runTimeoutSeconds +
+  harness.slotWaitSeconds` is deleted too (it stops calling the agent and the
+  judge and frees its slot), and the answer is `error`. Defaults: 1800 s and
+  300 s, so 2100 s.
+- The run's own clock starts at the unsuspend. The patch that unsuspends the
+  Job also sets the pod-template annotation `harness.oap.io/run-deadline`
+  (unsuspend time + `runTimeoutSeconds`), and the runner reads it as
+  `HARNESS_RUN_DEADLINE_EPOCH` through the downward API. So a Job that waited
+  in the queue still gets its full run time, and the runner stops (60 s
+  margin) before the Job's `activeDeadlineSeconds`, which also counts from the
+  unsuspend. An env value set at create time could not do this: a Job's pod
+  template env is immutable, while its labels and annotations may change while
+  it is suspended and has never started (checked on Kubernetes 1.35). A
+  runner that finds no annotation counts from its own start.
 - Invariant: `count x interval` must exceed that total by at least 300 s. The
   template's 160 x 15 s is 2400 s. The chart fails to render when
   `runTimeoutSeconds + slotWaitSeconds > 2100`, and a chart test asserts it.
@@ -245,12 +270,31 @@ revision. So the endpoint, not the template, owns the clock:
 The Job's `activeDeadlineSeconds` still ends a running Job at
 `runTimeoutSeconds`, which is a second bound on the run itself.
 
-The endpoint lives in the reconciler pod. A restart of that pod longer than
-about 75 seconds (5 polls at 15 s) ends every in-flight gate run in Error and
-aborts it. Restart the reconciler (including an Argo CD sync that changes its
-Deployment, which stops the old pod first because the chart uses `Recreate`)
-only when no gate run is active, or raise `consecutiveErrorLimit`
-above the Deployment's rollout time at the cost of a slower abort.
+The endpoint lives in the reconciler pod, but its availability does not
+depend on that pod's readiness. `/readyz` requires the Langfuse rules loop, so
+a Langfuse outage makes the pod NotReady after about 90 s (6 x 15 s). The
+verdict Service sets `publishNotReadyAddresses: true`, so polls still reach the
+endpoint, which does not use Langfuse. The smaller alternative, a readiness
+check of the endpoint's own, cannot help: Service endpoints follow the pod's
+single Ready condition, so it would only work by taking Langfuse out of
+`/readyz`, which would hide a Langfuse fault from the metrics Service and the
+alerts. While the pod is starting, before the endpoint listens, a poll is
+refused and counts as an error, as before.
+
+A restart of that pod (including an Argo CD sync that changes any harness
+value, which stops the old pod first because the chart uses `Recreate`) must
+end before `consecutiveErrorLimit` + 1 polls in a row go unanswered, or every
+in-flight gate run ends in Error and aborts. The limit is the platform value
+`global.agentEvaluation.harnessConsecutiveErrorLimit` on the
+oam-agent-components chart, default 12: 13 polls, about 195 s when the
+connection is refused, and up to 13 x 35 s (interval plus the web provider's
+20 s timeout) when polls time out. The default is provisional until the
+reconciler's restart time (to Ready and to the first answered poll) is
+measured on the hub; the value is the measured gap plus 60 s of margin,
+divided by the 15 s interval. A higher limit slows the abort when the
+endpoint is really down. Errors use polls too, so `count x interval -
+(limit + 1) x interval` must stay at or above `runTimeoutSeconds +
+slotWaitSeconds` (2100 s at most); a render test checks it at the default.
 
 In report mode every row above is recorded and none of them is meant to change
 the rollout. For `failed` metrics `dryRun` is verified. For the `Error` outcome
@@ -277,8 +321,8 @@ an admission rule on the component. This document does not add one.
 ### D5. The platform owns the judge key; the Bifrost management API needs a login
 The Bifrost management API (`/api/*` and `/metrics`) answers any pod without
 credentials today. Any pod can list every virtual key value and change
-budgets. This closes in three steps. Details and scratch evidence:
-`.agents/tasks/agent-harness/bifrost-auth-options.md` (Option A).
+budgets. This closes in three steps. The scratch evidence (Bifrost v1.5.0 with
+`auth_config`) is listed in section 7, "Verified".
 1. **Auth on.** The Bifrost chart sets `auth_config` with `is_enabled: true` and
    `disable_auth_on_inference: true`, with credentials from Secret
    `bifrost-admin` through `env.BIFROST_ADMIN_USERNAME` and
@@ -302,16 +346,28 @@ budgets. This closes in three steps. Details and scratch evidence:
    harness). The evaluation chart keeps `harness.judge.virtualKey.secretRef` and
    `required`. The minter's rule on each run: list keys with the admin credential and look
    for the name. If the key exists, copy its value into the Secret (the list API
-   returns key values; this is how a Secret deleted by hand is rebuilt, and why
-   the CronJob can heal it). If the key does not exist, create it and write the
+   returns key values; this is how a Secret emptied or deleted by hand is
+   rebuilt, and why the CronJob can heal it: Argo CD recreates the empty
+   Secret, the next minter run fills it). If the key does not exist, create it and write the
    Secret. If the key exists and the list does not return its value, delete that
    key and mint a new one under the name with a counter appended
    (`oap-harness-judge-<config hash>-2`, then `-3`), and the Secret carries the
    new value. Any Bifrost or Kubernetes API failure leaves the Secret as it was,
    fails the Job and logs the status code at ERROR. A config change makes a new
-   key, rewrites the Secret and deletes the older key, and only on a run where no Job labelled
-   `harness.oap.io/run=true` is active in `agent-evaluation`, because a running
-   Job mounts the old value with `subPath` and never sees an update.
+   key, rewrites the Secret and deletes the older key, and only when no Job
+   labelled `harness.oap.io/run=true` in `agent-evaluation` is unfinished (no
+   `Complete` or `Failed` condition, so a suspended Job waiting for a slot
+   counts), because a running Job mounts the value with `subPath` when its pod
+   starts and never sees an update. The rule against the race (a Job starting
+   between the check and the delete): the minter writes the Secret first and
+   lists the Jobs again immediately before deleting. A Job whose pod starts
+   after the write mounts the current key; a Job that started earlier is
+   unfinished at that re-check and blocks the delete, which the next run
+   retries. With `judgeKey.enabled` but no harness in `agent-evaluation`, the
+   minter's Role is absent, the Secret read gets 403, and the minter logs
+   "harness not enabled" and exits 0, so the PostSync hook does not mark the
+   Bifrost sync Failed. A 404 (Role present, Secret not yet created) is an
+   error that the hook's retries and the CronJob repeat.
 3. **The collector scrapes `/metrics` without holding the admin credential.**
    With auth on, `/metrics` needs the admin credential, and the otel-collector
    runs in namespace `otel`. A `basic_auth` block there would copy the admin
@@ -331,9 +387,19 @@ budgets. This closes in three steps. Details and scratch evidence:
 |---|---|---|
 | Runner Job pod | `agent-evaluation` | Mounts the Secret as a file (kubelet, no RBAC) |
 | Reconciler | `agent-evaluation` | `get` on that one Secret, to publish `judge_key_present` and fail closed. No write |
-| Minter (`bifrost:bifrost-vk-minter`) | `agent-evaluation` | `create` on secrets (RBAC cannot scope `create` by name); `get`, `update`, `patch` on the one Secret; `list` on `jobs` for the delete guard |
+| Minter (`bifrost:bifrost-vk-minter`) | `agent-evaluation` | `get`, `update`, `patch` on the one Secret, which the evaluation chart pre-creates empty (no `create`: RBAC cannot scope it by name); `list` on `jobs` for the delete guard |
 | Bifrost admin credential | `bifrost` only | Secret `bifrost-admin`, mounted by Bifrost, the minter, the metrics proxy and the init hook |
 | Team namespaces | none | No key, no admin credential |
+The evaluation chart pre-creates the Secret with no `data`
+(`35-harness-judge-key-secret.yaml`), and the minter fills `data` and the
+`harness.oap.io/judge-key-name` annotation with a merge patch. Argo CD syncs
+with ServerSideApply, so it does not own and does not reset those fields, and
+the registry entry ignores `/data` and that annotation in the diff (the same
+`ignoreDifferences` pattern as the `ExternalSecret` there); `helm lookup` was
+the alternative and cannot work, because Argo CD renders with `helm template`,
+where lookup returns nothing. A missing Secret is a minter error that the next
+run retries. An empty Secret is "key missing" for the reconciler and the
+endpoint, so no Job starts and nothing mounts it while it is empty.
 The evaluation chart renders the Role and RoleBinding in `agent-evaluation` and
 binds them to the minter's ServiceAccount, since it owns the namespace and the
 Secret name. With the job provider alternative the key would also be copied into
@@ -352,12 +418,14 @@ the revision it was asked for. Analysis covers most of that and not all.
 What Rollouts guarantees:
 - A run can reach only the revision under analysis, because Rollouts injects the
   pod-template hash into the preview Service selector.
-- Only the AnalysisRun created for a revision can promote it, and Rollouts
-  terminates that run when the revision changes. So a revision that gets an
-  AnalysisRun is never promoted by another revision's score. This is the property
-  gate needs. It does not cover a revision that gets no run: the first revision
-  of a Rollout, and the first push after gate is enabled on a running agent
-  (section 4.7, row 13).
+- Only the AnalysisRun created for a revision can promote it through analysis,
+  and Rollouts terminates that run when the revision changes. So a revision is
+  never promoted by another revision's score. It does not cover a revision that
+  gets no run: the first revision of a Rollout, and the first push after gate is
+  enabled on a running agent (section 4.7, row 13). It also does not cover
+  the fast-track in D7: a return to a ReplicaSet that still has a scale-down
+  deadline is promoted without checking its run, so a revision whose run failed
+  or was terminated can go live.
 What it does not guarantee: after a second push, the old run's Job kept getting
 replies from the new revision for about 25 seconds before Rollouts ended it.
 Rollouts discards that run's result, so nothing wrong is promoted, but a runner
@@ -401,9 +469,43 @@ cases do not run:
   documentation and is not run yet (live check 11).
 - A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet
   that is still running returns with no AnalysisRun. It is not scored and, in
-  gate mode, not re-gated. This was observed in pass 8 in report mode. The gate
-  variant is not verified. It is safe because that ReplicaSet was the promoted
-  stable. After scale-down a rollback gets a run.
+  gate mode, not re-gated. This was observed in pass 8 in report mode. After
+  scale-down a rollback gets a run. Earlier versions of this document called
+  this path safe because that ReplicaSet was the promoted stable. That holds
+  only for the previous stable; the next bullet shows the same mechanism
+  promoting revisions that never passed.
+- **Fast-track of a ReplicaSet with a scale-down deadline (not safe for a
+  gate).** In Argo Rollouts v1.9.0, `isBlueGreenFastTracked`
+  (`rollout/bluegreen.go:113-116`) is true for any new ReplicaSet that carries a
+  `scale-down-deadline` annotation, and `reconcileActiveService`
+  (`rollout/service.go:105-107`) then switches the active Service to it without
+  checking `completedPrePromotionAnalysis`. Three kinds of ReplicaSet carry
+  that deadline: the previous stable after a promotion (`scaleDownDelaySeconds`),
+  an aborted preview (`abortScaleDownDelaySeconds`, default 30 s), and any
+  other old ReplicaSet still scaled up, such as a superseded preview
+  (`scaleDownDelaySeconds`, `scaleDownDelayHelper` in `rollout/replicaset.go`).
+  The reviewer reproduced it on kind, and it was reproduced on the hub on
+  2026-11-19 with PR head 4572ba8f, on a gate agent whose every run failed:
+
+  | Path | Before the fix (4572ba8f) | With `abortScaleDownDelaySeconds: 0` |
+  |---|---|---|
+  | 1. `kubectl argo rollouts retry` 4 s after the abort | Promoted the failed revision with no new AnalysisRun; the old stable was scaled down | TODO(live): expected closed, because the aborted preview has no deadline (the reviewer verified this on kind) |
+  | 2. Push a new revision, revert to the aborted one 14 s after the abort | Promoted; its only run is the Failed one | TODO(live): expected open. After the push the aborted ReplicaSet is an old ReplicaSet that is still scaled up, so it gets the `scaleDownDelaySeconds` deadline, counted from the push |
+  | 3. Supersede a revision mid-analysis, revert to it 9 s later | Promoted; its only run was terminated with no verdict (phase `Successful`, `Run Terminated`) | TODO(live): expected open (`scaleDownDelaySeconds`) |
+  | Control: retry 46 s after the abort | Aborted again: the new run `.1` Failed | TODO(live) |
+
+  What the platform does: a gate renders `abortScaleDownDelaySeconds: 0`, which
+  closes path 1. The cost is that an aborted gate preview stays scaled up until
+  the next revision replaces it. The component does not change
+  `scaleDownDelaySeconds` for a gate: 0 there would also remove the fast
+  rollback to the previous stable, which is a trade-off for the maintainers.
+  For the paths that stay open, the reader raises
+  `HarnessStableRevisionUnverified`, `oap_agent_harness_unverified_stable` and
+  the `AgentHarnessGateUnverifiedStable` alert when a gate Rollout's stable
+  revision has harness runs and none passed. The guide tells operators not to
+  return to a failed or superseded gate revision within `scaleDownDelaySeconds`
+  of the push that replaced it. The upstream report for Argo Rollouts is
+  drafted and not yet filed.
 The `trigger` label of `oap_agent_harness_info` was `first-revision`,
 `new-revision` or `rollback`. Analysis cannot tell these apart, so the value is
 always `new-revision`. The label stays so the dashboard row and any query keep
@@ -609,7 +711,9 @@ flowchart TD
   OKM -->|gate| GP["Promoted<br/>(or paused for a person<br/>if autoPromotionEnabled false)"]
   OKM -->|report| RP["Score published.<br/>Promotion follows its posture"]
   BAD --> BADM{"mode"}
-  BADM -->|gate| AB["Rollout aborts, Degraded.<br/>Stable keeps serving.<br/>HarnessGateAborted"]
+  BADM -->|gate| AB["Rollout aborts, Degraded.<br/>Stable keeps serving.<br/>HarnessGateAborted.<br/>abortScaleDownDelaySeconds 0:<br/>no scale-down deadline, so a retry<br/>gets a new run with the same verdict"]
+  AB -.->|"another push, then a revert to this revision<br/>within scaleDownDelaySeconds"| FT["Fast-tracked: promoted with no new run.<br/>The revision never passed.<br/>HarnessStableRevisionUnverified"]
+  TERM -.->|"revert to the superseded revision<br/>within scaleDownDelaySeconds"| FT
   BADM -->|report| RF["Failure recorded with dryRun.<br/>Rollout unaffected.<br/>Score published"]
   GP --> PUB
   RP --> PUB
@@ -619,7 +723,13 @@ flowchart TD
 A rollback is a push in this diagram: a new revision number, a new run. The
 flow ends with no score for the first revision and for the cases in D7 (a fast
 revert, a `rollbackWindow` return, a return to stable while another revision is
-in flight).
+in flight). The dotted branch is the fast-track in D7: a return to a revision
+whose ReplicaSet still has a scale-down deadline is promoted with no new run,
+even after an abort or a supersede. A gate's aborted preview gets no deadline
+(`abortScaleDownDelaySeconds: 0`), so a retry no longer takes that branch; a
+revert to an aborted or superseded revision within `scaleDownDelaySeconds` of
+the push that replaced it still does, and the reader then raises
+`HarnessStableRevisionUnverified`.
 ### 4.4 Components, in prose
 **The `agent` component** renders the Rollout, the `<agent>-harness`
 declaration, the AnalysisTemplate (when `harness.enabled`), the NetworkPolicy
@@ -642,6 +752,14 @@ provider alternative the runner would exit non-zero below threshold and carry
 that logic `[D2]`.
 **Bifrost** gets login on `/api/*` and `/metrics`, the minter and the metrics
 proxy (D5).
+A gate needs the harness on the cluster. The agent component compares the
+platform value `global.agentEvaluation.harnessEnabled` (oam-agent-components,
+default `"false"`, set per cluster in the overlay next to agent-evaluation's
+`harness.enabled`) and rejects `mode: gate` at render when it is not `"true"`,
+with the named conflict `_harnessPlatformRequired`, the same pattern as the
+sandbox-operator guard from #151. Report mode is not blocked. Known gap: the
+two switches are separate values in two charts, so an operator sets them
+together; nothing checks that agent-evaluation's `harness.enabled` matches.
 ### 4.5 What the first revision and enablement look like
 A Rollout's first revision gets no analysis, pre or post. The same holds when
 a team switches the harness on for an agent that already has a stable revision:
@@ -667,11 +785,11 @@ cannot cover. Each row gives what is lost, why, and what replaces it.
 | 8 | Case results, digests and counts in the AnalysisRun | The AnalysisRun keeps only the verdict body and phase | The reconciler still reads the result ConfigMap by the Job name in the verdict |
 | 9 | Rollback re-run when `spec.rollbackWindow` is set | The fast path promotes with no run | The component does not set it. One data point lost if a team does |
 | 10 | Hold for a person on no verdict | Only the web provider can return Inconclusive. The job provider cannot | Abort (D3). A hold comes from `autoPromotionEnabled: false` |
-| 11 | Run numbers (`n` >= 2) for one revision, and re-scoring on `kubectl argo rollouts retry` | One AnalysisRun per revision. A retry makes a new run `.N` of the same revision, and the web call carries no run name | A retry reuses the delivered verdict, except after a slot timeout, where the Job is deleted and a retry starts a new run. To re-score, push a new revision (or delete the Job in `agent-evaluation` by hand). A retry that re-scores is a follow-up, only after a live test |
+| 11 | Run numbers (`n` >= 2) for one revision, and re-scoring on `kubectl argo rollouts retry` | One AnalysisRun per revision. A retry makes a new run `.N` of the same revision, and the web call carries no run name | When the retry creates a run `.N`, it reuses the delivered verdict, except after a slot timeout, where the Job is deleted and a retry starts a new run. A retry inside the aborted preview's scale-down deadline created no run and promoted (row 15); a gate sets `abortScaleDownDelaySeconds: 0` against that. To re-score, push a new revision (or delete the Job in `agent-evaluation` by hand). A retry that re-scores is a follow-up, only after a live test |
 | 12 | Metrics survive AnalysisRun pruning | Rollouts keeps 5 successful and 5 unsuccessful runs by default | The series follow the highest-revision finished run, which is always kept. A run pruned before the reconciler reads it (a restart gap over 5 revisions) is not published |
 | 13 | Gate on a revision with no AnalysisRun | Rollouts creates no run for the first revision of a Rollout, and none for the first push after gate is enabled when the template does not change | Not scored, promoted on health. A gate agent's first revision is unprotected. A revision promoted unscored can return unscored inside `rollbackWindow` (D7) |
 | 14 | Report mode never changes a rollout during an endpoint outage | `dryRun` is verified for a `Failed` metric, not for a measurement `Error` (P6) | If P6 fails, Dashcam needs `consecutiveErrorLimit` above the reconciler's start-up time, set in the template (D3) |
-| 15 | Score for a fast revert | A rollback within `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running returns with no AnalysisRun (observed in pass 8, report mode) | Not scored, and in gate mode not re-gated. Safe, because that ReplicaSet was the promoted stable. Gate variant not verified. After scale-down a rollback gets a run |
+| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0` (closes the retry path); the reverts inside `scaleDownDelaySeconds` stay open (see the D7 table). The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run |
 Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
@@ -742,6 +860,7 @@ team reads its runs in its own namespace:
 | `HarnessRunFailed` | Warning | reader | A finished run with an `error` verdict, or one that ended with no verdict (endpoint unreachable) |
 | `HarnessRunSuperseded` | Normal | reader | The AnalysisRun was terminated (a newer revision, or an abort). The endpoint deletes the older Job and writes no Event |
 | `HarnessGateAborted` | Warning | reader | `mode: gate` and the run did not pass. The Rollout aborted. The message carries the verdict |
+| `HarnessStableRevisionUnverified` | Warning | reader | `mode: gate` and the Rollout's `status.stableRS` hash has harness AnalysisRuns, none with a `pass` verdict: the revision became stable without a pass (Argo Rollouts fast-track, section 4.7 row 15, or a manual promote). Once per Rollout UID and hash per process (the D8 rule). A stable hash with no run at all is not flagged: the reader cannot tell it from a revision promoted before the harness was enabled |
 | `HarnessJudgeKeyUnavailable` | Warning | endpoint | The judge key Secret is missing and `required` is true |
 | `UnknownDataset`, `InvalidHarnessDeclaration` | Warning | endpoint, reader | Refusals |
 | `HarnessPreviewUnsupported` | Warning | endpoint | `ExternalName` or missing preview Service, or no `previewService` on the Rollout |
@@ -757,7 +876,7 @@ Started with the harness loop (`harness.enabled`), on its own listener, so a
 failing endpoint cannot touch `/metrics` or the probes.
 | | |
 |---|---|
-| Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port). Not the metrics port, not in `/readyz` |
+| Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port, `publishNotReadyAddresses: true`). Not the metrics port. The pod's `/readyz` requires the Langfuse rules loop (`main.py`, on a spoke the hub's Langfuse), and Service endpoints follow that one Ready condition. So the verdict Service publishes not-ready addresses: a Langfuse outage that turns the pod NotReady (after 6 x 15 s) does not stop verdicts, and the pod's own readiness stays honest for the metrics Service and the Langfuse alerts |
 | Request | `POST /v1/verdict?namespace=<ns>&agent=<agent>&revision=<n>&hash=<hash>`. No body. Any other path or method is 404 or 405 |
 | Caller | Only the Argo Rollouts controller. A NetworkPolicy enforces it (section 5). There is no credential |
 Input validation (every field is required; the endpoint fails with HTTP 400
@@ -826,20 +945,23 @@ agents with `maxConcurrentJobs: 1` and asserts that one Job is unsuspended.
    `false`, answer `error`. Check the judge key Secret (`error` and
    `HarnessJudgeKeyUnavailable` if missing and `required`). Only now, after
    steps 2 and 3 passed, delete the active Jobs of the same agent with a lower revision
-   number. Create the Job with `suspend: true`, the annotation
-   `harness.oap.io/first-seen` and `activeDeadlineSeconds`
+   number. Create the Job with `suspend: true` and `activeDeadlineSeconds`
    (a 409 conflict means another poll created it), record `HarnessRunStarted`,
-   and answer `pending`. A suspended Job is the wait for a slot and carries the
-   run's clock.
+   and answer `pending`. A suspended Job is the wait for a slot; its age is
+   the wait.
 6. **Job suspended.** If `now - creationTimestamp` is above
-   `harness.runTimeoutSeconds + harness.slotWaitSeconds`, answer `error`
-   ("no slot in time") and delete the Job. This is the one case where a later
-   `retry` starts a new Job and re-scores, because the Job is gone. Otherwise, when fewer than
-   `maxConcurrentJobs` unsuspended Jobs are active, set `suspend: false` (the
-   deadline counts from here). Answer `pending`.
-7. **Job active.** Apply the same total cap as step 6, and answer `pending`
-   otherwise. A Job past its `activeDeadlineSeconds` is finished and failed, so
-   step 8 handles it.
+   `harness.slotWaitSeconds`, delete the Job and answer `error` ("no slot in
+   time"). This is the one case where a later `retry` starts a new Job and
+   re-scores, because the Job is gone. Otherwise, when fewer than
+   `maxConcurrentJobs` unsuspended Jobs are active, patch `suspend: false` and
+   the pod-template annotation `harness.oap.io/run-deadline` (now +
+   `runTimeoutSeconds`) in one request; the run's deadline counts from here.
+   Answer `pending`.
+7. **Job active.** If `now - creationTimestamp` is above
+   `harness.runTimeoutSeconds + harness.slotWaitSeconds`, delete the Job and
+   answer `error` ("the run exceeded its total time limit"); otherwise answer
+   `pending`. A Job past its `activeDeadlineSeconds` is finished and failed, so
+   step 8 handles it first.
 8. **Job failed.** Answer `error` with the reason.
 9. **Job complete.** Read `<job>-result`, accept it only when an
    `ownerReference` carries this Job's uid (as before), and otherwise answer
@@ -848,7 +970,8 @@ agents with `maxConcurrentJobs: 1` and asserts that one Job is unsuspended.
    `error` to `error`, `insufficient` to `insufficient`, `completed` to `pass`
    when `passRatio >= threshold` and to `fail` below it. A repeated poll for the
    same Job returns the same verdict. There is no retry rule: a retried
-   AnalysisRun reads the delivered verdict (section 4.7 row 11).
+   AnalysisRun, when Rollouts creates one, reads the delivered verdict
+   (section 4.7 row 11; a retry inside a scale-down deadline creates none, D7).
 The `threshold` and `mode` are read at step 3 on every poll. Changing only the
 threshold therefore changes a verdict not yet delivered, and nothing else.
 ### Contract 4: the dataset schema
@@ -941,6 +1064,7 @@ series.
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
 | `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `mode` is `gate` or `report`; `trigger` is always `new-revision` (analysis cannot tell a first revision or a rollback apart, D7), `status` `completed`, `insufficient` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
+| `oap_agent_harness_unverified_stable` | `cluster`, `namespace`, `agent`, `revision` (the stable pod-template hash) | 1 while a gate agent's stable revision has harness runs and none passed (same rule as `HarnessStableRevisionUnverified`). Absent, not 0, when the stable revision passed or has no run. Alert `AgentHarnessGateUnverifiedStable` |
 | `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `insufficient`, `error`, `superseded`. A counter that increments once per AnalysisRun UID per process (D8); a restart can count a still-listed run again, so use `increase()` over a window longer than a restart. A gate run that did not pass is also in `oap_agent_harness_info{mode="gate"}` with its status |
 
 The two rules of Contract 2 bind these too:
@@ -1038,7 +1162,16 @@ with the change and bumping its pin makes both clauses effective.
   them, writes one `<job>-result` ConfigMap (`result.json`), and **exits 0**.
   `backoffLimit: 0` and `activeDeadlineSeconds: harness.runTimeoutSeconds`: a
   failed run is reported, never retried by the Job, because a retry would drive
-  the agent again.
+  the agent again and the result ConfigMap is create-only. Two settings keep a
+  node change from failing a run (a failed Job aborts a gate): the pod carries
+  `karpenter.sh/do-not-disrupt: "true"`, so Karpenter and EKS Auto Mode do not
+  consolidate or drift its node, and `podFailurePolicy` ignores a pod failure
+  with the `DisruptionTarget` condition (drain, preemption, a disruption the
+  annotation did not stop), so the Job starts a new pod without counting it,
+  inside the same run deadline. `backoffLimit: 1` was the alternative; it
+  would also retry a real failure, which re-drives the agent with the same
+  cases for no gain. Both fields were accepted by a Kubernetes 1.35 API server;
+  `podFailurePolicy` is GA since 1.31.
 - **Result ownership** is as before. The runner gives its result ConfigMap an
   `ownerReference` to its Job (the Job's uid comes from the pod label
   `batch.kubernetes.io/controller-uid` through the downward API;
@@ -1081,7 +1214,8 @@ with the change and bumping its pin makes both clauses effective.
   A run that finds no free slot has a suspended Job, and the endpoint answers
   `pending`; the controller's next poll unsuspends it when a slot is free. Waiting
   runs are not ordered: whichever poll arrives when a slot frees takes it.
-  `harness.slotWaitSeconds` (default 300) bounds the wait, inside the total cap of D3. The
+  `harness.slotWaitSeconds` (default 300) bounds the wait: a Job still
+  suspended after it is deleted and the run answers `error`. The
   old longest-waiting-first ordering and its in-memory state are gone.
 - **Pruning.** The reader deletes the Job of a terminated AnalysisRun and a
   finished Job whose AnalysisRun Rollouts has pruned (its result ConfigMap goes
@@ -1105,7 +1239,7 @@ with the change and bumping its pin makes both clauses effective.
 | Reconciler | ClusterRole | `configmaps` get/list/watch; `events` create/patch/get; `analysisruns` (argoproj.io) get/list/watch; `services` get; `rollouts` (argoproj.io) get, for the endpoint's argument check. **Not granted:** list, watch, or any write on Rollouts |
 | Reconciler | Role in `agent-evaluation` | `jobs` create/get/list/watch/delete/patch (`patch` is new, to unsuspend a Job); `configmaps` delete; `secrets` get on `agent-evaluation-harness-judge-key` only. **Removed:** `secrets` create/update/patch |
 | Runner pod | Role in `agent-evaluation` | `configmaps` create (its result). Unchanged |
-| Minter | Role in `agent-evaluation`, rendered by the evaluation chart | `secrets` create; `secrets` get/update/patch on the one Secret; `jobs` list |
+| Minter | Role in `agent-evaluation`, rendered by the evaluation chart | `secrets` get/update/patch on the one Secret (pre-created by the chart); `jobs` list. **Removed:** `secrets` create |
 | Minter, init hook, metrics proxy | namespace `bifrost` | `bifrost-admin` read (mounted); the init hook also creates that Secret |
 | Team namespaces | | Nothing is added. The component renders its own objects there, as before |
 The reconciler cannot read the Bifrost admin credential: it is in another
@@ -1203,7 +1337,11 @@ change (section 4.8).
 - Pass 8: a rollback within `scaleDownDelaySeconds` (30 s by default) of the
   previous promotion, while the old ReplicaSet is still up, creates no run.
   After scale-down, a rollback creates a run again (report mode, observed).
-  The gate variant of the fast revert is not verified.
+- 2026-11-19, hub, gate agent, PR head 4572ba8f: a retry 4 s after an abort, a
+  revert to an aborted revision 14 s after the abort, and a revert to a
+  superseded revision 9 s after the supersede all promoted a revision that
+  never passed, with no new AnalysisRun. A retry 46 s after the abort aborted
+  again (D7, section 4.7 row 15).
 - `dryRun` with the web and the job provider: the metric is `Failed` with
   `dryRun: true`, the run ends `Successful`, the Rollout is unaffected.
   `postPromotionAnalysis` without `dryRun` rolls live traffic back.
@@ -1292,8 +1430,13 @@ Rollout state recorded:
     pass 8, report mode).
     Also roll back to the current stable template mid-flight: it should return
     to stable with no run (documented, not yet run).
-12. `kubectl argo rollouts retry rollout` after a failed gate: the same verdict
-    comes back (no re-score), as section 4.7 row 11 says.
+12. `kubectl argo rollouts retry rollout` after a failed gate, once inside the
+    abort's scale-down window and once after it: inside, with
+    `abortScaleDownDelaySeconds: 0`, the retry must create a run and not
+    promote; after it, the same verdict comes back (no re-score), as section
+    4.7 row 11 says. Pass 8 (G9) retried only after the 30 s window, so it did
+    not exercise the fast-track path, and this document then called that path
+    safe. That was wrong (D7).
     Calls with another team's `namespace` and `agent` and a wrong revision or hash
     start nothing, delete nothing and write no Event (Contract 6 step 2). A call
     with a stale revision gets `pending`.
@@ -1322,7 +1465,8 @@ NetworkPolicy (and the egress one when its values are set), and `basic_auth` abs
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
 - P1 with `autoPromotionSeconds` set on a gate agent (the component omits it).
-- A gate rollback inside `scaleDownDelaySeconds` (seen in report mode only).
+- The D7 fast-track paths with `abortScaleDownDelaySeconds: 0` (the retest
+  fills the D7 table).
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
@@ -1330,8 +1474,8 @@ the AnalysisTemplate and the Rollout fragment.
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
-- `kubectl argo rollouts promote`, `abort` and `retry` plugin commands (status
-  patches were used).
+- `kubectl argo rollouts promote` and `abort` plugin commands (status patches
+  were used; `retry` was used in the 2026-11-19 reproduction).
 - A Job in another namespace calling into a NetworkPolicy-restricted agent: not
   needed for the web provider's design, tested in the existing manual-gate run.
 - Behaviour on a spoke.

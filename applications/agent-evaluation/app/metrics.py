@@ -38,6 +38,7 @@ HARNESS_INFO_LABELS = HARNESS_LABELS + (
     "dataset_digest",
     "checks_digest",
 )
+UNVERIFIED_STABLE_LABELS = ("cluster", "namespace", "agent", "revision")
 
 
 class Metrics:
@@ -134,13 +135,13 @@ class Metrics:
             registry=r,
         )
 
-        # ── harness (issue #137, report mode) ─────────────────────────────
+        # ── harness (issue #137, gate and report mode) ────────────────────
         # Always registered, absent until a run of that agent has finished: an
         # agent that has never been run must not read as 0% on a dashboard.
         def harness_gauge(name: str, help_text: str) -> Gauge:
             return Gauge(
                 name,
-                f"{help_text} Report mode: never blocks promotion.",
+                f"{help_text} Reported for gate and report mode; label mode on oap_agent_harness_info.",
                 HARNESS_LABELS,
                 registry=r,
             )
@@ -180,22 +181,28 @@ class Metrics:
             "oap_agent_harness_info",
             "Always 1. Revision, mode, judge model, trigger, status and the "
             "dataset and check-prompt digests of the latest finished harness "
-            "run. Report mode: never blocks promotion.",
+            "run.",
             HARNESS_INFO_LABELS,
             registry=r,
         )
         self.harness_judge_key_present = Gauge(
             "oap_agent_harness_judge_key_present",
             "1 when the harness judge virtual key is available, 0 when it is not "
-            "(no new harness run starts while it is required). Report mode: never "
-            "blocks promotion.",
+            "(no new harness run starts while it is required; a gate revision aborts).",
             ("cluster",),
+            registry=r,
+        )
+        self.harness_unverified_stable = Gauge(
+            "oap_agent_harness_unverified_stable",
+            "1 while a gate agent's stable revision (revision = its pod-template "
+            "hash) has harness runs and none of them passed. Absent otherwise.",
+            UNVERIFIED_STABLE_LABELS,
             registry=r,
         )
         self.harness_runs = Counter(
             "oap_agent_harness_runs_total",
             "Finished or superseded harness runs, by result "
-            "(completed|error|superseded). Report mode: never blocks promotion.",
+            "(completed|insufficient|error|superseded).",
             ("cluster", "result"),
             registry=r,
         )
@@ -244,6 +251,12 @@ class Metrics:
                 self.harness_threshold_met.labels(*labels).set(
                     1 if row.threshold_met else 0
                 )
+
+    def publish_unverified_stable(self, rows: list[tuple[str, str, str, str]]) -> None:
+        """Replace the series: one (cluster, namespace, agent, revision) per flagged agent."""
+        self.harness_unverified_stable.clear()
+        for labels in rows:
+            self.harness_unverified_stable.labels(*labels).set(1)
 
     def publish_scores(self, rows: list["ScoreRow"]) -> None:
         """Replace every score series with one pass's results."""

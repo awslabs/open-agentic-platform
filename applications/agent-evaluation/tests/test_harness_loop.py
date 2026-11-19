@@ -13,6 +13,7 @@ from app.events import (
     REASON_HARNESS_RUN_COMPLETED,
     REASON_HARNESS_RUN_FAILED,
     REASON_HARNESS_RUN_SUPERSEDED,
+    REASON_HARNESS_STABLE_UNVERIFIED,
     REASON_INVALID_HARNESS_DECLARATION,
 )
 from app.harness_declarations import HarnessDeclaration
@@ -122,7 +123,7 @@ def build(settings, harness_settings, catalog, metrics, declarations, *, fakes=N
             batch=FakeBatch(), custom=custom, core=FakeCore(custom), events=FakeEvents()
         )
     fakes.reader = FakeReader(declarations, malformed)
-    fakes.factory = JobFactory(settings, harness_settings, catalog, clock=lambda: 5_000.0)
+    fakes.factory = JobFactory(settings, harness_settings, catalog)
     if (PLATFORM_NS, harness_settings.catalog_configmap) not in fakes.core.configmaps:
         fakes.core.create_namespaced_config_map(
             PLATFORM_NS,
@@ -183,7 +184,7 @@ def make_run(
                 "name": f"{d.agent}-{number}",
                 "namespace": d.namespace,
                 "uid": uid or f"ar-{d.agent}-{number}",
-                "labels": {"harness.oap.io/agent": d.agent},
+                "labels": {"harness.oap.io/agent": d.agent, "rollouts-pod-template-hash": pod_hash},
                 "annotations": {"rollout.argoproj.io/revision": str(number)},
             },
             "spec": {"terminate": True} if terminate else {},
@@ -538,6 +539,13 @@ def test_judge_key_present_metric_and_required_failure(settings, harness_setting
     assert metrics.registry.get_sample_value("oap_agent_harness_judge_key_present", {"cluster": "dev"}) == 0
 
 
+def test_empty_pre_created_judge_key_secret_reads_as_missing(settings, harness_settings, catalog, metrics):
+    loop, f = build(settings, harness_settings, catalog, metrics, [decl()], key=False)
+    f.core.create_namespaced_secret(PLATFORM_NS, {"metadata": {"name": KEY_SECRET, "namespace": PLATFORM_NS}})
+    assert loop.run_once() is False
+    assert metrics.registry.get_sample_value("oap_agent_harness_judge_key_present", {"cluster": "dev"}) == 0
+
+
 def test_optional_missing_judge_key_counts_no_error(settings, harness_settings, catalog, metrics):
     import dataclasses
     optional = dataclasses.replace(harness_settings, judge_key_required=False)
@@ -572,3 +580,108 @@ def test_listing_failure_counts_a_harness_error(settings, harness_settings, cata
     assert metrics.registry.get_sample_value(
         "oap_agent_eval_errors_total", {"cluster": "dev", "loop": "harness"}
     ) == 1
+
+
+# ── a gate's stable revision with no pass (fast-track promotion) ──────────
+
+
+def _stable(f, d, stable_hash, uid="ro-uid-1"):
+    f.custom.set_rollout(d.namespace, d.agent, current=stable_hash)
+    ro = f.custom.rollouts[(d.namespace, d.agent)]
+    ro["status"]["stableRS"] = stable_hash
+    ro["metadata"]["uid"] = uid
+
+
+def unverified(metrics, d, revision):
+    return metrics.registry.get_sample_value(
+        "oap_agent_harness_unverified_stable",
+        {"cluster": "dev", "namespace": d.namespace, "agent": d.agent, "revision": revision},
+    )
+
+
+def unverified_events(f):
+    return [w for w in f.events.warnings if w[2] == REASON_HARNESS_STABLE_UNVERIFIED]
+
+
+def test_gate_stable_revision_with_only_a_failed_run_is_flagged_once_per_process(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl(mode="gate", threshold=0.9)
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", ["passed", "failed"], state="fail", phase="Failed")
+    _stable(f, d, "h2")
+    assert loop.run_once()
+    assert unverified(metrics, d, "h2") == 1
+    found = unverified_events(f)
+    assert len(found) == 1
+    assert found[0][1] == "assistant-harness" and "h2" in found[0][3] and "fail" in found[0][3]
+    loop.run_once()
+    assert len(unverified_events(f)) == 1
+    assert unverified(metrics, d, "h2") == 1
+    restarted, _ = build(settings, harness_settings, catalog, metrics, [d], fakes=f)
+    restarted.run_once()
+    assert len(unverified_events(f)) == 2
+
+
+def test_gate_stable_revision_that_passed_is_not_flagged(settings, harness_settings, catalog, metrics):
+    d = decl(mode="gate")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", ["passed", "failed"], state="fail", phase="Failed", uid="ar-a")
+    make_run(f, d, 3, "h2", uid="ar-b")  # a retry that passed
+    _stable(f, d, "h2")
+    loop.run_once()
+    assert unverified(metrics, d, "h2") is None
+    assert not unverified_events(f)
+
+
+def test_gate_stable_revision_with_a_terminated_unscored_run_is_flagged(
+    settings, harness_settings, catalog, metrics
+):
+    d = decl(mode="gate")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", terminate=True, finish=False, result=False, state="pending", phase="Successful")
+    _stable(f, d, "h2")
+    loop.run_once()
+    assert unverified(metrics, d, "h2") == 1
+    assert "no verdict" in unverified_events(f)[0][3]
+
+
+def test_flag_clears_when_a_passing_revision_becomes_stable(settings, harness_settings, catalog, metrics):
+    d = decl(mode="gate")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", state="fail", phase="Failed")
+    _stable(f, d, "h2")
+    loop.run_once()
+    assert unverified(metrics, d, "h2") == 1
+    make_run(f, d, 3, "h3")
+    _stable(f, d, "h3")
+    loop.run_once()
+    assert unverified(metrics, d, "h2") is None and unverified(metrics, d, "h3") is None
+
+
+def test_report_mode_stable_revision_is_not_flagged(settings, harness_settings, catalog, metrics):
+    d = decl(mode="report")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", state="fail", phase="Successful")
+    _stable(f, d, "h2")
+    loop.run_once()
+    assert unverified(metrics, d, "h2") is None
+    assert not unverified_events(f)
+
+
+def test_stable_revision_with_no_run_is_not_flagged(settings, harness_settings, catalog, metrics):
+    d = decl(mode="gate")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", state="fail", phase="Failed")
+    _stable(f, d, "h-before-the-harness")
+    loop.run_once()
+    assert unverified(metrics, d, "h-before-the-harness") is None
+    assert not unverified_events(f)
+
+
+def test_gate_with_no_rollout_is_skipped(settings, harness_settings, catalog, metrics):
+    d = decl(mode="gate")
+    loop, f = build(settings, harness_settings, catalog, metrics, [d])
+    make_run(f, d, 2, "h2", state="fail", phase="Failed")
+    assert loop.run_once()
+    assert not unverified_events(f)

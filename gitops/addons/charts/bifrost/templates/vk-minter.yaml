@@ -6,8 +6,12 @@
   minter runs in namespace `bifrost`, signs in with the admin Secret mounted
   only in this namespace, and writes the key into one Secret in the evaluation
   namespace. The admin credential never leaves namespace `bifrost`. The
-  evaluation chart grants this ServiceAccount write access to that one Secret
-  name (templates/10-rbac.yaml in agent-evaluation).
+  evaluation chart pre-creates that Secret and grants this ServiceAccount
+  get/update/patch on that one name (templates/10-rbac.yaml in
+  agent-evaluation). Where the harness is not enabled that Role is absent, the
+  Secret read gets 403, and the minter exits 0 with a log line, so this hook
+  does not fail the Bifrost sync. Old keys are deleted only when no harness Job
+  is unfinished, checked again right before the delete.
 
   Runs as a PostSync hook (first key as soon as Bifrost is healthy) and as a
   CronJob (reconciles a deleted Secret, a changed configuration, a rotated

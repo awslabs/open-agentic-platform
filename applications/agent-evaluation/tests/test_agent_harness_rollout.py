@@ -27,9 +27,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def render(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("agent-rollout")
+def _renderer(tmp: Path, *helm_args: str):
+    """Render the definitions with `helm template` (plus helm_args), then return
+    a function that runs `vela dry-run --offline` of an Application on them."""
+    tmp.mkdir(parents=True, exist_ok=True)
     kubeconfig = tmp / "kubeconfig"
     kubeconfig.write_text(
         "apiVersion: v1\nkind: Config\n"
@@ -41,7 +42,8 @@ def render(tmp_path_factory):
     )
     defs = tmp / "defs"
     subprocess.run(
-        ["helm", "template", "oap", str(CHART), "--set", "global.clusterName=c1", "--output-dir", str(defs)],
+        ["helm", "template", "oap", str(CHART), "--set", "global.clusterName=c1", *helm_args,
+         "--output-dir", str(defs)],
         check=True, capture_output=True,
     )
     env = {**os.environ, "KUBECONFIG": str(kubeconfig)}
@@ -72,6 +74,13 @@ def render(tmp_path_factory):
     return _render
 
 
+@pytest.fixture(scope="module")
+def render(tmp_path_factory):
+    return _renderer(
+        tmp_path_factory.mktemp("agent-rollout"), "--set", "global.agentEvaluation.harnessEnabled=true"
+    )
+
+
 def _app(path: Path, **harness) -> dict:
     app = copy.deepcopy(yaml.safe_load(path.read_text(encoding="utf-8")))
     props = app["spec"]["components"][0]["properties"]
@@ -97,6 +106,23 @@ def test_gate_runs_before_promotion_with_no_dry_run_and_no_timer(render):
     assert tpl["metadata"]["name"] == "harness-assistant-gate-harness"
 
 
+def test_gate_aborts_with_no_scale_down_deadline(render):
+    # 0, not absent: absent means the 30 s default, which leaves the
+    # fast-track promotion path open (rollout/bluegreen.go isBlueGreenFastTracked).
+    bg = _bg(render(_app(GATE)))
+    assert "abortScaleDownDelaySeconds" in bg and bg["abortScaleDownDelaySeconds"] == 0
+
+
+@pytest.mark.parametrize("path,harness", [
+    (REPORT, {}),
+    (MANUAL, {}),
+    (REPORT, {"_drop": True}),
+    (GATE, {"enabled": False}),
+])
+def test_only_a_gate_sets_abort_scale_down_delay(render, path, harness):
+    assert "abortScaleDownDelaySeconds" not in _bg(render(_app(path, **harness)))
+
+
 def test_dashcam_report_scores_after_promotion_with_dry_run(render):
     docs = render(_app(REPORT))
     bg = _bg(docs)
@@ -119,6 +145,7 @@ def test_template_metric_and_url_use_platform_values_and_argo_placeholders(rende
     assert metric["successCondition"] == "result.state == 'pass'"
     assert "'insufficient'" in metric["failureCondition"] and "'error'" in metric["failureCondition"]
     assert metric["count"] == 160 and metric["inconclusiveLimit"] == 160
+    assert isinstance(metric["consecutiveErrorLimit"], int)
     url = metric["provider"]["web"]["url"]
     assert url.startswith("http://agent-evaluation-harness-api.agent-evaluation.svc.cluster.local:8081/v1/verdict?")
     for arg in ("namespace", "agent", "revision", "hash"):
@@ -155,3 +182,58 @@ def test_the_harness_declaration_carries_the_mode(render):
     docs = render(_app(GATE))
     cm = next(d for d in docs["_all"] if d.get("kind") == "ConfigMap" and d["metadata"]["name"].endswith("-harness"))
     assert cm["data"]["mode"] == "gate"
+
+
+# The poll's consecutiveErrorLimit is a platform value (r7 B2).
+POLL_SECONDS = 15
+# The agent-evaluation chart refuses runTimeoutSeconds + slotWaitSeconds above this.
+MAX_RUN_PLUS_SLOT_WAIT = 2100
+
+
+def _metric(docs):
+    return docs["AnalysisTemplate"]["spec"]["metrics"][0]
+
+
+def test_consecutive_error_limit_comes_from_the_platform_value(render):
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    default = int(values["global"]["agentEvaluation"]["harnessConsecutiveErrorLimit"])
+    metric = _metric(render(_app(GATE)))
+    assert metric["consecutiveErrorLimit"] == default
+    assert metric["interval"] == f"{POLL_SECONDS}s"
+    assert metric["count"] >= metric["inconclusiveLimit"]
+    # Error polls use up the count too: what is left must still cover the
+    # endpoint's own cap, so the endpoint answers error before the count ends.
+    left = (metric["count"] - (metric["consecutiveErrorLimit"] + 1)) * POLL_SECONDS
+    assert left >= MAX_RUN_PLUS_SLOT_WAIT
+
+
+def test_consecutive_error_limit_can_be_set_per_cluster(tmp_path):
+    render = _renderer(
+        tmp_path,
+        "--set", "global.agentEvaluation.harnessEnabled=true",
+        "--set", "global.agentEvaluation.harnessConsecutiveErrorLimit=30",
+    )
+    assert _metric(render(_app(GATE)))["consecutiveErrorLimit"] == 30
+
+
+# A gate needs the harness on the cluster; the chart default says it is not.
+
+
+@pytest.fixture(scope="module")
+def render_without_harness(tmp_path_factory):
+    return _renderer(tmp_path_factory.mktemp("agent-rollout-noharness"))
+
+
+def test_gate_is_rejected_on_a_cluster_without_the_harness(render_without_harness):
+    result = render_without_harness.fails(_app(GATE))
+    assert result.returncode != 0
+    assert "_harnessPlatformRequired" in result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("path", [REPORT, MANUAL])
+def test_report_mode_still_renders_on_a_cluster_without_the_harness(render_without_harness, path):
+    assert "AnalysisTemplate" in render_without_harness(_app(path))
+
+
+def test_disabled_gate_renders_on_a_cluster_without_the_harness(render_without_harness):
+    assert "AnalysisTemplate" not in render_without_harness(_app(GATE, enabled=False))

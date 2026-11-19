@@ -1,5 +1,6 @@
 // Agent ComponentDefinition with blue-green deployment and pluggable memory
 import (
+	"strconv"
 	"strings"
 	"encoding/json"
 	"list"
@@ -273,6 +274,17 @@ template: {
 		_harnessMode: parameter.harness.mode
 	}
 	_harnessPre: _harnessMode == "gate" || !parameter.autoPromotionEnabled
+	// Whether this cluster runs the agent harness (the agent-evaluation chart's
+	// harness.enabled). A platform value substituted as text, compared as a
+	// string, never as a bool: a Helm string "false" is truthy.
+	_harnessPlatform: "{{ .Values.global.agentEvaluation.harnessEnabled }}"
+	// FAIL CLOSED, the same way as the sandbox-operator guard: a gate on a
+	// cluster without the harness has no verdict endpoint, so every revision of
+	// the agent would abort after a few polls. A named conflict so the message
+	// carries the remedy. Report mode is not blocked: it only loses its score.
+	if _harnessEnabled && _harnessMode == "gate" && _harnessPlatform != "true" {
+		_harnessPlatformRequired: "set" & "harness.mode: gate needs the agent harness on this cluster: harness.enabled on the agent-evaluation addon and global.agentEvaluation.harnessEnabled: true on oam-agent-components (both per cluster, in the cluster overlay values). Without it every revision of this agent aborts after a few polls. Use mode: report, or enable the harness on this cluster."
+	}
 	_harnessAnalysis: {
 		templates: [{templateName: context.name + "-harness"}]
 		analysisRunMetadata: labels: "harness.oap.io/agent": context.name
@@ -318,6 +330,18 @@ template: {
 				}
 				if parameter.scaleDownDelaySeconds != _|_ {
 					scaleDownDelaySeconds: parameter.scaleDownDelaySeconds
+				}
+				// Gate: an aborted preview gets no scale-down deadline. Argo Rollouts
+				// v1.9 fast-tracks any ReplicaSet that carries one
+				// (rollout/bluegreen.go isBlueGreenFastTracked), and the active
+				// Service then switches to it without checking the pre-promotion
+				// analysis (rollout/service.go reconcileActiveService). With the
+				// default 30 s, a retry within that window promoted a failed or
+				// unscored revision with no new AnalysisRun. 0 closes that path; the
+				// cost is that an aborted preview stays scaled up until the next
+				// revision replaces it.
+				if _harnessEnabled && _harnessMode == "gate" {
+					abortScaleDownDelaySeconds: 0
 				}
 			}
 			selector: matchLabels: {
@@ -920,7 +944,14 @@ template: {
 						count:                   160
 						inconclusiveLimit:       160
 						consecutiveSuccessLimit: 1
-						consecutiveErrorLimit:   4
+						// Platform value (global.agentEvaluation.harnessConsecutiveErrorLimit,
+						// a string like every global). Errors are polls the endpoint did not
+						// answer, e.g. during a reconciler restart (Recreate, on every
+						// harness value change); the run errors after limit+1 in a row, so
+						// the limit must cover the reconciler's start-up time. Errors use
+						// polls too: count x interval - (limit+1) x interval must stay at or
+						// above runTimeoutSeconds + slotWaitSeconds (a render test checks it).
+						consecutiveErrorLimit: strconv.Atoi("{{ .Values.global.agentEvaluation.harnessConsecutiveErrorLimit }}")
 						successCondition:        "result.state == 'pass'"
 						failureCondition:        "result.state in ['fail', 'insufficient', 'error']"
 						provider: web: {
@@ -1246,7 +1277,7 @@ template: {
 			dataset: #DatasetName
 			// +usage=How each case is judged. First cut: expected-answer only.
 			checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
-			// +usage=Fraction of cases that must pass, reported next to the score.
+			// +usage=Fraction of cases that must pass. Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision.
 			threshold: *0.8 | number & >0 & <=1
 			// +usage=report: record the score, never change the rollout. gate: abort a revision below the threshold or with no verdict.
 			mode: *"report" | "gate"

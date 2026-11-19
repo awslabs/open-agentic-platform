@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 
 from .config import Catalog, Settings
 from .harness_config import (
@@ -44,8 +43,12 @@ ANN_THRESHOLD = "harness.oap.io/threshold"
 ANN_CHECKS = "harness.oap.io/checks"
 ANN_MODE = "harness.oap.io/mode"
 ANN_JUDGE_MODEL = "harness.oap.io/judge-model"
-# Set when the endpoint first creates the Job; the run's clock starts here.
-ANN_FIRST_SEEN = "harness.oap.io/first-seen"
+# Pod-template annotation the endpoint sets when it unsuspends the Job: the
+# absolute time (epoch seconds) the run must end. The runner reads it through
+# the downward API, so the clock starts at the unsuspend, not at the create.
+# A suspended Job that never ran accepts a template annotation change; env
+# cannot change.
+ANN_RUN_DEADLINE = "harness.oap.io/run-deadline"
 # Argo Rollouts pins the preview Service's selector to the previewed revision.
 POD_TEMPLATE_HASH_LABEL = "rollouts-pod-template-hash"
 # Set by the Job controller on every pod of a Job, value = the Job's uid.
@@ -136,11 +139,10 @@ def _ts(value) -> float | None:
 class JobFactory:
     """Builds harness Job bodies from the platform settings."""
 
-    def __init__(self, settings: Settings, harness_settings: HarnessSettings, catalog: Catalog, clock=time.time):
+    def __init__(self, settings: Settings, harness_settings: HarnessSettings, catalog: Catalog):
         self._s = settings
         self._h = harness_settings
         self._catalog = catalog
-        self._clock = clock
 
     @property
     def judge_model(self) -> str:
@@ -159,10 +161,10 @@ class JobFactory:
 
         `revision` is the pod-template hash (the series label), `revision_number`
         the Rollout's revision number. The Job is created suspended: the
-        suspended Job is the wait for a slot, and its clock starts at creation.
+        suspended Job is the wait for a slot (its age, from creation, is the
+        wait). The run's clock starts when the endpoint unsuspends it.
         """
         trigger = TRIGGER_NEW
-        run_number = 1
         h = self._h
         checks = json.dumps(list(decl.checks))
         target = (
@@ -179,7 +181,6 @@ class JobFactory:
             "HARNESS_THRESHOLD": str(decl.threshold),
             "HARNESS_MODE": decl.mode,
             "HARNESS_TRIGGER": trigger,
-            "HARNESS_RUN_NUMBER": str(run_number),
             "HARNESS_RESULT_CONFIGMAP": result_configmap_name(name),
             "CLUSTER_NAME": self._s.cluster,
             "BIFROST_URL": self._s.bifrost_url,
@@ -189,10 +190,6 @@ class JobFactory:
             "HARNESS_READY_TIMEOUT_SECONDS": str(h.ready_timeout),
             # Same value as activeDeadlineSeconds, so the runner can stop first.
             "HARNESS_RUN_TIMEOUT_SECONDS": str(h.run_timeout),
-            # activeDeadlineSeconds counts from the Job's start, not the runner's:
-            # the runner stops at this absolute time (minus its margin). Taken
-            # just before the create, so it is never later than the Job's own.
-            "HARNESS_RUN_DEADLINE_EPOCH": str(self._clock() + h.run_timeout),
             "HARNESS_MAX_CASES": str(h.max_cases),
             "HARNESS_MIN_JUDGED_RATIO": str(h.min_judged_ratio),
             "HARNESS_CHECKS_PATH": f"{JOB_CHECKS_DIR}/{JOB_CHECKS_FILE}",
@@ -204,6 +201,19 @@ class JobFactory:
             {
                 "name": "POD_NAMESPACE",
                 "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}},
+            }
+        )
+        # activeDeadlineSeconds counts from the Job's start (the unsuspend), not
+        # the runner's: the runner stops at this absolute time (minus its
+        # margin). The endpoint stamps it on the pod template in the same patch
+        # that unsuspends the Job. Empty when absent: the runner then counts
+        # from its own start.
+        env_list.append(
+            {
+                "name": "HARNESS_RUN_DEADLINE_EPOCH",
+                "valueFrom": {
+                    "fieldRef": {"fieldPath": f"metadata.annotations['{ANN_RUN_DEADLINE}']"}
+                },
             }
         )
         # The Job's uid, from the label the Job controller puts on its pods:
@@ -237,7 +247,6 @@ class JobFactory:
                 ANN_CHECKS: checks,
                 ANN_MODE: decl.mode,
                 ANN_JUDGE_MODEL: self.judge_model,
-                ANN_FIRST_SEEN: str(int(self._clock())),
             },
         }
         if owner is not None:
@@ -250,13 +259,28 @@ class JobFactory:
             "metadata": metadata,
             "spec": {
                 # A failed run is reported, never retried: a retry would drive
-                # the agent again with the same cases.
+                # the agent again with the same cases, and the result ConfigMap
+                # is create-only. The one exception is a pod the cluster took
+                # away (drain, consolidation, preemption): podFailurePolicy
+                # ignores it, so the Job starts a new pod without counting a
+                # failure, within the same absolute run deadline. Without it a
+                # node consolidation would fail the Job and abort a gate.
                 "backoffLimit": 0,
+                "podFailurePolicy": {
+                    "rules": [
+                        {"action": "Ignore", "onPodConditions": [{"type": "DisruptionTarget"}]}
+                    ]
+                },
                 # Created suspended; the deadline counts from the unsuspend.
                 "suspend": suspend,
                 "activeDeadlineSeconds": h.run_timeout,
                 "template": {
-                    "metadata": {"labels": {**labels, LABEL_JOB: name}},
+                    "metadata": {
+                        "labels": {**labels, LABEL_JOB: name},
+                        # Karpenter (and EKS Auto Mode) does not consolidate or
+                        # drift a node while this pod runs.
+                        "annotations": {"karpenter.sh/do-not-disrupt": "true"},
+                    },
                     "spec": {
                         "restartPolicy": "Never",
                         "serviceAccountName": h.runner_service_account,
