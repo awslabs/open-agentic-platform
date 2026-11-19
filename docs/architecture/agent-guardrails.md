@@ -1,0 +1,1721 @@
+# Agent Guardrails and Policies: Runtime Content, Topic and Tool-Call Control for OAP Agents
+
+| | |
+|---|---|
+| **Status** | Proposed — design only, nothing implemented |
+| **Author** | @elamaran11 |
+| **Reviewers** | @shapirov103 (rev 3: D1 reversed in rev 4; rev 4: fail-closed, routes and the smaller points addressed in rev 5) |
+| **Target** | `agent` component, `agent-gateway` chart, `crossplane` providers — **no new addon and no new image** |
+| **Date** | 2026-11-11 |
+| **Revision** | 5 — fail-closed via agentgateway ≥ v1.6.0, one gated route per profile, research moved to an appendix |
+| **Issues** | #144 (content and topic control), #146 (Dogwood as the decision layer) |
+| **Adjacent** | #152 (external policy engine at the MCP hop) — complementary, not competing; see §3.9 and §3.10 |
+
+> **Why "and Policies".** Two different questions travel under the word
+> *guardrails*. One is probabilistic and about text — *is this content
+> acceptable?* — and a detector answers it. The other is deterministic and about
+> a call — *is this caller allowed to invoke this tool, with these arguments, in
+> this order?* — and only a policy evaluated against a schema answers that. The
+> first is §D1–D5. The second is §3.10, and it is the half the title used to
+> leave out.
+
+## Scope
+
+**In scope**
+
+- Inbound and outbound **content** inspection for every agent: prompt injection,
+  PII, toxicity, and off-topic requests
+- A declarative `guardrails` block on the `agent` component, so a developer
+  turns it on without naming a vendor, an ARN, a region or a key
+- **Where** the check runs, and what makes that hop hard to skip
+- The **decision seam**: how a finding becomes an allow / redact / block verdict,
+  and how a stateful policy engine replaces that decision later without an API
+  change
+- An honest account of what content inspection cannot promise
+- Observability that puts a blocked request next to an evaluation score
+- **Where deterministic policy over a tool *call* — caller, arguments, ordering —
+  can and cannot be enforced today**, which mechanism answers each dimension,
+  and what the three layers in §2.2 do *not* cover (§3.10)
+
+**Not in scope**
+
+- Tool authorization **by name**. Three layers already own it (§2.2) and a
+  fourth writer would reintroduce a silent-drop bug the platform has already
+  paid for. Authorization by *call shape* is a different question, and §3.10 is
+  where it is answered
+- Reachability, sandboxing and spend, each already owned (§2.2)
+- Replacing the `authPolicy` CEL surface on `mcp-server` — though §3.10 records
+  that one class of rule it accepts cannot work, which is a doc fix, not a
+  redesign
+- Running Dogwood's reference interpreter on the request path (§D6)
+- **Inspecting a tool call as it executes, and the external policy engine that
+  would do it.** This hop sees tool results and arguments only as text inside a
+  model call (§D7). The hop that sees the call itself is the MCP hop, which has
+  its own mechanism and its own issue (#152). §3.9 draws the boundary
+
+---
+
+## 1. Summary
+
+A developer turns guardrails on by adding one block to an agent:
+
+```yaml
+guardrails:
+  enabled: true
+  profile: standard
+```
+
+From that, the platform points the agent at an **agentgateway AI route** whose
+`promptGuard` screens the prompt with **Amazon Bedrock Guardrails** before
+Bifrost ever sees it, refuses the request on a violation, and reports every
+outcome through the gateway's own `guardrail_checks` metric, surfaced as
+`oap_agent_guardrail_*` next to the evaluation scores already on the dashboard.
+No vendor, ARN, region or key appears in the Application — **and no new OAP
+component appears in the cluster.**
+
+**Five decisions carry the design, and three of them differ from #144 as
+drafted:**
+
+| | Decision | Why it is not what the issue proposed |
+|---|---|---|
+| D1 | Enforce at **agentgateway's native `promptGuard`** on an AI route in front of Bifrost | Not a Bifrost plugin: OAP runs upstream's public OSS image, which is statically linked and **cannot load plugins**, and Bifrost's own guardrails are an **Enterprise-licensed image**. Not an OAP proxy either — agentgateway already does this, and from v1.6.0 it fails closed, so **OAP ships no new component** |
+| D2 | The agent may only pick its namespace's **minimum profile or a stricter one** | A free choice of profile lets any developer switch enforcement off while the capability still reports as on. Checked at admission and again at the gateway route |
+| D3 | **`ApplyGuardrail`**, behind a backend boundary that normalizes findings | The numeric `severityScore` shape #144 and #146 describe is a **different API** (`InvokeGuardrailChecks`), with different price, quota and Region coverage |
+| D4 | The verdict is made in **one place**, and fails **closed** | #146's ask, adopted. Every nearby precedent — Bifrost Enterprise, its judge guardrail, the reference plugin PR, OAP's own `authPolicy` — fails **open**. agentgateway ≥ v1.6.0 fails closed by default, and every guard sets `failureMode: FailClosed` explicitly |
+| D5 | **Input only** in Phase 1; blocking on output **costs streaming** | Buffer and lose the stream, or stream and lose the guarantee. There is no third option, and every vendor claiming otherwise leaks |
+
+**Three things this design says about itself, because the alternative is the
+failure mode OAP has already named:**
+
+- **It needs an agentgateway upgrade first.** OAP pins v1.4.1, where
+  `bedrockGuardrails` fails open with no field to change it. v1.6.0 adds
+  `failureMode` with `FailClosed` as the default, so the design requires
+  ≥ v1.6.0 and sets `FailClosed` explicitly. The upgrade is its own PR, because
+  every agent and MCP call goes through the gateway (§D4).
+- **The hop is not yet unbypassable.** `llmGatewayUrl` is a developer parameter,
+  Bifrost needs no credential, and no egress mechanism exists in the repository.
+  Until §D7's changes land, this is a control for cooperating agents and a
+  detection for the rest.
+- **Content inspection does not close prompt injection.** It narrows it. The
+  guard's `scope` decides which text is checked, and by default that includes
+  **tool output** as it is fed back to the model, the main indirect-injection
+  path. Tool *arguments* are checked only if `ToolInput` is listed, and the
+  tool call itself, at the MCP hop, is out of reach of this hop entirely (§3.9).
+
+Dogwood (#146) is **not** a Phase 1 dependency and should not be one: upstream's
+interpreter is explicitly not for production, its event store has no eviction and
+no persistence, and AgentCore Policy — which is GA, really is Dogwood, and solves
+those problems — has no callable authorization API. What Phase 1 owes it is a
+decision seam (D4) so the engine can be substituted later without an API change.
+
+**The deterministic half has its own answer, in §3.10.** "Is this caller allowed
+to call this tool, with these arguments, in this order?" is not a detector
+question, and OAP can enforce only part of it today. *By whom* is already
+enforced. *With what attributes* is not: tool arguments are absent from the CEL
+context at the phase where authorization runs, so an argument rule written on
+`authPolicy` never matches — and with `action: Deny` it **fails open**, which
+makes it worse than no rule. *In what sequence* has no mechanism at any hop: no
+durable event store, and no correlation key the platform controls. The one hop
+handed the arguments at decision time is #152's ExtMCP processor, which is the
+strongest argument for #152 in either issue.
+
+**#152 is adjacent, not overlapping, and the two should land independently.** It
+puts a policy engine at the **tool** hop, where the JSON-RPC params carry the tool
+name and arguments; this design sits at the **model** hop, where only the prompt
+and completion exist. Neither hop can answer the other's question, so a platform
+that wants both needs both (§3.9). Three things here came from reading it: the
+fail-closed default is no longer an argument but a convention OAP's own gateway
+already follows, a verdict now records the configuration that produced it, and the
+tool-call content gap is a stated boundary rather than an open hole.
+
+---
+
+## 2. Background
+
+### 2.1 Why an agent needs more than a service does
+
+A normal service takes typed input, computes a result, and calls the
+dependencies its code names. Three properties break each of those assumptions,
+and every one of them is a control gap rather than a quality problem:
+
+| Property | What breaks |
+|---|---|
+| Input is natural language from a user | Validation cannot be a schema. The input may be an instruction to the model rather than data for it |
+| Output is generated, not computed | No code path guarantees what comes back. PII, toxicity or advice can appear in a response no test covered |
+| Tool calls are chosen at runtime | Which dependency is called, and with what arguments, is a model decision made per request |
+
+"Guardrails" is used for every consequence of those three at once, which is why
+the word causes confusion. The concerns are genuinely separate, with different
+enforcement points and different owners.
+
+### 2.2 What OAP already covers — verified against `8be66b1`
+
+Stated precisely so that nothing here is rebuilt. Every row was checked against
+the repository, not inferred from a chart name.
+
+| # | Concern | State | Where |
+|---|---|---|---|
+| 4 | **Tool authorization, by name** | Covered, three layers | `mcpServers` (agent author) → `MCP_SERVER_NAMES`; `mcpAccess` (platform) → `traffic.authorization`; `authPolicy` (server team) → `backend.mcp.authorization` |
+| 4a | **Tool authorization, by call shape** | **Not covered** — arguments and ordering are invisible at the decision point | §3.10 |
+| 5 | **Reachability** | Covered | `agent-gateway`: `jwt-policy.yaml`, `caller-identity-policy.yaml`, `credential-passthrough-policy.yaml` |
+| 8 | **Sandboxing** | Covered where used | `agentcore-code-interpreter`, `agentcore-browser`, `agent-sandbox` (Kata micro-VMs) |
+| 9 | **Detection, post-hoc** | Covered | `agent-evaluation` addon: LLM-as-judge on sampled live traces, including a `safety` evaluator |
+
+The tool-authorization split is deliberate and must not be collapsed. The
+ownership boundary is the point: the team that knows `issue_refund` is dangerous
+writes the tool rule, not the team that wants to call it. `mcp-access.yaml`
+records why the two policies write **different** fields:
+
+> Two policies of equal specificity setting the SAME field tie, and agentgateway
+> keeps one at random and silently drops the other while both report Accepted.
+
+That is the whole reason this design adds **no `tools:` key**. A third writer on
+`backend.mcp.authorization` would reintroduce that bug.
+
+**All three layers decide on the tool's *name*.** Row 4 is honest only with that
+qualifier, and row 4a is the part it leaves out. `mcpServers` is a list of server
+names, `mcpAccess` renders `jwt.sub in [...]`, and `authPolicy` renders CEL that
+agentgateway evaluates with the tool's identity in scope. Not one of them can
+express `s3_put` is allowed but not into the production bucket, or `issue_refund`
+is allowed but not twice. §3.10 is about that gap, which is what a reviewer
+should read row 4 as *excluding* rather than covering.
+
+### 2.3 What OAP does not cover
+
+#### Content and topic: absent entirely
+
+`grep -rin guardrail` over the repository returns six hits, every one of them a
+code comment about a memory or session cap. There is no inbound or outbound
+content inspection anywhere. A prompt-injection attempt reaches the model and a
+PII-bearing completion reaches the user, with nothing in the path that looks at
+either.
+
+The closest thing is the `safety` evaluator in the `agent-evaluation` addon, and
+it is the right tool for the wrong job here: it runs **after** the response was
+returned, on a **sampled** fraction of traces. It measures quality. It cannot
+refuse a request.
+
+#### Spend: the mechanism exists and is switched off
+
+`gitops/addons/configs/bifrost/values.yaml` defines `governance` with a
+`budget-platform` budget and a `rate-limit-standard` rate limit. Two settings
+make them advisory:
+
+```yaml
+bifrost.client.enforceAuthOnInference: false
+plugins.governance.config.is_vk_mandatory: false
+```
+
+The chart's own design notes state the consequence:
+
+> Bifrost runs with governance enabled but `is_vk_mandatory: false` — all
+> in-cluster callers can reach the Bedrock backend without authentication.
+
+#### Two things #144 records as covered are not present
+
+| #144 says | Repository at `8be66b1` |
+|---|---|
+| "The `network-policy-enforcement` addon exists" | No such chart, no registry entry, no `enabled-addons.yaml` key. There is **no egress policy mechanism at all** |
+| — | `kyverno`, `kyverno_policies` and `kyverno_policy_reporter` are all `false`, so there is no admission policy engine either |
+
+Both matter to this design, because both are what would make the enforcement
+point hard to skip (§2.4).
+
+### 2.3a How this is done in practice
+
+Every serious implementation puts a gateway hook around the model call and
+treats the detector as a pluggable managed service. This design is an instance
+of that shape, not an invention. Of the managed detectors, Bedrock Guardrails is
+the only one that both **enforces** and takes **natural-language denied topics**,
+which is why it is the Phase 1 backend. The survey — gateways, detectors,
+in-process libraries, and how each fails and streams — is in the research
+appendix, [§D](agent-guardrails-research.md#d-how-guardrails-are-done-in-practice).
+
+### 2.4 The rule that decides the whole design, and how OAP currently fails it
+
+> **A guardrail belongs at a hop the agent cannot bypass.**
+
+Anything inside the agent image is a convention: a developer can omit it and a
+compromised agent certainly will. So the enforcement point matters more than the
+detection technology, and the honest question is not "does traffic go through
+Bifrost" but "can an agent choose not to".
+
+Today it can. Three facts compose:
+
+| Fact | Source |
+|---|---|
+| The gateway URL is a **developer-settable parameter** with a default, not a platform constant | `agent.cue`: `llmGatewayUrl: *"http://bifrost.bifrost.svc.cluster.local:8080/v1" \| string` |
+| Bifrost requires no credential, so nothing distinguishes a sanctioned caller | `is_vk_mandatory: false`, `enforceAuthOnInference: false` |
+| Nothing restricts where an agent pod may connect | no egress policy addon exists (§2.3) |
+
+So an agent can point itself at any reachable OpenAI-compatible endpoint and
+leave the platform's path entirely.
+
+**One fact limits the damage, and it is worth being precise about.** Agents hold
+no Bedrock IAM permission: `agent.cue` emits no Bedrock policy, and model access
+is Bifrost's own ServiceAccount through Pod Identity. So the bypass cannot reach
+OAP's own Bedrock path — it can only reach a *different* provider, and only if
+that provider is reachable and the agent carries its own credential.
+
+That makes Bifrost the correct enforcement point and an **incomplete** one. This
+design treats closing the gap as a named dependency with its own phase, not as
+an assumption (§D2, §6).
+
+---
+
+## 3. Decisions
+
+### D1. The enforcement point: agentgateway's own `promptGuard`, on an AI route in front of Bifrost
+
+**Revision 4 reverses this decision.** Revision 3 proposed an OAP-owned
+inspection proxy. @shapirov103 pointed out in review that agentgateway is also an
+LLM gateway with native prompt guards, and prototyped it against Bifrost on a dev
+spoke. That is correct, and it removes the proxy entirely. The guards exist in
+the version OAP pins; failing closed needs v1.6.0 (§D4).
+
+Revision 3's error is worth naming precisely, because it is a class of mistake
+rather than a detail: it observed that OAP routes only A2A and MCP traffic
+through the gateway today, and concluded the gateway *could not* see a model
+call. That is a fact about OAP's routing read as a limit of the product. The
+check that would have caught it — read the CRD, not the topology — is the same
+check this document applies to every other claim.
+
+#### What agentgateway v1.4.1 actually offers, verified in source
+
+| Fact | Source, at tag `v1.4.1` |
+|---|---|
+| `promptGuard` takes **`request`** and **`response`** guard lists, 1–8 entries each | `controller/api/v1alpha1/agentgateway/ai_policy.go` — `AIPromptGuard`, `MinItems=1`, `MaxItems=8` |
+| Five guard types, exactly one per entry: `regex`, `webhook`, `openAIModeration`, `bedrockGuardrails`, `googleModelArmor` | same file — `+kubebuilder:validation:ExactlyOneOf` on `PromptguardRequest`. `openAIModeration` is request-only; the other four work on both phases |
+| `bedrockGuardrails` takes `identifier`, `version`, `region`, and `policies.backendAuth.aws` | same file — `BedrockGuardrails`; example at `examples/llm-prompt-guard/bedrock-config.yaml` |
+| It calls **`ApplyGuardrail`** — `POST /guardrail/{identifier}/version/{version}/apply`, `source: INPUT` on request guards and `OUTPUT` on response guards — and reads `BLOCKED` / `ANONYMIZED` assessments | `crates/agentgateway/src/llm/policy/bedrock_guardrails.rs` — `ApplyGuardrailRequest`, `is_blocked()`, `is_anonymized()` |
+| `regex` carries `action: MASK \| REJECT` and five built-in patterns (SSN, credit card, phone, email, Canadian SIN) | `ai_policy.go` — `Action`, `BuiltIn` |
+| The dataplane implements all of it, not just the CRD | `crates/agentgateway/src/llm/policy/mod.rs` — `apply_prompt_guard`, `mod bedrock_guardrails` |
+| Guard outcomes are already a metric: `guardrail_checks`, labelled `phase` (Request/Response) and `action` (**Allow / Mask / Reject / FailOpen**) | `crates/agentgateway/src/telemetry/metrics.rs` — `GuardrailLabels`, `GuardrailAction` |
+| The AI backend reaches Bifrost because `host` / `port` **"override the provider default"** for a managed provider, and `pathPrefix` overrides `/v1` | `agentgateway.dev_agentgatewaybackends.yaml` |
+
+Three fields this design depends on arrive in **v1.6.0** (verified at that tag
+and at v1.7.0):
+
+| Field | What it gives the design |
+|---|---|
+| `failureMode` on `bedrockGuardrails`, `openAIModeration`, `googleModelArmor` — `FailClosed` by default | the fail-closed posture of §D4 |
+| `action: Reject \| Audit` on the same guards — `Audit` "invokes the guard and records what it would have done without enforcing" | the `observe` profile, natively, with no extra logic |
+| `scope: [SystemPrompt, Messages, ToolOutput, ToolInput]` — default the first three | which text is checked on each call, and therefore what it costs (§5) |
+
+So the topology is `agent → agentgateway (AI route + promptGuard) → Bifrost → Bedrock`.
+Bifrost keeps its job — virtual keys, governance, provider fan-out — and the
+guardrail moves one hop earlier, onto infrastructure OAP already runs and
+already upgrades.
+
+**What this deletes from the design:** a Deployment, a chart, a container image,
+an OpenAI-compatible protocol implementation that would have had to stay
+compatible with Bifrost's, a streaming path, and the operational burden of all
+of it. @shapirov103's objection was that OAP is not in the business of building
+scalable proxies and that a Python one would be the wrong instrument regardless.
+Both hold, and neither needs arguing now, because the proxy is gone.
+
+**What survives unchanged:** the API in D2, the tighten-only rule, the backend
+boundary in D3, the verdict semantics in D4, the streaming tradeoff in D5, and
+every observability contract in D8. They were written against a *seam*, not
+against the proxy, which is the one thing revision 3 got right.
+
+#### Why not Bifrost's own plugins
+
+OAP runs upstream's public OSS Bifrost image, which is statically linked and
+cannot load Go plugins, and Bifrost's own guardrails need its Enterprise image
+and fail open. So the guard runs one hop earlier, at the gateway. The source
+reading behind this is in the research appendix, [§A](agent-guardrails-research.md#a-bifrost-plugins-and-images).
+
+#### The options, compared
+
+| Option | Verdict |
+|---|---|
+| **agentgateway `promptGuard` on an AI route in front of Bifrost** (**chosen**) | Native, implemented in the dataplane, calls `ApplyGuardrail`, emits guard metrics, and adds **no OAP-owned component at all**. Needs agentgateway ≥ v1.6.0 to fail closed (§D4) |
+| An OAP-owned inspection proxy | **Rejected, and this is the reversal.** It builds and operates a service to do what the gateway already does. A platform that runs a gateway and then puts its own proxy beside it for one feature has two things to upgrade and one of them has no users but itself |
+| Bifrost Enterprise guardrails | Rejected as the default: commercial licence, private image, fails open. Still reasonable as an alternative backend for customers holding a licence (§D3) |
+| A custom Bifrost `.so` plugin | Rejected: OAP would own a Bifrost build and a per-upgrade rebuild, for a feature the gateway gives for free |
+| A library in the agent image (NeMo, Guardrails AI, LlamaFirewall, Presidio) | Rejected as the control. It lives where a developer can omit it, which is the definition of a convention rather than a guardrail. Any of them can sit behind the `webhook` guard instead |
+| AgentCore policy | Rejected as the platform answer. AgentCore components are optional and per-agent, so binding enforcement there leaves every EKS agent unguarded |
+| Kyverno / OPA admission | Yes, but for a different job: what an agent may *declare* (§D2). Not runtime content. Note `kyverno` is `false` in every overlay today |
+
+#### What OAP actually builds, now that the proxy is gone
+
+No service. The capability is **configuration OAP renders**, in the shape the
+platform already uses for MCP:
+
+| Object | Who writes it | Precedent in the repo |
+|---|---|---|
+| `AgentgatewayBackend` of type `ai`, provider `openai`, `host`/`port` pointed at the Bifrost Service, `pathPrefix: /v1` | the `agent-gateway` chart, once per cluster | `backend.yaml` already renders the MCP backend this way |
+| **One `HTTPRoute` per guardrail profile** on the existing gateway, in the gateway's own namespace, each gated by a `traffic.authorization` `Require` rule on `jwt.sub` | the `agent-gateway` chart | `mcp-server.cue` renders a `Require` on `jwt.sub in [...]` per MCP route; `mcp-access.yaml` renders platform grants from chart values |
+| `AgentgatewayPolicy` with `backend.ai.promptGuard`, `targetRefs` → that route | the `agent-gateway` chart, from the profile catalog | `mcp-access.yaml` renders platform-owned policies from chart values |
+| Bedrock `Guardrail` + `GuardrailVersion` | Crossplane, from the catalog (§D3) | unchanged from revision 3 |
+| `guardrails` block on the `agent` component → which profile's route the agent is pointed at | `agent.cue` | unchanged from revision 3 (§D2) |
+
+`backend.ai` and `backend.mcp` are **different fields on the same CRD**, so this
+adds no second writer to `backend.mcp.authorization` and does not reintroduce
+§2.2's silent-drop collision. The one-writer rule now applies to `backend.ai`
+instead, and the platform owns it — which is exactly how D2's tighten-only rule
+gets enforced rather than merely asserted.
+
+#### What stops an agent calling a weaker profile's route
+
+Without a gate, a per-profile route is a bypass: any agent with a token could
+send its model calls to the `observe` route, and "only stricter" would be gone
+without touching `llmGatewayUrl`. The gate follows directly from tighten-only:
+
+| Route | `Require` rule | Why |
+|---|---|---|
+| A profile **at or above** the platform default (`standard`, `strict`) | admits every agent ServiceAccount | moving to a stricter profile is always allowed, so it needs no grant |
+| A profile **below** the default (`observe`) | admits only the agents named in a platform grant: `jwt.sub in [...]` | a weaker profile is a platform decision, never a developer's |
+
+The grants live in `agent-gateway` chart values per environment, exactly like
+`mcpAccess`:
+
+```yaml
+guardrailAccess:
+  observe:
+    - team-a/eval-sandbox        # <namespace>/<agent>, rendered as
+                                 # system:serviceaccount:team-a:eval-sandbox
+```
+
+Three properties follow:
+
+- **The routes live in the gateway's namespace.** An agent team cannot create,
+  edit or relabel them, so the only way onto a weaker route is a reviewed
+  chart change.
+- **One expression per route.** `traffic.authorization` rules from different
+  policies on the same route are merged and ANDed, as `mcp-server.cue` already
+  records, so each route carries one `Require` listing every admitted subject.
+- **A refused route is a 403 at the gateway**, before any guard or model call.
+  The agent's CUE also rejects a weaker profile at admission (§D2), so in
+  practice the 403 only fires for an agent that sets `llmGatewayUrl` by hand.
+
+**One property still makes this incomplete, and it is now load-bearing rather
+than a hardening item:** an agent that points `llmGatewayUrl` at Bifrost
+directly skips the gateway and therefore the guard. Under the proxy design that
+was one of three bypasses; here it is *the* bypass, and closing it is a
+prerequisite rather than Phase 2 polish. §D7 is rewritten accordingly.
+
+### D2. The developer API: a `guardrails` block that can only tighten the profile
+
+The split that worked for evaluation: the developer declares **what**, the
+platform owns **how**. No vendor, ARN, region or key in the Application
+(`oam-authoring.md` §1).
+
+File: `platform/oam/definitions/components/agent.cue` (proposed `parameter` addition)
+
+```cue
+// +usage=Runtime content and topic guardrails for this agent. Requires
+// agentgateway v1.6.0 or later with guardrail profiles enabled in the
+// agent-gateway chart.
+guardrails?: {
+	// +usage=Turn guardrails on for this agent. Off by default, unless the
+	// platform requires guardrails in this namespace: then it is on, and false
+	// is rejected at admission.
+	enabled: *false | bool
+	// +usage=Platform profile name, resolved from the platform's profile catalog.
+	// The profile owns the detectors, their thresholds, and the WEAKEST verdict
+	// allowed. A profile below the namespace's minimum is rejected at admission.
+	profile: *"standard" | =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$"
+}
+// No per-agent onViolation or inspect override. Profiles are shared routes
+// (§D1), so every agent on a profile gets that profile's guards. To be
+// stricter, an agent chooses a stricter profile.
+```
+
+#### Why the agent may only tighten
+
+A free choice of profile would let any developer pick `observe` and switch
+enforcement off for their agent while the capability still reports as on. That
+is the failure shape this platform has already named: a control that produces
+the appearance of coverage.
+
+So profiles are **ordered** (`observe` < `standard` < `strict`), each namespace
+has a **minimum**, and an agent may pick that profile or a stricter one. It is
+enforced twice, and the two checks are independent:
+
+| Where | What it checks |
+|---|---|
+| Admission, in the agent's CUE | the declared `profile` is at or above the namespace minimum (§D2, *How admission rejects*) |
+| The gateway, on the route | a route below the default admits only agents named in a platform grant (§D1) |
+
+This is not a new idea in OAP. It is the semantics `mcp-access.yaml` already
+uses:
+
+> Both are `Require` rules, so a caller must be in both lists: when the server
+> has an allowlist, mcpAccess can only narrow it and cannot add an agent the
+> server did not list.
+
+A team that genuinely needs a weaker profile gets a grant, which is a reviewed
+chart edit with a name attached.
+
+#### How admission rejects a weaker profile
+
+CUE renders without reading the cluster, so it cannot look up a catalog. But it
+does not need to: the `oam-agent-components` chart already templates platform
+values into the rendered definition. `agent.cue` carries
+`{{ .Values.global.clusterName }}`,
+`{{ .Values.global.agentIdentity.propagateCallerToken }}` and
+`{{ .Values.global.agentGateway.namespace }}` today, and Helm fills them in.
+
+The same mechanism carries the guardrail policy into the CUE:
+
+```yaml
+# oam-agent-components values, per environment
+global:
+  guardrails:
+    order: [observe, standard, strict]   # weakest first
+    defaultProfile: standard
+    requiredNamespaces:                  # enabled: false is rejected here
+      team-payments: strict              # value = that namespace's minimum
+```
+
+The CUE then checks, with the message naming the minimum:
+
+- `profile` is a known name in `order`;
+- `profile` is at or above the minimum for `context.namespace` (or
+  `defaultProfile` for a namespace not listed);
+- in a required namespace, `enabled` is not `false`.
+
+One implementation risk to settle in Phase 1: today's templated values are all
+**strings** inside CUE strings, so the raw source still parses. A list or map
+has to arrive as a JSON string the CUE decodes, and `vela def render` must
+accept the raw source in that form.
+
+#### The rendered output
+
+No new object. The block changes **one value** the agent already gets:
+`LLM_GATEWAY_URL` (`agent.cue:153`), which today comes from
+`modelConfig.llmGatewayUrl` and defaults to Bifrost. With guardrails on, it is
+the profile's route on the gateway instead:
+
+```cue
+_llmUrl: [
+	if parameter.guardrails != _|_ && parameter.guardrails.enabled {
+		"http://agentgateway-proxy.{{ .Values.global.agentGateway.namespace }}.svc.cluster.local:8080/llm/" +
+			parameter.guardrails.profile + "/v1"
+	},
+	parameter.modelConfig.llmGatewayUrl,
+][0]
+// env: {name: "LLM_GATEWAY_URL", value: _llmUrl}
+```
+
+Revision 4 rendered an `<agent>-guardrails` declaration ConfigMap here. It is
+gone: only the deleted proxy read it. The gateway reads its own policy, and the
+dashboard takes the profile from the route (§D8).
+
+There is deliberately **no `tools:` key** (§2.2) and **no threshold number**: a
+threshold is a property of a detector, which the profile owns.
+
+File: `platform/oam/examples/example-agent-guardrails.yaml` (proposed)
+
+```yaml
+spec:
+  components:
+    - name: support-assistant
+      type: agent
+      properties:
+        systemMessage: "You are a support assistant."
+        modelConfig:
+          modelId: claude-sonnet
+        guardrails:
+          enabled: true
+          # What `standard` means — which detectors, at what strength — is in
+          # the platform's profile catalog. Choose a stricter profile to be
+          # stricter; a weaker one than the namespace minimum is rejected.
+          profile: standard
+```
+
+### D3. The detection backend: behind a boundary, Bedrock Guardrails first
+
+Customers run different content-safety stacks, and three of the four candidates
+return mutually incompatible value types. So "which service judges the text" is
+a property of the **profile**, not something an agent knows — the same
+conclusion evaluation reached in its §4a.
+
+The boundary is the guard type on the profile's route. Nothing else in the
+design names a vendor:
+
+| Generic — outside the boundary | Backend-specific — behind it |
+|---|---|
+| the profile name an agent declares, and its route | which guard type the profile uses (`bedrockGuardrails`, `googleModelArmor`, `openAIModeration`, `webhook`) |
+| the namespace minimum and the route grants (D2) | how detectors and strengths are expressed |
+| `failureMode: FailClosed` and `scope` (D4, §5) | how findings are named and scored |
+| `oap_agent_guardrail_*` recording rules (D8) | what the service is called, and its quotas |
+
+#### The normalization problem, and the contract that solves it
+
+The four candidate services disagree on the type of a finding's strength. This
+is not a detail — a policy written against one shape silently cannot be
+evaluated against another.
+
+| Service | Strength type |
+|---|---|
+| Bedrock `ApplyGuardrail` | **string enum** `NONE \| LOW \| MEDIUM \| HIGH` (content filters only; denied topics, word filters and PII carry **no** strength at all) |
+| Bedrock `InvokeGuardrailChecks` | **discrete float** — "numeric value in the range [0, 1] … These scores are discrete with the possible values being 0, 0.2, 0.4, 0.6, 0.8, and 1.0" |
+| Azure AI Content Safety | **integer** severity, `0/2/4/6` or the full `0-7` |
+| Google Model Armor | **string enum** `LOW_AND_ABOVE \| MEDIUM_AND_ABOVE \| HIGH`, and a boolean `matchState` for several filters |
+
+**Since D1's reversal, OAP does not write this normalizer — the gateway already
+is one.** `promptGuard`'s five guard types are the boundary, and the three
+managed services above each have their own entry (`bedrockGuardrails`,
+`openAIModeration`, `googleModelArmor`), with `webhook` as the escape hatch for
+anything else. Swapping a backend is a field change in the profile catalog, not
+a new Python module. That is the backend boundary @shapirov103 described, and it
+is better than the one revision 3 designed because upstream maintains it.
+
+What survives is the **catalog's** obligation, because the disagreement above is
+real and the gateway does not paper over it:
+
+- **A profile names its guard type explicitly**, and the catalog records which
+  detectors that type can express. `bedrockGuardrails` has no numeric score, so
+  a profile written against a threshold is invalid on it — the catalog refuses
+  such a profile at render time rather than at request time.
+- **Guard types are not interchangeable at equal strength.** Moving a profile
+  from `bedrockGuardrails` to `googleModelArmor` changes what "MEDIUM" means.
+  The catalog therefore pins the guard type per profile, and a change to it is
+  a reviewed chart edit with a new `profileVersion` (§D8).
+- **An unparsed backend response is an error, not a clean result.** The gateway
+  owns this now, and its answer is `action="FailOpen"` — which is honest, and is
+  precisely the fail-open §D4 records as this design's accepted cost.
+
+#### Why Bedrock Guardrails, and which of its two APIs
+
+| Option | Verdict |
+|---|---|
+| **Bedrock `ApplyGuardrail`** (**chosen, Phase 1 — and it is what the gateway already calls**) | Same account OAP already calls for inference. One `bedrock:ApplyGuardrail` permission: "If you are using guardrails independently with the `ApplyGuardrail` API … you only need the `bedrock:ApplyGuardrail` permission." Covers injection, PII, toxicity and **denied topics** in one object, and is the only candidate that both enforces and takes natural-language topic definitions. Independently confirmed by D1's reversal: agentgateway's `bedrockGuardrails` guard posts to `/guardrail/{identifier}/version/{version}/apply` — this API, this shape — so the choice needs no OAP code to realise it |
+| Bedrock `InvokeGuardrailChecks` | **Not Phase 1, but the answer to #146's score question.** It is where numeric `severityScore` actually lives, and it separates prompt attack into `JAILBREAK` / `PROMPT_INJECTION` / `PROMPT_LEAKAGE`. Against it: detect-only ("The API doesn't block, pass, or redact content"), no denied topics, and **7 Regions**. Adopt it behind the same boundary when a policy needs a number |
+| Azure AI Content Safety | A real option for a customer already on Azure. Standalone-only by design, which fits a gateway. Against it for OAP's default: cross-cloud egress and credentials, no PII in the standalone API (that is a second service, Azure AI Language, at ~2.7× the unit price), and a documented retirement of groundedness and custom categories on 2027-04-30 |
+| Google Model Armor | Also genuinely model-agnostic, and the only candidate with org-wide policy floors. Against it for OAP: cross-cloud hop, a **1,200 QPM per-project** quota, and streaming that is gRPC-only and cannot do PII de-identification |
+| An OSS classifier behind the `webhook` guard | Keep as an option for air-gapped installs. Not Phase 1: it moves model-hosting and tuning into the platform's scope |
+
+**#146 needs one correction here, and it changes a conclusion.** The issue says
+Dogwood's `ContentFilterFinding` / `PromptAttackFinding` / `SensitiveInfoFinding`
+carrying `severityScore` / `confidenceScore` is "exactly the finding shape
+Bedrock Guardrails emits". It is not the shape `ApplyGuardrail` emits — that API
+has no numeric score anywhere except contextual grounding, and prompt attack is a
+*content filter category* (`type: PROMPT_ATTACK`), not its own finding type. The
+shape it describes is `InvokeGuardrailChecks`. The two APIs differ in price,
+quota, Region coverage and whether they enforce at all, so "which Bedrock API"
+is a real decision and not a naming detail.
+
+#### Three Bedrock facts that shape the design rather than decorate it
+
+1. **Masking and blocking are indistinguishable from the top-level result.** A
+   PII filter set to `ANONYMIZE` "reports the same `stopReason` as a block, so
+   you can't distinguish the two from `stopReason` alone". Telling them apart
+   needs the per-entry `action` (`ANONYMIZED` vs `BLOCKED`). The gateway does
+   this correctly already — `bedrock_guardrails.rs` exposes `is_blocked()` and
+   `is_anonymized()` as separate predicates over the assessments, and the
+   dataplane maps them to distinct `Rejected` and `Masked` outcomes. Worth
+   recording because a reviewer would otherwise have to take it on trust that
+   the native guard does not collapse redaction into a block.
+2. **The response contains the unredacted values.** "The trace returns the
+   unmasked values … treat the trace as sensitive data and don't log it
+   alongside ordinary responses." Under D1's reversal this stops being OAP code
+   and becomes a **gateway logging-configuration requirement**: the guard's
+   response body must never reach an access log or a metric label. Phase 1 must
+   assert that, because the component holding the sensitive data is now one OAP
+   configures rather than one it writes.
+3. **Bedrock's Converse integration does not see tool-call content, but this
+   design does not use it.** Verbatim: PII is "neither blocked nor masked" in
+   `toolUse.input`, `toolResult`, or `toolSpec.description` / `inputSchema`.
+   The gateway calls `ApplyGuardrail` with text it extracts itself, so what is
+   checked is set by `scope`: tool results by default, tool arguments on
+   request (§5, §D7).
+
+#### Where the guardrail objects live
+
+Declarative, like every other AWS resource in OAP — and this is an **added**
+provider, not an upgrade:
+
+| | |
+|---|---|
+| OAP installs today | `xpkg.upbound.io/upbound/provider-aws-bedrockagentcore:v2.5.3` — the `bedrockagentcore` family |
+| A guardrail is | `bedrock.aws.upbound.io/v1beta1`, `kind: Guardrail` — the **`bedrock`** family, a different package |
+| Minimum versions | `Guardrail` from **v2.7.0**, `GuardrailVersion` from **v2.9.0** (`crossplane-contrib/provider-upjet-aws`) |
+
+So Phase 1 adds `provider-aws-bedrock` at ≥ v2.9.0 beside the existing provider.
+The two families share the `default` ProviderConfig and its Pod Identity
+credentials, exactly as `crossplane-agentcore` already documents. Pin the
+version in the chart and confirm the published package name before it goes in an
+install manifest.
+
+**Who holds `bedrock:ApplyGuardrail` changed with D1.** The guard authenticates
+through `policies.backendAuth.aws: {}`, which is the gateway's own AWS identity,
+so the permission belongs on the **`agentgateway` ServiceAccount** rather than
+on a new component's. That is a smaller surface than revision 3's — no new
+ServiceAccount, no new Pod Identity association — and a broader one in a way
+worth stating: the gateway's identity gains a Bedrock permission it did not have
+before. Scope it to the guardrail ARNs the catalog creates, not to `*`.
+
+### D4. The verdict is a seam, and it fails closed
+
+This is #146's one substantive ask of #144, and it is right. If the comparison
+that turns findings into a verdict is inlined at the call site, a finding can
+never be combined with anything else, and "block only if severity is high **and**
+no human approved in the last hour" stays unwritable forever.
+
+So the verdict is made in **one place**, and nothing else may decide: the
+`promptGuard` entries on the profile's route, rendered from the catalog.
+
+| | |
+|---|---|
+| Phase 1 | the native `bedrockGuardrails` guard. Bedrock's own guardrail configuration holds the per-category strengths |
+| How a policy engine plugs in later | as a `webhook` guard on the same route, with **no change** to the OAM API, the ConfigMap contract or the metrics |
+| What the webhook receives | the request text and selected headers, and identity through CEL. That is what a stateful policy (Dogwood, Cedar, OPA) would need |
+
+#### Fail-closed, per profile, and stated in the open
+
+#144 calls this "the single most consequential choice". Everything nearby gets it
+wrong, which is the strongest available argument for being explicit:
+
+| Precedent | Default |
+|---|---|
+| Bifrost Enterprise guardrails | "Provider error or timeout \| **Fails open**: the error is reported and the next profile still runs" — with no documented toggle |
+| Bifrost's own judge-based guardrail | "Prompt Guardrails therefore **fails open** on judge/runtime errors" |
+| The reference plugin PR (#4591) | `FailClosed bool` … "Default false (**fail open**) keeps the gateway available if ATR is down" |
+| Bedrock Guardrails | AWS documents the error codes and retry guidance and **publishes no recommendation at all** for what a safety-critical caller should do |
+| OAP's own `authPolicy` | the CRD warns `Deny` "is not recommended because expression failures fail to deny" — a CEL error **fails open** today |
+
+**One precedent gets it right, and it is the nearest neighbour.** agentgateway's
+MCP guardrail processor (`backend.mcp.guardrails.processors[].remote`, the hook
+#152 builds on) ships `failureMode` with **`FailClosed` as the documented
+default** — its table row reads "Fail closed (default) … Deny the request". So
+the posture argued for here is not novel; it is what the one adjacent
+implementation in OAP's own gateway already does.
+
+##### This design requires agentgateway v1.6.0 or later
+
+At the pinned **v1.4.1** the LLM `promptGuard` path fails **open**: every guard
+type except `webhook` falls back to `FailOpen`, and `BedrockGuardrails` has no
+field to change it.
+
+That is fixed upstream, so the design takes the fix rather than working around
+it. agentgateway/agentgateway#3618 ("add fail open/fail closed policy to all
+types", merged 2026-09-22) adds `failureMode` to `bedrockGuardrails`,
+`openAIModeration` and `googleModelArmor`. Verified at **v1.6.0**:
+
+| Where | What it says |
+|---|---|
+| `controller/api/v1alpha1/agentgateway/ai_policy.go`, `type BedrockGuardrails struct` | `failureMode` — "`FailOpen` allows the request to continue; `FailClosed` (default) rejects it" |
+| `crates/agentgateway/src/llm/policy/mod.rs` | `RequestGuardKind::BedrockGuardrails(bg) => bg.failure_mode`, the same on the response side, and `_ => FailureMode::FailClosed` for the rest |
+| `FailureMode` enum | `#[default] FailClosed` |
+
+So the decision is:
+
+- **The capability requires agentgateway ≥ v1.6.0.** v1.7.0 is the latest
+  release and the recommended target, because it also brings `mcp.params` for
+  the tool hop (§3.10). OAP pins `v1.4.1` today, in
+  `gitops/addons/registry/gateway.yaml` for both `agentgateway-crds` and
+  `agentgateway`.
+- **Every guard the platform renders sets `failureMode: FailClosed`
+  explicitly.** The default is already `FailClosed`. Writing it anyway means
+  a future upstream default change cannot quietly flip the posture, and a
+  reader of the policy sees the posture without knowing the default.
+- **The upgrade is a separate PR, landed first.** Every agent and MCP call goes
+  through the gateway, so the upgrade has a far larger blast radius than this
+  capability. That PR runs the identity and delegation live tests
+  (`scripts/test-identity-matrix.sh`). Phase 1 of this design starts after it
+  merges.
+
+Three properties keep fail-closed from being a slogan:
+
+- **`FailClosed` holds for every shipped profile**, including `observe`. An
+  `observe` profile reports violations and blocks nothing. But a backend it
+  cannot reach is an *unknown*, not a clean result.
+- **A fail-open stays a distinct, alerted outcome.** The `FailOpen` alert is
+  kept for one case: someone sets `failureMode: FailOpen` on purpose. Upstream
+  records it as `action="FailOpen"`, not `Allow`, so it never reads as "the
+  content was fine".
+- **A fail-closed refusal has its own alert.** A guardrail that refuses because
+  Bedrock is unreachable is a working control *and* an outage.
+
+#### Retry is part of the verdict, not a wrapper around it
+
+Throttling returns a `ThrottlingException`, which AWS says to handle with
+"retries with exponential backoff and random jitter". With `FailClosed`, a
+throttle that is not retried is a **refused request**, so a burst turns
+straight into agent errors. The gateway's retry budget applies first, and only
+then does `failureMode` decide. The binding quota is text units per second,
+not requests, and it is shared across every cluster in the account and Region
+(§5).
+
+### D5. Input first. Output inspection costs streaming, and that is a contract
+
+#144 lists streaming as needing "an explicit answer, not a default". The honest
+answer is that output inspection and token streaming are in genuine conflict,
+and every vendor that claims to have solved it has not.
+
+| Approach | What it actually gives you |
+|---|---|
+| Bedrock `streamProcessingMode: sync` | "guardrails will buffer and apply the configured policies to one or more response chunks before the response is sent back to the user … it provides better accuracy" — i.e. correctness, at the cost of the stream |
+| Bedrock `streamProcessingMode: async` | "response chunks may contain inappropriate content until guardrails scan completes" — and "doesn't support the masking of sensitive information with asynchronous mode". **Not a control** |
+| Bifrost Enterprise guardrails | "If any matched rule can block, Bifrost holds the complete stream until generation and guardrail evaluation finish" — the same trade, stated plainly |
+| Azure OpenAI's buffered default | leaks the tail anyway: "a blocklisted term in roughly the last 15 to 30 words of a streamed response was returned to the client with `finish_reason: "stop"`" |
+| Azure's async filter | tokens stream unscanned and the application is told to "stop content display and **remove or replace content that was already displayed**" |
+
+Every "streaming guardrail" is therefore one of: buffer and lose the stream, or
+stream and lose the guarantee. There is no third option, and a design that
+implies otherwise is the fail-silent shape again.
+
+**The decision:**
+
+| Phase | Inspection | Streaming |
+|---|---|---|
+| **1** | **input only** — `promptGuard.request` | unaffected. No conflict exists on the request path, which is why @shapirov103's prototype saw streaming work with a request guard in place |
+| **2** | input + output, a profile whose response guard uses `action: Audit` | unaffected — detection needs no buffering |
+| **2** | input + output, a profile whose response guard rejects | the gateway buffers, so **an agent on this profile does not stream** |
+| **2** | input + output, a profile whose response guard masks, **on a stream** | **not available at all** — see below |
+
+**agentgateway expresses this trade as a flag, and adds one constraint revision 3
+did not know about.** `AIPromptGuard.streaming` is an enum whose only non-default
+value is `Enabled`, documented as "Defaults to disabled to preserve streaming
+throughput unless explicitly enabled" — so response guards simply do not run on
+a stream until the platform opts in, which is the right default and matches
+Phase 1 doing nothing on the response path.
+
+The new constraint: **masking is not supported on the streaming path.** It
+holds at v1.6.0 and v1.7.0, where the CRD documents it on the streaming flag:
+
+> A guard can reject a streamed response, but `Mask` actions are not applied
+> to streamed content.
+
+and the dataplane refuses to count a masked stream as a pass ("Streaming cannot
+apply masking; do not report this as a passed check"). So on a stream the
+available verdicts are **allow or reject**, never redact. That is consistent
+with Bedrock's own `async` mode, which "doesn't support the masking of
+sensitive information", and it means a masking profile and streaming are
+mutually exclusive rather than merely expensive.
+
+That is a **contract, not a surprise**: an agent whose profile blocks on output
+does not stream, an agent whose profile redacts on output cannot stream at all,
+the `+usage` text says both, and `oap_agent_guardrail_info` carries a
+`streaming="buffered"` label so it is visible on the dashboard rather than
+discovered in a latency graph.
+
+Starting with input only is also where the value is. Prompt injection, jailbreak
+attempts and a user pasting someone else's PII are all inbound, they are the
+concerns with no coverage at all today, and inspecting them adds one call to the
+request path instead of doubling the response path.
+
+### D6. Dogwood: adopt the decision *shape* now, not the engine
+
+#146 asks whether Dogwood should be the policy language for guardrail and
+tool-call decisions. The answer that survives reading the language guide and the
+interpreter source is **yes as the target shape, offline first, and never the
+reference interpreter on the request path.** Upstream says so itself, in bold:
+
+> This reference interpreter is **NOT** intended for production use.
+
+#### Why, in short
+
+| | |
+|---|---|
+| What it is | a Cedar-derived policy language with three temporal operators (`formerly`, `previous`, `since`) and windowed `count` / `sum` |
+| Why not on the request path | the reference interpreter's event store has no eviction and no persistence, every decision is O(trace length), and every provider runs on every request |
+| Where it could run | AgentCore Policy is GA and really is Dogwood, but has no callable authorization API; a decision is reachable only through an AgentCore Gateway on the data path |
+| What Phase 3 tests | offline replay over recorded traffic, gated on converting OTel traces to `dogwood replay`'s text format |
+
+The five corrections to #146, the interpreter source reading and the Phase 3
+plan are in the research appendix, [§B](agent-guardrails-research.md#b-dogwood).
+
+#### What Phase 1 owes this option
+
+Nothing in Phase 1 depends on Dogwood, and Phase 1 must not wait for it. The
+whole debt is D4's seam: the verdict is made only by the profile's guards, so
+Dogwood, Cedar or OPA can be added later as a `webhook` guard on the same route
+without touching the OAM API, the route contract or the metrics.
+
+### D7. Making the hop hard to skip, and saying plainly what it is not
+
+#### The dependency chain, as three independent changes
+
+§2.4 established that an agent can leave the platform's model path today. A
+guardrail at that path inherits the gap, so closing it is part of this design
+rather than a footnote.
+
+**D1's reversal promotes change 1 from Phase 2 to Phase 1.** Under the proxy
+design, agents already pointed at a platform endpoint and the question was
+whether they could *change* it. Now the endpoint itself moves: agents must reach
+the **gateway's** AI route instead of the Bifrost Service. So repointing
+`llmGatewayUrl` is not hardening — it is how the capability reaches any traffic
+at all, and an agent keeping today's value is simply unguarded.
+
+| # | Change | Effect | Owner |
+|---|---|---|---|
+| 1 | `llmGatewayUrl` defaults to the **gateway's AI route** and stops being a developer override | the guard is on the path at all, and an agent can no longer *declare* its way off it | this design, **Phase 1** |
+| 2 | A default-deny egress NetworkPolicy on agent namespaces, allowing the gateway, the collector and DNS | an agent cannot *reach* Bifrost or a third party directly | new work; **no egress addon exists today** (§2.3) |
+| 3 | Per-workload Bifrost virtual keys, then `is_vk_mandatory: true` | Bifrost stops serving unauthenticated in-cluster callers, so the gateway becomes the only caller holding a usable key | already designed in `gitops/addons/charts/bifrost/DESIGN.md` |
+
+Change 3 is also worth more than it was. Under the proxy design it protected
+Bifrost from agents that skipped one OAP component; now the gateway is a natural
+single holder of the virtual key, so (3) turns "agents should go through the
+gateway" into "only the gateway can get an answer". **(2) and (3) together are
+what make this a control rather than a convention**, and (3) no longer needs new
+credential plumbing invented for it.
+
+One alone narrows it:
+
+- With (1) only, a developer cannot declare a bypass but a compromised image can
+  still open a socket to Bifrost.
+- With (2) only, the policy is the control and the parameter is cosmetic.
+- With (3) only, Bifrost is protected but a third-party endpoint is not.
+
+**Until at least (2) or (3) lands, this capability is a control for cooperating
+agents and a detection for everything else.** That sentence belongs in the
+README row, not only here.
+
+#### Admission is the cheap half
+
+Two classes of misconfiguration are statically detectable and should fail at
+admission rather than at request time, which is the lesson #104 already applied
+to the `decentralized` + `evaluation` combination:
+
+| Rejected at admission | Why |
+|---|---|
+| `guardrails.profile` below the namespace minimum | the whole point of D2 |
+| `guardrails.enabled: false` on an agent in a namespace the platform marks as requiring guardrails | opt-out should be visible and reviewed, not a default |
+| An `mcpServers` entry with no matching `mcpAccess` grant | the adjacent gap #144 notes: today it surfaces as a 403 at call time |
+
+The component itself enforces the first two with CUE, from the platform values
+templated into it (§D2, *How admission rejects*), the way `evaluation` already
+rejects a non-`centralized` observability mode. No policy engine is needed for
+either. The third still needs one, and `kyverno` is `false` in every overlay
+today, so it stays a prerequisite, not a configuration flip.
+
+#### What content inspection cannot promise
+
+A design that implies a content filter stops prompt injection is making a claim
+the field does not support, and this platform's stated rule is that a guardrail
+which appears to cover something it does not is worse than none. So, plainly:
+
+- **Injection detection is a classifier, and classifiers are evadable.** It
+  raises the cost of an attack. It does not close the class.
+- **Tool content is seen only as it passes through a model call.** Bedrock's
+  own Converse integration skips tool content: PII is "neither blocked nor
+  masked" in `toolUse.input`, `toolResult`, or `toolSpec.description`. The
+  gateway path is different, because the gateway extracts text itself and
+  sends it to `ApplyGuardrail`. With `scope` (v1.6.0+), **tool results are
+  checked by default** and tool arguments when `ToolInput` is listed. Tool
+  *schemas* and descriptions are not checked.
+- **Indirect injection is caught one step late, not never.** A poisoned
+  document fetched by an MCP server is checked when its tool result is sent
+  back to the model, before the model reads it. It is **not** checked when the
+  tool returns it, so anything that acts on a tool result without a model call
+  in between is unguarded by this hop.
+- **A guardrail is not an authorization control.** What an agent is *allowed to
+  do* stays with the three layers in §2.2, and that separation is why this design
+  adds no `tools:` key.
+
+The honest framing is that this is one layer: it blocks the direct, obvious and
+high-volume cases at a hop a developer does not control, and it makes the rest
+visible. The layers that actually bound damage are tool authorization, egress
+restriction, sandboxing and spend caps — three of which OAP already has.
+
+**What remains of the tool-call gap has a known mechanism, and it is not this
+hop.** A model call carries tool content only as text on its way to or from
+the model. It never carries the tool *call* as it executes, so this hop cannot
+refuse an action, only the text around it. agentgateway's MCP guardrail
+processor sits at the JSON-RPC layer and receives "the JSON-RPC method name, the
+target backend, the request or response parameters, and selected request
+headers" — so it *does* see the tool name and its arguments, and in the response
+phase the tool result. That is the hop where indirect injection and tool-argument
+PII are inspectable, it is the subject of #152, and §3.9 draws the line between
+the two designs. This design does not reach for it, and should not: the same
+`Mutate` capability that would let it redact a tool argument is also what creates
+#152's processor-ordering trap.
+
+### D8. Observability: mirror the evaluation contract exactly
+
+A blocked request and a badly-scored response are the same question asked at two
+different times, so they belong on one dashboard. The metric names deliberately
+mirror `oap_agent_eval_*` (`docs/architecture/agent-evaluation.md` §4a) so the
+two read together.
+
+**D1's reversal means most of this already exists, and one part of it does not.**
+agentgateway emits `guardrail_checks` (`crates/agentgateway/src/telemetry/metrics.rs`),
+a counter labelled `phase` (`Request` / `Response`) and `action`:
+
+| Native `action` (v1.6.0) | This design's `outcome` |
+|---|---|
+| `Allow` | `allowed` |
+| `Reject` | `blocked` |
+| `Mask` | `redacted` |
+| `Audit` | `reported` — the `observe` profile |
+| `FailOpen` | `error_allowed`, kept distinct from `Allow` |
+| *(nothing)* | `error_blocked` — see below |
+
+**One gap this table exposes, and fail-closed is what creates it.** At v1.6.0
+a fail-closed error has **no `guardrail_checks` value of its own**:
+
+- On the **HTTP path** agents use, `apply_single_request_guard` handles only
+  `FailOpen` itself; a `FailClosed` error propagates (`result?`) and returns
+  *before* `record_guardrail`. It is **not counted at all**. The agent just
+  sees a failed request.
+- On the **realtime** (WebSocket) path it is counted as `Reject`, the same
+  label as a real content block.
+
+So a Bedrock throttle or outage is either invisible in the guard metric or
+reads as a spike of violations. Both break the rule below that "a fail-closed
+block is never a violation". Two fixes, both small:
+
+- **Upstream:** a distinct `FailClosed` value in `GuardrailAction`, recorded on
+  both paths, mirroring the existing `FailOpen`. It is a one-variant change in
+  the shape #3618 already set.
+- **Until then:** derive `error_blocked` from the gateway's failed-request
+  telemetry on the guarded routes, and alarm on `ApplyGuardrail` throttles and
+  5xx from the Bedrock side. Phase 1 validation confirms which status code the
+  agent actually receives.
+
+So OAP writes no instrumentation for the verdict. **The gap is attribution:**
+`GuardrailLabels` is `{phase, action}` and carries no agent, namespace or
+profile. The native counter answers "how often did guardrails fire" but not
+"which agent" — and "which agent" is the question a platform dashboard exists to
+answer.
+
+Two consequences:
+
+- **Per-agent attribution comes from the caller's token, not the route.**
+  Routes are per profile (§D1), so the route names the profile and not the
+  agent. The agent comes from `jwt.sub`, through the gateway's frontend
+  `metrics.attributes`: CEL expressions "evaluated per-request and added as
+  labels to all Prometheus metrics". The label set is bounded by the number of
+  agents, so it is safe for cardinality. `oap_agent_guardrail_*` is then a set
+  of **recording rules over gateway telemetry** rather than a counter OAP's own
+  code increments.
+- **That is a Phase 1 deliverable, not a detail.** A reviewer should read the
+  table below as the contract the recording rules must produce, and the first
+  validation item is that the `jwt.sub` label in fact reaches
+  `guardrail_checks`, whose own label struct is only `{phase, action}`. If it
+  does not, the dashboard loses its primary dimension.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `oap_agent_guardrail_requests_total` | `cluster`, `namespace`, `agent`, `direction`, `outcome` | every inspected request. `outcome` is `allowed` \| `blocked` \| `redacted` \| `reported` \| `error_blocked` \| `error_allowed` |
+| `oap_agent_guardrail_findings_total` | + `category`, `severity` | findings by normalized category, so "what are we actually catching" is answerable |
+| `oap_agent_guardrail_latency_seconds` | + `direction` | histogram of the inspection call. The number that decides whether this is affordable |
+| `oap_agent_guardrail_errors_total` | `cluster`, `loop` | backend call failures, separate from violations |
+| `oap_agent_guardrail_info` | `profile`, `profile_version`, `guardrail_version`, `failure_mode`, `backend`, `streaming` | always 1; join in PromQL. Makes a weakened profile or a buffered agent visible, and names the configuration a verdict came from |
+| `oap_agent_guardrail_config_skew` | `cluster` | replicas holding different `profile_version` / `guardrail_version`, so a mid-rollout disagreement is visible rather than reported |
+| `oap_agent_guardrail_last_success_timestamp_seconds` | `cluster` | liveness, so silence is distinguishable from health |
+
+**One label is reserved rather than used: `hop`.** Every series above is
+`hop="model"`. A tool-hop denial (§3.10) is the same question asked one hop
+later — what was refused, by which configuration, and was it a refusal or a
+failure — so it belongs in this metric family with `hop="tool"`, not in a
+parallel one. Reserving the label now costs a constant and saves a reviewer
+later discovering two dashboards that cannot be joined. Phase 1 emits a single
+value for it.
+
+Three rules bind it, all inherited from evaluation's hard-won §4a:
+
+- **A fail-closed block is never a violation.** `error_blocked` is its own
+  outcome, so "the guardrail broke" cannot read as "the agent misbehaved".
+- **An idle agent is absent, not zero.** A zero block-rate reads as "nothing bad
+  happened"; absence reads as "no traffic".
+- **No finding content in a label.** Categories and severities are bounded
+  enums; the matched text and the `raw` assessment go to the trace, never to a
+  metric label or a log line — Bedrock's trace "returns the unmasked values".
+
+On the trace itself, a violation sets a Langfuse tag alongside the existing
+`langfuse.trace.tags` (`source:<chat|rca>`, agent name), so one trace shows the
+block in flight and the judge score afterwards.
+
+#### A decision records what decided it, not just what it decided
+
+Raised on #152 by @Sadrak2017 and adopted here, because it applies to a content
+verdict exactly as it does to an authorization one: a refusal that does not name
+the configuration that produced it is reproducible but not **explainable**. Replay
+a blocked prompt a week later, after the profile has been tuned, and a different
+answer is correct behaviour and useless evidence.
+
+Guardrails have two independently mutable inputs, and the record carries both on
+every non-`allowed` decision:
+
+| Recorded | Why it moves on its own |
+|---|---|
+| `profileVersion` | the catalog is a chart value, so it changes on an `agent-gateway` chart release |
+| `guardrailVersion` | Bedrock guardrails are **versioned objects**, and `ApplyGuardrail` takes `guardrailVersion` as a required path parameter. The platform can publish a new version without the chart changing at all |
+
+So a decision record is the verdict **plus** the findings **plus** that pair, and
+`oap_agent_guardrail_info` carries both as labels so a dashboard can say which
+configuration a block came from. Two consequences worth stating:
+
+- **The pair belongs in the trace and in `info`, never in a per-request counter
+  label.** A version is low-cardinality on `info`; on
+  `oap_agent_guardrail_requests_total` it would multiply every series on each
+  release.
+- **A rollout makes replicas legitimately disagree.** During a chart rollout or a
+  guardrail-version publish, two gateway replicas hold different configuration, so
+  two identical prompts can get different verdicts and **both be right**. A test
+  asserting the replicas agree would hide that; the useful assertion is that the
+  record names the version explaining the difference. The same reasoning #104
+  applied to data age applies here, so the skew is a metric rather than something
+  inferred from a confused report.
+
+Alerts follow #104's rule that the platform pages on the **pipeline**, not on
+agent quality: a rising block rate is a product signal for the owning team, while
+the error rate, the fail-closed rate and staleness are platform signals. The
+`PrometheusRule` is gated on
+`.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule"`, per
+the regression #143 fixed.
+
+### 3.9 Relationship to #152: two hops, two engines, one set of lessons
+
+#152 proposes an external policy engine (Cedar, or OPA) behind agentgateway's
+**ExtMCP** hook. It is easy to read the two issues as competing proposals for
+"the policy layer". They are not, and the distinction is the hop:
+
+| | This design (#144) | #152 |
+|---|---|---|
+| Hop | agent → **model** | agent → **tool** (MCP) |
+| Mechanism | `backend.ai.promptGuard` on an AI route in front of Bifrost (§D1) | `backend.mcp.guardrails.processors[].remote` — the same gateway, the other backend type |
+| Sees | the prompt and the completion | the JSON-RPC method, **the params — tool name and arguments** — and the result |
+| Question answered | "is this text acceptable?" | "is this caller allowed to call this tool, with these arguments, right now?" |
+| Decides with | the profile's `promptGuard` entries (§D4) | a policy engine over principal / action / resource / entities |
+| Fail mode | `failureMode: FailClosed`, set explicitly, from agentgateway v1.6.0 (§D4) | `failureMode: FailClosed`, already the documented default |
+
+Neither hop can do the other's job, and that is structural rather than a
+limitation to engineer away. A model call carries no tool name, so no guard on
+that path can authorize a tool. An MCP call carries no prompt, so no processor on
+that path can judge what the user asked the model. **A platform that wants both
+needs both**, which is why these are two designs rather than one.
+
+What this design takes from #152 — the fail-closed default, decision
+provenance, and the tool-call boundary — and what it owes it, including the
+mutation-ordering trap and why rate limits belong to neither engine, are in the
+research appendix, [§C](agent-guardrails-research.md#c-relationship-to-152).
+The two designs are independent and can land in either order.
+
+---
+
+### 3.10 D9. The deterministic half: *how* a tool is called
+
+Everything above §3.9 answers a probabilistic question about text. This section
+answers a different one, and the distinction is not academic — it decides which
+mechanism can possibly work.
+
+> **Is this caller allowed to invoke this tool, with these arguments, in this
+> order?**
+
+That sentence has four clauses, and OAP today can enforce exactly one and a
+half of them. Taking the three the requirement names, plus the one that is
+always mistaken for them:
+
+| Dimension | The question | Needs | Decidable in OAP today |
+|---|---|---|---|
+| **By whom** | which agent, which user behind it | a verified principal at the decision point | **Yes** |
+| **With what attributes** | `bucket`, `amount`, `region`, `limit` — the argument values | the request `params` at the decision point | **No** |
+| **In what sequence** | "not after a refund", "only once per session", "read before write" | prior events, plus a key to correlate them | **No** |
+| *(How often)* | "no more than 20 per minute" | a counter | **Yes**, and it is not a policy question (§3.9) |
+
+Each "no" has a specific cause, and the causes are different. That is why this
+is one section rather than one sentence.
+
+#### By whom: already true, and it reaches further than #152 assumed
+
+Caller identity is the one dimension OAP already enforces deterministically.
+`mcp-server.cue:325` renders
+
+```cue
+traffic: authorization: {
+    action: "Require"
+    policy: matchExpressions: ["jwt.sub in [" + strings.Join(_agentSubjects, ", ") + "]"]
+}
+```
+
+and `caller-identity-policy.yaml` is what makes `jwt.sub` the *agent's* identity
+rather than the end user's. An expression over `jwt.*` is evaluated with the
+claims in scope, so "by whom" needs no new mechanism.
+
+It also reaches an external policy engine, which **answers #152's own blocking
+task 2** — recorded there as unresolved because the prose documents only
+"selected request headers". The wire protocol says more. `ext_mcp.proto` at
+v1.4.1 defines on `McpRequest`:
+
+| Field | Comment, verbatim |
+|---|---|
+| `metadata_context` (3) | "CEL-evaluated context from gateway config, one field per config key" |
+| `mcp_request` (4) | "JSON-RPC `params` as raw JSON bytes; absent when the method has none" |
+| `headers` (5) | "Incoming HTTP request headers carrying this MCP call, after gateway-side allow/deny filtering" |
+
+`metadata_context` is the answer: the gateway evaluates CEL expressions from its
+own config and ships the **results**, so configuring `sub: jwt.sub` delivers the
+verified claim to the processor as data. Identity does not depend on a header
+surviving the allow/deny filter. **#152 should unblock that task on the proto
+rather than on the prose.**
+
+#### With what attributes: the seam that looks open and is not
+
+This is the finding most worth a reviewer's attention, because OAP already has a
+field that appears to accept argument-level rules.
+
+`mcp-server.cue:430` exposes `authPolicy.matchExpressions` as `[...string]` and
+passes it through verbatim into `backend.mcp.authorization`. Arbitrary CEL, no
+schema, no validation. So this looks enforceable:
+
+```cue
+authPolicy: {
+    action: "Deny"
+    matchExpressions: ["mcp.tool.name == \"s3_put\" && mcp.tool.arguments.bucket == \"prod-data\""]
+}
+```
+
+**It is not.** `mcp.tool.arguments` is in agentgateway's CEL schema, but not at
+the phase where authorization runs. The generated reference at the pinned
+v1.4.1 says so in its description of the `mcp` object:
+
+> `mcp` contains attributes about the MCP request. **Request-time CEL only
+> includes identity fields such as `tool`, `prompt`, or `resource`.** Post-request
+> CEL may also include fields like `methodName`, `sessionId`, and **tool
+> payloads**.
+
+The implementation agrees. `McpAuthorizationSet::validate` takes
+`res: &ResourceType, method_name: &Strng` and builds its MCP view from those two
+alone; `impl DynamicType for ResourceType` materializes only the resource's name
+and target. Arguments are a *payload*, available post-request — in logging,
+metrics and tracing, where they are evidence rather than a decision.
+
+**The failure direction is the problem.** OAP already records, at
+`mcp-server.cue:431`, that the CRD warns `Deny` "is not recommended because
+expression failures fail to deny" — a CEL error in a `Deny` rule **fails open**.
+An argument-referencing expression is permanently in exactly that position. So
+the rule above does not narrow anything; it is a policy that silently never
+matches, written by someone who believes the bucket is protected. It is worse
+than no rule, because it reports as configured.
+
+Three consequences, all design-level:
+
+1. **The platform should not advertise argument rules on `authPolicy`.** If
+   anything, `authPolicy` deserves a doc string saying which fields are live at
+   decision time — a one-line CUE comment, and the cheapest item in this whole
+   document.
+2. **`action: Allow` / `Require` fail safe and are still wrong here.** An
+   `Allow` rule referencing arguments never matches either, so it denies
+   everything rather than permitting selectively. Safe, useless, and it will be
+   read as a bug in the gateway.
+3. **Argument-level decisions need a hop that is handed the payload.** At
+   v1.4.1 exactly one exists: an ExtMCP processor, which receives
+   `mcp_request` — the raw `params`. **That is #152's mechanism, and this is the
+   strongest argument for #152 in either issue.** Not "a policy engine would be
+   nice", but: it is the only place the arguments exist at decision time.
+
+#### One cheaper option, and the version it costs
+
+A remote processor is a service to run, a hop to pay for and a fail-mode to get
+right. For simple attribute rules there is now an in-process alternative:
+agentgateway's **CEL guardrails**, where a request-phase processor evaluates an
+expression against `mcp.params` and returns `reject` or `transform`. No external
+service, no extra network hop.
+
+It is not available at OAP's pin. Tracing `mcp.params` through the generated CEL
+reference per tag:
+
+| agentgateway | `mcp.params` | Request-time `mcp` context |
+|---|---|---|
+| **v1.4.1** (OAP's pin, 2026-07-29) | absent | identity fields only |
+| v1.5.0 (2026-08-27) | absent | identity fields only |
+| v1.6.0 (2026-10-02) | absent | identity fields **plus `methodName`** |
+| **v1.7.0** (2026-10-27) | **present** — "Available only during request-phase CEL guardrails" | identity fields plus `methodName` |
+
+So in-process argument checks arrive in **v1.7.0** and the remote ExtMCP path
+works at **v1.4.1**. The model hop already needs an upgrade to ≥ v1.6.0 (§D4),
+and v1.7.0 is its recommended target, so the same upgrade makes the in-process
+path available here too. The remote path stays the plan for anything a single
+CEL expression cannot express.
+
+One note on the upgrade, because it contradicts a deliberate comment.
+`gitops/addons/registry/gateway.yaml:63` pins v1.4.1 and explains that a higher
+tag in that registry can be a *downgrade* — the `cr.agentgateway.dev` v2.2.x
+charts track kgateway's versioning and ship a smaller API surface. That reasoning
+is sound and should stand. The adjacent claim that upstream's "newest final
+release is v1.4.1" was true when written and is now stale: v1.5.0, v1.6.0 and
+v1.7.0 are all published, non-prerelease upstream releases. Anyone acting on the
+v1.7.0 row above should re-verify the **chart** surface, not just the release
+tag, for exactly the reason the note gives.
+
+#### In what sequence: the one nothing covers
+
+Ordering is categorically harder than the other two, and it is worth being
+blunt about why rather than listing it as future work.
+
+A sequence rule — *not after*, *only once*, *read before write* — is a predicate
+over **prior events**. Every mechanism discussed so far is a pure function of the
+call in front of it. Making ordering enforceable needs three things OAP does not
+have, and they fail independently:
+
+| Requirement | State |
+|---|---|
+| A **vocabulary** for "formerly" | Exists, in Dogwood: exactly three temporal operators — `formerly`, `previous`, `since` (§D6) |
+| A **store** for the trace | The reference interpreter's is in-memory with no eviction and no persistence, so a `formerly within 1h` *permit* denies everything after a pod restart (§D6). AgentCore Policy solves this and has no callable API (§D6) |
+| A **correlation key** | Missing at the wire. `ext_mcp.proto`'s `McpRequest` carries `service_names`, `method`, `metadata_context`, `mcp_request`, `headers` — and **no session identifier**. `mcp.sessionId` exists in CEL but post-request at v1.4.1, so it cannot be shipped through `metadata_context` at decision time |
+
+The correlation key is the new finding and the cheapest to fix. MCP's Streamable
+HTTP transport defines `Mcp-Session-Id`, and `headers` reaches the processor
+"after gateway-side allow/deny filtering" — so the candidate route is to allow
+that header through and key the trace on it. **It is a candidate, not an
+answer**, and the spec itself says why: a server **MAY** assign a session ID,
+and only *if* it does must the client echo it on subsequent requests. A session
+key that exists at the server's discretion cannot be the foundation of an
+enforcement decision. It is also stdio-blind — `headers` is "Empty for stdio
+upstreams".
+
+So the sequence dimension needs a correlation key the **platform** controls, not
+one the tool server may or may not issue. The obvious candidate is a
+platform-minted identifier injected per agent conversation, which is a change to
+how OAP's gateway labels traffic rather than a policy feature — and it is
+therefore the first thing to settle, not the last. Phase 3's validation plan is
+where it gets tested.
+
+Until all three land, the honest statement is: **OAP cannot enforce call
+ordering, at any hop, in any currently pinned version.** It can *detect* it
+after the fact — §D6's Phase 3 replay over Langfuse traces is exactly that, and
+offline replay is the right place to learn whether the rules one would write are
+rules one would want enforced.
+
+#### The decision
+
+**D9. Sequence-and-attribute policy is the tool hop's job, and this design owns
+the three things that make it consistent with the model hop rather than a second
+unrelated system.**
+
+What this design does *not* do: add a `tools:` key, add a fourth writer on
+`backend.mcp.authorization`, or put a policy engine on the content route. §2.2's
+silent-drop bug and §3.9's one-verdict-seam-per-hop both still apply.
+
+What it does own:
+
+| Owned here | Why it has to be shared rather than duplicated |
+|---|---|
+| **Tighten-only semantics** (§D2) | An agent that can pick a profile below its namespace minimum is the same defect as a per-agent tool policy that can widen its own permissions. One rule, both hops |
+| **The fail-closed verdict shape** (§D4) | One place, fails closed. `failureMode: FailClosed` at the tool hop and on every model-hop guard is the same decision, now spelled the same way too |
+| **Provenance** (§D8) | A tool-call denial has to record the policy-set version that denied it, exactly as a content block records `profileVersion` and `guardrailVersion`. Same metric family, one `hop` label |
+| **The schema, not the engine** | §3.9 argues against one engine across both hops — different inputs, latency budgets and blast radii. The *vocabulary* is the opposite case, and it already models the attribute dimension: `dogwood schema mcp --manifest tools.json` emits one Cedar action per tool and maps each tool's `inputSchema.properties` to `context.input` (§D6). The argument names a policy would constrain are therefore **derivable from the `tools/list` payload OAP already has** — no new authoring surface. Share the schema; run two engines |
+
+And one new boundary, stated so it is not mistaken for an oversight:
+**attribute and sequence rules are authored by the team that owns the tool, not
+the team that calls it.** That is §2.2's ownership rule applied one level down.
+The agent author declaring `mcpServers: [refunds]` must not be able to assert
+which refund amounts are acceptable; the refunds team must. Whatever shape #152
+settles on, this is the property to preserve, because it is the reason the
+existing three-layer split is worth protecting.
+
+---
+
+## 4. Architecture
+
+### Where the hop sits
+
+```mermaid
+flowchart LR
+    classDef dev fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef plat fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef aws fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    A["agent Rollout<br/>(agent namespace)"]:::dev
+    AG["agentgateway<br/>AI route + promptGuard<br/>★ CONFIG ONLY"]:::plat
+    CAT["profile catalog<br/>(chart values)<br/>★ NEW"]:::plat
+    BF["Bifrost /v1"]:::plat
+    BR["Amazon Bedrock<br/>models"]:::aws
+    GR["Bedrock Guardrails<br/>ApplyGuardrail"]:::aws
+    AMP["AMP → AMG dashboard"]:::aws
+    LF["Langfuse<br/>traces + scores"]:::plat
+
+    A -- "1. model call" --> AG
+    CAT -- "renders route + policy" --> AG
+    AG -- "2. ApplyGuardrail<br/>source=INPUT" --> GR
+    GR -- "3. BLOCKED / ANONYMIZED" --> AG
+    AG -- "4. forward if allowed<br/>ai backend, host=Bifrost" --> BF
+    BF --> BR
+    AG -- "guardrail_checks" --> AMP
+    A -- "OTLP traces" --> LF
+    A -. "BYPASS: llmGatewayUrl still<br/>reaches Bifrost directly — §D7" .-> BF
+
+    linkStyle 8 stroke:#dc2626,stroke-width:2px,color:#b91c1c
+```
+
+Blue is the agent's own namespace, amber is in-cluster platform, green is AWS.
+**Only the profile catalog is new, and the gateway box is configuration rather
+than a component** — that is the whole content of D1's reversal, and it is the
+one thing this picture is for. Revision 3 had an extra amber box here, an
+OAP-owned proxy, and review was right that it did not need to exist.
+
+The red dashed edge is the design's own stated weakness (§2.4, §D7). It matters
+more than it did: with the guard on the gateway, an agent that keeps today's
+`llmGatewayUrl` is not partially guarded, it is unguarded.
+
+### One request, in order
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Ag as Agent
+    participant AG as agentgateway
+    participant GR as Bedrock Guardrails
+    participant BF as Bifrost
+    participant BR as Bedrock
+
+    Ag->>AG: POST /v1/chat/completions
+    AG->>AG: route match selects the profile's promptGuard
+    AG->>GR: POST /guardrail/{id}/version/{v}/apply<br/>source=INPUT
+    alt blocked
+        GR-->>AG: assessment action=BLOCKED
+        AG-->>Ag: 403 + the profile's custom response
+        Note over AG: Bifrost is never called<br/>guardrail_checks{phase=Request,action=Reject}
+    else anonymized
+        GR-->>AG: assessment action=ANONYMIZED + masked outputs
+        AG->>BF: forward the masked prompt
+        BF->>BR: inference
+        BR-->>BF: completion
+        BF-->>AG: completion
+        AG-->>Ag: completion<br/>guardrail_checks{action=Mask}
+    else backend error or timeout
+        GR--xAG: ThrottlingException / 5xx
+        AG->>AG: retry budget, then<br/>failureMode: FailClosed (v1.6.0+)
+        AG-->>Ag: request refused
+        Note over AG: Bifrost is never called<br/>counted as error_blocked, not blocked (§D8)
+    else clean
+        GR-->>AG: no blocked assessment
+        AG->>BF: forward verbatim
+        BF->>BR: inference
+        BR-->>BF: completion
+        BF-->>AG: completion
+        AG-->>Ag: completion<br/>guardrail_checks{action=Allow}
+    end
+```
+
+The third branch is the one that needs agentgateway v1.6.0. At v1.4.1 it
+forwards the request uninspected; from v1.6.0, with `failureMode: FailClosed`,
+it refuses (§D4).
+
+### Which concern is enforced at which hop
+
+This is the map the word "guardrails" usually hides, and most of it already
+exists. Green is covered today, amber is this design, blue is designed elsewhere
+and red is a gap with no mechanism at all.
+
+```mermaid
+flowchart TB
+    classDef have fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef new fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef other fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef gapn fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+
+    subgraph CALLER["Caller → agent"]
+        R["Reachability<br/>jwt-policy, caller-identity"]:::have
+    end
+    subgraph MODEL["Agent → model"]
+        C["Content + topic<br/>promptGuard on AI route — THIS DESIGN"]:::new
+        S["Spend + rate<br/>Bifrost governance — needs VK"]:::gapn
+    end
+    subgraph TOOL["Agent → tool"]
+        T1["WHICH tool, by name<br/>mcpServers / mcpAccess / authPolicy"]:::have
+        T2["BY WHOM<br/>jwt.sub, and metadata_context to ExtMCP"]:::have
+        T3["WITH WHAT ARGUMENTS<br/>only ExtMCP sees params — #152"]:::other
+        T4["IN WHAT SEQUENCE<br/>no durable store, no platform key"]:::gapn
+        TC["Tool-call CONTENT<br/>ExtMCP can see it — #152"]:::other
+        TR["HOW OFTEN<br/>traffic.rateLimit, native"]:::have
+    end
+    subgraph RUNTIME["Agent runtime"]
+        SB["Sandboxing<br/>Kata micro-VMs, AgentCore"]:::have
+        E["Egress<br/>no mechanism exists"]:::gapn
+    end
+    subgraph AFTER["After the fact"]
+        D["Detection<br/>agent-evaluation judge"]:::have
+    end
+
+    CALLER --> MODEL --> TOOL --> RUNTIME --> AFTER
+```
+
+Read that way, **three** boxes have no mechanism at anyone's hop: agent egress,
+model-call spend, and **tool-call ordering**. The first two are prerequisites
+this design depends on rather than owns (§D7). The third is the one the word
+"policy" is usually assumed to cover and nothing currently does — §3.10 names
+the three missing pieces, of which a platform-controlled correlation key is both
+the least discussed and the first to settle.
+
+The tool hop is drawn as five questions rather than one box because they have
+five different answers. "Tool authorization is covered" is true only of the
+first.
+
+| Actor | Owns |
+|---|---|
+| Application developer | `guardrails.enabled`, and which profile, at or above the namespace minimum |
+| Platform engineer | the profile catalog, the profile order and namespace minimums, the route grants, the guard type, the Bedrock guardrail objects |
+| KubeVela | checking the profile at admission, and pointing `LLM_GATEWAY_URL` at the profile's route |
+| agentgateway | matching the route, running the guard, deciding, forwarding, emitting `guardrail_checks` |
+| grafana-operator | importing the dashboard |
+
+---
+
+## 4a. The backend boundary, and the two public contracts
+
+Same structure as evaluation's §4a, and for the same reason: a second backend
+must be one field, not a branch at every call site.
+
+### Contract 1 — the profile route
+
+One route per profile on the existing gateway, rendered by the `agent-gateway`
+chart from the profile catalog. An agent reaches it through `LLM_GATEWAY_URL`.
+
+| | |
+|---|---|
+| path | `/llm/<profile>/v1`, OpenAI-compatible, forwarded to Bifrost |
+| gate | one `traffic.authorization` `Require` on `jwt.sub`: every agent for a profile at or above the default, granted agents only below it (§D1) |
+| guards | `backend.ai.promptGuard`, every entry with `failureMode: FailClosed` and an explicit `scope` (§D4, §5) |
+
+There is deliberately no agent-side backend key, threshold or vendor
+identifier: each is the profile's concern, not the agent's. Revision 4's
+`<agent>-guardrails` declaration ConfigMap is removed: only the deleted proxy
+read it.
+
+### Contract 2 — the metrics
+
+The table in §D8, with these names and labels. Two rules bind any
+implementation: an idle agent is **absent, not zero**, and an unparsed backend
+response is an **error, not a clean result**.
+
+---
+
+## 5. Security and cost
+
+| Concern | Control |
+|---|---|
+| The gateway sees every prompt | It already terminates agent traffic, so this adds no component with prompt visibility. It must not log the guard's response body (§D3), and the assessment goes only to the trace store that already holds prompts |
+| Guardrail API credential | One `bedrock:ApplyGuardrail` permission on the **`agentgateway` ServiceAccount** via Pod Identity, reached through `policies.backendAuth.aws`. Verbatim: "you only need the `bedrock:ApplyGuardrail` permission". Scope it to the catalog's guardrail ARNs (§D3, open question 14) |
+| The response carries unmasked PII | Bedrock's trace "returns the unmasked values", and the guard must read the assessments to tell masking from blocking. So the gateway's access-log and metric configuration must exclude the guard response body — a configuration assertion now, not OAP code (§D3) |
+| A developer weakening the control | A profile below the namespace minimum is rejected at admission, and a weaker route admits only granted agents (§D1, §D2). Both the minimums and the grants are reviewed chart edits, and the dashboard shows each agent's profile from its route |
+| A guardrail that silently stops working | `failureMode: FailClosed` on every guard, so a broken guard refuses rather than passes. `error_blocked` is derived separately from `blocked` (§D8), and staleness has its own alert |
+| Bypass | Narrowed in Phase 1, not closed. `LLM_GATEWAY_URL` points at the profile route by default, and a weaker route is gated. An agent can still set `llmGatewayUrl` to Bifrost by hand until egress policy or mandatory virtual keys land in Phase 2 (§D7) |
+| Cost | Content filters and denied topics **$0.15 / 1,000 text units**; PII **$0.10**; word filters and regex **free**. A text unit is up to 1,000 characters, and it is charged **per request**, not sampled. What is charged is set by the guard's `scope`, below — not by the length of the latest user message |
+| Throughput | The binding limit is **text units per second**, not requests — see *Quota* below. It is per account and Region, so every cluster in one account shares it, and with `FailClosed` a throttle the retry budget cannot absorb is a refused request |
+| Latency | AWS publishes **no** figure. Phase 1's exit criterion is a measured p50/p99 of the added request latency on real hub traffic, not an estimate. The gateway, not OAP, owns the timing instrumentation |
+
+### What text is checked on each call
+
+An agent does not send one prompt. On every model call it sends the system
+prompt, the whole conversation so far, and every tool result. The guard's
+`scope` (v1.6.0+, request guards) decides which of those are checked:
+
+| `scope` value | What it covers | Default |
+|---|---|---|
+| `SystemPrompt` | the system/developer prompt | on |
+| `Messages` | user and assistant messages, including plaintext reasoning | on |
+| `ToolOutput` | tool call results — the main indirect-injection path | on |
+| `ToolInput` | tool call arguments produced by the model | off |
+
+With the default, a conversation is re-checked in full on every turn, so cost
+grows with the **square** of the number of turns, not linearly. The design sets
+`scope` explicitly on every guard:
+
+- **`[Messages, ToolOutput]`** for the shipped profiles. The system prompt is
+  authored by the agent team and reviewed in git; re-checking it on every call
+  is pure cost.
+- **`ToolInput`** only in a profile that needs it, since in Completions-style
+  APIs a mask "has the potential to rewrite the arguments into invalid JSON".
+
+The real number is measured, not estimated: Phase 1 records text units per
+model call on a real multi-turn agent (§7).
+
+### Quota
+
+The limit that binds is not the 100 `ApplyGuardrail` requests per second. It is
+**text units per second**, per policy type, per account and Region. In
+`us-west-2`, Standard tier:
+
+| Policy | Text units / second | Burst |
+|---|---|---|
+| Content filters | 200 | 1,000 |
+| Denied topics | 200 | 1,000 |
+| Sensitive information (PII) | 500 | 1,000 |
+| Word filters | 500 | 1,000 |
+
+So a profile with content filters is capped at **200 text units per second**
+for the whole account in that Region. A 20,000-character multi-turn request is
+20 text units, which means roughly **10 guarded model calls per second across
+every cluster** in the account. All the quotas are adjustable, but the default
+is the ceiling Phase 1 meets first, and a two-cluster run is in the validation
+plan for exactly that reason.
+
+---
+
+## 6. Phases
+
+| Phase | Delivers |
+|---|---|
+| **0** | **A separate PR: upgrade agentgateway** from `v1.4.1` to ≥ `v1.6.0` (`v1.7.0` recommended), both `agentgateway-crds` and `agentgateway` in `gitops/addons/registry/gateway.yaml`. Every agent and MCP call goes through the gateway, so it runs the identity and delegation live tests (`scripts/test-identity-matrix.sh`) and re-verifies the **chart** surface OAP depends on, not just the release tag (§3.10). Nothing guardrail-specific ships in it |
+| **1** | **No new component.** In the `agent-gateway` chart: an `ai` backend pointed at Bifrost, one HTTPRoute per profile with its `jwt.sub` gate and grants, and an `AgentgatewayPolicy` with `backend.ai.promptGuard` rendered from the profile catalog, every guard with `failureMode: FailClosed` and an explicit `scope`. Plus `provider-aws-bedrock` ≥ v2.9.0 and the `Guardrail` / `GuardrailVersion` resources, `bedrock:ApplyGuardrail` on the gateway's ServiceAccount, the `guardrails` block on `agent` with its admission checks fed from `oam-agent-components` values, `LLM_GATEWAY_URL` pointed at the profile route (§D7, change 1), **request guards only**, `oap_agent_guardrail_*` as recording rules over `guardrail_checks` with a `jwt.sub` label (§D8), the dashboard, the alerts — fail-closed refusals, and FailOpen for a deliberate setting (§D4) — and a measured latency, cost and quota report on real hub traffic |
+| **2** | Response guards, with `promptGuard.streaming` and the no-masking-on-streams constraint (§D5). The rest of the bypass chain in §D7: a default-deny egress NetworkPolicy, and per-workload virtual keys then `is_vk_mandatory: true`. Upstream: a distinct `FailClosed` value in `guardrail_checks` (§D8) |
+| **3** | The Dogwood offline experiment (§D6): generate the schema from real MCP manifests, write three policies, convert recorded traffic to the replay format, and report what the language expressed. Decides whether a policy engine is worth scoping at all. It also settles §3.10's two prerequisites, because both are cheap to answer offline and expensive to discover later: whether a **platform-controlled correlation key** can be minted per agent conversation and carried to the tool hop, and whether the argument names a policy would constrain actually appear in OAP's `tools/list` payloads |
+| Later | A second backend behind the boundary (Bifrost Enterprise for licensed customers, Azure Content Safety, Model Armor); per-team profiles; human review of blocked requests |
+
+Phase 1 ships **off by default** in every overlay, as `agent_evaluation: false`
+does today. With D1's reversal there is no image to publish, so the flag gates
+whether the chart renders the AI route, the policy and the Crossplane guardrail
+objects at all.
+
+---
+
+## 7. Validation plan
+
+Nothing here is implemented, so this is what Phase 1 must prove rather than what
+has been shown.
+
+**Correctness**
+
+- [ ] CUE renders with `guardrails` absent, off, and on, with the platform
+      values templated in; a `profile` not in the catalog's `order` is
+      **rejected at admission**, not silently ignored
+- [ ] A `profile` below the namespace minimum, and `enabled: false` in a
+      required namespace, are both **rejected at admission**, with the minimum
+      named in the message
+- [ ] A known-injection prompt is blocked, the agent receives the profile's
+      `response.message`, and **Bifrost records no call**
+- [ ] `guardrail_checks` carries the caller's `jwt.sub` from the frontend
+      `metrics.attributes` label (§D8, open question 13). This is the first
+      thing to test, because a failure here changes the dashboard design rather
+      than a label
+- [ ] **An agent without a grant gets 403 on the `observe` route**, a granted
+      agent gets 200, and any agent gets 200 on `standard` and `strict` (§D1)
+- [ ] A prompt with PII under a `redact` profile reaches the model **masked**,
+      proven by reading the trace's per-entry `action: ANONYMIZED` rather than
+      `stopReason`
+- [ ] A clean prompt is forwarded byte-identical
+
+**Deterministic policy (§3.10) — three assertions, all testable without building
+anything**
+
+- [ ] **An argument rule on `authPolicy` does not enforce.** Write
+      `action: Deny` with `mcp.tool.arguments.<field> == "<value>"`, call the
+      tool with that value, and show the call **succeeds**. This is the claim
+      most likely to be disputed in review and the cheapest to settle: it needs
+      one MCP server, one policy and one call
+- [ ] **The same rule under `action: Allow` denies everything**, which is the
+      safe-but-useless half of the same finding
+- [ ] **Caller identity reaches a processor as data.** Configure
+      `metadata_context` with a `jwt.sub` expression against a stub ExtMCP
+      server and show the claim arrives in the `McpRequest`, independent of
+      header allow/deny filtering. This is #152's blocking task 2, answerable
+      with a stub rather than a policy engine
+
+**Failure behaviour**
+
+- [ ] **With the guardrail API unreachable, the request is refused** and
+      Bifrost records no call. Record the status code the agent actually
+      receives, because `error_blocked` is derived from it (§D8)
+- [ ] That refusal is **not** counted as a content block: `error_blocked`
+      moves and `blocked` does not
+- [ ] A guard deliberately set to `failureMode: FailOpen` forwards the request,
+      increments `guardrail_checks{action="FailOpen"}`, and fires the FailOpen
+      alert in a fault-injection test
+- [ ] A throttled call is retried within the gateway's budget before the
+      fail-closed refusal
+- [ ] Killing the **gateway** does not silently un-guard an agent: measure what the
+      agent actually gets, and make it a refusal rather than a direct path
+
+**Operational**
+
+- [ ] Measured added p50/p99 from `guardrailProcessingLatency` and from the
+      gateway's own latency telemetry, on real hub traffic
+- [ ] **Text units per model call on a real multi-turn agent**, over a full
+      conversation, for the default `scope` and for `[Messages, ToolOutput]`,
+      priced against the $0.15/$0.10 per-text-unit rates (§5)
+- [ ] **A two-cluster run in one account and Region**, driving both clusters at
+      once until the text-units-per-second quota throttles. Show the throttle is
+      shared, that the retry budget absorbs bursts, and what share of requests
+      is refused under `FailClosed` once it cannot (§5)
+- [ ] The dashboard appears in AMG with no manual import, and a newly guarded
+      agent appears on the next scrape
+- [ ] The `PrometheusRule` is absent, and the chart still renders, on a cluster
+      without the prometheus-operator CRDs
+
+---
+
+## 8. Open questions
+
+1. ~~**Does the profile floor belong in CUE or only in the reconciler?**~~
+   **Answered in review: CUE.** @shapirov103 suggested passing each profile's
+   floor into the `oam-agent-components` chart values, which already template
+   `global.*` values into `agent.cue`. §D2 *How admission rejects* uses that,
+   and no policy engine is needed. What remains is the implementation risk
+   recorded there: a structured value must arrive as a JSON string that
+   `vela def render` accepts.
+2. ~~**Is the extra hop acceptable, or should this be a Bifrost plugin after
+   all?**~~ **Answered in review, and neither.** @shapirov103 showed that
+   agentgateway's native `promptGuard` does this, so there is no OAP-owned hop
+   to justify and no Bifrost build to own.
+3. **Which profiles ship, and what does each mean?** `strict` / `standard` /
+   `observe` is a guess. The denied-topic definitions in particular are
+   product-specific and may not have a sensible platform default at all.
+4. **Do OAP's Langfuse observations carry tool-call arguments and timestamps**
+   in a form convertible to `dogwood replay`'s trace format? This gates Phase 3
+   and is #146's own first unknown.
+5. **Is Bedrock Guardrails entitled and reachable** in the accounts OAP deploys
+   into, and is the Standard tier (which requires cross-Region inference)
+   acceptable where denied-topic throughput matters?
+6. ~~**Does the platform ever mandate guardrails?**~~ **Answered in review:
+   yes, per namespace.** @shapirov103's suggestion is adopted: the platform
+   lists required namespaces and their minimum profile in
+   `oam-agent-components` values, CUE rejects `enabled: false` and a weaker
+   profile there, and the developer field stays for choosing a stricter
+   profile (§D2). Which namespaces to list is still a governance call per
+   environment.
+7. ~~**Who owns the tool-call content gap?**~~ **Answered by #152.** This hop
+   checks tool results and arguments only as text inside a model call (§D7);
+   the hop that sees the call itself is agentgateway's ExtMCP processor, which
+   receives the JSON-RPC params. Kept here
+   rather than deleted because the *answer* raises a narrower question for
+   reviewers: should a content detector ever run at the MCP hop as well, sharing
+   this design's profile catalog, or does tool-call inspection belong wholly to
+   #152's policy engine? §3.9 argues the second — one verdict seam per hop — but
+   it is a judgement call, not a derivation.
+8. **Does the two-tier policy-store question in #152 reach this design?** #152
+   proposes git for the baseline plus a runtime store for emergency `forbid`
+   overrides with a TTL. The same argument applies to a guardrail profile: an
+   incident may want a denied topic added in seconds, not in a chart release.
+   This design deliberately keeps the catalog in git (§D2) on the grounds that a
+   reviewed definition is the point — but if #152 builds a narrowing-only runtime
+   overlay, reusing it here is cheaper than inventing a second mechanism.
+9. **Who owns the correlation key that makes ordering enforceable?** §3.10's
+    conclusion is that sequence policy needs a session identifier the *platform*
+    mints, because MCP's `Mcp-Session-Id` is optional for a server to issue and
+    absent on stdio. That is a change to how the gateway labels agent traffic,
+    not a policy feature — so it belongs to whoever owns `agent-gateway`, and it
+    should be settled before anyone writes a temporal policy. **It is also the
+    one item on this list that blocks #146 rather than this design.**
+10. **Should `authPolicy` reject argument references outright?** §3.10 shows an
+    argument rule is a policy that never matches, and under `action: Deny` it
+    fails open. Three options: document the live fields in a CUE comment
+    (cheapest, no enforcement), validate `matchExpressions` against a field
+    allowlist in CUE (enforces, but hardcodes an upstream schema that moves per
+    release — v1.6.0 already added `methodName` to the request phase), or leave
+    it and rely on review. The first is nearly free and the recommendation; the
+    second is the only one that actually stops the mistake.
+11. ~~**Is an agentgateway upgrade on the table?**~~ **Answered in review:
+    yes, as Phase 0.** Fail-closed guards need ≥ v1.6.0 (§D4), and v1.7.0 is
+    the target because it also brings `mcp.params` for §3.10. It lands as its
+    own PR that runs the identity and delegation live tests. What stays open is
+    the chart check: OAP pins v1.4.1 behind a deliberate note that the
+    `cr.agentgateway.dev` charts version independently of upstream, so the
+    upgrade PR must pull and diff the **chart** at the new tag, not trust the
+    release tag.
+12. ~~**Which §D4 option, given that `bedrockGuardrails` fails open?**~~
+    **Answered in review: none of them.** @shapirov103 found the upstream fix:
+    agentgateway#3618 adds `failureMode` with `FailClosed` as the default from
+    v1.6.0. The design requires that version and sets `FailClosed` explicitly.
+    One residue is open and is now in §D8: a fail-closed error has no
+    `guardrail_checks` value of its own, so `error_blocked` must be derived
+    until upstream adds one.
+13. **Can `guardrail_checks` be attributed to a single agent?** Routes are per
+    profile, so the route does not name the agent. §D8 takes the agent from
+    `jwt.sub` through the frontend `metrics.attributes` CEL labels, documented
+    as added "to all Prometheus metrics". Whether that includes
+    `guardrail_checks`, whose own label struct is only `{phase, action}`, is the
+    first Phase 1 validation item. If it does not, the dashboard loses its
+    primary dimension.
+14. **Does the gateway's AWS identity gaining `bedrock:ApplyGuardrail` need its
+    own review?** The permission lands on the `agentgateway` ServiceAccount,
+    which already terminates agent and MCP
+    traffic. Scoped to the catalog's guardrail ARNs it is narrow, but it is a new
+    class of permission on a component that previously held none for Bedrock.

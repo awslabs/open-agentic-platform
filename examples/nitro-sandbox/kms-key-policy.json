@@ -1,0 +1,90 @@
+{
+  "Version": "2012-10-17",
+  "Id": "nitro-sandbox-attested-image-key",
+  "Statement": [
+    {
+      "Sid": "AllowKeyAdministration",
+      "Comment": "Without this the key is unmanageable. A KMS key policy is the ROOT of authorization for the key -- an IAM policy alone cannot grant access unless the key policy delegates to the account -- so a policy containing only the attested-decrypt statement below locks you out of your own key permanently, including from deleting it. Scope this to your actual key administrators rather than the account root in anything but a demo. NOTE THE ACTION LIST: it is no longer kms:*. kms:* delegates kms:Decrypt to the account, which means any principal an administrator writes an IAM policy for can unwrap the image layer key with no attestation at all -- the actor confidential mode exists to exclude. Administration and use are separated here, and the Deny below closes the same hole a second way.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:root"
+      },
+      "Action": [
+        "kms:CreateAlias",
+        "kms:CreateGrant",
+        "kms:DeleteAlias",
+        "kms:Describe*",
+        "kms:Disable*",
+        "kms:Enable*",
+        "kms:Get*",
+        "kms:List*",
+        "kms:Put*",
+        "kms:Revoke*",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:Update*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowBuildIdentityToEncryptLayers",
+      "Comment": "skopeo + nitro-sandbox-keyprovider calls kms:Encrypt to wrap the per-layer symmetric key at image build time. Encrypt only: the build identity has no business decrypting, and in confidential mode it is on the untrusted side of the boundary anyway. kms:DescribeKey is here because the keyprovider resolves the key's region and spec from the ARN before using it.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "BUILD_PRINCIPAL_ARN"
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowDecryptOnlyFromAnAttestedSandbox",
+      "Comment": "THE STATEMENT THIS EXAMPLE EXISTS FOR. The Nitro Sandbox calls kms:Decrypt through EKS Pod Identity to unwrap the image layer key, attaching the attestation document the Nitro Secure Module signed. KMS validates that document and compares the measurements below before releasing anything. No match, no key, no image, no pod.",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "POD_ROLE_ARN"
+      },
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIgnoreCase": {
+          "kms:RecipientAttestation:PCR17": "PCR17_VALUE",
+          "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DenyDataPlaneWithoutAttestation",
+      "Comment": "THE BACKSTOP, and the reason this example can honestly claim 'only an attested sandbox'. An Allow is not a guarantee: a grant (kms:CreateGrant above), a future administrator statement, or a widened account delegation can each add a path to kms:Decrypt that the attested Allow knows nothing about. An explicit Deny cannot be out-voted -- Deny beats every Allow, in the key policy, in IAM, and in grants -- so this is what actually enforces the boundary. StringNotEqualsIfExists is the load-bearing detail: the IfExists suffix makes the condition TRUE when the attestation key is ABSENT, which is precisely the ordinary caller with no attestation document, so the Deny catches them. The attested sandbox presents a matching PCR17, StringNotEquals is false, and the Deny does not apply to it. PCR17 alone is enough HERE because the Allow above additionally requires PCR8:ServiceName -- a guest with the right policy hash but an unsigned image has no Allow to begin with, so there is nothing for this statement to need to override.",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:GenerateDataKeyPair",
+        "kms:GenerateDataKeyPairWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIfExists": {
+          "kms:RecipientAttestation:PCR17": "PCR17_VALUE"
+        }
+      }
+    }
+  ],
+  "_notes": [
+    "PCR17 is the measurement of your Cedar policy. eks-nitro-sandbox-genpolicy prints the predicted value, so this key policy can be written BEFORE anything is deployed. Any change to the policy -- including one caused by a new image digest -- changes PCR17, and this key then stops releasing the layer key. Regenerate both in the same commit.",
+    "PCR17_VALUE APPEARS TWICE, in the Allow and in the Deny. Updating only one is the worst outcome available: update only the Allow and the Deny blocks your own sandbox; update only the Deny and the Allow stops matching. create-attested-key.sh substitutes both from one argument, which is why it is the recommended route.",
+    "PCR8:ServiceName is NOT optional alongside PCR17. PCR8 measures the certificate that signed the guest image (the EIF); the :ServiceName selector compares the service identity recorded in that certificate rather than its raw hash. Set to eks.amazonaws.com it attests that AWS signed the guest image, and it keeps matching when AWS rotates the signing certificate. PCR17 on its own would accept the same policy hash presented from a guest image AWS never signed; a raw PCR8 hash would break on the next rotation.",
+    "PCR0 measures the system image itself. Add kms:RecipientAttestation:PCR0 when you want to pin a specific guest image version, and accept that every AWS update to that image stops this key working until the condition is updated.",
+    "VERIFY THE DENY, do not assume it. As a key administrator, with no attestation: aws kms decrypt --key-id <arn> --ciphertext-blob fileb://<any blob>. It must fail with AccessDeniedException. If it returns plaintext -- or fails with InvalidCiphertextException, which means authorization PASSED -- the boundary is not in place. The README walkthrough has this as a numbered step.",
+    "The Comment fields and this _notes array are NOT part of the IAM policy language. create-attested-key.sh strips them before calling AWS. If you hand-edit this file and paste it into the console yourself, strip them too, or KMS rejects the policy with a MalformedPolicyDocumentException."
+  ]
+}
