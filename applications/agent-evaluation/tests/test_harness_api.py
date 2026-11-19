@@ -266,6 +266,65 @@ def test_slot_wait_past_the_cap_errors_and_deletes_the_job(settings, harness_set
     assert job_name(b) in f.batch.deleted
 
 
+def _two_agents_one_slot(settings, harness_settings, catalog):
+    hs = dataclasses.replace(harness_settings, max_concurrent_jobs=1)
+    a, b = decl("assistant"), decl("helper")
+    f = make(settings, harness_settings, catalog, [a, b], hs=hs)
+    rollout(f)
+    f.custom.set_rollout("team-a", "helper", "hash2", revision="2")
+    assert poll(f)["message"] == "the run started"
+    assert poll(f, agent="helper")["message"] == "waiting for a free slot"
+    return hs, a, b, f
+
+
+def test_suspended_job_past_slot_wait_is_deleted(settings, harness_settings, catalog):
+    # Review r7 B3: a suspended Job was deleted only past the total cap
+    # (run_timeout + slot_wait), not after slot_wait.
+    hs, a, b, f = _two_agents_one_slot(settings, harness_settings, catalog)
+    age_job(f, job_name(b), hs.slot_wait_seconds + 1)
+    assert hs.slot_wait_seconds + 1 < hs.run_timeout + hs.slot_wait_seconds
+    answer = poll(f, agent="helper")
+    assert answer["state"] == "error" and answer["message"] == "no slot in time"
+    assert job_name(b) in f.batch.deleted
+
+
+def test_job_that_waited_in_the_queue_still_gets_its_full_run_time(settings, harness_settings, catalog):
+    # Review r7 B3: the runner's deadline was fixed when the Job was created,
+    # so the queue wait came off the run time.
+    from app.harness_config import DEADLINE_MARGIN_SECONDS
+    from app.harness_runner import run_deadline
+    from tests.test_harness_runner import runner_settings
+
+    hs, a, b, f = _two_agents_one_slot(settings, harness_settings, catalog)
+    age_job(f, job_name(b), 200)
+    f.batch.finish(job_name(a))
+    assert poll(f, agent="helper")["message"] == "the run started"
+    patch = [body for name, body in f.batch.patched if name == job_name(b)][-1]
+    assert patch["spec"]["suspend"] is False
+    deadline = patch["spec"]["template"]["metadata"]["annotations"]["harness.oap.io/run-deadline"]
+    assert deadline == str(int(NOW + hs.run_timeout))
+    env = {e["name"]: e for e in f.batch.bodies[job_name(b)]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "value" not in env["HARNESS_RUN_DEADLINE_EPOCH"]
+    assert env["HARNESS_RUN_DEADLINE_EPOCH"]["valueFrom"] == {
+        "fieldRef": {"fieldPath": "metadata.annotations['harness.oap.io/run-deadline']"}
+    }
+    settings_seen = runner_settings(run_timeout=hs.run_timeout, run_deadline_epoch=float(deadline))
+    assert run_deadline(settings_seen, started_at=NOW + 30) == NOW + hs.run_timeout - DEADLINE_MARGIN_SECONDS
+
+
+def test_running_job_is_deleted_at_the_cap(settings, harness_settings, catalog):
+    # Review r7 B3: at the cap the endpoint answered error and left the Job
+    # running, still calling the agent and the judge and holding a slot.
+    d = decl()
+    f = make(settings, harness_settings, catalog, [d])
+    rollout(f)
+    assert poll(f)["message"] == "the run started"
+    age_job(f, job_name(d), harness_settings.run_timeout + harness_settings.slot_wait_seconds + 1)
+    answer = poll(f)
+    assert answer["state"] == "error" and answer["message"] == "the run exceeded its total time limit"
+    assert job_name(d) in f.batch.deleted
+
+
 def test_pending_for_the_whole_poll_count_never_ends_as_a_pass(settings, harness_settings, catalog):
     # The AnalysisTemplate polls 160 times, 15 s apart. The endpoint owns the
     # clock and answers error before the last poll.

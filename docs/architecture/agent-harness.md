@@ -228,7 +228,7 @@ then waits for the person.
 | Preview Service no longer selects the revision | `error` | failure | abort |
 | Declaration missing or invalid, dataset unknown, `ExternalName` preview | `error` | failure | abort |
 | Endpoint unreachable, HTTP error, timeout | none | Error. After `consecutiveErrorLimit` + 1 consecutive errors (default 12, so 13) the run is Error | abort |
-| Job waited for a slot, or ran, past `runTimeoutSeconds + slotWaitSeconds` | `error` | failure | abort |
+| Job still waiting for a slot after `slotWaitSeconds`, or running past `runTimeoutSeconds + slotWaitSeconds` (the Job is deleted) | `error` | failure | abort |
 | Run still going | `pending` | inconclusive | keeps polling |
 `pending` counts as an inconclusive measurement. A metric that ends its `count`
 with inconclusive results not above `inconclusiveLimit` ends `Successful` (the
@@ -238,9 +238,22 @@ revision. So the endpoint, not the template, owns the clock:
 - At the first poll for a revision the endpoint creates the Job (suspended when no
   slot is free, Contract 6 step 5) and stamps it with the annotation
   `harness.oap.io/first-seen`. The Job's `creationTimestamp` is the same moment.
-- Every poll computes `now - creationTimestamp`. Past
-  `harness.runTimeoutSeconds + harness.slotWaitSeconds` the answer is `error`,
-  whether the Job waited for a slot or ran. Defaults: 1800 s and 300 s, so 2100 s.
+- Every poll computes `now - creationTimestamp`. A Job still suspended past
+  `harness.slotWaitSeconds` is deleted and the answer is `error` ("no slot in
+  time"). A running Job past `harness.runTimeoutSeconds +
+  harness.slotWaitSeconds` is deleted too (it stops calling the agent and the
+  judge and frees its slot), and the answer is `error`. Defaults: 1800 s and
+  300 s, so 2100 s.
+- The run's own clock starts at the unsuspend. The patch that unsuspends the
+  Job also sets the pod-template annotation `harness.oap.io/run-deadline`
+  (unsuspend time + `runTimeoutSeconds`), and the runner reads it as
+  `HARNESS_RUN_DEADLINE_EPOCH` through the downward API. So a Job that waited
+  in the queue still gets its full run time, and the runner stops (60 s
+  margin) before the Job's `activeDeadlineSeconds`, which also counts from the
+  unsuspend. An env value set at create time could not do this: a Job's pod
+  template env is immutable, while its labels and annotations may change while
+  it is suspended and has never started (checked on Kubernetes 1.35). A
+  runner that finds no annotation counts from its own start.
 - Invariant: `count x interval` must exceed that total by at least 300 s. The
   template's 160 x 15 s is 2400 s. The chart fails to render when
   `runTimeoutSeconds + slotWaitSeconds > 2100`, and a chart test asserts it.
@@ -898,17 +911,21 @@ agents with `maxConcurrentJobs: 1` and asserts that one Job is unsuspended.
    number. Create the Job with `suspend: true`, the annotation
    `harness.oap.io/first-seen` and `activeDeadlineSeconds`
    (a 409 conflict means another poll created it), record `HarnessRunStarted`,
-   and answer `pending`. A suspended Job is the wait for a slot and carries the
-   run's clock.
+   and answer `pending`. A suspended Job is the wait for a slot; its age is
+   the wait.
 6. **Job suspended.** If `now - creationTimestamp` is above
-   `harness.runTimeoutSeconds + harness.slotWaitSeconds`, answer `error`
-   ("no slot in time") and delete the Job. This is the one case where a later
-   `retry` starts a new Job and re-scores, because the Job is gone. Otherwise, when fewer than
-   `maxConcurrentJobs` unsuspended Jobs are active, set `suspend: false` (the
-   deadline counts from here). Answer `pending`.
-7. **Job active.** Apply the same total cap as step 6, and answer `pending`
-   otherwise. A Job past its `activeDeadlineSeconds` is finished and failed, so
-   step 8 handles it.
+   `harness.slotWaitSeconds`, delete the Job and answer `error` ("no slot in
+   time"). This is the one case where a later `retry` starts a new Job and
+   re-scores, because the Job is gone. Otherwise, when fewer than
+   `maxConcurrentJobs` unsuspended Jobs are active, patch `suspend: false` and
+   the pod-template annotation `harness.oap.io/run-deadline` (now +
+   `runTimeoutSeconds`) in one request; the run's deadline counts from here.
+   Answer `pending`.
+7. **Job active.** If `now - creationTimestamp` is above
+   `harness.runTimeoutSeconds + harness.slotWaitSeconds`, delete the Job and
+   answer `error` ("the run exceeded its total time limit"); otherwise answer
+   `pending`. A Job past its `activeDeadlineSeconds` is finished and failed, so
+   step 8 handles it first.
 8. **Job failed.** Answer `error` with the reason.
 9. **Job complete.** Read `<job>-result`, accept it only when an
    `ownerReference` carries this Job's uid (as before), and otherwise answer
@@ -1152,7 +1169,8 @@ with the change and bumping its pin makes both clauses effective.
   A run that finds no free slot has a suspended Job, and the endpoint answers
   `pending`; the controller's next poll unsuspends it when a slot is free. Waiting
   runs are not ordered: whichever poll arrives when a slot frees takes it.
-  `harness.slotWaitSeconds` (default 300) bounds the wait, inside the total cap of D3. The
+  `harness.slotWaitSeconds` (default 300) bounds the wait: a Job still
+  suspended after it is deleted and the run answers `error`. The
   old longest-waiting-first ordering and its in-memory state are gone.
 - **Pruning.** The reader deletes the Job of a terminated AnalysisRun and a
   finished Job whose AnalysisRun Rollouts has pruned (its result ConfigMap goes

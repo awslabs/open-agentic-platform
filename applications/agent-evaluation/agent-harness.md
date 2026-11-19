@@ -143,7 +143,9 @@ Step by step, with the code that does it:
    unsuspends it when fewer than `harness.maxConcurrentJobs` run (default 2),
    or answers `pending`. A run still waiting for a slot after
    `harness.slotWaitSeconds`, or running past `runTimeoutSeconds +
-   slotWaitSeconds`, is answered `error`. A finished Job gives `pass`, `fail`
+   slotWaitSeconds`, is answered `error` and its Job deleted. The run time
+   counts from the unsuspend, so a run that waited for a slot still gets the
+   full `runTimeoutSeconds`. A finished Job gives `pass`, `fail`
    (below the threshold), `insufficient` or `error`. The endpoint takes the
    dataset, checks, threshold and mode from the declaration, never from the call.
    `backoffLimit: 0`, so a failed run is reported and never retried.
@@ -866,7 +868,7 @@ tests, the offline render checks and the validation plan in the design document
 | Rollback | A rollback is a push of an older template: a new revision number, a new AnalysisRun, a new Job. The exception is a fast revert: within `scaleDownDelaySeconds` (default 30 s) of the previous promotion, while the old ReplicaSet is still running, Rollouts creates no AnalysisRun, so that rollback is not scored and, in gate mode, not re-gated (seen live in report mode). A return to an aborted or superseded gate revision whose ReplicaSet is still up is promoted the same way, without a pass (section 3.6). `trigger` in `oap_agent_harness_info` is always `new-revision`. With `spec.rollbackWindow` set by hand, a previously promoted revision inside the window comes back with no run |
 | Report never changes a rollout | The AnalysisTemplate has `dryRun`: a failed metric is recorded and the Rollout is untouched. Verified for a failed metric. An endpoint outage (a measurement error) is not verified under `dryRun` (design P6) |
 | Gate never promotes on "unknown" | Only a `pass` verdict promotes. `fail`, `insufficient`, a missing judge key, a Job error, a preview that no longer selects the revision, and a run past its time cap all fail the metric and abort the revision. Five endpoint errors in a row do the same |
-| The endpoint owns the clock | It answers `error` once a Job has existed longer than `runTimeoutSeconds + slotWaitSeconds`, so 160 `pending` answers cannot end as a pass |
+| The endpoint owns the clock | It deletes a Job still waiting for a slot after `slotWaitSeconds`, or still running after `runTimeoutSeconds + slotWaitSeconds`, and answers `error`, so 160 `pending` answers cannot end as a pass and a Job past the cap does not keep calling the agent and the judge |
 | Superseded runs are discarded | When a newer revision arrives, Rollouts ends the older run (`spec.terminate`); the endpoint deletes the older active Job when the newer run first polls; the reader records `HarnessRunSuperseded` and publishes nothing for it. For about 25 seconds the old Job can still send cases to the new pods (first implementation observation) |
 | Restart is safe | A reconciler restart creates or deletes no Job and holds no key. Gauges come back from the retained results. `runs_total` and completion Events are counted again once after a restart for runs Rollouts still lists. A restart that leaves `consecutiveErrorLimit` + 1 polls in a row unanswered (13 polls, about 195 s, by default; `global.agentEvaluation.harnessConsecutiveErrorLimit` on oam-agent-components) ends the in-flight gate runs in `Error` and aborts them. A harness value change restarts the reconciler (`Recreate`), so sync it when no gate run is active if the restart can take longer |
 | Invalid declaration keeps history (first implementation) | A hand-edited or otherwise invalid `<agent>-harness` gets `InvalidHarnessDeclaration`, starts no run (the verdict is `error`), and keeps the agent's Jobs, results and series |

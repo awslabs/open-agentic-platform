@@ -311,6 +311,10 @@ class FakeBatch:
             raise ApiException(status=404, reason="NotFound")
         if "suspend" in (body.get("spec") or {}):
             self.jobs[name].spec.suspend = bool(body["spec"]["suspend"])
+        annotations = (((body.get("spec") or {}).get("template") or {}).get("metadata") or {}).get("annotations")
+        if annotations and name in self.bodies:
+            template = self.bodies[name]["spec"]["template"]
+            template.setdefault("metadata", {}).setdefault("annotations", {}).update(annotations)
         self.patched.append((name, body))
 
     def create_namespaced_job(self, namespace, body):

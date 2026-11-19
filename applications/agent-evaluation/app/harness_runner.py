@@ -113,10 +113,12 @@ def utc_now_iso(clock) -> str:
 def run_deadline(settings: RunnerSettings, started_at: float) -> float:
     """When the runner stops starting work.
 
-    activeDeadlineSeconds counts from the Job's start, so scheduling, image pull
-    and Python startup are already spent when the runner starts. The reconciler
-    passes the absolute time the Job expires; the runner's own start is only
-    the fallback when it was not given one.
+    activeDeadlineSeconds counts from the Job's start (the endpoint's
+    unsuspend), so scheduling, image pull and Python startup are already spent
+    when the runner starts. The endpoint stamps the absolute time the Job
+    expires on the pod template when it unsuspends the Job (annotation
+    harness.oap.io/run-deadline, read through the downward API); the runner's
+    own start is only the fallback when it was not given one.
     """
     if settings.run_deadline_epoch > 0:
         return settings.run_deadline_epoch - DEADLINE_MARGIN_SECONDS
