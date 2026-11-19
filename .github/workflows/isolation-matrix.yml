@@ -114,6 +114,12 @@ jobs:
           set -euo pipefail
           C=gitops/addons/charts/agent-sandbox
           IMG=--set=coderTemplate.image=example.com/coder:1
+          # The coder SandboxTemplate is gated on the warm pool -- it is the
+          # pod template the pool clones, and it is the only thing that requires
+          # coderTemplate.image. Every check below that inspects that template
+          # therefore has to ask for the pool as well, which is also the
+          # configuration (dark_factory on) where the template is real.
+          POOL=--set-string=warmPool.enabled=true
 
           echo "== default is Nitro, and the POD carries NO Kata node scheduling =="
           # A Kata nodeSelector on a Nitro pod is the specific bug that made every
@@ -126,7 +132,7 @@ jobs:
           # One line on purpose: a multi-line python here would need to sit
           # inside this block scalar's indentation, and getting that wrong
           # silently ends the YAML block.
-          podsel() { helm template s "$C" $IMG "$@" | python3 -c 'import sys,yaml; [print(k, "=", (d["spec"]["podTemplate"]["spec"] or {}).get(k, "absent")) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="SandboxTemplate" for k in ("runtimeClassName","nodeSelector","tolerations")]'; }
+          podsel() { helm template s "$C" $IMG $POOL "$@" | python3 -c 'import sys,yaml; [print(k, "=", (d["spec"]["podTemplate"]["spec"] or {}).get(k, "absent")) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="SandboxTemplate" for k in ("runtimeClassName","nodeSelector","tolerations")]'; }
 
           podsel | grep -qx 'runtimeClassName = isolated-sandbox'
           podsel | grep -qx 'nodeSelector = absent'
@@ -137,18 +143,32 @@ jobs:
           podsel --set runtime=kata | grep -q 'kata-runtime'
 
           echo "== an unknown runtime must FAIL, not fall through to either =="
-          ! helm template s "$C" $IMG --set runtime=nitr0 >/dev/null 2>&1
+          ! helm template s "$C" $IMG $POOL --set runtime=nitr0 >/dev/null 2>&1
 
-          echo "== warmPool.enabled=false drops the pool and nothing else =="
-          ! helm template s "$C" $IMG --set warmPool.enabled=false | grep -q 'kind: SandboxWarmPool'
-          helm template s "$C" $IMG --set warmPool.enabled=false | grep -q 'kind: SandboxTemplate'
+          echo "== the pool is gated by the VALUE'S TYPE, not just its value =="
+          # warmPool.enabled arrives from an ApplicationSet valuesObject, which
+          # renders through Go templates -- so the chart receives the STRING
+          # "false", and Helm's `if` treats any non-empty string as true. That
+          # stood the Dark Factory pool up on every cluster. --set parses a real
+          # bool and hid it, so both shapes are checked here.
+          ! helm template s "$C" $IMG --set-string warmPool.enabled=false | grep -q 'kind: SandboxWarmPool'
+          ! helm template s "$C" $IMG --set        warmPool.enabled=false | grep -q 'kind: SandboxWarmPool'
+          helm template s "$C" $IMG --set-string warmPool.enabled=true  | grep -q 'kind: SandboxWarmPool'
+
+          echo "== pool off is a CRDs-only install: no coder template, no image needed =="
+          # The coder template requires coderTemplate.image, so while it rendered
+          # unconditionally a CRDs-only install -- the default now, and what both
+          # spokes do -- failed the whole chart on an image it would never pull.
+          ! helm template s "$C" $IMG --set-string warmPool.enabled=false | grep -q 'kind: SandboxTemplate'
+          helm template s "$C" --set-string warmPool.enabled=false >/dev/null
+          helm template s "$C" $IMG $POOL | grep -q 'kind: SandboxTemplate'
 
           echo "== Nitro-only values on a Kata pool must FAIL =="
-          ! helm template s "$C" $IMG --set runtime=kata --set nitro.networkIsolated=true >/dev/null 2>&1
-          ! helm template s "$C" $IMG --set runtime=kata --set nitro.cedarPolicy=abc >/dev/null 2>&1
+          ! helm template s "$C" $IMG $POOL --set runtime=kata --set nitro.networkIsolated=true >/dev/null 2>&1
+          ! helm template s "$C" $IMG $POOL --set runtime=kata --set nitro.cedarPolicy=abc >/dev/null 2>&1
 
           echo "== confidential emits enableServiceLinks: false (genpolicy requires it) =="
-          helm template s "$C" $IMG --set runtime=nitro --set nitro.mode=confidential \
+          helm template s "$C" $IMG $POOL --set runtime=nitro --set nitro.mode=confidential \
             --set nitro.cedarPolicy=abc | grep -q 'enableServiceLinks: false'
 
       - name: Generated definitions are in step with the CUE
