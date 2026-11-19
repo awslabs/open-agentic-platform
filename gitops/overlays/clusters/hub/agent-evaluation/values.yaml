@@ -29,3 +29,4 @@ harness:
   enabled: true
   # TEST ONLY (B3 live check) - reverted right after.
   maxConcurrentJobs: 1
+  slotWaitSeconds: 15
