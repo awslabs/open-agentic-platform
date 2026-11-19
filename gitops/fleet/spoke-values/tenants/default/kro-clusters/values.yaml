@@ -38,13 +38,26 @@ clusters:
     # identity associations the EksCluster RGD has already created.
     provider: "kro-ack"
     region: us-west-2
-    # Kept at 1.35 intentionally: this value feeds ACK Cluster.spec.version under
-    # adopt-or-create (appmod rg-eks.yaml), and EKS upgrades only ONE minor per call,
-    # so bumping a live 1.35 spoke straight to 1.37 (two minors) parks it in error.
-    # The spoke upgrade is staged separately (1.35 -> 1.36 -> 1.37); this PR bumps
-    # only the hub/config. A fresh spoke created from here comes up at 1.35 to match
-    # the running fleet; re-stage when upgrading the spoke in place.
-    k8sVersion: "1.35"
+    # 1.37, matching the hub.
+    #
+    # This was pinned at 1.35, and the reason was sound AT THE TIME: the value feeds
+    # ACK Cluster.spec.version under adopt-or-create (appmod rg-eks.yaml), EKS
+    # upgrades only ONE minor per call, and bumping a LIVE 1.35 spoke straight to
+    # 1.37 parks it in error. That constraint applies to an in-place upgrade of a
+    # running spoke. It does not apply here: the fleet was torn down, so every spoke
+    # this file creates is fresh and is created AT this version in one call.
+    #
+    # 1.36 IS A FLOOR, NOT A PREFERENCE. Both the dev and prod overlays set
+    # agent_sandbox: true, and the addon registry hands every spoke
+    # sandbox_runtime_class: isolated-sandbox -- a RuntimeClass that does not exist
+    # below Kubernetes 1.36. A 1.35 spoke therefore installs the Sandbox CRDs, admits
+    # a `sandbox: true` agent, and then leaves its pod Pending forever: the isolation
+    # is requested and never delivered. Nitro Sandboxes require 1.36+ in a US
+    # commercial region.
+    #
+    # IF YOU UPGRADE A LIVE SPOKE, the one-minor rule returns: stage it
+    # 1.35 -> 1.36 -> 1.37 rather than editing this value in one step.
+    k8sVersion: "1.37"
     # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
     # kro-clusters chart resolves both via `default $.Values.global.accountId`
     # (clusters.yaml), and clusters-kro.yaml's ApplicationSet template already
