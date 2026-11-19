@@ -39,7 +39,11 @@ judgeKey:
   # Models the key may call. The harness runner sends the real model id of the
   # judge alias (agent-evaluation judge.models), not the alias, and Bifrost checks
   # the requested name, so each judge needs both its alias and its model id.
-  # Keep in step with the judge aliases in configs/bifrost/values.yaml.
+  # Keep in step with the judge aliases in configs/bifrost/values.yaml. Must be
+  # exactly the aliases and model ids of agent-evaluation's judge.models: the
+  # test test_bifrost_judge_key_models_match_the_judge_aliases_and_ids
+  # (applications/agent-evaluation/tests/test_harness_chart_files.py) fails
+  # when they drift.
   models:
     - judge-default
     - judge-haiku

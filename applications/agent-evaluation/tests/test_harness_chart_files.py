@@ -256,3 +256,15 @@ def test_verdict_service_routes_to_a_not_ready_pod_and_metrics_service_does_not(
     assert others and all("publishNotReadyAddresses" not in services[n]["spec"] for n in others)
     off = [d for d in _render_eval() if d["kind"] == "Service"]
     assert "agent-evaluation-harness-api" not in {d["metadata"]["name"] for d in off}
+
+
+def test_bifrost_judge_key_models_match_the_judge_aliases_and_ids():
+    # The judge key may call only judgeKey.models. The runner sends the model
+    # id of the judge alias (judge.models), and Bifrost checks the requested
+    # name, so a list that drifts from judge.models makes every judge call a
+    # 403 and aborts every gate revision.
+    judge = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))["judge"]["models"]
+    bifrost = CHART.parent / "bifrost" / "values.yaml"
+    key_models = yaml.safe_load(bifrost.read_text(encoding="utf-8"))["judgeKey"]["models"]
+    assert sorted(key_models) == sorted(set(judge) | set(judge.values()))
+    assert len(key_models) == len(set(key_models))
