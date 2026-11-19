@@ -1,7 +1,7 @@
 # Agent Harness: Per-Revision Evaluation on Argo Rollouts Analysis
 | | |
 |---|---|
-| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested and render-checked; live validation (section 7) is the next step. The provider choice (D2, web provider with a platform endpoint) is still pending reviewer confirmation. The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
+| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested, render-checked and validated live on a hub (live pass 8, section 7: gate preconditions P2 to P6, report, gate and Bifrost scenarios). The provider choice (D2, web provider with a platform endpoint) is still pending reviewer confirmation. The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
 | **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/`, `agent` component `platform/oam/definitions/components/agent.cue`, Bifrost chart `gitops/addons/charts/bifrost/` |
 | **Operator guide** | [`applications/agent-evaluation/agent-harness.md`](../../applications/agent-evaluation/agent-harness.md) |
 | **Parent design** | [Continuous Agent Evaluation](agent-evaluation.md) (this document was its §4b) |
@@ -1243,6 +1243,22 @@ the gate wiring is not approved, until all pass. Record the date here.
 - **P6.** Report, Dashcam, endpoint scaled to zero for more than 75 seconds: the
   run ends `Successful` or Error with `dryRun`, and the Rollout is not rolled
   back. Record the date here.
+
+**Result (live pass 8, 2026-11-18, hub, Argo Rollouts v1.9.0).** P2 to P6
+passed. P5: the controller pod carries `app.kubernetes.io/name: argo-rollouts`,
+the chart default for `harness.api.controller.podLabels`, and a pod in another
+namespace and the API-server proxy both time out on the endpoint port. P6: with
+the endpoint unreachable for more than 75 seconds, the Dashcam run ended
+`Successful` with `dryRunSummary error:1` and the Rollout was not rolled back.
+P1 holds by construction: the component omits `autoPromotionSeconds` for gate
+agents, and no gate revision promoted before its pre-promotion run succeeded.
+P1 with `autoPromotionSeconds` set on a gate agent was not exercised. The same
+pass ran the Bifrost checks (items 1 to 5, without the counter-rename scratch
+test), items 6 to 10, item 11 for a plain rollback and the fast revert (the
+`rollbackWindow` case is from the spike; the mid-flight return to stable was
+not run), the first half of 12 (by status patch, not the plugin), 13, and the
+first half of 14 (a new agent's first revision). Gaps are listed under "Not
+verified yet".
 ### To run on the PR branch
 Bifrost Option A (live, test cluster):
 1. From a pod in another namespace, the management API and `/metrics` return 401
@@ -1305,7 +1321,15 @@ NetworkPolicy (and the egress one when its values are set), and `basic_auth` abs
 `vela dry-run` of the three examples (report, manual gate, gate); `cue vet` of
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
-- Gate and report preconditions P1 to P6 (section 7 above).
+- P1 with `autoPromotionSeconds` set on a gate agent (the component omits it).
+- A gate rollback inside `scaleDownDelaySeconds` (seen in report mode only).
+- Item 11's mid-flight return to the stable template; item 12's calls with
+  another team's `namespace`, `agent`, revision or hash (unit-tested only); the
+  first run after enabling the harness on an agent that already has a stable
+  revision (item 14); the runner egress policy (item 15).
+- The minter's handling of an existing key whose value Bifrost withholds
+  (unit-tested only, `test_vk_minter.py`).
+- Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
 - `kubectl argo rollouts promote`, `abort` and `retry` plugin commands (status
   patches were used).
 - A Job in another namespace calling into a NetworkPolicy-restricted agent: not
