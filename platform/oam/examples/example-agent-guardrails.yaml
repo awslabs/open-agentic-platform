@@ -1,0 +1,80 @@
+# Example: Agent with runtime content guardrails (PROPOSED — not implemented)
+#
+# This file documents the API that docs/architecture/agent-guardrails.md
+# proposes. The `guardrails` block does NOT exist on the agent component yet, so
+# applying this today is rejected by KubeVela. It is here so reviewers can read
+# the developer experience next to the design.
+#
+# Adding the `guardrails` block is the whole change. From it the platform points
+# this agent at an agentgateway AI route whose promptGuard screens the prompt with
+# Amazon Bedrock Guardrails before the model sees it, refuses the request on a
+# violation, and reports every outcome to Grafana beside the evaluation scores.
+# The enforcement point is the gateway OAP already runs, not a new component.
+#
+# What the developer controls here: whether guardrails are on, and which
+# platform profile applies — the namespace minimum or a stricter one.
+# What the platform controls: what a profile MEANS. Which detectors run, at what
+# strength, which text is checked, and that a guard refuses when the detection
+# backend is unreachable. It also sets each namespace's minimum profile, and can
+# require guardrails in a namespace. That keeps every agent held to one
+# definition of "standard", and keeps those definitions reviewed in one place.
+# There is no account, region, ARN, endpoint or API key in this file.
+#
+# Prerequisites:
+# - agentgateway v1.6.0 or later (v1.7.0 recommended). OAP pins v1.4.1 today,
+#   where the bedrockGuardrails guard fails open; from v1.6.0 every guard sets
+#   failureMode: FailClosed, so a Bedrock error refuses the request. See D4.
+# - guardrail profiles enabled in the agent-gateway chart on this cluster
+# - Amazon Bedrock Guardrails reachable in the cluster's account, and
+#   bedrock:ApplyGuardrail on the agentgateway ServiceAccount
+#
+# Cost: one ApplyGuardrail call per model call — PER REQUEST, not sampled — at
+# $0.15 per 1,000 text units for content filters and denied topics. A model call
+# re-sends the whole conversation and its tool results, so what is charged is the
+# text the profile's `scope` selects, not just the latest message. The quota is
+# text units per second, shared by every cluster in the account and Region.
+# See the design, section 5.
+#
+# See the design: docs/architecture/agent-guardrails.md
+# Issues: #144 (content and topic control), #146 (Dogwood as the decision layer)
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: support-assistant
+  namespace: default
+spec:
+  components:
+    - name: support-assistant
+      type: agent
+      properties:
+        description: "Customer support assistant with content guardrails"
+        systemMessage: "You are a support assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+
+        guardrails:
+          enabled: true
+
+          # Platform profile. What `standard` means — which detectors, at what
+          # strength, which text is checked — lives in the platform's profile
+          # catalog, not here. Choose a stricter profile to be stricter. A
+          # profile below this namespace's minimum is rejected at admission.
+          profile: standard
+
+          # There is no per-agent onViolation or inspect. Profiles are shared
+          # routes on the gateway, so every agent on `standard` gets the same
+          # guards. Output inspection is Phase 2: a profile that blocks on output
+          # does not stream, and one that masks output cannot stream at all.
+          # See the design, D2 and D5.
+
+        # Guardrails block in flight; evaluation scores after the fact, on a
+        # sample. They answer the same question at two different times, and the
+        # dashboard shows them together.
+        evaluation:
+          enabled: true
+          strictness: medium
+          coverage: medium
+          evaluators:
+            - goal-completion
+            - name: safety
+              strictness: high

@@ -16,6 +16,7 @@ spec:
         	"encoding/hex"
         	"strings"
         )
+
         // AWS name of the IAM policy. IAM policy names are unique per ACCOUNT, so two installs
         // in one account that derive <appName>-<component>-iam-policy ask for the same policy.
         // The install identity (global.clusterName and global.awsRegion, the cluster secret's

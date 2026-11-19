@@ -71,10 +71,29 @@ enabledAddons:
   # not complete. The capability now runs on the control-plane cluster alongside
   # argo + argo-events. See overlays/environments/control-plane/enabled-addons.yaml.
   #
-  # Disabling prunes the operator, its CRDs, the RuntimeClasses/SandboxTemplate and
-  # the warm pool from this cluster (preserveResourcesOnDeletion is false), which is
-  # the intent of a move. The three stuck coder-warmpool pods here go with them.
-  agent_sandbox: false
+  # BACK ON (and this is not a move back). Two things changed that made the
+  # reasoning above stop applying to spokes:
+  #
+  #   1. The warm pool is no longer why this addon exists here. It is OFF in the
+  #      chart default and enabled only where dark_factory is, so on this spoke
+  #      the addon installs the operator and the Sandbox* CRDs and NOTHING that
+  #      schedules a pod. The Dark Factory pool stays on the hub, for the
+  #      cross-cluster-claim reason above, which still holds.
+  #   2. Isolation no longer needs Kata. Nitro Sandboxes need no node layer of
+  #      ours, so "Auto Mode + Bottlerocket cannot host Kata" is no longer a
+  #      reason a spoke cannot run sandboxed workloads.
+  #
+  # WHY A SPOKE NEEDS IT AT ALL: oam-agent-components ships the `sandbox`
+  # ComponentDefinition to every cluster, and the CRDs come only from here. With
+  # this off, a `type: sandbox` Application on this spoke is rejected at
+  # admission (sandbox.cue, _sandboxOperatorRequired) -- which is correct but
+  # means the capability simply does not exist on spokes. Applications are
+  # deployed to spokes, so it has to.
+  #
+  # The Kata RuntimeClasses this chart also renders are inert here: no node
+  # carries their labels, and nothing selects them unless a cluster is annotated
+  # onto Kata.
+  agent_sandbox: true
   # kata-deploy installs the clh/qemu runtime on the kata nodes (separate app).
   # Off with the capability above — nothing on this cluster needs the runtime now.
   agent_sandbox_kata: false
