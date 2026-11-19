@@ -63,7 +63,9 @@ platform-engineering foundation, all on Amazon EKS Auto Mode:
 - AWS account with Amazon Bedrock access
 - [Task](https://taskfile.dev), `kubectl`, Helm 3.x, AWS CLI, `yq`
 - Podman or Docker (for the Kind-based bootstrap)
-- IAM Identity Center (ArgoCD SSO)
+- IAM Identity Center — **required** (the ArgoCD EKS capability needs an IdC instance; an
+  empty `identityCenter` block makes the install fail partway through). Its region may differ
+  from `aws.region` — a cross-region IdC is supported (see [Gotchas](#gotchas-for-a-custom-domain--agentic-install)).
 
 ### Install — no domain required (fastest path)
 
@@ -101,6 +103,35 @@ Either path bootstraps from Kind, provisions an EKS **hub** cluster, deploys the
 (ArgoCD, Crossplane, observability), provisions optional **spoke** clusters, then layers on the
 agentic capabilities as ArgoCD-managed addons. The Kind bootstrap is destroyed once the hub is
 self-managing.
+
+### Gotchas for a custom-domain / agentic install
+
+Five things that are easy to get wrong on a real own-domain install; each is annotated at its key
+in [`config.yaml`](config.yaml).
+
+- **Don't pin a `platform.ref` TAG yet.** The first clone takes a tag, but a resumed install
+  re-fetches with `+refs/heads/<ref>:...` (branches only), so a tag then fails with
+  `couldn't find remote ref refs/heads/<tag>` (exit 128). Use a **branch** until the re-fetch is
+  made tag-tolerant (tracked in an OAP issue to be filed). On a resumable install this is the
+  common case, not an edge case.
+- **`aws.profile` on an EC2 / Cloud Desktop host.** `"default"` has no entry in `~/.aws/config`
+  there, so it resolves to the **host instance role** via IMDS — usually a different account. The
+  installer stops if the resolved identity is not on `aws.accountId` rather than provisioning in
+  the wrong account. Set a **named** profile whose account equals `aws.accountId`. Both Taskfiles
+  resolve `aws.profile` from config and apply it to their own AWS calls, so you set it in config
+  rather than exporting `AWS_PROFILE` by hand.
+- **`identityCenter` is required, and may be cross-region.** Empty IdC → ack + kro come up but the
+  ArgoCD capability is never created and the install fails later (the root ApplicationSet CRD never
+  appears). `identityCenter.region` is where the **IdC instance** lives and may differ from
+  `aws.region`. Find yours: `aws sso-admin list-instances --region <idc-region>`.
+- **The agent-gateway host is derived and shared per parent zone.** The registry computes
+  `agents.<parent-of-domain>` (for a 3+ label domain), covered by a single-label `*.<parent>`
+  cert. Every hub under the **same parent zone** derives the **same** `agents.<parent>`, so two
+  hubs in one zone collide on that Route53 record. To run more than one hub in one zone, set a
+  distinct `agent_gateway_host` annotation on each hub's cluster-secret (e.g. `agents-b.<parent>`);
+  there is no `config.local.yaml` key for it yet (tracked in an OAP issue to be filed).
+- **Making a spoke agentic in your own fleet repo** is a per-cluster overlay — see
+  [Use your own fleet repo](#use-your-own-fleet-repo).
 
 ---
 
@@ -225,6 +256,42 @@ platform and agentic addons.
 - **Existing install:** before switching a running hub to a new fleet repo, make its spoke entries
   identical to the live ones (region, prefix, `k8sVersion`, CIDR). Otherwise the next sync tries to
   change the live spoke cluster to match the new entry.
+
+#### Make a spoke agentic
+
+A spoke's addon set comes from its `environment` overlay, which is **agent-free** by default. To
+turn the agentic capabilities on for **one** spoke, add a per-cluster override at your fleet
+repo's **root** (not under `gitops/`):
+
+```
+overlays/clusters/<spoke>/addon-overrides.yaml
+```
+
+The spoke's `fleet-secret` reads this as its **last** value file (the `$overlay` source at the
+repo root), so it deep-merges over the environment overlay and affects only `<spoke>`. Each `true`
+key becomes an `enable_<key>` label on the spoke's cluster-secret:
+
+```yaml
+# overlays/clusters/<spoke>/addon-overrides.yaml
+enabledAddons:
+  # enablers the agentic addons need
+  cert_manager: true
+  crossplane_aws: true
+  abstractions: true        # Crossplane XRDs incl. PodIdentity
+  karpenter: true
+  # agentic platform
+  agent_platform: true
+  bifrost: true
+  otel_collector: true
+  monitoring: true
+  agent_core: true
+  agent_gateway: true
+  oam_components: true
+```
+
+This is the agentic delta over the agent-free `dev` overlay; `agent_evaluation`, `agent_sandbox`
+and the kata keys stay off, matching this repo's own `gitops/overlays/environments/dev/enabled-addons.yaml`.
+The same file placed under a **hub** cluster turns the hub agentic the same way.
 
 ---
 

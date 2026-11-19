@@ -4,7 +4,15 @@
 # Platform base (appmod-blueprints)
 platform:
   repo: "https://github.com/aws-samples/appmod-blueprints.git"
-  ref: "main"                          # Branch or tag (e.g., "main" or "v1.0.0"). A moving branch like "main" tracks latest; pin a tag for reproducibility.
+  ref: "main"                          # Branch or tag (e.g., "main" or "v1.0.0"). A moving branch like "main" tracks latest.
+  # Caveat — a TAG currently breaks an idempotent re-run. The first clone takes a
+  # tag fine (git clone --branch), but once .platform/ exists, `platform:clone`
+  # re-fetches with `+refs/heads/<ref>:...`, which resolves BRANCHES only: a tag
+  # then fails with `couldn't find remote ref refs/heads/<tag>` (exit 128). So a
+  # resumed install (the common case) aborts. Until this is fixed, prefer a BRANCH
+  # here. Workaround for a tag: make the re-fetch tag-tolerant in platform:clone
+  # (add `|| git fetch origin +refs/tags/<ref>:...` and a tag-aware checkout).
+  # Tracked in an OAP issue (to be filed).
   # Cluster provider (appmod-blueprints cluster-providers/<name>). Default: kind-kro-ack.
   # Other selectable providers: kind-crossplane, terraform, byoc. Override in config.local.yaml.
   clusterProvider: "kind-kro-ack"
@@ -13,6 +21,14 @@ platform:
 aws:
   region: "us-west-2"
   accountId: ""
+  # On a laptop with a configured profile this is used as-is. On an EC2 / Cloud
+  # Desktop host, the name "default" has no entry in ~/.aws/config, so it resolves
+  # to the HOST INSTANCE ROLE through IMDS — which is often a DIFFERENT account.
+  # The installer guards this: if the resolved identity is not on aws.accountId it
+  # stops with an error rather than provisioning in the wrong account. Set a NAMED
+  # profile whose account equals aws.accountId. (Both Taskfiles resolve this value
+  # from config and apply it to their own AWS calls, so you don't export AWS_PROFILE
+  # by hand.)
   profile: "default"
 
 # Hub cluster
@@ -21,10 +37,33 @@ hub:
   kubernetesVersion: "1.37"
 
 # Domain and networking
+#
+# Custom-domain mode: set `domain` to a host you own (ACM wildcard cert + public
+# Route53 zone). The platform serves the UIs path-based under this host over HTTPS.
+# Leave `domain` empty for the no-domain CloudFront path (see workshop/README.md).
+#
+# Agent-gateway host is DERIVED, not configured here, and is SHARED per parent zone.
+# The agent-gateway registry computes it as `agents.<parent-of-domain>` when the
+# domain has 3+ labels (e.g. domain `oap.example.com` -> `agents.example.com`), else
+# `agents.<domain>`. A single-label `*.<parent>` wildcard cert covers it. Every hub
+# under the SAME parent zone derives the SAME `agents.<parent>`, so two hubs in one
+# zone collide on that record (external-dns gives it to whichever hub owns it first).
+# To run more than one hub in one parent zone, give each its own agent host via the
+# hub cluster-secret annotation `agent_gateway_host` (e.g. `agents-b.<parent>`, still
+# covered by `*.<parent>`). There is no config key for it yet — tracked in an OAP
+# issue (to be filed).
 domain: ""
 resourcePrefix: ""
 
 # AWS Identity Center
+#
+# REQUIRED for a custom-domain / agentic install. The platform's ArgoCD is created
+# as an EKS ArgoCD Capability, which needs a real IdC instance. If these are empty,
+# ack + kro still come up, but the ArgoCD capability is never created and the install
+# fails partway through (the root ApplicationSet CRD never appears). `region` is
+# where the IdC INSTANCE lives and MAY DIFFER from aws.region — a cross-region IdC
+# (e.g. cluster in us-west-2, IdC in us-east-1) is supported; set it to the IdC's
+# own region. Find your instance with: aws sso-admin list-instances --region <idc-region>
 identityCenter:
   instanceArn: ""
   region: ""
