@@ -57,7 +57,7 @@ Four things are decided here that the PR reviews asked about:
 ## 2. Background
 ### 2.1 What Argo Rollouts already does for each revision
 Measured on Argo Rollouts v1.9.0 on a hub cluster, with a scratch
-Rollout (evidence: `.agents/tasks/agent-harness/analysis-spike.md`):
+Rollout (the spike results are listed in section 7, "Verified"):
 | Need | What Rollouts does |
 |---|---|
 | New revision | One AnalysisRun per revision, named `<rollout>-<pod hash>-<revision number>-pre` or `-post`. A retry adds `.N` |
@@ -321,8 +321,8 @@ an admission rule on the component. This document does not add one.
 ### D5. The platform owns the judge key; the Bifrost management API needs a login
 The Bifrost management API (`/api/*` and `/metrics`) answers any pod without
 credentials today. Any pod can list every virtual key value and change
-budgets. This closes in three steps. Details and scratch evidence:
-`.agents/tasks/agent-harness/bifrost-auth-options.md` (Option A).
+budgets. This closes in three steps. The scratch evidence (Bifrost v1.5.0 with
+`auth_config`) is listed in section 7, "Verified".
 1. **Auth on.** The Bifrost chart sets `auth_config` with `is_enabled: true` and
    `disable_auth_on_inference: true`, with credentials from Secret
    `bifrost-admin` through `env.BIFROST_ADMIN_USERNAME` and
