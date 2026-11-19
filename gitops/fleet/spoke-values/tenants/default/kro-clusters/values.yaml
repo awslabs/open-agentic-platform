@@ -75,3 +75,40 @@ clusters:
       publicSubnet2Cidr: "10.1.2.0/24"
       privateSubnet1Cidr: "10.1.11.0/24"
       privateSubnet2Cidr: "10.1.12.0/24"
+  oap-prod:
+    clusterName: oap-prod
+    tenant: default
+    # Selects overlays/environments/prod, where agent_platform, agent_core,
+    # agent_gateway, oam_components and agent_sandbox are all enabled -- so this
+    # spoke receives the same agentic capabilities as dev, against the prod tier.
+    environment: prod
+    # Load-bearing, same as dev: an empty provider label makes the addon registry
+    # route this spoke to the crossplane pod-identity chart (selector is
+    # provider NotIn [kro-ack], which matches an empty value), and that chart then
+    # 409-conflicts with the pod identity associations the EksCluster RGD has
+    # already created.
+    provider: "kro-ack"
+    region: us-west-2
+    # 1.37, matching the hub and oap-dev. 1.36 is a hard floor rather than a
+    # preference: agent_sandbox is enabled on the prod overlay and the registry
+    # hands this spoke sandbox_runtime_class: isolated-sandbox, a RuntimeClass that
+    # does not exist below 1.36. See the note on oap-dev above for why the old 1.35
+    # pin does not apply to a freshly created spoke.
+    k8sVersion: "1.37"
+    # accountId/managementAccountId deliberately OMITTED, exactly as for oap-dev:
+    # appmod-blueprints' kro-clusters chart resolves both via
+    # `default $.Values.global.accountId`, which clusters-kro.yaml populates from
+    # the hub cluster secret's aws_account_id annotation. Keeping a real account ID
+    # out of git is the point.
+    resourcePrefix: peeks
+    # 10.3.0.0/16, NOT 10.2.0.0/16. The allocation is 10.0 hub, 10.1 oap-dev, and
+    # 10.2 is taken by an unrelated CDK VPC hosting ROSA workers (see the oap-dev
+    # comment above) -- so prod skips to 10.3 rather than colliding with it. A
+    # previous config.local.yaml had spoke-prod on 10.2.0.0/16, which would have
+    # overlapped that VPC.
+    cidr:
+      vpcCidr: "10.3.0.0/16"
+      publicSubnet1Cidr: "10.3.1.0/24"
+      publicSubnet2Cidr: "10.3.2.0/24"
+      privateSubnet1Cidr: "10.3.11.0/24"
+      privateSubnet2Cidr: "10.3.12.0/24"
