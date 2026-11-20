@@ -188,6 +188,43 @@ agent-evaluation:
     global:
       awsRegion: '{{.metadata.annotations.aws_region}}'
       clusterName: '{{.metadata.annotations.aws_cluster_name}}'
+    # Pulled from THE DEPLOYING CLUSTER'S OWN ACCOUNT, resolved from the cluster
+    # secret -- so no AWS account id is committed to this repo.
+    #
+    # WHY AN OVERRIDE IS NEEDED AT ALL. The chart default,
+    # public.ecr.aws/z0a4o2j5/agent-evaluation, does not exist: that repository
+    # answers NAME_UNKNOWN and the tag 404s, so a cluster taking the default sits
+    # in ImagePullBackOff -- a stuck addon, not a degraded one. Until the image is
+    # published, each account builds it from applications/agent-evaluation
+    # (./build.sh --push; multi-arch is required, OAP fleets mix arm64 and amd64).
+    #
+    # WHY TEMPLATED RATHER THAN A PER-CLUSTER FILE. This replaces three
+    # overlays/clusters/<cluster>/agent-evaluation/values.yaml files that each
+    # hardcoded one account's registry. Those had to be written out per cluster
+    # and put a real account id in git. Resolving aws_account_id/aws_region from
+    # the cluster secret covers hub and every spoke at once, and -- the point of
+    # the original objection to making this the chart default -- never pins one
+    # account's private registry as anyone else's: a fork resolves to its OWN
+    # account, not ours.
+    #
+    # STILL TEMPORARY. Delete this image block once
+    # public.ecr.aws/z0a4o2j5/agent-evaluation exists ("Ask 2" on #104); the chart
+    # default is correct for everyone at that point.
+    #
+    # ON AN EXISTING INSTALL THIS DOES NOT TAKE EFFECT ON ITS OWN. The addon reads
+    # this registry through the hub's agent-platform-addons Application, which is
+    # pinned to the addons_repo_revision stamped on the hub cluster secret. Until
+    # that Application follows the revision carrying this change -- in practice,
+    # re-running the agentic bootstrap -- the addon keeps rendering the OLD image
+    # and nothing here applies. A fresh install picks it up immediately.
+    #
+    # The tag is the IMAGE version line and moves in lockstep with image.tag in
+    # the chart's values.yaml, appVersion in its Chart.yaml, and version in the
+    # application's pyproject.toml -- NOT with the chart version or
+    # defaultVersion above, which track templates and move independently.
+    image:
+      repository: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/agent-evaluation'
+      tag: '0.2.4'
     # EXPLICIT FIRST, inference only as a fallback.
     #
     # An `agent_evaluation_role` annotation on the cluster secret wins outright.

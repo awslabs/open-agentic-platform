@@ -145,15 +145,30 @@ enabledAddons:
   # registry entry derives role=hub from this cluster having an
   # ingress_domain_name, so no flag here chooses the role.
   #
-  # OFF UNTIL THE IMAGE IS PUBLISHED. The chart's default image,
-  # public.ecr.aws/z0a4o2j5/agent-evaluation, does not exist in the public
-  # registry yet -- the repository itself answers NAME_UNKNOWN, so there is no
-  # tag to fall back to. Enabling it here puts the reconciler in
-  # ImagePullBackOff the moment this environment syncs the chart: a stuck
-  # addon, not a degraded one. Same reasoning as judge.virtualKey.enabled
-  # defaulting off -- a dangling dependency is a worse first-run experience
-  # than an addon a cluster opts into.
-  # Flip to true in the same change that points image.tag at the published tag.
+  # OFF, BECAUSE THE IMAGE IS NOT IN A PUBLIC REGISTRY.
+  #
+  # The chart's default, public.ecr.aws/z0a4o2j5/agent-evaluation, does not
+  # exist: that repository answers NAME_UNKNOWN and the tag 404s. The registry
+  # entry (gitops/addons/registry/observability.yaml) therefore points the addon
+  # at <aws_account_id>.dkr.ecr.<aws_region>.amazonaws.com/agent-evaluation,
+  # templated from the cluster secret -- which resolves to the DEPLOYING
+  # account, and that account only has the image if someone there has run
+  # applications/agent-evaluation/build.sh --push.
+  #
+  # So `true` here cannot be a default: on any install whose account has no
+  # agent-evaluation repository, every hub and spoke reconciler sits in
+  # ImagePullBackOff. A stuck addon, not a degraded one, and a clean install
+  # must not require building an image first.
+  #
+  # TO TURN IT ON FOR YOUR OWN FLEET: build and push the image (multi-arch is
+  # required -- OAP fleets mix arm64 and amd64, and a single-arch image
+  # ImagePulls on half the nodes), then set this true in your own overlay rather
+  # than here. Verified working that way: 8 invocations produced 8 judge scores
+  # in Langfuse and oap_agent_eval_* series in AMP.
+  #
+  # FLIP THE DEFAULT only once the image is in a public registry (a consolidated
+  # public ECR for OAP images is planned). Move the flag and the image pointer in
+  # the same change -- see that registry entry for the tag lockstep rule.
   agent_evaluation: false
   agent_core: true
   agent_gateway: true

@@ -191,7 +191,7 @@ kubectl get componentdefinition agent -n vela-system -o yaml | grep -oE 'image: 
 Measured on this cluster: the published `public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10`
 emits only `['<agent>', 'source:chat']` — **no scoped tag** — so imageless does
 not score against it. The hub's `global.agentImage` is therefore pointed at
-`940019131157.dkr.ecr.us-west-2.amazonaws.com/strands-agent:v1.3.4-tracetag`,
+`<account-id>.dkr.ecr.<region>.amazonaws.com/strands-agent:v1.3.4-tracetag`,
 built from this branch. Once the tag ships in the public image, set
 `global.agentImage` back to it and the override disappears.
 
