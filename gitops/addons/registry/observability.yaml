@@ -224,7 +224,7 @@ agent-evaluation:
     # defaultVersion above, which track templates and move independently.
     image:
       repository: '{{.metadata.annotations.aws_account_id}}.dkr.ecr.{{.metadata.annotations.aws_region}}.amazonaws.com/agent-evaluation'
-      tag: '0.2.4'
+      tag: '3e0448a3' # TEST ONLY - never merge: private image built from 3e0448a3
     # EXPLICIT FIRST, inference only as a fallback.
     #
     # An `agent_evaluation_role` annotation on the cluster secret wins outright.
