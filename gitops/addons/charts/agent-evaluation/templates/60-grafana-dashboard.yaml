@@ -10,7 +10,27 @@ escaped, which is how Dark Factory's dashboard has to do it. The file is a copy
 of docs/architecture/diagrams/src/agent-evaluation-dashboard.json, which stays
 the source of truth for review.
 */ -}}
-{{- if and .Values.metrics.enabled .Values.grafana.enabled }}
+{{- /*
+Gated on the CRD being present, exactly as 61-prometheus-rule.yaml gates on
+monitoring.coreos.com/v1/PrometheusRule. Without this the dashboard renders on
+every cluster, and on one with no grafana-operator Argo CD fails the sync of
+the WHOLE application:
+
+  one or more synchronization tasks are not valid: failed to discover server
+  resources for group version grafana.integreatly.org/v1beta1: the server could
+  not find the requested resource
+
+That is not a degraded dashboard, it is a reconciler that never starts -- the
+Deployment, RBAC and ExternalSecrets in this chart never apply either, because
+one invalid resource invalidates the whole sync. Observed on oap-dev and
+oap-prod, which run the addon but not grafana-operator (dashboards are central
+on the hub; spokes only export metrics to AMP).
+
+grafana.enabled stays an explicit opt-out for a cluster that HAS the CRD and
+still does not want the dashboard. This condition is about whether the cluster
+can accept the resource at all.
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.grafana.enabled (.Capabilities.APIVersions.Has "grafana.integreatly.org/v1beta1/GrafanaDashboard") }}
 {{- $dashboard := .Files.Get "files/agent-evaluation-dashboard.json" }}
 {{- if not $dashboard }}
 {{- fail "agent-evaluation: files/agent-evaluation-dashboard.json is missing from the chart; the dashboard would be imported empty." }}

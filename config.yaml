@@ -92,10 +92,24 @@ sandbox:
   # nodes do not have, and every warm pod goes Pending.
   runtime: "nitro"
 
-# Spoke clusters (optional — hub-only by default)
-# Each entry is applied by `task spokes:install` as a Crossplane PlatformCluster claim, so it
-# only takes effect with platform.clusterProvider: kind-crossplane. With kind-kro-ack, declare
-# spokes in the fleet repo instead (see gitops/fleet/members/_example/README.md).
+# Spoke clusters for the kind-crossplane provider ONLY.
+#
+# THIS BLOCK BEING EMPTY DOES NOT MEAN A HUB-ONLY INSTALL. It is read only when
+# platform.clusterProvider is kind-crossplane. The default above is kind-kro-ack,
+# which ignores this block entirely and builds whatever spokes are declared in the
+# FLEET REPO -- and the fleet repo defaults to this repo (see the fleetRepo note
+# above), so a default `task install` today also creates the spokes committed under
+# gitops/fleet/spoke-values/. Leaving `spokes: {}` here does not prevent that.
+#
+# An earlier version of this comment said "optional — hub-only by default", which
+# described this block accurately and the default install misleadingly.
+#
+# For a genuinely hub-only install on kind-kro-ack, point fleetRepo at your own
+# repo (or an overlay) with no spoke definitions. Making the shipped default
+# hub-only is tracked separately.
+#
+# With kind-kro-ack, declare spokes in the fleet repo instead
+# (see gitops/fleet/members/_example/README.md).
 spokes: {}
   # Example:
   # spoke-dev:
