@@ -576,8 +576,9 @@ reconciler started runs itself. With the analysis-based design the run starts
 when Rollouts creates the AnalysisRun, within one 15-second poll of the pause,
 and the Events and the `kubectl` commands are the same. Placeholders: `<hub-context>` is your kube context, `<agent>` the agent and
 Application name, `<ns>` its namespace. Plain `kubectl` is used. The
-`kubectl argo rollouts` plugin was not installed in the test, so the plugin
-commands below are the standard equivalents and were not run.
+`kubectl argo rollouts` plugin v1.9.0 was run in live pass 9 (`get rollout`,
+`promote`, `abort`, `retry`); the `kubectl patch` forms below were run in the
+earlier passes and do the same.
 
 1. **Push a new revision.** Apply a changed Application (any change to the
    agent's pod template makes a revision).
@@ -630,7 +631,7 @@ commands below are the standard equivalents and were not run.
      ```
      Verified live: the phase went from `Paused` to `Healthy` within 4 s
      and both Services moved to the new revision. The plugin equivalent is
-     `kubectl argo rollouts promote <agent>` (not run).
+     `kubectl argo rollouts promote <agent>` (run in pass 9, G8).
    - **Abort** when you reject it:
      ```bash
      kubectl --context <hub-context> patch rollout <agent> -n <ns> \
@@ -638,7 +639,7 @@ commands below are the standard equivalents and were not run.
      ```
      Verified live: the Rollout showed `Degraded` and the old revision kept
      serving. The plugin equivalent is `kubectl argo rollouts abort <agent>`
-     (not run). Then push a fixed revision.
+     (run in pass 9, R9). Then push a fixed revision.
    - **Real regression or judge variation?** Each case runs once, so one or
      two cases of difference are within run-to-run variation. The same
      revision scored 19/20 and then 17/20 when it was run twice. Read the
@@ -659,10 +660,9 @@ commands below are the standard equivalents and were not run.
      errors and the run deadline. Fix the cause and push a new revision, or
      decide without a score. **Not verified:** an `insufficient` run while a
      revision is held (the live test covered it only without a hold).
-   - **Rollout state.** **Not verified:** the output of
-     `kubectl argo rollouts get rollout`, because the plugin was not
-     installed. The `jsonpath` line in step 1 and `kubectl get rollout <agent>
-     -o wide` were used instead.
+   - **Rollout state.** `kubectl argo rollouts get rollout <agent>` shows it
+     (real v1.9.0 output earlier in this guide). The `jsonpath` line in step 1
+     and `kubectl get rollout <agent> -o wide` give the same state.
 
 #### Caveats for the manual gate
 
@@ -986,7 +986,7 @@ tests, the offline render checks and the validation plan in the design document
 | Gate never promotes on "unknown" | Only a `pass` verdict promotes. `fail`, `insufficient`, a missing judge key, a Job error, a preview that no longer selects the revision, and a run past its time cap all fail the metric and abort the revision. Five endpoint errors in a row do the same |
 | The endpoint owns the clock | It deletes a Job still waiting for a slot after `slotWaitSeconds`, or still running after `runTimeoutSeconds + slotWaitSeconds`, and answers `error`, so 160 `pending` answers cannot end as a pass and a Job past the cap does not keep calling the agent and the judge |
 | Superseded runs are discarded | When a newer revision arrives, Rollouts ends the older run (`spec.terminate`); the endpoint deletes the older active Job when the newer run first polls; the reader records `HarnessRunSuperseded` and publishes nothing for it. For about 25 seconds the old Job can still send cases to the new pods (first implementation observation) |
-| Restart is safe | A reconciler restart creates or deletes no Job and holds no key. Gauges come back from the retained results. `runs_total` and completion Events are counted again once after a restart for runs Rollouts still lists. A restart that leaves `consecutiveErrorLimit` + 1 polls in a row unanswered (13 polls, about 195 s, by default; `global.agentEvaluation.harnessConsecutiveErrorLimit` on oam-agent-components) ends the in-flight gate runs in `Error` and aborts them. A harness value change restarts the reconciler (`Recreate`), so sync it when no gate run is active if the restart can take longer |
+| Restart is safe | A reconciler restart creates or deletes no Job and holds no key. Gauges come back from the retained results. `runs_total` and completion Events are counted again once after a restart for runs Rollouts still lists. A restart that leaves `consecutiveErrorLimit` + 1 polls in a row unanswered (13 polls, about 195 s when connections are refused and 413 s measured when polls time out, by default; `global.agentEvaluation.harnessConsecutiveErrorLimit` on oam-agent-components) ends the in-flight gate runs in `Error` and aborts them. A harness value change restarts the reconciler (`Recreate`), so sync it when no gate run is active if the restart can take longer |
 | Invalid declaration keeps history (first implementation) | A hand-edited or otherwise invalid `<agent>-harness` gets `InvalidHarnessDeclaration`, starts no run (the verdict is `error`), and keeps the agent's Jobs, results and series |
 | All cases errored is a run error (D2) | The agent's own unusable replies (failed Task, JSON-RPC error, any non-2xx status incl. 4xx, timeout, a connection dropped after the request was sent) are failed cases and count in the pass ratio. Judge errors (retried up to 3 times on transport, 429 and 5xx) and a failure to connect to the preview are case errors, outside the ratio. If every case errored, the run is `status=error` with no counts or pass ratio, so a judge or path outage never reads as a 0% revision |
 | Series follow the current declaration | Metrics show the finished run with the highest revision number on the **declared** dataset against the **declared** threshold. A threshold-only change starts no run; `threshold` and `threshold_met` update at the next pass |
@@ -1193,7 +1193,7 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
   gate agent's first revision, and the first push after gate is turned on, are
   promoted on health.
 - **Endpoint restarts.** A reconciler restart that leaves
-  `consecutiveErrorLimit` + 1 polls unanswered (default 13, about 195 s) ends
+  `consecutiveErrorLimit` + 1 polls unanswered (default 13, about 195 s when refused, 413 s measured when polls time out) ends
   in-flight gate runs in `Error` and aborts them. A Langfuse outage does not:
   the verdict Service publishes not-ready addresses.
 - **Provider.** The template uses the Argo Rollouts `web` provider with the

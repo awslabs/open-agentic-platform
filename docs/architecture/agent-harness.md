@@ -290,7 +290,7 @@ end before `consecutiveErrorLimit` + 1 polls in a row go unanswered, or every
 in-flight gate run ends in Error and aborts. The limit is the platform value
 `global.agentEvaluation.harnessConsecutiveErrorLimit` on the
 oam-agent-components chart, default 12: 13 polls, about 195 s when the
-connection is refused, and up to 13 x 35 s (interval plus the web provider's
+connection is refused (a restart), and up to 13 x 35 s (interval plus the web provider's
 20 s timeout) when polls time out. Measured on the hub (live pass 9): a restart leaves the
 endpoint unanswered for 5 to 6 s and the pod Ready after 19 to 22 s, plus up to
 5 s for a cold image pull. The limit for that gap is its length plus 60 s of
@@ -459,8 +459,8 @@ by the end check or by Rollouts' termination.
 ### D7. Rollback
 A rollback is a push of an older template. Rollouts treats it as a new
 revision with a new revision number, creates a new AnalysisRun, and the harness
-scores it like any other revision, with three exceptions. The Job name includes
-the revision number, so the earlier run's Job and result are not reused. Three
+scores it like any other revision, with four exceptions. The Job name includes
+the revision number, so the earlier run's Job and result are not reused. Four
 cases do not run:
 - With `spec.rollbackWindow` set on the Rollout, a previously promoted revision
   inside the window is promoted in about 14 seconds with no run. The component
@@ -490,7 +490,8 @@ cases do not run:
   promotion (`scaleDownDelaySeconds`), an aborted preview
   (`abortScaleDownDelaySeconds`, default 30 s), and any other old ReplicaSet
   still scaled up, such as a superseded preview (`scaleDownDelaySeconds`,
-  `scaleDownDelayHelper` in `rollout/replicaset.go`). The reviewer reproduced it
+  added by `scaleDownDelayHelper`, `rollout/replicaset.go:304`, called from
+  `rollout/bluegreen.go:234`; read at the v1.9.0 tag on 2026-11-20). The reviewer reproduced it
   on kind. It was reproduced on the hub on 2026-11-19 with PR head 4572ba8f and
   retested the same day with `abortScaleDownDelaySeconds: 0` (image
   `3e0448a3`), on a gate agent whose every run failed:
@@ -529,7 +530,8 @@ cases do not run:
   - `0` closes paths 2 and 3 only because Argo Rollouts v1.9.0 then never
     scales an old ReplicaSet down. After eight revisions, eight old ReplicaSets
     each still ran one pod and none had a deadline. Do not use it. Upstream
-    issues 1639 and 1992 describe the same behavior.
+    issues 1639 and 1992 (both open, checked on GitHub on 2026-11-20) report
+    that `scaleDownDelaySeconds: 0` leaves old ReplicaSets running.
   - `1` closes both paths: a revert 14 s after an abort and a revert 10 s after
     a supersede each got a new run and failed again. Old ReplicaSets scale down
     about a second after a promotion (the eight ReplicaSets left by the `0`
@@ -822,7 +824,7 @@ cannot cover. Each row gives what is lost, why, and what replaces it.
 | 12 | Metrics survive AnalysisRun pruning | Rollouts keeps 5 successful and 5 unsuccessful runs by default | The series follow the highest-revision finished run, which is always kept. A run pruned before the reconciler reads it (a restart gap over 5 revisions) is not published |
 | 13 | Gate on a revision with no AnalysisRun | Rollouts creates no run for the first revision of a Rollout, and none for the first push after gate is enabled when the template does not change | Not scored, promoted on health. A gate agent's first revision is unprotected. A revision promoted unscored can return unscored inside `rollbackWindow` (D7) |
 | 14 | Report mode never changes a rollout during an endpoint outage | `dryRun` is verified for a `Failed` metric, not for a measurement `Error` (P6) | If P6 fails, Dashcam needs `consecutiveErrorLimit` above the reconciler's start-up time, set in the template (D3) |
-| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0`, which closes the retry path (retested on the hub). The two reverts inside `scaleDownDelaySeconds` stay open (D7 table, retested on the hub): this is Argo Rollouts v1.9.0 behavior and a known limitation. Setting `scaleDownDelaySeconds` per agent is the lever, with the trade-offs in D7; `0` must not be used The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run |
+| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0`, which closes the retry path (retested on the hub). The two reverts inside `scaleDownDelaySeconds` stay open (D7 table, retested on the hub): this is Argo Rollouts v1.9.0 behavior and a known limitation. Setting `scaleDownDelaySeconds` per agent is the lever, with the trade-offs in D7; `0` must not be used. The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run |
 Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
@@ -1535,8 +1537,6 @@ NetworkPolicy (and the egress one when its values are set), and `basic_auth` abs
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
 - P1 with `autoPromotionSeconds` set on a gate agent (the component omits it).
-- The D7 fast-track paths with `abortScaleDownDelaySeconds: 0` (the retest
-  fills the D7 table).
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
@@ -1544,8 +1544,6 @@ the AnalysisTemplate and the Rollout fragment.
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
-- `kubectl argo rollouts promote` and `abort` plugin commands (status patches
-  were used; `retry` was used in the 2026-11-19 reproduction).
 - A Job in another namespace calling into a NetworkPolicy-restricted agent: not
   needed for the web provider's design, tested in the existing manual-gate run.
 - Behaviour on a spoke.
