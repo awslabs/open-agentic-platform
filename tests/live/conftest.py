@@ -168,7 +168,8 @@ class Gw:
     url: str
 
     def request(self, token, method, path, body=None, headers=None, timeout=60):
-        h = dict(headers or {})
+        # httpx.Headers, not dict, so a list of pairs can repeat a header (row R3).
+        h = httpx.Headers(headers or {})
         if token:
             h["Authorization"] = f"Bearer {token}"
         if body is not None:

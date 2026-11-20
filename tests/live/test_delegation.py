@@ -108,6 +108,9 @@ def runs(gw, t, direct, logs):
     out["r1"] = gw.chat(t["sup"], MEM, f"r1{RUN}", "Say hi.",
                         headers={"X-Delegated-User": t["s1"], "X-Delegation-Depth": "1"})
     out["r2"] = gw.chat(t["sup"], MEM, f"r2{RUN}", "Say hi.", headers={"X-Delegation-Depth": "1"})
+    out["r3"] = gw.chat(t["sup"], MEM, f"r3{RUN}", "Say hi.",
+                        headers=[("X-Delegated-User", t["s1"]), ("X-Delegated-User", t["s2"]),
+                                 ("X-Delegation-Depth", "1")])
     # Autonomous run: no user at all reaches the supervisor (its Service, not the gateway).
     until_delegated("a1", direct, None, f"Ask the assistant agent ({MEM}) to say hello.", [MEM])
     for line in (f"{k}: {v[0]} {v[1][:160]}" for k, v in out.items()):
@@ -222,6 +225,19 @@ def test_R2_delegated_call_without_a_named_user_gets_no_identity(mem_log):
     # both user and agent, so it must not key memory on it.
     assert f"memory is off for session 'r2{RUN}'" in mem_log
     assert actor(mem_log, f"r2{RUN}") is None
+
+
+def test_R3_repeated_delegated_user_is_refused_or_one_user(runs, mem_log, t):
+    # From agentgateway v1.7.0, CEL request.headers["x-delegated-user"] is a list when the
+    # header is sent twice. The sub-agent must see a refusal or one user, never a list.
+    status, _ = runs["r3"]
+    one = (t["s1"], t["s2"])
+    if status != 200:
+        assert actor(mem_log, f"r3{RUN}") is None
+        return
+    assert actor(mem_log, f"r3{RUN}") in (None, *one)
+    users = re.findall(rf"session=r3{RUN} delegated_by=\S* user=(\S*)", mem_log)
+    assert all(u in (*one, SUP_SUB) for u in users), users
 
 
 def test_A1_autonomous_run_without_a_user_gets_no_memory_at_the_sub_agent(mem_log, sup_log):
