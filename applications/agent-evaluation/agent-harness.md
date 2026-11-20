@@ -820,11 +820,18 @@ image index at the end.
 - Publish to a registry **every cluster that runs agents can pull** (hub and
   spokes). A private repository in one account works only where the node role
   can pull from it.
-- Pin `image.tag` to an immutable tag (we used the commit short sha) and record
-  the index digest. Do not overwrite tags.
-- Publishing the image is also when the hub overlay's `image.tag` moves off
-  `0.2.4` (see 4.1); until then the hub runs the reconciler without a harness
-  loop.
+- The image is set in the registry entry `agent-evaluation`
+  (`gitops/addons/registry/observability.yaml`, `valuesObject.image`), not in
+  an overlay. `image.repository` there resolves to the deploying cluster's own
+  ECR (`<account>.dkr.ecr.<region>.amazonaws.com/agent-evaluation`, from the
+  cluster secret), so push the image to each account that runs the addon.
+  `valuesObject` wins over any overlay values file, so an overlay
+  `image.tag` has no effect.
+- Pin the registry's `image.tag` to an immutable tag (we used the commit short
+  sha) and record the index digest. Do not overwrite tags.
+- Publishing the `0.3.0` image is also when the registry's `image.tag` moves
+  off `0.2.4` (see 4.1); until then every cluster with the addon runs the
+  reconciler without a harness loop.
 - The chart default `image.repository` is the platform public repository, which
   does not exist yet; that is why the addon defaults to off (section 8).
 
@@ -1040,21 +1047,28 @@ Placeholders: `<registry>` for the image registry, `<tag>` for the image tag,
 
 ### 6.1 Enablement (hub only)
 
-We enabled the harness on the hub only; `dev` and `prod` stayed off. We set
-these two files locally and did not commit them; on `main` the addon is off
-and the hub overlay only pins an image:
+We enabled the harness on the hub only; `dev` and `prod` stayed off. With the
+current mechanism (4.1 and 4.2) that is two files, changed locally and not
+committed; on `main` the addon and the harness are off:
 
-- `gitops/overlays/environments/control-plane/enabled-addons.yaml`:
-  `agent_evaluation: true`.
-- `gitops/overlays/clusters/hub/agent-evaluation/values.yaml`:
+- `gitops/overlays/environments/control-plane/enabled-addons.yaml`: the addon
+  and the harness flag. `agent_harness` alone sets both harness switches.
 
   ```yaml
-  image:
-    repository: <registry>/agent-evaluation
-    tag: "<tag>"            # the fix commit's short sha, multi-arch index
-  harness:
-    enabled: true           # everything else: chart defaults
+  enabledAddons:
+    agent_evaluation: true
+    agent_harness: true     # sets harness.enabled and global.agentEvaluation.harnessEnabled
   ```
+
+- `gitops/addons/registry/observability.yaml`, entry `agent-evaluation`:
+  `valuesObject.image.tag: "<tag>"` (the fix commit's short sha, multi-arch
+  index). `image.repository` already resolves to the hub account's ECR. The
+  tag applies to every cluster with the addon; only the hub had it on.
+
+  Do not put `image` or `harness.enabled` in
+  `gitops/overlays/clusters/hub/agent-evaluation/values.yaml`: the registry
+  sets both in `valuesObject`, which wins over that file. The bifrost chart's
+  `judgeKey.enabled` is set separately (4.4).
 
   Defaults in use: judge key minted in the hub's Bifrost, judge model
   `judge.defaultAlias`, interval 60 s, history 3, `casePassScore` 0.7.
@@ -1242,8 +1256,8 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
   [docs/architecture/agent-harness.md](../../docs/architecture/agent-harness.md). A design note, not a commitment.
 - **Publishing images and bumping pins.** The reconciler image with the harness
   is not in the platform's public registry yet, so `agent_evaluation` stays off
-  on `main`. Once published, set the chart's `image.tag` and remove per-cluster
-  image overrides. Publish a `strands-agent` image with the harness marking
+  on `main`. Once published, set the chart's `image.tag` and remove the
+  `image` block from the registry entry (`gitops/addons/registry/observability.yaml`). Publish a `strands-agent` image with the harness marking
   change and bump its default pin.
 - **Team-owned datasets.** The `<namespace>/<name>` dataset form is reserved and
   rejected today; datasets are platform chart files.
