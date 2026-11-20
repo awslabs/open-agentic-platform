@@ -104,6 +104,7 @@ and real.
 | `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m; also follows a missing required judge key |
 | `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m; includes a judge key that cannot be minted or read only with `required: true` |
 | `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; `warning` with `required: true` (no run starts while it fires), `info` with `required: false` (runs go on un-budgeted) |
+| `AgentHarnessGateUnverifiedStable` | Only with `harness.enabled`: a `mode: gate` agent's stable revision has harness runs and none passed, for 5m. With PF-1 nothing on this platform evaluates the PrometheusRule today, so this alert cannot fire; the Warning Event `HarnessStableRevisionUnverified` and the metric `oap_agent_harness_unverified_stable` are the signals |
 
 ## Harness
 The per-revision harness from issue #137, off by default. With
@@ -131,7 +132,7 @@ harness off").
 | ConfigMap `agent-evaluation-harness-datasets` | every `files/harness/datasets/*.yaml`. Fails the render when there is none |
 | Deployment | the `HARNESS_*` env, both ConfigMaps mounted read-only, and a `checksum/harness` annotation so a dataset or prompt change restarts the reconciler |
 | RBAC | see below |
-| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing` (where the CRD exists) |
+| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing`, `AgentHarnessGateUnverifiedStable` (where the CRD exists) |
 
 The Grafana dashboard is one static JSON, so it always contains the "Harness"
 row, harness on or off. Its panels show "No data" for agents with no harness and

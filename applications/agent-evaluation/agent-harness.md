@@ -926,6 +926,11 @@ is on and the `monitoring.coreos.com/v1` PrometheusRule CRD exists:
 | `AgentHarnessJudgeKeyMissing` | `max by (cluster) (oap_agent_harness_judge_key_present) == 0` | 30m | `warning` with `harness.judge.virtualKey.required: true` (no run starts), `info` with `false` (runs go on with an un-budgeted judge) |
 | `AgentHarnessGateUnverifiedStable` | `max by (cluster, namespace, agent, revision) (oap_agent_harness_unverified_stable) == 1` | 5m | warning |
 
+With PF-1 (below), nothing on this platform evaluates the PrometheusRule today, so
+`AgentHarnessGateUnverifiedStable` cannot fire. The Warning Event
+`HarnessStableRevisionUnverified` and the metric
+`oap_agent_harness_unverified_stable` are the signals.
+
 `AgentHarnessReconcileErrors` means the harness reader's Kubernetes AnalysisRun,
 Job or Secret calls are failing. A judge key Secret that is missing counts here
 only with `required: true`. The
