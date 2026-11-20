@@ -649,7 +649,9 @@ commands below are the standard equivalents and were not run.
      abort, `kubectl argo rollouts retry` within the aborted preview's
      scale-down deadline (30 s by default in report mode) brings the revision
      back with no new run; after it, the new run returns the verdict already
-     given.
+     given. This is the report-mode (Manual gate) behavior. For a gate the
+     component sets `abortScaleDownDelaySeconds: 0`, so a retry always creates
+     a new run (see the gate fast-track section above).
    - **`insufficient`.** If fewer than `minJudgedRatio` (default 0.8) of the
      cases were judged, no verdict exists and no pass ratio is published. The
      Event says how many cases were judged, for example `12 of 20 cases
