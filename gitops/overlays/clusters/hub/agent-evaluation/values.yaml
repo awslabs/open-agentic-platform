@@ -25,5 +25,3 @@
 image:
   repository: 257077212816.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
   tag: "3e0448a3"
-harness:
-  enabled: true

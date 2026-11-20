@@ -1,5 +1,3 @@
-# TEST ONLY - never merge. The hub runs the agent harness, so the agent
-# component accepts harness.mode: gate here.
-global:
-  agentEvaluation:
-    harnessEnabled: "true"
+# TEST ONLY - never merge. The harness switch is no longer set here: it comes
+# from agent_harness in control-plane/enabled-addons.yaml (P3 live check).
+{}
