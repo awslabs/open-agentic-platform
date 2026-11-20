@@ -177,7 +177,7 @@ enabledAddons:
   # enable_agent_harness label by both registry entries. Does nothing unless
   # agent_evaluation is also true here, and needs the 0.3.0 image.
   # TEST ONLY - never merge: the single harness switch under live test (P3).
-  agent_harness: false
+  agent_harness: true
   agent_core: true
   agent_gateway: true
   oam_components: true
