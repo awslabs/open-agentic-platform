@@ -27,10 +27,3 @@ image:
   tag: "3e0448a3"
 harness:
   enabled: true
-  # TEST ONLY (R8/G7 unreachable endpoint check) - reverted right after.
-  # A label no Rollouts controller pod has, so the endpoint NetworkPolicy
-  # drops the controller's polls.
-  api:
-    controller:
-      podLabels:
-        app.kubernetes.io/name: p9-not-the-controller
