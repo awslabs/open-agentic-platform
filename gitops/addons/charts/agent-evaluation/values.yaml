@@ -255,6 +255,13 @@ catalog:
 # an agent namespace.
 harness:
   # Off by default. Nothing harness-specific renders while this is false.
+  # Not set by hand on a cluster: the registry entry
+  # (gitops/addons/registry/observability.yaml) sets it from the
+  # enable_agent_harness cluster-secret label (agent_harness in
+  # enabled-addons.yaml), with the expression that also sets oam-agent-components'
+  # global.agentEvaluation.harnessEnabled. It arrives as the string "true" or
+  # "false"; the chart reads it through the agent-evaluation.harnessEnabled
+  # helper, which accepts a bool or those two strings and fails on anything else.
   # Turning it off after it was on: Argo prunes the judge key Secret (a chart
   # object) and the harness catalog ConfigMap, which owns the harness Jobs and
   # their results, so the garbage collector deletes those. The Bifrost key is not a

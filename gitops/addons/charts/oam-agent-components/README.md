@@ -46,6 +46,7 @@ The agent-sandbox **operator** (the `Sandbox` CRD and its controller) is *not* a
 | Value | Default | Purpose |
 |---|---|---|
 | `global.sandboxRuntimeClass` | `kata-clh` | The Kata RuntimeClass a sandboxed agent selects. Platform-owned; an application developer cannot set it from their OAM. `kata-qemu` is a one-line change (same node pool). `kata-fc` additionally needs `kataFc.enabled` on `kata-nodepool` and the `agent_sandbox_kata_fc` addon. **Empty makes `sandbox: true` fail the render**, by design, rather than silently scheduling an unisolated pod. |
+| `global.agentEvaluation.harnessEnabled` | `"false"` | Whether the `agent` component accepts `harness.mode: gate`. Not set by hand: the registry entry derives it from the `enable_agent_evaluation` and `enable_agent_harness` labels (`agent_evaluation` and `agent_harness` in `enabled-addons.yaml`) with the expression that also sets agent-evaluation's `harness.enabled`, so the two cannot disagree. A string, compared as text. See [agent-harness.md](../../../../applications/agent-evaluation/agent-harness.md) section 4.1. |
 
 See [`docs/sandbox-agents/DESIGN.md`](../../../../docs/sandbox-agents/DESIGN.md).
 

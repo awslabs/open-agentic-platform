@@ -789,12 +789,15 @@ that logic `[D2]`.
 proxy (D5).
 A gate needs the harness on the cluster. The agent component compares the
 platform value `global.agentEvaluation.harnessEnabled` (oam-agent-components,
-default `"false"`, set per cluster in the overlay next to agent-evaluation's
-`harness.enabled`) and rejects `mode: gate` at render when it is not `"true"`,
+default `"false"`) and rejects `mode: gate` at render when it is not `"true"`,
 with the named conflict `_harnessPlatformRequired`, the same pattern as the
-sandbox-operator guard from #151. Report mode is not blocked. Known gap: the
-two switches are separate values in two charts, so an operator sets them
-together; nothing checks that agent-evaluation's `harness.enabled` matches.
+sandbox-operator guard from #151. Report mode is not blocked. One flag sets
+both switches: `agent_harness` in `enabled-addons.yaml` becomes the
+`enable_agent_harness` cluster-secret label, and the two registry entries
+derive agent-evaluation's `harness.enabled` and this value from it with the
+same expression, which also requires `enable_agent_evaluation`. So the harness
+flag alone enables nothing, and a gate cannot render where the verdict
+endpoint does not (`test_harness_enablement.py`).
 ### 4.5 What the first revision and enablement look like
 A Rollout's first revision gets no analysis, pre or post. The same holds when
 a team switches the harness on for an agent that already has a stable revision:
@@ -1099,7 +1102,7 @@ series.
 | `oap_agent_harness_last_run_timestamp_seconds` | | when the latest run finished |
 | `oap_agent_harness_info` | `revision`, `mode`, `judge_model`, `trigger`, `status`, `dataset_digest`, `checks_digest` | always 1; `mode` is `gate` or `report`; `trigger` is always `new-revision` (analysis cannot tell a first revision or a rollback apart, D7), `status` `completed`, `insufficient` or `error`; the digests are the first 12 hex characters of sha256 over the dataset file and over the selected checks (`name`, `casePassScore`, prompt, in declared order), empty when unknown |
 | `oap_agent_harness_judge_key_present` | `cluster` only | 1 when the harness judge key is in its Secret |
-| `oap_agent_harness_unverified_stable` | `cluster`, `namespace`, `agent`, `revision` (the stable pod-template hash) | 1 while a gate agent's stable revision has harness runs and none passed (same rule as `HarnessStableRevisionUnverified`). Absent, not 0, when the stable revision passed or has no run. Alert `AgentHarnessGateUnverifiedStable` |
+| `oap_agent_harness_unverified_stable` | `cluster`, `namespace`, `agent`, `revision` (the stable pod-template hash) | 1 while a gate agent's stable revision has harness runs and none passed (same rule as `HarnessStableRevisionUnverified`). Absent, not 0, when the stable revision passed or has no run. Alert `AgentHarnessGateUnverifiedStable`; with PF-1 nothing on this platform evaluates the PrometheusRule today, so the alert cannot fire, and the Warning Event `HarnessStableRevisionUnverified` and this metric are the signals |
 | `oap_agent_harness_runs_total` | `cluster`, `result` | runs by `completed`, `insufficient`, `error`, `superseded`. A counter that increments once per AnalysisRun UID per process (D8); a restart can count a still-listed run again, so use `increase()` over a window longer than a restart. A gate run that did not pass is also in `oap_agent_harness_info{mode="gate"}` with its status |
 
 The two rules of Contract 2 bind these too:

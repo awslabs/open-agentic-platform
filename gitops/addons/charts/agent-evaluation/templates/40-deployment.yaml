@@ -13,7 +13,7 @@ HTTP and never consults Langfuse, so a slow ExternalSecret or an IAM policy stil
 propagating cannot restart the pod in a loop. /readyz is the one that reports the
 dependency.
 */ -}}
-{{- if .Values.harness.enabled }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
 {{- if gt (int .Values.replicaCount) 1 }}
 {{- fail "agent-evaluation: harness.enabled needs replicaCount 1. The verdict endpoint serialises Job creation and the slot count with an in-process lock, and a second replica would apply maxConcurrentJobs per pod." }}
 {{- end }}
@@ -50,7 +50,7 @@ spec:
         # catalog edit actually reaches Langfuse instead of waiting for an
         # unrelated restart.
         checksum/catalog: {{ include "agent-evaluation.catalogChecksum" . }}
-        {{- if .Values.harness.enabled }}
+        {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
         # Same for a harness dataset, check prompt or harness value.
         checksum/harness: {{ include "agent-evaluation.harnessChecksum" . }}
         {{- end }}
@@ -108,7 +108,7 @@ spec:
               value: /etc/agent-evaluation/credentials
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            {{- if .Values.harness.enabled }}
+            {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
             # Harness. Rendered only when on, so a chart with the
             # harness off carries nothing harness-specific; the reconciler
             # defaults HARNESS_ENABLED to false.
@@ -165,7 +165,7 @@ spec:
             - name: http-metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
-            {{- if .Values.harness.enabled }}
+            {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
             # The harness verdict endpoint (Service agent-evaluation-harness-api).
             # Its own listener: it is not /metrics and not a probe.
             - name: harness-api
@@ -194,7 +194,7 @@ spec:
               subPath: BIFROST_VIRTUAL_KEY
               readOnly: true
             {{- end }}
-            {{- if .Values.harness.enabled }}
+            {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
             # Two sibling directories, the same layout the harness Jobs mount.
             - name: harness-checks
               mountPath: /etc/agent-evaluation/harness-checks
@@ -232,7 +232,7 @@ spec:
           secret:
             secretName: {{ .Values.judge.virtualKey.secretRef }}
         {{- end }}
-        {{- if .Values.harness.enabled }}
+        {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
         - name: harness-checks
           configMap:
             name: agent-evaluation-harness-catalog

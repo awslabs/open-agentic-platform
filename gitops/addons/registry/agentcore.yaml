@@ -100,6 +100,15 @@ oam-agent-components:
       # selector matches on, and reading the selector's input is what keeps this
       # honest.
       sandboxOperator: '{{ if eq (index .metadata.labels "enable_agent_sandbox") "true" }}true{{ else }}false{{ end }}'
+      # Whether this cluster runs the agent harness, so the agent component
+      # accepts harness.mode: gate. The SAME expression as agent-evaluation's
+      # harness.enabled (registry/observability.yaml), from the same labels,
+      # so the two cannot disagree (test_harness_enablement.py). Off unless
+      # BOTH enable_agent_evaluation and enable_agent_harness are "true": the
+      # harness flag on a cluster without the agent-evaluation addon has no
+      # verdict endpoint, so it must not let a gate render.
+      agentEvaluation:
+        harnessEnabled: '{{ if and (eq (index .metadata.labels "enable_agent_evaluation") "true") (eq (index .metadata.labels "enable_agent_harness") "true") }}true{{ else }}false{{ end }}'
       # Namespaces admitted to agents besides the gateway's (agent component
       # NetworkPolicy). The aiops-agent addon's chat-ui and incident-bridge call the
       # agent's Service directly from its own namespace, so that namespace is admitted

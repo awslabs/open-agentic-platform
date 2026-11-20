@@ -63,7 +63,7 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch", "get"]
-  {{- if .Values.harness.enabled }}
+  {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
   # Harness: the verdict endpoint reads the Rollout named in a poll to check the
   # caller's revision and pod hash. get only; no list, no watch.
   - apiGroups: ["argoproj.io"]
@@ -95,7 +95,7 @@ subjects:
   - kind: ServiceAccount
     name: agent-evaluation-reconciler
     namespace: {{ .Release.Namespace }}
-{{- if .Values.harness.enabled }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
 ---
 # Harness: the reconciler's writes, in this namespace only.
 apiVersion: rbac.authorization.k8s.io/v1

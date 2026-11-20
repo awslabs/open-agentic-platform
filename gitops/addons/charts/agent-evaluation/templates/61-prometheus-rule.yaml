@@ -109,7 +109,7 @@ spec:
               Manager entry and set judge.virtualKey.enabled with its
               secretManagerKey on the agent-evaluation addon.
 {{- end }}
-{{- if .Values.harness.enabled }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
 {{- $harnessStale := max (mul 3 (int .Values.harness.intervalSeconds)) 900 }}
         # Harness. Pipeline alerts only, like the rest of this
         # file: a low harness pass ratio is the owning team's signal on the

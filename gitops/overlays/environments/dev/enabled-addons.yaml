@@ -46,12 +46,25 @@ enabledAddons:
   # ingress_domain_name: it owns only its own oap-<cluster>- Langfuse rules and
   # never writes a judge prompt, so it cannot change how prod is scored.
   #
-  # OFF UNTIL THE IMAGE IS PUBLISHED -- public.ecr.aws/z0a4o2j5/agent-evaluation
-  # does not exist in the public registry yet (the repository answers
-  # NAME_UNKNOWN), so enabling it here is an ImagePullBackOff on sync rather
-  # than a working addon. See the control-plane overlay for the full note.
-  # Flip to true in the same change that points image.tag at the published tag.
+  # OFF. The image is not in a public registry, so this cannot be a default --
+  # see the control-plane overlay for the full note. Turn it on in your own
+  # overlay once you have built and pushed the image into your account.
+  #
+  # ONE EXTRA THING FOR SPOKES. A spoke reconciler reaches the hub's Langfuse
+  # over the hub's PUBLIC endpoint (registry entry: langfuse.url falls back to
+  # the oidc_issuer_url host when the cluster has no ingress_domain_name of its
+  # own). So a hub that restricts its platform ALB by source IP must allow every
+  # spoke's NAT egress address, or the spoke reconcilers time out on
+  # GET /api/public/v2/evaluators and no spoke agent is ever scored. Measured:
+  # restricting the ALB to the operator's IP plus the hub NAT alone broke both
+  # spokes within a minute.
   agent_evaluation: false
+  # Agent harness (applications/agent-evaluation/agent-harness.md section 4.1):
+  # the one switch for both agent-evaluation harness.enabled and
+  # oam-agent-components global.agentEvaluation.harnessEnabled, read from the
+  # enable_agent_harness label by both registry entries. Does nothing unless
+  # agent_evaluation is also true here, and needs the 0.3.0 image.
+  agent_harness: false
   agent_core: true
   agent_gateway: true
   oam_components: true

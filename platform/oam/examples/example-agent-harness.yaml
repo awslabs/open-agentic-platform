@@ -27,7 +27,9 @@
 # example-smoke-v1 is the four-case format example.
 #
 # Prerequisites:
-# - the agent-evaluation addon on this cluster, with harness.enabled
+# - the agent harness on this cluster: agent_evaluation: true and
+#   agent_harness: true in the environment's enabled-addons.yaml (one flag sets
+#   both harness switches; without it a gate is rejected at render)
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:

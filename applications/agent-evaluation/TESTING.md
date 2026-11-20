@@ -191,7 +191,7 @@ kubectl get componentdefinition agent -n vela-system -o yaml | grep -oE 'image: 
 Measured on this cluster: the published `public.ecr.aws/z0a4o2j5/strands-agent:v1.4.10`
 emits only `['<agent>', 'source:chat']` — **no scoped tag** — so imageless does
 not score against it. The hub's `global.agentImage` is therefore pointed at
-`940019131157.dkr.ecr.us-west-2.amazonaws.com/strands-agent:v1.3.4-tracetag`,
+`<account-id>.dkr.ecr.<region>.amazonaws.com/strands-agent:v1.3.4-tracetag`,
 built from this branch. Once the tag ships in the public image, set
 `global.agentImage` back to it and the override disappears.
 
@@ -695,8 +695,8 @@ The harness (issue #137,
 [design](../../docs/architecture/agent-harness.md))
 is covered by unit tests and `helm template`, and was run end to end on a hub
 cluster (setup in [agent-harness.md §6](agent-harness.md)). Every command
-below is read-only. Prerequisites: the addon with `harness.enabled: true` in
-`gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`, an image that
+below is read-only. Prerequisites: `agent_evaluation: true` and
+`agent_harness: true` in the environment's `enabled-addons.yaml`, an image that
 contains the harness, and an agent with a `harness` block such as
 `platform/oam/examples/example-agent-harness.yaml`.
 

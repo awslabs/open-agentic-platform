@@ -29,7 +29,11 @@ spec:
         # so traces from that image are not matched by any rule and nothing is
         # ever scored. Drop this override once the tag ships in the default
         # image.
-        image: 940019131157.dkr.ecr.us-west-2.amazonaws.com/strands-agent:eval-tracetag
+        #
+        # Substitute your own account and region: this is an image you build
+        # yourself (applications/strands-agent-base) and push to your own
+        # registry, so no real account id is committed here.
+        image: <account-id>.dkr.ecr.<region>.amazonaws.com/strands-agent:eval-tracetag
         evaluation:
           enabled: true
           strictness: medium

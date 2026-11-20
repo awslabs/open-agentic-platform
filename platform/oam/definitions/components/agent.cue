@@ -283,7 +283,7 @@ template: {
 	// the agent would abort after a few polls. A named conflict so the message
 	// carries the remedy. Report mode is not blocked: it only loses its score.
 	if _harnessEnabled && _harnessMode == "gate" && _harnessPlatform != "true" {
-		_harnessPlatformRequired: "set" & "harness.mode: gate needs the agent harness on this cluster: harness.enabled on the agent-evaluation addon and global.agentEvaluation.harnessEnabled: true on oam-agent-components (both per cluster, in the cluster overlay values). Without it every revision of this agent aborts after a few polls. Use mode: report, or enable the harness on this cluster."
+		_harnessPlatformRequired: "set" & "harness.mode: gate needs the agent harness on this cluster: agent_evaluation: true and agent_harness: true in the environment enabled-addons.yaml (the enable_agent_evaluation and enable_agent_harness cluster-secret labels, which set global.agentEvaluation.harnessEnabled). Without it every revision of this agent aborts after a few polls. Use mode: report, or enable the harness on this cluster."
 	}
 	_harnessAnalysis: {
 		templates: [{templateName: context.name + "-harness"}]

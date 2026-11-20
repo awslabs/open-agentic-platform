@@ -104,6 +104,7 @@ and real.
 | `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m; also follows a missing required judge key |
 | `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m; includes a judge key that cannot be minted or read only with `required: true` |
 | `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; `warning` with `required: true` (no run starts while it fires), `info` with `required: false` (runs go on un-budgeted) |
+| `AgentHarnessGateUnverifiedStable` | Only with `harness.enabled`: a `mode: gate` agent's stable revision has harness runs and none passed, for 5m. With PF-1 nothing on this platform evaluates the PrometheusRule today, so this alert cannot fire; the Warning Event `HarnessStableRevisionUnverified` and the metric `oap_agent_harness_unverified_stable` are the signals |
 
 ## Harness
 The per-revision harness from issue #137, off by default. With
@@ -131,7 +132,7 @@ harness off").
 | ConfigMap `agent-evaluation-harness-datasets` | every `files/harness/datasets/*.yaml`. Fails the render when there is none |
 | Deployment | the `HARNESS_*` env, both ConfigMaps mounted read-only, and a `checksum/harness` annotation so a dataset or prompt change restarts the reconciler |
 | RBAC | see below |
-| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing` (where the CRD exists) |
+| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing`, `AgentHarnessGateUnverifiedStable` (where the CRD exists) |
 
 The Grafana dashboard is one static JSON, so it always contains the "Harness"
 row, harness on or off. Its panels show "No data" for agents with no harness and
@@ -177,13 +178,15 @@ agent's `harness.dataset`. Two ship: `general-assistant-v1` (20 cases for a
 general assistant without tools) and `example-smoke-v1` (the four-case format
 example). Neither was harvested from real failures and neither is a golden set.
 
-**Enable it** per cluster through the overlay values file the registry entry
-already reads, `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`:
-
-```yaml
-harness:
-  enabled: true
-```
+**Enable it** with `agent_harness: true` next to `agent_evaluation: true` in
+`gitops/overlays/environments/<env>/enabled-addons.yaml`. The registry entry
+sets `harness.enabled` from the resulting `enable_agent_harness` cluster-secret
+label, with the same expression that sets `global.agentEvaluation.harnessEnabled`
+on `oam-agent-components`, so the two cannot disagree. Both stay off unless
+`enable_agent_evaluation` is also set. Do not set `harness.enabled` in an
+overlay values file: the registry's `valuesObject` overrides it. The value
+arrives as the string `"true"` or `"false"`; the `agent-evaluation.harnessEnabled`
+helper reads it, and fails the render on any other value.
 
 The image must be one that contains the harness (`0.3.0` or later).
 
