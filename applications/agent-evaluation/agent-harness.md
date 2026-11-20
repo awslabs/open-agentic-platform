@@ -787,6 +787,16 @@ admin credential in namespace `bifrost` (the reply includes the key values:
 print only `id` and `name`) and delete each with
 `DELETE <bifrost>/api/governance/virtual-keys/<id>`.
 
+A gate agent that already exists keeps running when the harness is switched off:
+its Application, AnalysisTemplate and pods stay, and the stable revision keeps
+serving. Nothing aborts until a new revision starts. That revision's analysis then
+gets no answer from the missing endpoint (the service name no longer resolves),
+and after 13 failed polls (a little over 2 minutes on the hub) the run ends
+`Error` and the Rollout aborts. Editing the Application is rejected at admission
+by `_harnessPlatformRequired`. When the harness is switched on again, Argo CD
+recreates the judge-key Secret empty and the minter CronJob fills it on its next
+run (every 15 minutes), so a gate run started before that has no judge key.
+
 ### 4.2 Image and build
 
 One image runs both the reconciler and the harness Job. Build it with
