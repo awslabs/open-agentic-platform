@@ -12,10 +12,14 @@
 # There is no automatic promotion timer in gate mode. The component sets
 # abortScaleDownDelaySeconds: 0 for a gate, so an aborted preview stays up with
 # no scale-down deadline and a retry gets a new run with the same verdict (no
-# re-score); push a new revision instead. Do not revert to a failed or
-# superseded revision within scaleDownDelaySeconds (30 s) of the push that
-# replaced it: Argo Rollouts promotes it without a pass (the reconciler then
-# writes a HarnessStableRevisionUnverified Event).
+# re-score); push a new revision instead. Known limit (Argo Rollouts v1.9.0):
+# a person who returns to a failed or superseded revision within
+# scaleDownDelaySeconds (30 s) of the push that replaced it promotes it without
+# a pass. The reconciler then writes a HarnessStableRevisionUnverified Event and
+# sets oap_agent_harness_unverified_stable; abort or roll back. A team that
+# wants this closed can set scaleDownDelaySeconds on the agent (not 0: Rollouts
+# then never scales old ReplicaSets down; 1 was tried), at the price of the
+# instant rollback to the previous stable.
 #
 # The first revision of an agent has no pre-promotion analysis in Rollouts and
 # goes live at once. Start a new dataset in `mode: report`, read the scores over
