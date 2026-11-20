@@ -228,7 +228,7 @@ spec:
 | `mode` | `report` | `report` or `gate` (section 3.6). Anything else is rejected |
 
 Prerequisite: the cluster your agent runs on must have the `agent-evaluation`
-addon with `harness.enabled: true` (section 4). Ask your platform operator.
+addon and the harness flag `agent_harness: true` (section 4.1). Ask your platform operator.
 
 Known gap (O-1): a block without `dataset` is admitted by the KubeVela webhook
 and then fails at render (`outputs.harnessSpec.data.dataset: incomplete value`),
@@ -693,66 +693,66 @@ earlier passes and do the same.
 
 ### 4.1 Enable the addon and the harness per cluster
 
-Three switches, all per cluster or environment:
+Two flags, both per environment, in
+`gitops/overlays/environments/<env>/enabled-addons.yaml` (`control-plane` for
+the hub, `dev` and `prod` for spokes). The fleet-secret chart turns each `true`
+flag into an `enable_<flag>: 'true'` label on the cluster secret, and writes no
+label for `false`.
 
-1. **The addon.** `agent_evaluation: true` in the environment's
-   `gitops/overlays/environments/<env>/enabled-addons.yaml`
-   (`control-plane` for the hub, `dev` and `prod` for spokes). The registry
+1. **The addon.** `agent_evaluation: true`. The registry
    entry `agent-evaluation` in `gitops/addons/registry/observability.yaml`
    deploys the chart `gitops/addons/charts/agent-evaluation` into namespace
    `agent-evaluation` on every cluster whose cluster secret carries
    `enable_agent_evaluation: 'true'` (sync wave 7, after Langfuse and the OTel
    collector). The addon is `false` in every environment by default, because
-   the chart's default image is not published yet (4.2). Turn it on per
-   environment, together with an image override.
-2. **The harness.** `harness.enabled: true` in the chart values. It is off by
-   default and nothing harness-specific (RBAC, ConfigMaps, `HARNESS_*` env,
-   alerts) renders without it; the reconciler then defaults `HARNESS_ENABLED`
-   to false. The one exception is the Grafana dashboard: it is one static JSON,
-   so its "Harness" row still renders and its panels show "No data". Set it in
-   a per-cluster or per-environment values overlay, which the addon
-   ApplicationSet reads at highest precedence with
-   `ignoreMissingValueFiles: true` (`gitops/bootstrap/agent-platform-app.yaml`):
-
-   ```text
-   gitops/overlays/environments/<env>/agent-evaluation/values.yaml
-   gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml
-   ```
+   the chart's default image is not published yet (4.2).
+2. **The harness.** `agent_harness: true`, next to `agent_evaluation`. It is
+   `false` in every environment by default. Both registry entries read the
+   resulting `enable_agent_harness` label with one expression: it sets
+   `harness.enabled` on the agent-evaluation addon (the verdict endpoint, RBAC,
+   ConfigMaps, `HARNESS_*` env, alerts) and
+   `global.agentEvaluation.harnessEnabled` on `oam-agent-components` (whether
+   the agent component accepts `harness.mode: gate`). The two cannot disagree,
+   and `test_harness_enablement.py` fails if the expressions drift apart.
 
    ```yaml
-   # gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml
-   image:
-     repository: <registry>/agent-evaluation
-     tag: "<tag>"
-   harness:
-     enabled: true
+   # gitops/overlays/environments/<env>/enabled-addons.yaml
+   enabledAddons:
+     agent_evaluation: true
+     agent_harness: true
    ```
 
-   **The image must have the harness loop.** `harness.enabled` needs image
-   `0.3.0` or later (the chart's `appVersion`). The hub overlay
-   `gitops/overlays/clusters/hub/agent-evaluation/values.yaml` still pins tag
-   `0.2.4` on `main`, and this change does not touch it: that tag moves when
-   the `0.3.0` image is published (4.2), in the same change that turns the
-   harness on there. Do not set `harness.enabled: true` on a cluster still on
-   `0.2.4`: the RBAC, ConfigMaps and alerts render, but the `0.2.4` image has
-   no harness loop, so no run ever starts and `AgentHarnessStale` is the only
-   sign.
-3. **Gate on this cluster.** `global.agentEvaluation.harnessEnabled: "true"` on
-   the `oam-agent-components` addon, in the same overlay layer:
-   ```yaml
-   # gitops/overlays/clusters/<cluster>/oam-agent-components/values.yaml
-   global:
-     agentEvaluation:
-       harnessEnabled: "true"
-   ```
-   With the default `"false"` the agent component rejects `harness.mode: gate`
-   at render (`_harnessPlatformRequired`), because without the verdict
-   endpoint every revision of a gate agent aborts after a few polls. Report
-   mode still renders and only loses its score. Set switches 2 and 3 together:
-   the two charts deploy separately and neither can read the other's values.
-   A cluster-secret label is not used, because the registry's `valuesObject`
-   would override the overlay. A string, because the component compares it as
-   text.
+   The flag does nothing without `agent_evaluation: true`: both values stay
+   `"false"` unless both labels are `'true'`. On such a cluster there is no
+   verdict endpoint, so the agent component keeps rejecting `harness.mode: gate`
+   at render (`_harnessPlatformRequired`, which names both flags), because
+   every revision of a gate agent would abort after a few polls. Report mode
+   still renders and only loses its score.
+
+   Do not set `harness.enabled` or `global.agentEvaluation.harnessEnabled` in
+   an overlay values file. The registry sets them in `valuesObject`, which Argo
+   CD applies over value files, so an overlay value has no effect. The chart
+   values (`false` and `"false"`) stay the defaults for a render outside the
+   registry. The registry passes strings; the agent-evaluation chart reads
+   `harness.enabled` through its `agent-evaluation.harnessEnabled` helper, which
+   accepts `true`, `false`, `"true"` or `"false"` and fails the render on
+   anything else.
+
+   Without the harness nothing harness-specific renders, and the reconciler
+   defaults `HARNESS_ENABLED` to false. The one exception is the Grafana
+   dashboard: it is one static JSON, so its "Harness" row still renders and its
+   panels show "No data".
+
+   **The image must have the harness loop.** The harness needs image `0.3.0`
+   or later (the chart's `appVersion`). The registry entry still pins image tag
+   `0.2.4` (4.2), and that tag moves when the `0.3.0` image is published. Do
+   not set `agent_harness: true` for an environment still on `0.2.4`: the
+   RBAC, ConfigMaps and alerts render, but the `0.2.4` image has no harness
+   loop, so no run ever starts and `AgentHarnessStale` is the only sign.
+
+   The flag is per environment, like `agent_evaluation`, so it applies to every
+   cluster in that environment (every hub for `control-plane`). The bifrost
+   chart's `judgeKey.enabled` (4.4) is still set separately.
 
 Useful `harness.*` values (`values.yaml`; all have working defaults):
 
@@ -777,7 +777,7 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 **Turning the harness off.** Every harness Job carries an `ownerReference` to
 the chart's `agent-evaluation-harness-catalog` ConfigMap, which renders only
 with `harness.enabled: true`; each result ConfigMap is owned by its Job. The
-judge-key Secret is a chart object itself. Set `harness.enabled: false` and
+judge-key Secret is a chart object itself. Set `agent_harness: false` (or remove the flag) and
 Argo CD prunes the Secret and the ConfigMap, and the Kubernetes garbage
 collector deletes the Jobs and their results. While the verdict endpoint cannot read that ConfigMap it creates no Job. The Bifrost virtual key is not a
 Kubernetes object, so delete it by hand: turn off `judgeKey.enabled` in the
@@ -969,7 +969,7 @@ dashboard or with your own alerting.
 
 The reconciler and the Argo Rollouts controller that polls it work **in their own
 cluster only**, and the Job reaches `<agent>-preview` through cluster DNS. A harness on the hub does
-nothing for an agent on a spoke. Enable the addon and `harness.enabled` on every
+nothing for an agent on a spoke. Enable `agent_evaluation` and `agent_harness` for every
 cluster, spokes included, where agents declare a `harness` block. Each cluster
 has its own Bifrost, admin Secret, minter and judge key; no hub change is needed for a spoke.
 **Not verified:** the harness on a spoke (the test ran on the hub only; the
@@ -1177,7 +1177,7 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
 | Symptom | Check |
 |---|---|
 | No `<agent>-harness` ConfigMap | `enabled: true` set? `dataset` set (O-1)? Application status and render errors: `kubectl get application.core.oam.dev <app> -n <ns> -o yaml` |
-| ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`, `HarnessPreviewUnsupported`); is this the agent's first revision (no analysis runs for it)?; `kubectl get analysisrun -n <ns> -l harness.oap.io/agent=<agent>`; `harness.enabled` on this cluster's addon?; the AnalysisRun's measurement message shows the endpoint's answer; `maxConcurrentJobs` slots busy ("waiting for a free slot")? |
+| ConfigMap exists but no Job | Events on the ConfigMap (`UnknownDataset`, `InvalidHarnessDeclaration`, `HarnessJudgeKeyUnavailable`, `HarnessPreviewUnsupported`); is this the agent's first revision (no analysis runs for it)?; `kubectl get analysisrun -n <ns> -l harness.oap.io/agent=<agent>`; `agent_harness: true` (and `agent_evaluation: true`) for this cluster's environment?; the AnalysisRun's measurement message shows the endpoint's answer; `maxConcurrentJobs` slots busy ("waiting for a free slot")? |
 | `HarnessJudgeKeyUnavailable`, `judge_key_present` 0 | Secret `agent-evaluation-harness-judge-key` exists? `judgeKey.enabled` set in the bifrost chart? Logs of the `bifrost-vk-minter` Job or CronJob in namespace `bifrost` (the status code of the failed call is logged) |
 | `info{status="error"}`, no counts | `kubectl logs job/<job> -n agent-evaluation` and `result.json` `error` and `caseResults[].reason`: preview not reachable within `readyTimeoutSeconds`, dataset invalid or over `maxCases`, every case errored (judge failing after retries, or no connection to the preview; a 404 or 403 from the agent is a failed case, not this), or the Job killed at `runTimeoutSeconds` before it wrote a result (the runner normally stops 60 s earlier with a partial result). An agent answering with errors is not this: it shows as a completed run with failed cases |
 | Many case errors with reason `expected-answer: judge returned HTTP 4xx` | Judge key scope (`judgeKey.models` in the bifrost chart), budget exhausted, or Bedrock access to the judge model |

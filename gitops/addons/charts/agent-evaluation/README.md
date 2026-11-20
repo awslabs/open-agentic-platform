@@ -178,13 +178,15 @@ agent's `harness.dataset`. Two ship: `general-assistant-v1` (20 cases for a
 general assistant without tools) and `example-smoke-v1` (the four-case format
 example). Neither was harvested from real failures and neither is a golden set.
 
-**Enable it** per cluster through the overlay values file the registry entry
-already reads, `gitops/overlays/clusters/<cluster>/agent-evaluation/values.yaml`:
-
-```yaml
-harness:
-  enabled: true
-```
+**Enable it** with `agent_harness: true` next to `agent_evaluation: true` in
+`gitops/overlays/environments/<env>/enabled-addons.yaml`. The registry entry
+sets `harness.enabled` from the resulting `enable_agent_harness` cluster-secret
+label, with the same expression that sets `global.agentEvaluation.harnessEnabled`
+on `oam-agent-components`, so the two cannot disagree. Both stay off unless
+`enable_agent_evaluation` is also set. Do not set `harness.enabled` in an
+overlay values file: the registry's `valuesObject` overrides it. The value
+arrives as the string `"true"` or `"false"`; the `agent-evaluation.harnessEnabled`
+helper reads it, and fails the render on any other value.
 
 The image must be one that contains the harness (`0.3.0` or later).
 

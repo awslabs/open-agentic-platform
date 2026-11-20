@@ -59,6 +59,12 @@ enabledAddons:
   # restricting the ALB to the operator's IP plus the hub NAT alone broke both
   # spokes within a minute.
   agent_evaluation: false
+  # Agent harness (applications/agent-evaluation/agent-harness.md section 4.1):
+  # the one switch for both agent-evaluation harness.enabled and
+  # oam-agent-components global.agentEvaluation.harnessEnabled, read from the
+  # enable_agent_harness label by both registry entries. Does nothing unless
+  # agent_evaluation is also true here, and needs the 0.3.0 image.
+  agent_harness: false
   agent_core: true
   agent_gateway: true
   oam_components: true

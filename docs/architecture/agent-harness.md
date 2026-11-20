@@ -789,12 +789,15 @@ that logic `[D2]`.
 proxy (D5).
 A gate needs the harness on the cluster. The agent component compares the
 platform value `global.agentEvaluation.harnessEnabled` (oam-agent-components,
-default `"false"`, set per cluster in the overlay next to agent-evaluation's
-`harness.enabled`) and rejects `mode: gate` at render when it is not `"true"`,
+default `"false"`) and rejects `mode: gate` at render when it is not `"true"`,
 with the named conflict `_harnessPlatformRequired`, the same pattern as the
-sandbox-operator guard from #151. Report mode is not blocked. Known gap: the
-two switches are separate values in two charts, so an operator sets them
-together; nothing checks that agent-evaluation's `harness.enabled` matches.
+sandbox-operator guard from #151. Report mode is not blocked. One flag sets
+both switches: `agent_harness` in `enabled-addons.yaml` becomes the
+`enable_agent_harness` cluster-secret label, and the two registry entries
+derive agent-evaluation's `harness.enabled` and this value from it with the
+same expression, which also requires `enable_agent_evaluation`. So the harness
+flag alone enables nothing, and a gate cannot render where the verdict
+endpoint does not (`test_harness_enablement.py`).
 ### 4.5 What the first revision and enablement look like
 A Rollout's first revision gets no analysis, pre or post. The same holds when
 a team switches the harness on for an agent that already has a stable revision:

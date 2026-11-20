@@ -482,7 +482,8 @@ dataset, on its blue-green preview Service (`<agent>-preview`), and publishes
 the result as `oap_agent_harness_*` metrics. The component emits an Argo
 Rollouts `AnalysisTemplate` named `<agent>-harness` and wires it into the
 Rollout, so Argo Rollouts creates one AnalysisRun per revision. It needs the
-agent-evaluation addon on the cluster with `harness.enabled`.
+agent harness on the cluster: `agent_evaluation: true` and `agent_harness: true`
+in the environment's `enabled-addons.yaml`. A gate is rejected at render without it.
 ```yaml
 harness:
   enabled: true

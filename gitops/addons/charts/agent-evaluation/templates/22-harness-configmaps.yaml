@@ -20,7 +20,7 @@ the current UTC time at judge time, also rendered inside a case's expected,
 where asked, date and weekday render the time the question was sent):
 .Files.Get returns them unrendered and the runner substitutes them.
 */ -}}
-{{- if .Values.harness.enabled }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
