@@ -65,3 +65,34 @@ the old prompt — which is the opposite of "a prompt change reaches every clust
 {{- end -}}
 {{- join "\n" $parts | sha256sum -}}
 {{- end -}}
+
+{{/*
+"true" when the harness is on, "" otherwise. Every harness template tests this,
+never .Values.harness.enabled directly: the registry entry sets harness.enabled
+from the enable_agent_harness cluster-secret label, and an ApplicationSet
+template always yields a STRING, so the value arrives as "true" or "false", and
+a Helm string "false" is truthy. A bool (the chart default, --set) works the
+same. Anything else fails the render instead of guessing.
+*/}}
+{{- define "agent-evaluation.harnessEnabled" -}}
+{{- $v := toString .Values.harness.enabled -}}
+{{- if eq $v "true" -}}
+true
+{{- else if not (has $v (list "false" "" "<nil>")) -}}
+{{- fail (printf "agent-evaluation: harness.enabled must be true or false, got %q" $v) -}}
+{{- end -}}
+{{- end -}}
+{{/*
+Same idea for the harness: a dataset, a check prompt or a harness value change
+restarts the reconciler, which re-validates the checks at startup and re-reads
+the shipped dataset names. Used only when harness.enabled is true.
+*/}}
+{{- define "agent-evaluation.harnessChecksum" -}}
+{{- $root := . -}}
+{{- $parts := list (toJson .Values.harness) -}}
+{{- range $path, $_ := .Files.Glob "files/harness/**" -}}
+{{- $parts = append $parts $path -}}
+{{- $parts = append $parts (($root.Files.Get $path) | default "") -}}
+{{- end -}}
+{{- join "\n" $parts | sha256sum -}}
+{{- end -}}

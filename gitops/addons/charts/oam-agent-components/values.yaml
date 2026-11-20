@@ -48,6 +48,38 @@ global:
     # registry adds aiops-agent on clusters that run the aiops-agent addon, whose chat-ui
     # and incident-bridge call the agent's Service directly.
     extraIngressNamespaces: ""
+  # Namespace of the agent-evaluation addon. Platform-owned. An agent whose harness block
+  # is enabled admits ingress on TCP 8083 from the harness runner pods
+  # (harness.oap.io/run: "true") in this namespace, because the harness Jobs call the
+  # agent's <agent>-preview Service directly. Agents without a harness block do not.
+  agentEvaluation:
+    namespace: agent-evaluation
+    # Port of the verdict endpoint (Service agent-evaluation-harness-api) that the
+    # harness AnalysisTemplate calls. Must match harness.api.port in the
+    # agent-evaluation chart.
+    harnessApiPort: 8081
+    # Whether this cluster runs the agent harness. Not set by hand: the registry
+    # entry (gitops/addons/registry/agentcore.yaml) derives it from the
+    # enable_agent_evaluation and enable_agent_harness cluster-secret labels with
+    # the same expression that sets harness.enabled on the agent-evaluation
+    # addon, so the two cannot disagree. This "false" is the default for a render
+    # outside the registry. With "false" the agent component REJECTS
+    # harness.mode: gate at render, because without the verdict endpoint every
+    # revision would abort. A string, because it is substituted into CUE as text.
+    harnessEnabled: "false"
+    # consecutiveErrorLimit of the harness AnalysisTemplate's verdict poll (every
+    # 15 s). The run errors, and a gate revision aborts, after limit+1 polls in a
+    # row get no answer, so this must exceed the agent-evaluation reconciler's
+    # restart time (Recreate: the old pod stops first). 12 tolerates 13 polls,
+    # 195 s when the connection is refused, up to 13 x 35 s when polls time out
+    # (413 s measured on the hub with a NetworkPolicy drop).
+    # Measured on the hub: a restart leaves the endpoint unanswered for 5 to 6 s,
+    # the pod Ready after 19 to 22 s, plus up to 5 s for a cold image pull.
+    # ceil((27 + 60) / 15) - 1 = 5 would cover that; 12 also covers a start on a
+    # node that has to be created (not measured). Lower it only with a new
+    # measurement. A string, like the other globals (KubeVela reads it with
+    # strconv).
+    harnessConsecutiveErrorLimit: "12"
   # RuntimeClass a sandboxed agent's pod selects for the DEFAULT trust model
   # (agent component, properties.sandbox: true, sandboxMode: isolated).
   # Platform-owned: an application developer cannot set this from their OAM,

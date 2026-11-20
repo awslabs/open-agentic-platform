@@ -32,6 +32,30 @@ REASON_INVALID_DECLARATION = "InvalidEvaluationDeclaration"
 REASON_RULE_LIMIT = "EvaluationRuleLimitReached"
 REASON_RECONCILED = "EvaluationReconciled"
 
+# Harness (issue #137). Emitted on the agent's `<agent>-harness`
+# ConfigMap, so the owning team reads them in its own namespace.
+REASON_HARNESS_RUN_STARTED = "HarnessRunStarted"
+REASON_HARNESS_RUN_COMPLETED = "HarnessRunCompleted"
+REASON_HARNESS_RUN_FAILED = "HarnessRunFailed"
+REASON_HARNESS_RUN_SUPERSEDED = "HarnessRunSuperseded"
+# mode: gate and the run did not pass: Argo Rollouts aborted the revision.
+REASON_HARNESS_GATE_ABORTED = "HarnessGateAborted"
+# mode: gate and the Rollout's stable revision has harness runs, none of which
+# passed: it became stable without a pass (Argo Rollouts fast-track promotion
+# inside the scale-down window, or a manual promote).
+REASON_HARNESS_STABLE_UNVERIFIED = "HarnessStableRevisionUnverified"
+REASON_UNKNOWN_DATASET = "UnknownDataset"
+REASON_INVALID_HARNESS_DECLARATION = "InvalidHarnessDeclaration"
+REASON_HARNESS_JUDGE_KEY_UNAVAILABLE = "HarnessJudgeKeyUnavailable"
+# Why a run cannot start yet (Normal: no Rollout named <agent>, or its
+# blueGreen.previewSelector is not set yet) or at all (Warning: the Rollout has
+# no blueGreen previewService, e.g. a canary strategy).
+REASON_HARNESS_WAITING_FOR_PREVIEW = "HarnessWaitingForPreview"
+REASON_HARNESS_PREVIEW_UNSUPPORTED = "HarnessPreviewUnsupported"
+# The agent declares tools or sub-agents, which the platform datasets assume it
+# does not have: a run may act for real or fail live-data cases.
+REASON_HARNESS_AGENT_HAS_TOOLS = "HarnessAgentHasTools"
+
 
 class EventRecorder:
     """Emits Events against the agents' ConfigMaps, deduplicating repeats."""

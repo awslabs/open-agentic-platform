@@ -1,0 +1,67 @@
+{{- /*
+The harness verdict endpoint (harness.enabled): the web provider of the AnalysisTemplate
+the agent component emits. Argo Rollouts polls it every 15 s per running revision.
+
+ClusterIP only. The NetworkPolicy admits the Argo Rollouts controller's pods and
+nothing else, because the endpoint has no credential: reaching it can start a
+harness Job for a declared agent. Which pods are the controller is a value
+(harness.api.controller), since the controller chart belongs to the base
+platform. The NetworkPolicy takes effect only on clusters that enforce it.
+A policy that selects the reconciler pod isolates it for ingress, so the metrics
+port gets its own rule: the AMP scraper and the Prometheus-style scrapers reach
+the pod from outside any namespace selector, and without the rule the dashboard
+series stop arriving.
+*/ -}}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-evaluation-harness-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  # The pod's readiness is /readyz, which requires the Langfuse rules loop (on a
+  # spoke, the hub's Langfuse). A Langfuse outage turns the pod NotReady after
+  # the probe's 6 x 15 s, and without this field every verdict poll would then
+  # fail and abort every gate revision in flight. The endpoint does not use
+  # Langfuse, so its Service routes to the pod whether it is Ready or not; the
+  # metrics Service and the pod's own readiness are unchanged.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "agent-evaluation.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: harness-api
+      port: {{ .Values.harness.api.port }}
+      targetPort: harness-api
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-evaluation-harness-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agent-evaluation.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.harness.api.controller.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.harness.api.controller.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.harness.api.port }}
+    {{- if .Values.metrics.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+    {{- end }}
+{{- end }}

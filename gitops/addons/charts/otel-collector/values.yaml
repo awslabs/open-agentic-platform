@@ -20,10 +20,12 @@ langfuse:
   # Secret Manager key holding LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY
   secretManagerKey: ""
 
-# Bifrost Prometheus metrics scraping
+# Bifrost Prometheus metrics scraping. Bifrost's management plane needs a login,
+# so the collector scrapes the bifrost chart's metrics proxy, which holds the
+# credential in namespace bifrost. No Bifrost credential belongs in this chart.
 bifrost:
   enabled: true
-  scrapeEndpoint: "bifrost.bifrost.svc.cluster.local:8080"
+  scrapeEndpoint: "bifrost-metrics.bifrost.svc.cluster.local:8080"
 
 # AMP remote write for Grafana dashboards (requires Pod Identity with AMP write permissions)
 amp:

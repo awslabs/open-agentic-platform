@@ -13,6 +13,7 @@ spec:
       template: |
         // Agent ComponentDefinition with blue-green deployment and pluggable memory
         import (
+        	"strconv"
         	"strings"
         	"encoding/json"
         	"list"
@@ -247,6 +248,50 @@ spec:
         	},
         ]
 
+        // HARNESS (optional). Declared here, not next to the declaration ConfigMap,
+        // because the Rollout and the outputs both read it. A disabled block behaves
+        // like an absent one.
+        _harnessEnabled: *false | bool
+        if parameter.harness != _|_ {
+        	_harnessEnabled: parameter.harness.enabled
+        }
+
+        // Where the analysis runs and whether it may fail the rollout:
+        //   gate                                -> prePromotionAnalysis, no dryRun:
+        //                                          a run below the threshold, or with
+        //                                          no verdict, aborts the revision
+        //   report, autoPromotionEnabled        -> postPromotionAnalysis + dryRun:
+        //                                          scored after promotion, never delays it
+        //   report, not autoPromotionEnabled    -> prePromotionAnalysis + dryRun:
+        //                                          the preview waits for a person while the
+        //                                          score is recorded
+        // dryRun is what keeps a report-mode result from changing the rollout.
+        _harnessMode: *"report" | "gate"
+        if _harnessEnabled {
+        	_harnessMode: parameter.harness.mode
+        }
+        _harnessPre: _harnessMode == "gate" || !parameter.autoPromotionEnabled
+        // Whether this cluster runs the agent harness (the agent-evaluation chart's
+        // harness.enabled). A platform value substituted as text, compared as a
+        // string, never as a bool: a Helm string "false" is truthy.
+        _harnessPlatform: "{{ .Values.global.agentEvaluation.harnessEnabled }}"
+        // FAIL CLOSED, the same way as the sandbox-operator guard: a gate on a
+        // cluster without the harness has no verdict endpoint, so every revision of
+        // the agent would abort after a few polls. A named conflict so the message
+        // carries the remedy. Report mode is not blocked: it only loses its score.
+        if _harnessEnabled && _harnessMode == "gate" && _harnessPlatform != "true" {
+        	_harnessPlatformRequired: "set" & "harness.mode: gate needs the agent harness on this cluster: agent_evaluation: true and agent_harness: true in the environment enabled-addons.yaml (the enable_agent_evaluation and enable_agent_harness cluster-secret labels, which set global.agentEvaluation.harnessEnabled). Without it every revision of this agent aborts after a few polls. Use mode: report, or enable the harness on this cluster."
+        }
+        _harnessAnalysis: {
+        	templates: [{templateName: context.name + "-harness"}]
+        	analysisRunMetadata: labels: "harness.oap.io/agent": context.name
+        	args: [
+        		{name: "agent", valueFrom: fieldRef: fieldPath: "metadata.name"},
+        		{name: "namespace", valueFrom: fieldRef: fieldPath: "metadata.namespace"},
+        		{name: "revision", valueFrom: fieldRef: fieldPath: "metadata.annotations['rollout.argoproj.io/revision']"},
+        		{name: "hash", valueFrom: podTemplateHashValue: "Latest"},
+        	]
+        }
         output: {
         	apiVersion: "argoproj.io/v1alpha1"
         	kind:       "Rollout"
@@ -268,11 +313,33 @@ spec:
         			activeService:        context.name + "-stable"
         			previewService:       context.name + "-preview"
         			autoPromotionEnabled: parameter.autoPromotionEnabled
-        			if parameter.autoPromotionSeconds != _|_ {
+        			// Gate: no automatic timer. Whether it can promote a revision before
+        			// the pre-promotion run ends is not verified (design P1), so a gate
+        			// agent never sets it and promotion waits for the analysis.
+        			if parameter.autoPromotionSeconds != _|_ && _harnessMode != "gate" {
         				autoPromotionSeconds: parameter.autoPromotionSeconds
+        			}
+        			if _harnessEnabled && _harnessPre {
+        				prePromotionAnalysis: _harnessAnalysis
+        			}
+        			if _harnessEnabled && !_harnessPre {
+        				postPromotionAnalysis: _harnessAnalysis
         			}
         			if parameter.scaleDownDelaySeconds != _|_ {
         				scaleDownDelaySeconds: parameter.scaleDownDelaySeconds
+        			}
+
+        			// Gate: an aborted preview gets no scale-down deadline. Argo Rollouts
+        			// v1.9 fast-tracks any ReplicaSet that carries one
+        			// (rollout/bluegreen.go isBlueGreenFastTracked), and the active
+        			// Service then switches to it without checking the pre-promotion
+        			// analysis (rollout/service.go reconcileActiveService). With the
+        			// default 30 s, a retry within that window promoted a failed or
+        			// unscored revision with no new AnalysisRun. 0 closes that path; the
+        			// cost is that an aborted preview stays scaled up until the next
+        			// revision replaces it.
+        			if _harnessEnabled && _harnessMode == "gate" {
+        				abortScaleDownDelaySeconds: 0
         			}
         		}
         		selector: matchLabels: "app.kubernetes.io/name": context.name
@@ -700,6 +767,27 @@ spec:
         	// Any pod in a listed namespace can name any user toward these agents, so the
         	// list is a platform decision, never an Application's.
         	let _extraIngress = [for ns in strings.Split("{{ .Values.global.agentGateway.extraIngressNamespaces }}", ",") if strings.TrimSpace(ns) != "" {strings.TrimSpace(ns)}]
+
+        	// The agent harness calls <agent>-preview directly, not through the gateway,
+        	// so an agent whose own harness block is enabled admits one more source: the
+        	// harness runner pods (harness.oap.io/run: "true", set by the reconciler on
+        	// every runner Job's pod template) in the agent-evaluation namespace
+        	// (global.agentEvaluation.namespace, platform-owned). Both selectors sit in
+        	// one `from` entry, so a pod must match both; the reconciler's own pod does
+        	// not carry the label. The runner code sends no X-Forwarded-User, so it runs
+        	// as an anonymous caller. The policy itself does not enforce that: it admits
+        	// any pod with the label in that namespace, so whoever can create a pod there
+        	// (the reconciler's ServiceAccount included) can send X-Forwarded-User. This
+        	// is an exception to "gateway only" (docs/agent-delegation/DESIGN.md
+        	// section 5). Without an enabled harness block the policy has only the
+        	// gateway rule.
+        	let _harnessIngress = [if _harnessEnabled {
+        		from: [{
+        			namespaceSelector: matchLabels: "kubernetes.io/metadata.name": "{{ .Values.global.agentEvaluation.namespace }}"
+        			podSelector: matchLabels: "harness.oap.io/run":                "true"
+        		}]
+        		ports: [{protocol: "TCP", port: 8083}]
+        	}]
         	gatewayOnlyIngress: {
         		apiVersion: "networking.k8s.io/v1"
         		kind:       "NetworkPolicy"
@@ -711,10 +799,10 @@ spec:
         		spec: {
         			podSelector: matchLabels: "app.kubernetes.io/name": context.name
         			policyTypes: ["Ingress"]
-        			ingress: [{
+        			ingress: list.Concat([[{
         				from: [for ns in list.Concat([["{{ .Values.global.agentGateway.namespace }}"], _extraIngress]) {namespaceSelector: matchLabels: "kubernetes.io/metadata.name": ns}]
         				ports: [{protocol: "TCP", port: 8083}]
-        			}]
+        			}], _harnessIngress])
         		}
         	}
 
@@ -809,6 +897,96 @@ spec:
         				// Absent means "use the platform default judge".
         				if parameter.evaluation.judge != _|_ {
         					judge: parameter.evaluation.judge.modelId
+        				}
+        			}
+        		}
+        	}
+
+        	// HARNESS DECLARATION (optional). Only a declaration: the agent-evaluation
+        	// reconciler finds it by the harness.oap.io/agent label and runs the
+        	// dataset against <agent>-preview for each new revision. It is a KubeVela
+        	// output, so disabling the harness or deleting the Application removes it
+        	// and the reconciler prunes that agent's runs. Same optional-field guard
+        	// as evaluation, see the comment above _evaluationEnabled.
+        	if _harnessEnabled {
+        		// The Rollout's analysis runs this template once per revision. It asks
+        		// the agent-evaluation verdict endpoint to run the harness Job for the
+        		// revision and to answer pass, fail, insufficient, error or pending.
+        		// Report mode adds dryRun so a failed metric is recorded and never
+        		// changes the rollout. The platform namespace and port are platform
+        		// values (global.agentEvaluation), never the developer's. The Helm raw
+        		// strings in the url print the Argo placeholders unchanged.
+        		harnessAnalysisTemplate: {
+        			apiVersion: "argoproj.io/v1alpha1"
+        			kind:       "AnalysisTemplate"
+        			metadata: {
+        				name:      context.name + "-harness"
+        				namespace: context.namespace
+        				labels: {
+        					"harness.oap.io/agent":   context.name
+        					"app.kubernetes.io/name": context.name
+        				}
+        			}
+        			spec: {
+        				args: [{name: "agent"}, {name: "namespace"}, {name: "revision"}, {name: "hash"}]
+        				if _harnessMode == "report" {
+        					dryRun: [{metricName: "oap-harness"}]
+        				}
+        				metrics: [{
+        					name:     "oap-harness"
+        					interval: "15s"
+        					// 160 x 15 s = 40 minutes. The endpoint's own cap
+        					// (runTimeoutSeconds + slotWaitSeconds) is shorter and answers
+        					// error before the count runs out.
+        					count:                   160
+        					inconclusiveLimit:       160
+        					consecutiveSuccessLimit: 1
+        					// Platform value (global.agentEvaluation.harnessConsecutiveErrorLimit,
+        					// a string like every global). Errors are polls the endpoint did not
+        					// answer, e.g. during a reconciler restart (Recreate, on every
+        					// harness value change); the run errors after limit+1 in a row, so
+        					// the limit must cover the reconciler's start-up time. Errors use
+        					// polls too: count x interval - (limit+1) x interval must stay at or
+        					// above runTimeoutSeconds + slotWaitSeconds (a render test checks it).
+        					consecutiveErrorLimit: strconv.Atoi("{{ .Values.global.agentEvaluation.harnessConsecutiveErrorLimit }}")
+        					successCondition:      "result.state == 'pass'"
+        					failureCondition:      "result.state in ['fail', 'insufficient', 'error']"
+        					provider: web: {
+        						method:         "POST"
+        						url:            "http://agent-evaluation-harness-api.{{ .Values.global.agentEvaluation.namespace }}.svc.cluster.local:{{ .Values.global.agentEvaluation.harnessApiPort }}/v1/verdict?namespace={{ `{{` }}args.namespace{{ `}}` }}&agent={{ `{{` }}args.agent{{ `}}` }}&revision={{ `{{` }}args.revision{{ `}}` }}&hash={{ `{{` }}args.hash{{ `}}` }}"
+        						timeoutSeconds: 20
+        					}
+        				}]
+        			}
+        		}
+        		harnessSpec: {
+        			apiVersion: "v1"
+        			kind:       "ConfigMap"
+        			metadata: {
+        				name:      context.name + "-harness"
+        				namespace: context.namespace
+        				labels: {
+        					// The reconciler lists on this label alone.
+        					"harness.oap.io/agent":   context.name
+        					"app.kubernetes.io/name": context.name
+        				}
+        			}
+        			// No preview target here: the reconciler derives it from the
+        			// agent name (<agent>-preview, port 8083) and checks that Service.
+        			data: {
+        				agent:     context.name
+        				dataset:   parameter.harness.dataset
+        				checks:    json.Marshal(parameter.harness.checks)
+        				threshold: "\(parameter.harness.threshold)"
+        				mode:      parameter.harness.mode
+        				// What the agent can act with. The platform datasets assume an
+        				// agent without tools or sub-agents, so the reconciler warns
+        				// (an Event) when either is listed; CUE itself cannot warn.
+        				if len(parameter.mcpServers) > 0 {
+        					mcpServers: strings.Join([for s in parameter.mcpServers {s.name}], ",")
+        				}
+        				if len(parameter.agents) > 0 {
+        					agents: strings.Join([for a in parameter.agents {a.name}], ",")
         				}
         			}
         		}
@@ -1076,6 +1254,35 @@ spec:
         			strictness?: "low" | "medium" | "high"
         		})]
         	}
+
+        	// +usage=Per-revision exam of this agent on a fixed dataset. Each new
+        	// revision is scored on <agent>-preview by an Argo Rollouts AnalysisRun (the
+        	// component emits the AnalysisTemplate) and the result is published as
+        	// oap_agent_harness_* metrics.
+        	//   mode: report  the score is recorded and never changes the rollout
+        	//                 (the analysis runs with dryRun)
+        	//   mode: gate    a score below the threshold, or no verdict, aborts the
+        	//                 revision before it is promoted
+        	// Requires the agent-evaluation addon on the cluster with harness.enabled.
+        	//
+        	// A dataset is a platform catalog name. The <namespace>/<name> form is
+        	// reserved for team-owned datasets and is not accepted yet.
+        	harness?: {
+        		// +usage=Turn the harness on for this agent.
+        		enabled: *false | bool
+        		// +usage=Platform dataset name, e.g. example-smoke-v1.
+        		dataset: #DatasetName
+        		// +usage=How each case is judged. First cut: expected-answer only.
+        		checks: *["expected-answer"] | [#HarnessCheck, ...#HarnessCheck]
+        		// +usage=Fraction of cases that must pass. Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision.
+        		threshold: *0.8 | number & >0 & <=1
+        		// +usage=report: record the score, never change the rollout. gate: abort a revision below the threshold or with no verdict.
+        		mode: *"report" | "gate"
+        	}
+
+        	// Same shape as #EvaluatorName, and a valid ConfigMap value and label value.
+        	#DatasetName:  =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$" & strings.MaxRunes(63)
+        	#HarnessCheck: "expected-answer"
 
         	// Lowercase alphanumeric with internal hyphens. `--` is excluded because it
         	// separates an evaluator from its judge alias in the Langfuse object name

@@ -6,7 +6,12 @@ import dataclasses
 
 import pytest
 
-from app.cluster_loop import ClusterLoop
+from app.cluster_loop import (
+    AGENT_TURN_FILTER,
+    HARNESS_SESSION_EXCLUSION,
+    HARNESS_TAG_EXCLUSION,
+    ClusterLoop,
+)
 from app.declarations import AgentDeclaration, RequestedEvaluator
 from app.events import (
     REASON_EVALUATOR_NOT_PUBLISHED,
@@ -427,3 +432,63 @@ def test_a_filter_change_is_detected_and_patched(settings, catalog, metrics):
     assert any(
         f["column"] == "type" for f in langfuse.rules[0]["filter"]
     )
+
+
+def test_rule_excludes_harness_traffic(settings, catalog, metrics):
+    """Offline harness traffic is never sampled into online evaluation.
+
+    Two clauses: the source:harness tag (new images) and the session id marker
+    (every image sets session.id to the A2A contextId).
+    """
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
+    assert loop.run_once()
+    filters = langfuse.rules[0]["filter"]
+    assert AGENT_TURN_FILTER in filters
+    assert {
+        "column": "tags",
+        "operator": "none of",
+        "type": "arrayOptions",
+        "value": ["source:harness"],
+    } in filters
+    assert {
+        "column": "sessionId",
+        "operator": "does not contain",
+        "type": "string",
+        "value": "oap-harness-",
+    } in filters
+
+
+def test_the_agent_tags_clause_is_the_first_tags_clause(
+    settings, catalog, metrics
+):
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
+    assert loop.run_once()
+    first = next(f for f in langfuse.rules[0]["filter"] if f["column"] == "tags")
+    assert first["operator"] == "any of"
+    assert first["value"]
+    assert all(t.startswith("agent:") for t in first["value"])
+
+
+def test_a_rule_without_the_harness_exclusions_is_patched_once(
+    settings, catalog, metrics
+):
+    """A rule written by the previous reconciler converges in one PATCH."""
+    loop, langfuse, _ = build(settings, catalog, metrics, [declaration()])
+    assert loop.run_once()
+    rule = langfuse.rules[0]
+    rule["filter"] = [
+        f
+        for f in rule["filter"]
+        if f not in (HARNESS_TAG_EXCLUSION, HARNESS_SESSION_EXCLUSION)
+    ]
+    assert len(rule["filter"]) == 2
+    langfuse.calls.clear()
+
+    assert loop.run_once()
+    assert len([c for c in langfuse.calls if c.startswith("update_rule")]) == 1
+    assert HARNESS_TAG_EXCLUSION in langfuse.rules[0]["filter"]
+    assert HARNESS_SESSION_EXCLUSION in langfuse.rules[0]["filter"]
+
+    langfuse.calls.clear()
+    assert loop.run_once()
+    assert not [c for c in langfuse.calls if c.startswith("update_rule")]

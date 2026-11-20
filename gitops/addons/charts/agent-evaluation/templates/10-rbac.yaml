@@ -16,6 +16,24 @@ agent_platform: true), so it reconciles its own cluster's rules like any spoke.
 Events are namespaced and written into the agents' own namespaces, which is how
 a team sees "evaluator not published" with kubectl describe on their own
 ConfigMap and no access to platform logs.
+
+The harness (harness.enabled, off by default) adds, and nothing else renders
+without it:
+- cluster-wide GET of argoproj.io rollouts (the verdict endpoint checks the
+  caller's revision and pod hash) and READ of analysisruns (the reader
+  publishes metrics from finished runs).
+- cluster-wide GET (no list/watch) of services, to read the derived
+  <agent>-preview Service before a run and refuse an ExternalName one or one
+  that does not select the revision.
+- a Role in THIS namespace only for the reconciler: create, patch and delete
+  the harness Jobs, delete their result ConfigMaps, and GET the one harness
+  judge-key Secret. It cannot write any Secret: the platform minter in
+  namespace bifrost owns the key (a separate Role below).
+- a separate ServiceAccount for the Job pods whose only grant is creating its
+  result ConfigMap in this namespace.
+No write is granted in any agent namespace; the only new access there is the
+two cluster-wide reads above. The Jobs reach the agent over its -preview
+Service, not the Kubernetes API.
 */ -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -45,6 +63,23 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch", "get"]
+  {{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
+  # Harness: the verdict endpoint reads the Rollout named in a poll to check the
+  # caller's revision and pod hash. get only; no list, no watch.
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts"]
+    verbs: ["get"]
+  # Harness: the reader lists the AnalysisRuns the agent component's template
+  # makes (label harness.oap.io/agent) to publish metrics. Read only.
+  - apiGroups: ["argoproj.io"]
+    resources: ["analysisruns"]
+    verbs: ["get", "list", "watch"]
+  # Harness: read the agent's <agent>-preview Service before a run, to refuse
+  # an ExternalName Service and one that does not select the revision. get only.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -60,3 +95,127 @@ subjects:
   - kind: ServiceAccount
     name: agent-evaluation-reconciler
     namespace: {{ .Release.Namespace }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
+---
+# Harness: the reconciler's writes, in this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-evaluation-harness
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  # One Job per agent revision, created suspended by the verdict endpoint
+  # (patch unsuspends it); stale ones are deleted by the reader.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  # Delete the Jobs' result ConfigMaps. get/list come from the ClusterRole.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["delete"]
+  # The harness judge key, written by the platform minter. Read only here, to
+  # publish judge_key_present and to fail closed.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.harness.judge.virtualKey.secretRef | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-evaluation-harness
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-evaluation-harness
+subjects:
+  - kind: ServiceAccount
+    name: agent-evaluation-reconciler
+    namespace: {{ .Release.Namespace }}
+---
+# The platform minter (bifrost chart, namespace bifrost) writes the harness judge
+# key into the one Secret named by secretRef, which this chart pre-creates
+# (35-harness-judge-key-secret.yaml). No create: RBAC cannot scope create by
+# name, so the minter only patches the existing Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-evaluation-judge-key-minter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.harness.judge.virtualKey.secretRef | quote }}]
+    verbs: ["get", "update", "patch"]
+  # Read-only: the minter deletes old keys only when no harness Job is active.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-evaluation-judge-key-minter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-evaluation-judge-key-minter
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.harness.judge.virtualKey.minter.serviceAccountName }}
+    namespace: {{ .Values.harness.judge.virtualKey.minter.namespace }}
+---
+# The harness Job pods. Separate from the reconciler's account so a Job, which
+# handles agent output, holds none of the reconciler's grants.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+rules:
+  # Write its own <job>-result ConfigMap. create only: no read, no update, so
+  # a Job cannot read or overwrite the catalog or another run's result. Jobs run
+  # with backoffLimit 0, so a second write for the same run does not happen; a
+  # result left by an earlier Job of the same name is deleted by the reconciler
+  # before it recreates the Job, never replaced by the runner. The result's
+  # ownerReference to its Job needs no extra verb (blockOwnerDeletion unset).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-evaluation-harness-runner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-evaluation-harness-runner
+subjects:
+  - kind: ServiceAccount
+    name: agent-evaluation-harness-runner
+    namespace: {{ .Release.Namespace }}
+{{- end }}

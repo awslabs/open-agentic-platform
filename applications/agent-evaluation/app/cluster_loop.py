@@ -81,6 +81,36 @@ AGENT_TURN_FILTER = {
     "value": ["AGENT"],
 }
 
+# Agent-harness traffic is offline test traffic and must never be sampled into
+# the online oap_agent_eval_* series. The harness sends A2A contextId
+# `<job-name>-<caseId>` = `oap-harness-<12 hex>-<caseId>`. Must equal strands-agent-base
+# app/config.py HARNESS_SESSION_PREFIX.
+HARNESS_SESSION_MARKER = "oap-harness-"
+
+# Excludes traces the agent base image tagged source:harness. Langfuse v4.72.0
+# InMemoryFilterService.ts, arrayOptions branch: "none of" matches when the
+# trace's tags share no element with the value. Needs an image that emits the
+# tag; the session clause below covers older images.
+HARNESS_TAG_EXCLUSION = {
+    "column": "tags",
+    "operator": "none of",
+    "type": "arrayOptions",
+    "value": ["source:harness"],
+}
+
+# Excludes harness traffic from images that predate the source:harness tag:
+# every image already sets session.id to the contextId. Langfuse v4.72.0
+# InMemoryFilterService.ts, string branch: "does not contain" is a substring
+# test, and a null sessionId is NOT excluded (so chat without a session is
+# still evaluated). scheduleObservationEvals.ts AND-s every clause of a rule
+# filter, so both exclusions apply on top of the agent-turn and agent tags.
+HARNESS_SESSION_EXCLUSION = {
+    "column": "sessionId",
+    "operator": "does not contain",
+    "type": "string",
+    "value": HARNESS_SESSION_MARKER,
+}
+
 
 @dataclass(frozen=True)
 class RuleGroup:
@@ -125,6 +155,10 @@ class RuleGroup:
                     "type": "arrayOptions",
                     "value": list(self.tags),
                 },
+                # Always on, not behind harness.enabled, so toggling the
+                # harness never churns rules. Kept after the `any of` clause.
+                HARNESS_TAG_EXCLUSION,
+                HARNESS_SESSION_EXCLUSION,
             ],
         }
 
@@ -564,7 +598,7 @@ def _filter_of(rule: dict) -> list[tuple]:
 
 def _tags_of(rule: dict) -> list[str]:
     for clause in rule.get("filter") or []:
-        if clause.get("column") == "tags":
+        if clause.get("column") == "tags" and clause.get("operator") == "any of":
             return sorted(clause.get("value") or [])
     return []
 

@@ -33,6 +33,11 @@ from . import events
 from .cluster_loop import ClusterLoop
 from .config import ConfigError, load_catalog, load_settings
 from .declarations import DeclarationReader
+from .harness_config import load_checks, load_harness_settings
+from .harness_declarations import HarnessDeclarationReader
+from .harness_api import VerdictService, serve as serve_harness_api
+from .harness_job import JobFactory
+from .harness_loop import HarnessLoop
 from .langfuse_client import LangfuseClient
 from .metrics import Metrics
 from .metrics_loop import MetricsLoop
@@ -183,6 +188,12 @@ def main() -> int:
     try:
         settings = load_settings()
         catalog = load_catalog(settings.catalog_path)
+        # Harness config is read only when HARNESS_ENABLED=true; a bad checks
+        # file is a deploy error exactly like a bad catalog.
+        harness_settings = load_harness_settings()
+        if harness_settings.enabled:
+            load_checks(harness_settings.checks_path)
+            catalog.judge_model(harness_settings.judge_alias or catalog.judge_default)
     except ConfigError as exc:
         # Configuration that cannot be defaulted is a deploy error, not a
         # transient one: exit and let the Deployment's restart surface it.
@@ -209,6 +220,7 @@ def main() -> int:
         ",".join(catalog.judge_aliases),
         settings.langfuse_url,
     )
+    logger.info("harness %s", "enabled" if harness_settings.enabled else "disabled")
 
     server = ThreadingHTTPServer(
         ("0.0.0.0", settings.metrics_port),  # noqa: S104 - see module docstring
@@ -342,12 +354,69 @@ def main() -> int:
         )
     )
 
+    harness_api = None
+    if harness_settings.enabled:
+        # Deliberately NOT a required readiness loop (_State): an unready pod
+        # drops out of the metrics Service and would hide every oap_agent_eval_*
+        # series. Harness health is last_success/errors_total{loop="harness"}.
+        batch = k8s_client.BatchV1Api()
+        custom = k8s_client.CustomObjectsApi()
+        reader = HarnessDeclarationReader(core)
+        harness_loop = HarnessLoop(
+            settings,
+            harness_settings,
+            metrics,
+            reader,
+            recorder,
+            batch,
+            custom,
+            core,
+        )
+        # The verdict endpoint the harness AnalysisTemplate polls. Its own
+        # listener, so a failing endpoint cannot touch /metrics or the probes.
+        harness_api = serve_harness_api(
+            VerdictService(
+                settings,
+                harness_settings,
+                JobFactory(settings, harness_settings, catalog),
+                reader,
+                recorder,
+                batch,
+                custom,
+                core,
+            ),
+            harness_settings.api_port,
+        )
+        def harness_pass() -> bool:
+            if not kube["ready"]:
+                kube["ready"] = _load_kube()
+                if not kube["ready"]:
+                    return False
+            return harness_loop.run_once()
+
+        threads.append(
+            threading.Thread(
+                target=_run_loop,
+                args=(
+                    "harness",
+                    harness_settings.interval,
+                    harness_pass,
+                    stop,
+                    metrics,
+                    settings.cluster,
+                ),
+                daemon=True,
+            )
+        )
+
     for thread in threads:
         thread.start()
 
     stop.wait()
     server.shutdown()
     langfuse.close()
+    if harness_api is not None:
+        harness_api.shutdown()
     logger.info("stopped")
     return 0
 

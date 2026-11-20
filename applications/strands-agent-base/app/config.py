@@ -14,6 +14,31 @@ def _int_env(name: str, default: int, minimum: int) -> int:
     return max(minimum, value)
 
 
+# A2A contextId prefixes that identify where a request came from. The harness
+# prefix is a platform contract shared with applications/agent-evaluation (the
+# cluster_loop exclusion of harness traffic from online evaluation, and the
+# harness runner that sends `oap-harness-<12 hex>-<caseId>`) and documented in
+# docs/architecture/agent-evaluation.md. Change all of them together.
+HARNESS_SESSION_PREFIX = "oap-harness-"
+# Set by the incident-bridge for autonomous RCA: "incident-<fingerprint>".
+RCA_SESSION_PREFIX = "incident-"
+
+
+def trace_source(session_id: str | None) -> str:
+    """The `source:<x>` trace tag value for a request's session id (contextId).
+
+    "harness" for offline agent-harness traffic, "rca" for incident-bridge
+    traffic, "chat" for everything else, including a missing session id. Prefix
+    semantics: a contextId that merely contains a marker mid-string is chat.
+    """
+    session_id = session_id or ""
+    if session_id.startswith(HARNESS_SESSION_PREFIX):
+        return "harness"
+    if session_id.startswith(RCA_SESSION_PREFIX):
+        return "rca"
+    return "chat"
+
+
 class Config:
     """Application configuration from environment variables."""
 

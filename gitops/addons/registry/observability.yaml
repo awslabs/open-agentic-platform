@@ -114,7 +114,10 @@ otel-collector:
       secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}-hub/langfuse-otel'
     bifrost:
       enabled: true
-      scrapeEndpoint: 'bifrost.bifrost.svc.cluster.local:8080'
+      # The bifrost chart's metrics proxy (the management plane needs a login, so
+      # the collector cannot scrape the Bifrost Service directly). Must match the
+      # otel-collector chart default.
+      scrapeEndpoint: 'bifrost-metrics.bifrost.svc.cluster.local:8080'
     amp:
       enabled: true
       remoteWriteEndpoint: '{{with (index .metadata.annotations "amp_endpoint_url")}}{{.}}{{end}}'
@@ -170,7 +173,7 @@ prometheus-operator-crds:
 # every spoke carries in oidc_issuer_url).
 agent-evaluation:
   namespace: agent-evaluation
-  defaultVersion: '0.1.0'
+  defaultVersion: '0.2.0'
   path: 'gitops/addons/charts/agent-evaluation'
   annotationsAppSet:
     # After langfuse (5) and otel-collector (6): the reconciler needs the seeded
@@ -245,8 +248,31 @@ agent-evaluation:
       # push-otel-keys hook. <resource_prefix>-hub is the hub cluster name, and
       # the annotation is identical on hub and spokes.
       secretManagerKey: '{{ index .metadata.annotations "resource_prefix" }}-hub/langfuse-otel'
+    # The agent harness (agent-harness.md section 4.1). ONE flag turns it on:
+    # `agent_harness: true` in enabled-addons.yaml, which the fleet-secret chart
+    # turns into the enable_agent_harness label. The SAME expression sets
+    # global.agentEvaluation.harnessEnabled on oam-agent-components
+    # (registry/agentcore.yaml), so the verdict endpoint and the gate render
+    # guard cannot disagree; test_harness_enablement.py fails if the two drift.
+    # It also requires enable_agent_evaluation: the flag alone implies nothing,
+    # so on a cluster without this addon the guard keeps rejecting mode: gate.
+    # A string ("true"/"false"): the chart's agent-evaluation.harnessEnabled
+    # helper reads it as text. Being valuesObject, it wins over any overlay
+    # values file, so an overlay can no longer set harness.enabled.
+    harness:
+      enabled: '{{ if and (eq (index .metadata.labels "enable_agent_evaluation") "true") (eq (index .metadata.labels "enable_agent_harness") "true") }}true{{ else }}false{{ end }}'
   ignoreDifferences:
     - group: external-secrets.io
       kind: ExternalSecret
       jsonPointers:
         - /spec/dataFrom
+    # The harness judge key Secret: the chart pre-creates it empty and the
+    # bifrost chart's minter fills data and the key-name annotation. Argo CD
+    # syncs with ServerSideApply and does not own those fields; ignoring them
+    # keeps the app Synced. The name must match harness.judge.virtualKey.secretRef.
+    - group: ""
+      kind: Secret
+      name: agent-evaluation-harness-judge-key
+      jsonPointers:
+        - /data
+        - /metadata/annotations/harness.oap.io~1judge-key-name

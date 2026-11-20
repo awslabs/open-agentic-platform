@@ -298,6 +298,14 @@ clusters that enforce NetworkPolicy, which is part of the base platform's cluste
 (aws-samples/appmod-blueprints#1239). A caller that reached agents directly, such as an
 incident bridge, must go through the gateway instead. MCP servers are tracked in #86.
 
+Exception: an agent with an enabled `harness` block also admits port 8083 from pods
+labelled `harness.oap.io/run: "true"` in the agent-evaluation namespace, because the
+harness runner calls `<agent>-preview` directly. The runner code sends no
+`X-Forwarded-User`, but the policy admits any pod with that label in that namespace, so
+anyone who can create a pod there (the reconciler's ServiceAccount included) can send
+the header to that agent and, through a harness-enabled supervisor, to its sub-agents.
+See `docs/agent-delegation/DESIGN.md` section 5.
+
 Long-term records are extracted asynchronously by AgentCore after a conversation, so a
 fact told in one session is recallable in a new session after extraction completes, not
 immediately.
@@ -468,6 +476,45 @@ rolloutStrategy:
     scaleDownDelaySeconds: 30
 ```
 
+## Agent harness (per-revision dataset, report or gate)
+The optional `harness` block scores each new revision of the agent on a fixed
+dataset, on its blue-green preview Service (`<agent>-preview`), and publishes
+the result as `oap_agent_harness_*` metrics. The component emits an Argo
+Rollouts `AnalysisTemplate` named `<agent>-harness` and wires it into the
+Rollout, so Argo Rollouts creates one AnalysisRun per revision. It needs the
+agent harness on the cluster: `agent_evaluation: true` and `agent_harness: true`
+in the environment's `enabled-addons.yaml`. A gate is rejected at render without it.
+```yaml
+harness:
+  enabled: true
+  dataset: general-assistant-v1
+  checks: [expected-answer]
+  threshold: 0.8
+  mode: report   # or gate
+```
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `enabled` | `false` | Turn the harness on for this agent. |
+| `dataset` | required | Platform catalog dataset name (lowercase, hyphens, max 63 characters). `<namespace>/<name>` is reserved for team-owned datasets and not accepted yet. |
+| `checks` | `[expected-answer]` | How each case is judged. `expected-answer` is the only check for now; an empty list is rejected. |
+| `threshold` | `0.8` | Fraction of cases that must pass (greater than 0, at most 1). Report mode: recorded next to the score. Gate: the pass bar; a ratio below it aborts the revision. |
+| `mode` | `report` | `report`: record the score, never change the rollout. `gate`: abort a revision below the threshold, or with no verdict. |
+Where the analysis runs depends on the mode:
+| `mode` | `autoPromotionEnabled` | Analysis | Effect |
+|--------|------------------------|----------|--------|
+| `report` | `true` (default) | `postPromotionAnalysis`, `dryRun` | The revision promotes on health and is scored afterwards. Never delays promotion. |
+| `report` | `false` | `prePromotionAnalysis`, `dryRun` | The preview holds for a person; the score is recorded, never decisive. |
+| `gate` | any | `prePromotionAnalysis` | Promoted only on a passing score. Below the threshold, `insufficient`, a missing judge key or a runner error aborts the revision; the stable revision keeps serving. No `autoPromotionSeconds` is set. |
+The first revision of a Rollout has no analysis (Rollouts promotes it at once),
+so the first run in a new agent is the next revision. See
+[example-agent-harness.yaml](examples/example-agent-harness.yaml) (report, default),
+[example-agent-harness-manual-gate.yaml](examples/example-agent-harness-manual-gate.yaml)
+(report, `autoPromotionEnabled: false`),
+[example-agent-harness-gate.yaml](examples/example-agent-harness-gate.yaml) (gate) and the
+[design](../../docs/architecture/agent-harness.md).
+The component also renders a `<agent>-harness` ConfigMap labelled
+`harness.oap.io/agent`, a declaration for the reconciler, which publishes the
+metrics. Disabling the harness removes both objects.
 ## Troubleshooting
 
 ```bash

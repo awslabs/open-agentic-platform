@@ -205,7 +205,9 @@ die_defs() { echo "cannot build definition set '$1' -- see the render error abov
 
 echo "== definitions =="
 # nitro: the shipped defaults. session: per-session isolation switched on.
-D_NITRO="$(defs_for nitro --set global.sandboxOperator=true)" || die_defs nitro
+# global.agentEvaluation.harnessEnabled: the gate harness example needs a
+# cluster with the harness, or the agent component rejects it.
+D_NITRO="$(defs_for nitro --set global.sandboxOperator=true --set global.agentEvaluation.harnessEnabled=true)" || die_defs nitro
 D_KATA="$(defs_for kata --set global.sandboxOperator=true --set global.sandboxRuntimeClass=kata-clh --set global.confidentialSandboxRuntimeClass=)" || die_defs kata
 D_NORUNTIME="$(defs_for noruntime --set global.sandboxOperator=true --set global.sandboxRuntimeClass= --set global.confidentialSandboxRuntimeClass=)" || die_defs noruntime
 # A MISCONFIGURED cluster: confidential_sandbox_runtime_class pointed at a Kata

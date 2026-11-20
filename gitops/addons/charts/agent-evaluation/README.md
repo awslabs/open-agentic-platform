@@ -98,9 +98,97 @@ and real.
 | Alert | Fires when |
 |---|---|
 | `AgentEvaluationDataStale` | No full metrics pass for `alerts.dataAgeSeconds` (per cluster, so one stalled cluster is not hidden) |
-| `AgentEvaluationReconcileErrors` | Langfuse calls failing for 30m |
+| `AgentEvaluationReconcileErrors` | Langfuse calls failing for 30m in a loop other than `harness` |
 | `AgentEvaluationRuleBudgetHigh` | The shared project is at 80% of `maxActiveRules` |
 | `AgentEvaluationJudgeKeyMissing` | Hub only: judge spend is un-budgeted |
+| `AgentHarnessStale` | Only with `harness.enabled`: no harness pass for `max(3 x harness.intervalSeconds, 900s)`, for 15m; also follows a missing required judge key |
+| `AgentHarnessReconcileErrors` | Only with `harness.enabled`: the harness loop's Kubernetes (Job, Rollout, Service) or Bifrost management API calls failing for 30m; includes a judge key that cannot be minted or read only with `required: true` |
+| `AgentHarnessJudgeKeyMissing` | Only with `harness.enabled`: the harness judge key is missing for 30m; `warning` with `required: true` (no run starts while it fires), `info` with `required: false` (runs go on un-budgeted) |
+| `AgentHarnessGateUnverifiedStable` | Only with `harness.enabled`: a `mode: gate` agent's stable revision has harness runs and none passed, for 5m. With PF-1 nothing on this platform evaluates the PrometheusRule today, so this alert cannot fire; the Warning Event `HarnessStableRevisionUnverified` and the metric `oap_agent_harness_unverified_stable` are the signals |
+
+## Harness
+The per-revision harness from issue #137, off by default. With
+`harness.enabled: true` the `agent` component's Argo Rollouts analysis polls the
+reconciler's verdict endpoint (Service `agent-evaluation-harness-api`), which
+starts a runner Job per revision against the agent's `<agent>-preview` Service;
+the reconciler publishes `oap_agent_harness_*` and Events from the finished
+AnalysisRuns. `mode: report` never blocks or delays a promotion; `mode: gate`
+aborts a revision below its threshold or with no verdict. Design and contracts:
+[agent-harness.md](../../../../docs/architecture/agent-harness.md).
+Nothing in the table below renders while `harness.enabled` is false, not even a
+`HARNESS_ENABLED` env var (the reconciler defaults it to false). The one
+harness part of a disabled render is the dashboard's "Harness" row (see below).
+
+Turning the harness off after it ran: the reconciler makes the catalog
+ConfigMap the owner of every harness Job and of the judge-key Secret (each
+result ConfigMap is owned by its Job), so once Argo CD prunes the catalog the
+garbage collector removes them. The Bifrost virtual key stays in
+Bifrost; turn off `judgeKey.enabled` in the bifrost chart and delete it by hand as described in `agent-harness.md` ("Turning the
+harness off").
+
+| Renders | What |
+|---|---|
+| ConfigMap `agent-evaluation-harness-catalog` | `checks.yaml`: `harness.checks` with each prompt from `files/harness/checks/`. Fails the render on a missing prompt or a `casePassScore` outside [0, 1] |
+| ConfigMap `agent-evaluation-harness-datasets` | every `files/harness/datasets/*.yaml`. Fails the render when there is none |
+| Deployment | the `HARNESS_*` env, both ConfigMaps mounted read-only, and a `checksum/harness` annotation so a dataset or prompt change restarts the reconciler |
+| RBAC | see below |
+| PrometheusRule | `AgentHarnessStale`, `AgentHarnessReconcileErrors`, `AgentHarnessJudgeKeyMissing`, `AgentHarnessGateUnverifiedStable` (where the CRD exists) |
+
+The Grafana dashboard is one static JSON, so it always contains the "Harness"
+row, harness on or off. Its panels show "No data" for agents with no harness and
+on clusters with the harness off.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `harness.intervalSeconds` | `60` | How often the reader publishes from finished runs |
+| `harness.maxConcurrentJobs` | `2` | Harness Jobs at once on this cluster |
+| `harness.api.port` | `8081` | Verdict endpoint port (match `global.agentEvaluation.harnessApiPort` in `oam-agent-components`) |
+| `harness.api.controller` | `argo-rollouts`, `app.kubernetes.io/name: argo-rollouts` | Pods the NetworkPolicy lets call the endpoint |
+| `harness.slotWaitSeconds` | `300` | Wait for a free slot; `runTimeoutSeconds + slotWaitSeconds` must be at most 2100 |
+| `harness.caseConcurrency` | `2` | Cases in flight within one run |
+| `harness.caseTimeoutSeconds` | `120` | Per call (agent call, each judge call) |
+| `harness.readyTimeoutSeconds` | `600` | Wait for the preview's agent card |
+| `harness.runTimeoutSeconds` | `1800` | Whole run; the runner stops 60 s before it with a partial result |
+| `harness.maxCases` | `50` | Larger datasets are a run error |
+| `harness.minJudgedRatio` | `0.8` | Share of a run's cases that must be judged (passed or failed) before a pass ratio is published; below it the run is `insufficient` (counts only, no ratio or threshold_met) |
+| `harness.judge.alias` | `""` | Judge alias; empty is `judge.defaultAlias` |
+| `harness.judge.virtualKey.*` | see `values.yaml` | The harness judge key: `mint` (must stay `false`), `required`, `secretRef`, `minter`. Models, budget and rate limit are in the bifrost chart (`judgeKey`) |
+| `harness.checks` | `expected-answer` (0.7) | Check prompt file and per-case pass score |
+| `harness.runner.resources` | 50m / 128Mi, 256Mi limit | The Job container |
+
+**RBAC.** The ClusterRole gains `get` on `argoproj.io` `rollouts`, read-only
+`get`/`list`/`watch` on `analysisruns` and `get` on `services`. Everything else
+is a Role in the release namespace: the reconciler creates, patches and deletes
+the harness Jobs, deletes their result ConfigMaps and can only `get` the judge
+key Secret. The Jobs run as a separate ServiceAccount,
+`agent-evaluation-harness-runner`, which can only create ConfigMaps in this
+namespace. A second Role lets the bifrost chart's minter
+(`bifrost:bifrost-vk-minter`) write that one Secret. No write is granted in any
+agent namespace.
+**Judge key.** A harness-only Bifrost virtual key, separate from the ONLINE judge
+key in `judge.virtualKey` (which stays hub-only). The platform owns it: the
+bifrost chart's minter (`judgeKey.enabled`, a PostSync hook Job and a CronJob in
+namespace `bifrost`) signs in to **this** cluster's Bifrost, whose management
+API needs a login, creates the key and writes it to the `secretRef` Secret,
+which the Jobs mount. The admin credential stays in namespace `bifrost`. There
+is no Secrets Manager entry and nothing to do on the hub. With `required: true`
+(the default) no run starts without it, and a gate revision is aborted.
+**Datasets.** `files/harness/datasets/<name>.yaml`, referenced by name from an
+agent's `harness.dataset`. Two ship: `general-assistant-v1` (20 cases for a
+general assistant without tools) and `example-smoke-v1` (the four-case format
+example). Neither was harvested from real failures and neither is a golden set.
+
+**Enable it** with `agent_harness: true` next to `agent_evaluation: true` in
+`gitops/overlays/environments/<env>/enabled-addons.yaml`. The registry entry
+sets `harness.enabled` from the resulting `enable_agent_harness` cluster-secret
+label, with the same expression that sets `global.agentEvaluation.harnessEnabled`
+on `oam-agent-components`, so the two cannot disagree. Both stay off unless
+`enable_agent_evaluation` is also set. Do not set `harness.enabled` in an
+overlay values file: the registry's `valuesObject` overrides it. The value
+arrives as the string `"true"` or `"false"`; the `agent-evaluation.harnessEnabled`
+helper reads it, and fails the render on any other value.
+
+The image must be one that contains the harness (`0.3.0` or later).
 
 ## Rule budget
 

@@ -37,7 +37,7 @@ def _tags(monkeypatch, **env) -> list[str]:
         monkeypatch.setenv(key, value)
     importlib.reload(cfg)
     config = cfg.Config()
-    tags = ["source:chat", config.AGENT_NAME]
+    tags = [f"source:{cfg.trace_source(None)}", config.AGENT_NAME]
     scoped = config.scoped_agent_tag()
     if scoped:
         tags.append(scoped)
@@ -107,3 +107,37 @@ def test_the_tag_distinguishes_the_same_agent_on_two_clusters(monkeypatch):
     )
     assert [t for t in dev if t.startswith("agent:")] == ["agent:dev/team-a/support"]
     assert [t for t in prod if t.startswith("agent:")] == ["agent:prod/team-a/support"]
+
+
+# ── source:<x> tag ───────────────────────────────────────────────────────
+# Online evaluation excludes source:harness, so a harness request mis-tagged as
+# chat would be scored into the production pass ratios.
+
+
+def test_harness_context_id_is_tagged_harness():
+    from app.config import HARNESS_SESSION_PREFIX, trace_source
+
+    assert HARNESS_SESSION_PREFIX == "oap-harness-"
+    assert trace_source("oap-harness-3-case-001") == "harness"
+
+
+def test_incident_context_id_is_tagged_rca():
+    from app.config import trace_source
+
+    assert trace_source("incident-abc") == "rca"
+
+
+@pytest.mark.parametrize(
+    "session_id", ["0b6f6a52-6a8e-4c1e-9a43-0b4ad3a1f9d2", None, ""]
+)
+def test_other_context_ids_are_tagged_chat(session_id):
+    from app.config import trace_source
+
+    assert trace_source(session_id) == "chat"
+
+
+def test_the_harness_marker_only_counts_as_a_prefix():
+    """The tag uses prefix semantics; the marker mid-string is ordinary chat."""
+    from app.config import trace_source
+
+    assert trace_source("user-oap-harness-1-case") == "chat"

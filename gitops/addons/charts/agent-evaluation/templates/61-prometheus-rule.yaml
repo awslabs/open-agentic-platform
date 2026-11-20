@@ -51,8 +51,11 @@ spec:
               not running.
 
         - alert: AgentEvaluationReconcileErrors
+          # The Langfuse loops only. The harness loop calls Kubernetes and
+          # Bifrost, not Langfuse, so it has its own alert below with wording
+          # that points at the right system.
           expr: >-
-            sum by (cluster, loop) (rate(oap_agent_eval_errors_total[15m])) > 0
+            sum by (cluster, loop) (rate(oap_agent_eval_errors_total{loop!="harness"}[15m])) > 0
           for: 30m
           labels:
             severity: warning
@@ -105,5 +108,108 @@ spec:
               is mounted. Evaluation still works. To fix, create the Secrets
               Manager entry and set judge.virtualKey.enabled with its
               secretManagerKey on the agent-evaluation addon.
+{{- end }}
+{{- if eq (include "agent-evaluation.harnessEnabled" .) "true" }}
+{{- $harnessStale := max (mul 3 (int .Values.harness.intervalSeconds)) 900 }}
+        # Harness. Pipeline alerts only, like the rest of this
+        # file: a low harness pass ratio is the owning team's signal on the
+        # dashboard, not a page.
+        - alert: AgentHarnessStale
+          # The harness loop is not in /readyz (an unready pod would hide every
+          # evaluation series), so this is how a stuck loop is seen.
+          expr: >-
+            time() - max by (cluster)
+            (oap_agent_eval_last_success_timestamp_seconds{loop="harness"})
+            > {{ $harnessStale }}
+          for: 15m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The agent harness loop on cluster {{ `{{ $labels.cluster }}` }}
+              has not completed a pass for over
+              {{ div $harnessStale 60 }} minutes.
+            description: >-
+              Harness results from finished AnalysisRuns are not being
+              published, so the dashboard is stale. Usual causes: the
+              Kubernetes API refusing the reconciler's AnalysisRun, Job or Secret
+              calls (check oap_agent_eval_errors_total{loop="harness"}), the
+              required harness judge key being unavailable, or the reconciler
+              not running. A pass without a required judge key does not count
+              as complete, so this alert also follows AgentHarnessJudgeKeyMissing;
+              when both fire, fix the key first.
+        - alert: AgentHarnessReconcileErrors
+          # The harness loop's own error rate, kept apart from
+          # AgentEvaluationReconcileErrors because its calls go to Kubernetes,
+          # not Langfuse.
+          expr: >-
+            sum by (cluster) (rate(oap_agent_eval_errors_total{loop="harness"}[15m])) > 0
+          for: 30m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The agent harness loop is failing on cluster
+              {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              The harness loop's Kubernetes AnalysisRun, Job or Secret calls
+              have been failing for 30 minutes, so harness results may be
+              missing from the dashboard. A judge key that cannot be
+              read counts here only with
+              harness.judge.virtualKey.required true; with required false it
+              shows only in AgentHarnessJudgeKeyMissing. Check the reconciler's logs in
+              the {{ .Release.Namespace }} namespace and the
+              HarnessJudgeKeyUnavailable Events.
+{{- $keyRequired := .Values.harness.judge.virtualKey.required }}
+        - alert: AgentHarnessJudgeKeyMissing
+          # Severity follows required: with required true no run starts
+          # without the key; with required false runs go on un-budgeted, so
+          # it is information, not a problem to act on now.
+          expr: max by (cluster) (oap_agent_harness_judge_key_present) == 0
+          for: 30m
+          labels:
+            severity: {{ ternary "warning" "info" $keyRequired }}
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              The harness judge Bifrost virtual key is missing on cluster
+              {{ `{{ $labels.cluster }}` }}.
+            description: >-
+{{- if $keyRequired }}
+              With harness.judge.virtualKey.required true no harness run
+              starts while this fires: the verdict endpoint answers error, so a
+              gate agent's new revision is aborted. The platform minter writes the key
+{{- else }}
+              With harness.judge.virtualKey.required false harness runs still
+              start, but their judge calls reach Bedrock through Bifrost
+              without a budget or rate limit. The platform minter writes the key
+{{- end }}
+              (the bifrost chart's bifrost-vk-minter CronJob, judgeKey.enabled)
+              to Secret {{ .Values.harness.judge.virtualKey.secretRef }} in the
+              {{ .Release.Namespace }} namespace. Check that judgeKey.enabled is
+              set in the bifrost chart, the bifrost-vk-minter Job logs in
+              namespace bifrost, and the HarnessJudgeKeyUnavailable Events.
+        - alert: AgentHarnessGateUnverifiedStable
+          # A gate agent's stable revision has harness runs and none passed:
+          # Argo Rollouts promoted it without a pass (fast-track inside the
+          # scale-down window, or a manual promote).
+          expr: max by (cluster, namespace, agent, revision) (oap_agent_harness_unverified_stable) == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: agent-evaluation
+          annotations:
+            summary: >-
+              Gate agent {{ `{{ $labels.namespace }}/{{ $labels.agent }}` }}
+              serves revision {{ `{{ $labels.revision }}` }}, which never passed
+              the harness.
+            description: >-
+              The Rollout's stable ReplicaSet has harness AnalysisRuns and none
+              of them passed, so the gate did not hold. Read the
+              HarnessStableRevisionUnverified Event on the agent's
+              -harness ConfigMap, check how the revision was promoted, and
+              roll back if it should not serve.
 {{- end }}
 {{- end }}

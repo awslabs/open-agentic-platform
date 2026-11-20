@@ -31,9 +31,12 @@ or rotated per workload without affecting others.
 3. **Idempotency** — check `GET /api/governance/virtual-keys/<id>` first;
    create only if absent. On redeploy the existing VK is reused.
 
-4. **Admin credentials** — the management API call needs a Bifrost admin token.
-   Enable `bifrost.bifrost.bifrost.governance.authConfig` with credentials from
-   a well-known cluster Secret (created once at bootstrap, not per-workload).
+4. **Admin credentials** — the management API now requires Basic auth
+   (`bifrost.bifrost.authConfig`, with `disableAuthOnInference: true` so agent
+   inference stays open). The `bifrost-admin` Secret is created in each cluster by
+   the `bifrost-admin-init` PreSync hook (`templates/admin-init.yaml`) with a random
+   password, only when the Secret is missing. The credential stays in namespace
+   `bifrost`; components that need the API run there.
 
 5. **Re-enable enforcement** — once minting is in place, set
    `plugins.governance.config.is_vk_mandatory: true`.
@@ -50,7 +53,6 @@ or rotated per workload without affecting others.
 - The KubeVela `http` workflow step or a sidecar Job can make the management
   API call. The Job approach (shell + wget) is simpler and doesn't require CUE
   HTTP complexity.
-- The admin Secret should be created by `task agentic:bootstrap` (one-time,
-  same pattern as other platform bootstrap credentials).
+- The admin Secret is created by the `bifrost-admin-init` hook, not by bootstrap.
 - Budget and rate-limit IDs can be parameterised in the `agent` ComponentDefinition
   so different agent tiers get different limits.

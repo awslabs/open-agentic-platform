@@ -1,0 +1,80 @@
+# Example: Agent with a per-revision harness, gate mode
+#
+# Same agent as example-agent-harness.yaml with one change: `mode: gate`.
+#
+# A new revision is scored on the preview Service BEFORE it is promoted, by an
+# Argo Rollouts pre-promotion analysis. It promotes only on a passing score:
+#   - pass (ratio at or above `threshold`): the revision is promoted.
+#   - fail, `insufficient` (too few cases judged), a missing judge key, a runner
+#     Job error, or no answer from the platform: the analysis fails and Rollouts
+#     ABORTS the revision. The stable revision keeps serving, and the Rollout
+#     shows Degraded until a new revision is pushed.
+# There is no automatic promotion timer in gate mode. The component sets
+# abortScaleDownDelaySeconds: 0 for a gate, so an aborted preview stays up with
+# no scale-down deadline and a retry gets a new run with the same verdict (no
+# re-score); push a new revision instead. Known limit (Argo Rollouts v1.9.0):
+# a person who returns to a failed or superseded revision within
+# scaleDownDelaySeconds (30 s) of the push that replaced it promotes it without
+# a pass. The reconciler then writes a HarnessStableRevisionUnverified Event and
+# sets oap_agent_harness_unverified_stable; abort or roll back. A team that
+# wants this closed can set scaleDownDelaySeconds on the agent (not 0: Rollouts
+# then never scales old ReplicaSets down; 1 was tried), at the price of the
+# instant rollback to the previous stable.
+#
+# The first revision of an agent has no pre-promotion analysis in Rollouts and
+# goes live at once. Start a new dataset in `mode: report`, read the scores over
+# several revisions, then switch to gate where the score is steady.
+#
+# What the developer controls here: which dataset, which checks, and the
+# threshold: the pass bar, a ratio below it aborts the revision.
+# What the platform controls: the dataset catalog, the judge and its prompt.
+# The judge runs through Bifrost on a platform-minted, budgeted virtual key.
+# Harness requests are marked, so they are excluded from online evaluation
+# (the `evaluation` block) and never counted as live traffic.
+# There is no account, region, endpoint or API key in this file.
+#
+# general-assistant-v1 has 20 cases for a general assistant WITHOUT tools,
+# like this one: every case is passable without a tool (time cases accept an
+# honest "I cannot access the current time"), so a good revision can reach the
+# threshold. It was written for the platform, not harvested from this agent's
+# failures; a real agent's dataset should come from its own traces.
+# example-smoke-v1 is the four-case format example.
+#
+# Prerequisites:
+# - the agent harness on this cluster: agent_evaluation: true and
+#   agent_harness: true in the environment's enabled-addons.yaml (one flag sets
+#   both harness switches; without it a gate is rejected at render)
+# - a judge key: gate needs harness.judge.virtualKey.required (the default)
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: harness-assistant-gate
+  namespace: default
+spec:
+  components:
+    - name: harness-assistant-gate
+      type: agent
+      properties:
+        description: "Assistant that must pass a fixed dataset before each new revision is promoted"
+        systemMessage: "You are a helpful assistant. Be concise and accurate."
+        modelConfig:
+          modelId: claude-sonnet
+        harness:
+          enabled: true
+          # A platform catalog dataset name.
+          dataset: general-assistant-v1
+          # How each case is judged. expected-answer is the only check for now.
+          checks:
+            - expected-answer
+          # Fraction of cases that must pass: the pass bar for a gate.
+          threshold: 0.8
+          # gate: abort a revision below the threshold or with no verdict.
+          mode: gate
+        registerWithGateway: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi

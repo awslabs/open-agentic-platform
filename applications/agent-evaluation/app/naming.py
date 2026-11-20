@@ -48,6 +48,31 @@ JUDGE_SEPARATOR = "--"
 _TOKEN_LEN = 8
 _TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % _TOKEN_LEN)
 
+# Harness objects (issue #137). The Jobs and their result ConfigMaps live in
+# the reconciler's own namespace, are recognised by prefix, and only this
+# reconciler writes them.
+HARNESS_JOB_PREFIX = "oap-harness-"
+_HARNESS_JOB_HASH_LEN = 12
+
+
+def harness_job_name(
+    namespace: str, agent: str, revision: str, pod_hash: str, dataset: str
+) -> str:
+    """Deterministic Job name for one (agent, Rollout revision, pod hash, dataset).
+
+    The Job object IS the "already ran" record for a revision: every poll of the
+    verdict endpoint for the same revision finds the same Job. The Rollout
+    revision number and the pod-template hash are both in the hash, so a rollback
+    (a new revision number) gets a new Job even when the pod hash repeats.
+    """
+    payload = f"{namespace}/{agent}/{revision}/{pod_hash}/{dataset}"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return HARNESS_JOB_PREFIX + digest[:_HARNESS_JOB_HASH_LEN]
+
+
+def result_configmap_name(job: str) -> str:
+    return f"{job}-result"
+
 
 def owner_token(cluster: str) -> str:
     """Return the fixed-length, fixed-alphabet token identifying one cluster."""

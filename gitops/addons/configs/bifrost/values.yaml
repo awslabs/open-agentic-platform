@@ -76,6 +76,19 @@ bifrost:
           echo "postgres still unreachable after 60 attempts; failing init"; exit 1
 
   bifrost:
+    # Admin login for the management API (/api/governance/*, config, logs) and
+    # the UI. Basic auth with a per-cluster password that the chart's
+    # bifrost-admin-init hook generates in the cluster (templates/admin-init.yaml).
+    # Inference stays open to in-cluster agents: disable_auth_on_inference is the
+    # setting that keeps the data plane working while the admin plane is closed.
+    # Platform components that need the API (the judge key minter) run in this
+    # namespace and read the Secret here; the admin credential does not leave it.
+    authConfig:
+      isEnabled: true
+      existingSecret: bifrost-admin
+      usernameKey: username
+      passwordKey: password
+      disableAuthOnInference: true
     client:
       initialPoolSize: 100
       # TODO(llm-as-a-service): re-enable with VK enforcement once per-workload

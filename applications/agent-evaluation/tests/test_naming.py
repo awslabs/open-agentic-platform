@@ -3,6 +3,7 @@
 from app.naming import (
     config_hash,
     evaluator_name,
+    harness_job_name,
     is_platform_rule,
     owner_token,
     owns,
@@ -81,3 +82,24 @@ def test_evaluator_object_name_carries_a_non_default_judge():
         evaluator_name("safety", "judge-strong", "judge-default")
         == "safety--judge-strong"
     )
+
+
+def test_harness_job_name_hashes_namespace_agent_revision_hash_and_dataset():
+    import hashlib
+    digest = hashlib.sha256(b"team-a/assistant/2/5ff64c796b/example-smoke-v1").hexdigest()
+    assert harness_job_name("team-a", "assistant", "2", "5ff64c796b", "example-smoke-v1") == "oap-harness-" + digest[:12]
+
+
+def test_harness_job_name_is_distinct_per_field_and_deterministic():
+    base = ("team-a", "assistant", "2", "abc", "example-smoke-v1")
+    names = {
+        harness_job_name(*base),
+        harness_job_name("team-b", *base[1:]),
+        harness_job_name(base[0], "other", *base[2:]),
+        harness_job_name(*base[:2], "3", *base[3:]),  # a rollback is a new revision number
+        harness_job_name(*base[:3], "def", base[4]),
+        harness_job_name(*base[:4], "general-assistant-v1"),
+    }
+    assert len(names) == 6
+    assert harness_job_name(*base) == harness_job_name(*base)
+    assert all(n.startswith("oap-harness-") and len(n) == len("oap-harness-") + 12 for n in names)
