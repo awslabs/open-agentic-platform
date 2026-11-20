@@ -46,16 +46,19 @@ enabledAddons:
   # ingress_domain_name: it owns only its own oap-<cluster>- Langfuse rules and
   # never writes a judge prompt, so it cannot change how prod is scored.
   #
-  # ON. The public image still does not exist (public.ecr.aws/z0a4o2j5/
-  # agent-evaluation answers NAME_UNKNOWN), so the registry entry points the
-  # addon at the deploying account's own ECR, templated from the cluster secret.
-  # See the control-plane overlay for the full note.
+  # OFF. The image is not in a public registry, so this cannot be a default --
+  # see the control-plane overlay for the full note. Turn it on in your own
+  # overlay once you have built and pushed the image into your account.
   #
-  # This spoke instance reconciles only its OWN agents' rules and exports its
-  # own score metrics; role=spoke is inferred from this cluster having no
-  # ingress_domain_name, so the hub stays the single writer of the project-wide
-  # catalog evaluators and judge connection.
-  agent_evaluation: true
+  # ONE EXTRA THING FOR SPOKES. A spoke reconciler reaches the hub's Langfuse
+  # over the hub's PUBLIC endpoint (registry entry: langfuse.url falls back to
+  # the oidc_issuer_url host when the cluster has no ingress_domain_name of its
+  # own). So a hub that restricts its platform ALB by source IP must allow every
+  # spoke's NAT egress address, or the spoke reconcilers time out on
+  # GET /api/public/v2/evaluators and no spoke agent is ever scored. Measured:
+  # restricting the ALB to the operator's IP plus the hub NAT alone broke both
+  # spokes within a minute.
+  agent_evaluation: false
   agent_core: true
   agent_gateway: true
   oam_components: true

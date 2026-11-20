@@ -10,15 +10,25 @@
 # namespace may not be set when a resource name is provided" after ~7 of 35 resources.
 # Tracked in #17.
 #
-# The clusters-kro ApplicationSet globs
-# tenants/<tenant>/kro-clusters/clusters/*.json to decide WHICH spokes exist and reads
-# the matching entry below for HOW to build each one. A spoke needs both, plus a fleet
-# member under fleet/members/<name>/ so ArgoCD gets a cluster secret.
+# ALL THREE FILES, OR THE SPOKE SILENTLY DOES NOT EXIST. Adding a spoke takes:
 #
-# Discovery follows the OVERLAY repo, not the fleet repo: clusters-kro resolves
-# repoURL/revision/basepath as `or overlay_repo_* fleetRepo*`. If gitops/fleet/hub/
-# values.yaml points the overlay at a tree without the trigger json, this file is never
-# read and zero spokes are generated, silently. Keep them in step.
+#   1. tenants/<tenant>/kro-clusters/clusters/<name>.json   WHICH spokes exist
+#        The clusters-kro ApplicationSet globs clusters/*.json. No json, no spoke.
+#   2. the matching <name>: entry in THIS file                HOW to build it
+#        Present json but no entry here -> built from defaults, not what you meant.
+#   3. fleet/members/<name>/values.yaml                       ArgoCD cluster secret
+#        Without it the cluster is created but never registered, so no addon syncs.
+#
+# There is no error for a missing one. Each failure mode is a quiet partial result,
+# which is why they are listed rather than left implied.
+#
+# AND ALL THREE ARE READ FROM THE OVERLAY REPO WHEN ONE IS WIRED -- not from the
+# fleet repo. clusters-kro resolves repoURL/revision/basepath as
+# `or overlay_repo_* fleetRepo*`, so on a hub with overlay_repo_* set, adding a spoke
+# here does nothing: the json, this entry and the member file must all exist in the
+# OVERLAY tree. If gitops/fleet/hub/values.yaml points the overlay at a tree without
+# the trigger json, this file is never read and zero spokes are generated, silently.
+# Keep them in step.
 #
 # The cluster name is used verbatim for the EKS cluster AND for every IAM role the RGD
 # creates (<name>-cluster-role, <name>-cluster-node-role, <name>-argocd-capability-role).
@@ -40,14 +50,22 @@ clusters:
     region: us-west-2
     # 1.37, matching the hub.
     #
-    # ACTION REQUIRED IF YOUR oap-dev IS ALREADY LIVE ON 1.35. This value feeds ACK
-    # Cluster.spec.version under adopt-or-create (appmod rg-eks.yaml), and EKS
-    # upgrades only ONE minor per call, so a running 1.35 spoke cannot take this
-    # change directly -- it goes to error. Pick one:
+    # ACTION REQUIRED IF YOUR oap-dev IS ALREADY LIVE ON 1.35, AND IT IS NOT
+    # OPTIONAL: clusters-kro-* syncs automatically, so an install tracking this
+    # file picks the change up on its next refresh whether or not anyone has read
+    # this comment. Pin k8sVersion in YOUR OWN overlay BEFORE taking this change
+    # if you are not ready for it -- that is the only thing that stops the
+    # automatic rollout, and it is the supported way to hold a different version
+    # per environment.
+    #
+    # Why it matters: this value feeds ACK Cluster.spec.version under
+    # adopt-or-create (appmod rg-eks.yaml), and EKS upgrades only ONE minor per
+    # call, so a running 1.35 spoke cannot take 1.37 directly -- it goes to error.
+    # Pick one:
     #
     #   - RECREATE the spoke at 1.37 (simplest), or
-    #   - UPGRADE ONE MINOR AT A TIME: set 1.36, let the spoke reach ACTIVE, then
-    #     set 1.37 and let it reach ACTIVE again.
+    #   - UPGRADE ONE MINOR AT A TIME: pin 1.36 in your overlay, let the spoke
+    #     reach ACTIVE, then move to 1.37 and let it reach ACTIVE again.
     #
     # Editing this file from 1.35 straight to 1.37 on a live spoke is the one thing
     # not to do. A spoke CREATED fresh at 1.37 is unaffected, because it is created
@@ -57,10 +75,15 @@ clusters:
     # 1.36 IS A FLOOR, NOT A PREFERENCE. Both the dev and prod overlays set
     # agent_sandbox: true, and the addon registry hands every spoke
     # sandbox_runtime_class: isolated-sandbox -- a RuntimeClass that does not exist
-    # below Kubernetes 1.36. A 1.35 spoke therefore installs the Sandbox CRDs, admits
-    # a `sandbox: true` agent, and then leaves its pod Pending forever: the isolation
-    # is requested and never delivered. Nitro Sandboxes require 1.36+ in a US
-    # commercial region. So staying on 1.35 is not a neutral choice either.
+    # below Kubernetes 1.36. Nitro Sandboxes require 1.36+ in a US commercial
+    # region. So staying on 1.35 is not a neutral choice either.
+    #
+    # WHAT A 1.35 SPOKE ACTUALLY DOES with a `sandbox: true` agent: the pod is
+    # REJECTED AT ADMISSION with `RuntimeClass "isolated-sandbox" not found`, and
+    # the Rollout stays Progressing. It is not a Pending pod -- an earlier version
+    # of this comment said Pending, which sends you looking at scheduling and
+    # capacity instead of at the missing RuntimeClass. Thanks @allamand for
+    # measuring the real behaviour.
     k8sVersion: "1.37"
     # accountId/managementAccountId deliberately OMITTED. appmod-blueprints'
     # kro-clusters chart resolves both via `default $.Values.global.accountId`
@@ -109,11 +132,17 @@ clusters:
     # the hub cluster secret's aws_account_id annotation. Keeping a real account ID
     # out of git is the point.
     resourcePrefix: peeks
-    # 10.3.0.0/16, NOT 10.2.0.0/16. The allocation is 10.0 hub, 10.1 oap-dev, and
-    # 10.2 is taken by an unrelated CDK VPC hosting ROSA workers (see the oap-dev
-    # comment above) -- so prod skips to 10.3 rather than colliding with it. A
-    # previous config.local.yaml had spoke-prod on 10.2.0.0/16, which would have
-    # overlapped that VPC.
+    # OVERRIDE THIS PER ENVIRONMENT. These ranges are a working default, not a
+    # recommendation: what is free in one AWS account says nothing about what is
+    # free in yours. Set the cidr block in your own overlay to match your own
+    # allocation before creating the spoke -- changing it afterwards means
+    # recreating the VPC.
+    #
+    # Why 10.3 and not 10.2 here: in the account this was authored against the
+    # allocation is 10.0 hub, 10.1 oap-dev, and 10.2 was already taken by an
+    # unrelated CDK VPC, so prod skipped to 10.3. That is a fact about one
+    # account, recorded only so the gap does not look like an accident. A previous
+    # config.local.yaml had spoke-prod on 10.2.0.0/16 and would have overlapped.
     cidr:
       vpcCidr: "10.3.0.0/16"
       publicSubnet1Cidr: "10.3.1.0/24"

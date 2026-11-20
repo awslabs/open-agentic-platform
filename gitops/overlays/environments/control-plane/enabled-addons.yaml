@@ -145,23 +145,31 @@ enabledAddons:
   # registry entry derives role=hub from this cluster having an
   # ingress_domain_name, so no flag here chooses the role.
   #
-  # ON, against a per-account image rather than the unpublished public one.
+  # OFF, BECAUSE THE IMAGE IS NOT IN A PUBLIC REGISTRY.
   #
-  # The chart's default, public.ecr.aws/z0a4o2j5/agent-evaluation, still does
-  # not exist -- that repository answers NAME_UNKNOWN and the tag 404s, so
-  # enabling against it would put the reconciler in ImagePullBackOff: a stuck
-  # addon, not a degraded one. That is why this was off.
+  # The chart's default, public.ecr.aws/z0a4o2j5/agent-evaluation, does not
+  # exist: that repository answers NAME_UNKNOWN and the tag 404s. The registry
+  # entry (gitops/addons/registry/observability.yaml) therefore points the addon
+  # at <aws_account_id>.dkr.ecr.<aws_region>.amazonaws.com/agent-evaluation,
+  # templated from the cluster secret -- which resolves to the DEPLOYING
+  # account, and that account only has the image if someone there has run
+  # applications/agent-evaluation/build.sh --push.
   #
-  # The registry entry (gitops/addons/registry/observability.yaml) now points
-  # the addon at <aws_account_id>.dkr.ecr.<aws_region>.amazonaws.com/
-  # agent-evaluation, templated from the cluster secret so no account ID lands
-  # in this repo. Build and publish it per applications/agent-evaluation
-  # (./build.sh --push) before enabling in a new account; a multi-arch image is
-  # required because OAP fleets mix arm64 and amd64 nodes.
+  # So `true` here cannot be a default: on any install whose account has no
+  # agent-evaluation repository, every hub and spoke reconciler sits in
+  # ImagePullBackOff. A stuck addon, not a degraded one, and a clean install
+  # must not require building an image first.
   #
-  # Per the original instruction, the flag and the image pointer move in the
-  # SAME change -- see that registry entry for the tag lockstep rule.
-  agent_evaluation: true
+  # TO TURN IT ON FOR YOUR OWN FLEET: build and push the image (multi-arch is
+  # required -- OAP fleets mix arm64 and amd64, and a single-arch image
+  # ImagePulls on half the nodes), then set this true in your own overlay rather
+  # than here. Verified working that way: 8 invocations produced 8 judge scores
+  # in Langfuse and oap_agent_eval_* series in AMP.
+  #
+  # FLIP THE DEFAULT only once the image is in a public registry (a consolidated
+  # public ECR for OAP images is planned). Move the flag and the image pointer in
+  # the same change -- see that registry entry for the tag lockstep rule.
+  agent_evaluation: false
   agent_core: true
   agent_gateway: true
   oam_components: true

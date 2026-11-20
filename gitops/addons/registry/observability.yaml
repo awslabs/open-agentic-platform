@@ -208,6 +208,13 @@ agent-evaluation:
     # public.ecr.aws/z0a4o2j5/agent-evaluation exists ("Ask 2" on #104); the chart
     # default is correct for everyone at that point.
     #
+    # ON AN EXISTING INSTALL THIS DOES NOT TAKE EFFECT ON ITS OWN. The addon reads
+    # this registry through the hub's agent-platform-addons Application, which is
+    # pinned to the addons_repo_revision stamped on the hub cluster secret. Until
+    # that Application follows the revision carrying this change -- in practice,
+    # re-running the agentic bootstrap -- the addon keeps rendering the OLD image
+    # and nothing here applies. A fresh install picks it up immediately.
+    #
     # The tag is the IMAGE version line and moves in lockstep with image.tag in
     # the chart's values.yaml, appVersion in its Chart.yaml, and version in the
     # application's pyproject.toml -- NOT with the chart version or
