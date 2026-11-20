@@ -168,6 +168,7 @@ enabledAddons:
 | `hub` | `clusterName`, `kubernetesVersion` | Hub cluster config |
 | `domain` | | Ingress domain (ACM cert + Route53 zone) |
 | `albInboundCidrs` | | Optional hardening; source-IP allowlist for the shared hub ALB, applied from install time (list or comma-separated IPv4 CIDRs). Include the hub + OAP-spoke NAT egress IPs. Forwarded to the platform; see its `docs/platform/alb-ip-allowlist.md` |
+| `spokeAlbInboundCidrs` | | Optional hardening; fleet-wide default source-IP allowlist for every spoke's own (participant-facing) ALB, applied from install time (list or comma-separated IPv4 CIDRs). Blocks participants whose IP is not listed — only for known source ranges. Forwarded to the platform; see its `docs/platform/alb-ip-allowlist.md` |
 | `identityCenter` | `instanceArn`, `region`, `adminGroupId` | SSO for ArgoCD |
 | `agenticRepo` | `url`, `revision`, `basepath` | This repo's coordinates (for ArgoCD) |
 | `fleetRepo` | `url`, `revision`, `basepath` | Optional fleet repo; defaults to this repo (see below) |
