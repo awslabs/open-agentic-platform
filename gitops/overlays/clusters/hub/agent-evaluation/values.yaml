@@ -27,3 +27,5 @@ image:
   tag: "3e0448a3"
 harness:
   enabled: true
+  # TEST ONLY (R6/G5 insufficient check) - reverted right after.
+  runTimeoutSeconds: 75
