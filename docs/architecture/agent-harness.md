@@ -1,7 +1,7 @@
 # Agent Harness: Per-Revision Evaluation on Argo Rollouts Analysis
 | | |
 |---|---|
-| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested, render-checked and validated live on a hub (live passes 8 and 9, section 7: gate preconditions P2 to P6, report, gate and Bifrost scenarios, and the review round 7 retests). The provider choice (D2, web provider with a platform endpoint) is still pending reviewer confirmation. The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
+| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested, render-checked and validated live on a hub (live passes 8 and 9, section 7: gate preconditions P2 to P6, report, gate and Bifrost scenarios, and the review round 7 retests). The maintainer confirmed D2 (web provider with a platform endpoint, including the verdict endpoint), D4, the metrics proxy (D5 step 3) and the runner egress policy (section 5) in review of PR #153 (section 8). The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
 | **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/`, `agent` component `platform/oam/definitions/components/agent.cue`, Bifrost chart `gitops/addons/charts/bifrost/` |
 | **Operator guide** | [`applications/agent-evaluation/agent-harness.md`](../../applications/agent-evaluation/agent-harness.md) |
 | **Parent design** | [Continuous Agent Evaluation](agent-evaluation.md) (this document was its §4b) |
@@ -120,7 +120,7 @@ spec:
       successCondition: result.state == 'pass'
       failureCondition: result.state in ['fail', 'insufficient', 'error']
       provider:
-        web:                   # proposed provider, see D2
+        web:                   # the provider, see D2
           method: POST
           url: http://agent-evaluation-harness-api.<evaluation namespace>.svc.cluster.local:<port>/v1/verdict?namespace={{args.namespace}}&agent={{args.agent}}&revision={{args.revision}}&hash={{args.hash}}
           timeoutSeconds: 20
@@ -163,11 +163,15 @@ for report only.
 **Rejected: one `ClusterAnalysisTemplate` shared by all agents.** It worked in
 the spike, but the dry-run setting differs by mode, and a namespaced template
 lets a team read what its Rollout runs with `kubectl get analysistemplate`.
-### D2. Provider: web provider with a platform endpoint (PENDING reviewer confirmation)
-> **Pending.** The reviews wrote "job provider". The proposal below differs
-> from that text. It is not final until @shapirov103 and @elamaran11 confirm it.
-> Sections that depend on it carry the marker `[D2]`.
-**Proposed: the `web` provider.** The Argo Rollouts controller calls a small
+### D2. Provider: web provider with a platform endpoint
+> **Decided.** The reviews first wrote "job provider". @shapirov103 confirmed
+> the web provider in review of PR #153: the job provider would put the judge
+> key and the datasets into every team namespace, the web provider keeps them in
+> the platform namespace, and Argo Rollouts still owns the revision lifecycle.
+> The verdict endpoint was accepted as part of D2. It has no credential, so it
+> depends on NetworkPolicy being enforced (Contract 6). Sections that depend on
+> D2 carry the marker `[D2]`.
+**Chosen: the `web` provider.** The Argo Rollouts controller calls a small
 HTTP endpoint in the reconciler on each poll. The first call for a revision
 creates the runner Job in the evaluation namespace. Later calls return its
 state. The runner stays the Job it is today.
@@ -179,7 +183,7 @@ environment variable `ARGO_ROLLOUTS_ANALYSIS_JOB_NAMESPACE`, read in
 on the cluster, including appmod's `service-rollout` gates that call
 `http://<service>-preview:<port>` by short name, and the controller chart is
 appmod's. So the variable is not an option.
-| | Web provider (proposed) | Job provider (alternative) |
+| | Web provider (chosen) | Job provider (alternative) |
 |---|---|---|
 | Where the runner Job runs | `agent-evaluation` namespace | The agent's namespace |
 | Judge key | Only in `agent-evaluation` | A copy in every namespace that enables the harness |
@@ -197,9 +201,8 @@ thing they did not ask for: an endpoint. The job provider matches the text but
 undoes those three. shapirov103 also wrote that the reconciler should "only
 publish metrics from the finished runs". The endpoint is a second job for the
 reconciler. It holds the single rule "start the Job for this revision, once",
-so it is small, but it is not nothing. If the reviewers choose the job
-provider, the pieces marked `[D2]` change as listed in section 4.8 and nothing
-else in this document does.
+so it is small, but it is not nothing. Section 4.8 lists what the job provider
+would have changed.
 Not yet verified with the web provider: a real `POST` with arguments in the
 URL. The spike's test server refused `POST`; `GET` and conditions worked. The
 first implementation task is to verify `POST` live. If it fails, the template
@@ -313,6 +316,8 @@ nothing, the stable revision keeps serving, and the rule fits in one line:
 `insufficient` and `error` to Inconclusive by changing the failure condition).
 That is a later option that needs no new code.
 ### D4. Gate is allowed in every environment (answer to #137 Q2)
+Accepted by @shapirov103 in review of PR #153, together with the guide's
+practice of starting in `report` and then moving to `gate`.
 **Policy statement, not a technical limit.** The `agent` component accepts
 `mode: gate` in any environment (dev, staging, prod) and does not tie it to
 one. A failed gate aborts only the preview revision. The stable revision keeps
@@ -385,8 +390,9 @@ budgets. This closes in three steps. The scratch evidence (Bifrost v1.5.0 with
    Bifrost review, `basic_auth` on the scrape job with the password in a Secret
    in `otel`, is rejected because it breaks the rule "no admin credential outside
    namespace `bifrost`". Bifrost's scoped API keys would solve it but are
-   Enterprise only. **This differs from the wording in the approved decisions
-   ("collector uses `basic_auth`") and needs a go.**
+   Enterprise only. This differs from the wording in the earlier approved
+   decisions ("collector uses `basic_auth`"); @shapirov103 accepted the proxy in
+   review of PR #153, because it keeps the admin credential in `bifrost`.
 **Where the key is readable** (least privilege, `[D2]` web provider):
 | Reader or writer | Where | Access |
 |---|---|---|
@@ -832,7 +838,7 @@ Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
 evaluation, the manual-gate posture documentation.
-### 4.8 If the reviewers choose the job provider `[D2]`
+### 4.8 The job provider alternative (not chosen) `[D2]`
 Same template shape, `provider.job` in place of `provider.web`. The pieces that
 change:
 - The runner Job spec moves into the template. It runs in the agent's namespace
@@ -1367,7 +1373,7 @@ it. The dashboard's run status shows it.
 | Phase | Delivers | Status |
 |---|---|---|
 | **3a** | Report mode on the reconciler's own loop (#137): `harness` block, declaration ConfigMap, platform datasets, Job per revision, `expected-answer` judge, metrics, dashboard row, alerts, online exclusion, two examples | Implemented in PR #153 (first cut). Replaced by 3b |
-| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR, render-tested and not yet run on a cluster (section 7, item 15). Provider pending; live validation pending |
+| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR, render-tested and not yet run on a cluster (section 7, item 15). Live validation pending |
 | **3c** | Follow-ups: the agent image echoes its revision for the exact per-reply check; team-owned datasets (`<namespace>/<name>`); `expectTools`; k runs per case; hold-on-no-verdict through Inconclusive; a harvested dataset from real failures (shares ground with #146); a public image registry | Not scheduled |
 The order of work inside 3b was: (1) Bifrost Option A, because the minter and
 the key location do not depend on the provider; (2) this document; (3) the CUE
@@ -1497,7 +1503,7 @@ Bifrost Option A (live, test cluster):
 5. `kubectl auth can-i get secret/bifrost-admin -n bifrost` is `no` for every
    service account outside `bifrost`, and no Secret with an admin credential
    exists outside `bifrost`.
-Gate and report (after D2 is confirmed), each with the Event, the metric and the
+Gate and report, each with the Event, the metric and the
 Rollout state recorded:
 6. Gate preconditions P1 to P6 pass.
 7. Gate: a passing revision promotes; a failing one aborts and stable keeps
@@ -1571,19 +1577,19 @@ the AnalysisTemplate and the Rollout fragment.
 - The PostSync minter's ordering against `agent-evaluation` sync waves.
 ---
 ## 8. Open questions
-### Pending reviewer confirmation
-1. **Provider (D2).** Web provider with a platform endpoint, or the job provider
-   with the key and datasets copied into team namespaces. Proposed: web.
-2. **The endpoint itself.** Review 5925886715 wrote that the reconciler should
-   only publish metrics from finished runs. The endpoint starts Jobs. If it
-   stays, the NetworkPolicy that admits only the Rollouts controller is a
-   condition of the design.
+### Decided in review of PR #153
+@shapirov103 answered the five open decisions in review of PR #153:
+1. **Provider (D2).** The web provider with a platform endpoint. The job
+   provider would copy the judge key and datasets into team namespaces.
+2. **The verdict endpoint.** Accepted as part of D2. It has no credential, so
+   it depends on NetworkPolicy being enforced on the cluster, which is part of
+   the cluster contract (Contract 6).
 3. **The metrics proxy (D5 step 3)** in place of `basic_auth` in the collector.
-   This keeps the admin credential in `bifrost`.
-4. **Runner egress NetworkPolicy (section 5).** Not asked for in the reviews.
-   Proposed only. Without a go it moves to phase 3c.
-5. **Gate in every environment (D4).** A policy statement the maintainers can
-   change.
+   Accepted. It keeps the admin credential in `bifrost`.
+4. **Runner egress NetworkPolicy (section 5).** Added, behind
+   `harness.egress.enabled`.
+5. **Gate in every environment (D4).** Accepted, with the practice "start in
+   report, then move to gate".
 ### Agent harness (#137): the five questions
 - **Q1. Where datasets live.** Decided for now: as files in the
   `agent-evaluation` chart (`files/harness/datasets/*.yaml`, rendered into the
