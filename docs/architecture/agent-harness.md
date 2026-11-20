@@ -288,11 +288,13 @@ in-flight gate run ends in Error and aborts. The limit is the platform value
 `global.agentEvaluation.harnessConsecutiveErrorLimit` on the
 oam-agent-components chart, default 12: 13 polls, about 195 s when the
 connection is refused, and up to 13 x 35 s (interval plus the web provider's
-20 s timeout) when polls time out. The default is provisional until the
-reconciler's restart time (to Ready and to the first answered poll) is
-measured on the hub; the value is the measured gap plus 60 s of margin,
-divided by the 15 s interval. A higher limit slows the abort when the
-endpoint is really down. Errors use polls too, so `count x interval -
+20 s timeout) when polls time out. Measured on the hub (live pass 9): a restart leaves the
+endpoint unanswered for 5 to 6 s and the pod Ready after 19 to 22 s, plus up to
+5 s for a cold image pull. The limit for that gap is its length plus 60 s of
+margin, divided by the 15 s interval, rounded up, minus 1: 5 for 27 s. The
+default of 12 keeps room for a start on a node that has to be created, which was
+not measured. A higher limit slows the abort when the endpoint is really down:
+13 timed-out polls took 413 s on the hub. Errors use polls too, so `count x interval -
 (limit + 1) x interval` must stay at or above `runTimeoutSeconds +
 slotWaitSeconds` (2100 s at most); a render test checks it at the default.
 
