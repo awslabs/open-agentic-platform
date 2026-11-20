@@ -18,5 +18,5 @@ type: application
 # harness (#137, gate and report mode). Chart 0.2.0 adds the harness templates. An earlier
 # pass wrongly aligned the build script and README down to 0.1.0, which was the
 # CHART version, not the image's.
-version: 0.2.0
+version: 0.2.1
 appVersion: "0.3.0"
