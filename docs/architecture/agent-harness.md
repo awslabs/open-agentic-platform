@@ -518,8 +518,8 @@ cases do not run:
   `oap_agent_harness_unverified_stable` when a gate Rollout's `status.stableRS`
   hash has harness runs and none passed. Both were seen on the hub after paths 2
   and 3 ("none passed (fail)" and "none passed (no verdict)"). Where a rule
-  evaluator runs, the `AgentHarnessGateUnverifiedStable` alert fires on the same
-  metric. On this hub nothing evaluates the PrometheusRule (PF-1), so the
+  evaluator runs, the `AgentHarnessGateUnverifiedStable` alert is meant to fire on the same
+  metric (promtool checked the rule syntax; it was not seen firing). On this hub nothing evaluates the PrometheusRule (PF-1), so the
   Event and the metric are the signals. A person who sees it aborts or rolls
   back by pushing a known good template.
   The per-agent lever. The agent component already has the parameter
