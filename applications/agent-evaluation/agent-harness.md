@@ -870,7 +870,10 @@ every gate revision, so run one gate revision to completion after turning it
 on. It has been render-tested only, not yet run on a cluster (design section 7,
 item 15). Ingress to the reconciler's verdict endpoint (TCP 8081) is
 limited by NetworkPolicy to the Argo Rollouts controller; set
-`harness.api.controller` if its namespace or labels differ.
+`harness.api.controller` if its namespace or labels differ. The endpoint has
+no credential, so the cluster must enforce NetworkPolicy. That is part of the
+cluster contract
+([aws-samples/appmod-blueprints#1239](https://github.com/aws-samples/appmod-blueprints/issues/1239)).
 
 ### 4.4 The judge key
 

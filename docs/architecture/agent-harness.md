@@ -925,6 +925,15 @@ failing endpoint cannot touch `/metrics` or the probes.
 | Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port, `publishNotReadyAddresses: true`). Not the metrics port. The pod's `/readyz` requires the Langfuse rules loop (`main.py`, on a spoke the hub's Langfuse), and Service endpoints follow that one Ready condition. So the verdict Service publishes not-ready addresses: a Langfuse outage that turns the pod NotReady (after 6 x 15 s) does not stop verdicts, and the pod's own readiness stays honest for the metrics Service and the Langfuse alerts |
 | Request | `POST /v1/verdict?namespace=<ns>&agent=<agent>&revision=<n>&hash=<hash>`. No body. Any other path or method is 404 or 405 |
 | Caller | Only the Argo Rollouts controller. A NetworkPolicy enforces it (section 5). There is no credential |
+
+**Dependency: NetworkPolicy enforcement.** The endpoint has no credential, so
+the NetworkPolicy `agent-evaluation-harness-api` is the only thing that keeps
+other pods from calling it. That holds only on a cluster that enforces
+NetworkPolicy. Enforcement is part of the cluster contract
+([aws-samples/appmod-blueprints#1239](https://github.com/aws-samples/appmod-blueprints/issues/1239)),
+so a cluster that runs the harness must enforce it. On a cluster that does
+not, any pod can start or read a run for the current revision of a declared
+agent (section 5).
 Input validation (every field is required; the endpoint fails with HTTP 400
 and an `error` body on the first violation, and starts no Job):
 | Field | Rule |
@@ -1303,8 +1312,9 @@ and in D1 here.
 **Endpoint exposure `[D2]`.** The endpoint is the one new network surface. It
 starts a platform Job when called, so the protections are layered:
 - **Reachability.** Only the Rollouts controller can reach it, by the
-  NetworkPolicy above. This holds where the cluster enforces NetworkPolicy. On
-  a cluster that does not, any pod can call it.
+  NetworkPolicy above. This holds where the cluster enforces NetworkPolicy,
+  which is part of the cluster contract (Contract 6). On a cluster that does
+  not, any pod can call it.
 - **What a caller can do.** The endpoint takes `namespace`, `agent`, `revision`
   and `hash` from the URL, and the Rollouts controller cannot say which team's
   template made the call. So the endpoint trusts none of them: it reads the
