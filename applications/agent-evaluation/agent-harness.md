@@ -762,6 +762,9 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `maxConcurrentJobs` | 2 | Jobs at once per cluster; a new Job is created suspended and waits for a slot |
 | `api.port` | 8081 | the verdict endpoint's port (match `global.agentEvaluation.harnessApiPort` in `oam-agent-components`) |
 | `api.controller` | `argo-rollouts` namespace, label `app.kubernetes.io/name: argo-rollouts` | which pods the NetworkPolicy lets call the endpoint. Check the labels on your cluster |
+| `egress.enabled` | `false` | renders the runner egress NetworkPolicy (4.3). Needs `egress.apiServerCidrs` |
+| `egress.apiServerCidrs` | `[]` | this cluster's `kubernetes` Service ClusterIP and API server endpoint addresses, as CIDRs. Set per cluster |
+| `egress.bifrostNamespace`, `egress.bifrostPort`, `egress.agentPort`, `egress.apiServerPort` | `bifrost`, 8080, 8083, 443 | the other destinations the runner may reach |
 | `slotWaitSeconds` | 300 | how long a created Job may wait for a free slot. `runTimeoutSeconds + slotWaitSeconds` must be at most 2100, or the chart fails to render |
 | `caseConcurrency` | 2 | cases in flight per run |
 | `caseTimeoutSeconds` | 120 | per call: the agent call and each judge call |
@@ -853,7 +856,19 @@ gateway-only policy, unchanged. The runner sends no `X-Forwarded-User`, so it
 reaches the agent as an anonymous caller. If you add your own NetworkPolicies
 on agent namespaces, they need the same allowance. Egress from the
 agent-evaluation namespace must reach the preview Services (TCP 8083), Bifrost
-and the Kubernetes API. Ingress to the reconciler's verdict endpoint (TCP 8081) is
+and the Kubernetes API.
+
+The runner egress NetworkPolicy `agent-evaluation-harness-runner-egress` limits
+the runner pods to those destinations and DNS, so a preview Service given
+hand-made EndpointSlices cannot aim a runner at an address outside the
+cluster's pods. It is off by default because the API server address is per
+cluster. To turn it on for a cluster, set `harness.egress.enabled: true` and
+`harness.egress.apiServerCidrs` in that cluster's values (read the addresses with
+`kubectl get svc,endpoints kubernetes -n default`); the chart fails to render
+without them. A wrong value makes every run fail with an `error`, which aborts
+every gate revision, so run one gate revision to completion after turning it
+on. It has been render-tested only, not yet run on a cluster (design section 7,
+item 15). Ingress to the reconciler's verdict endpoint (TCP 8081) is
 limited by NetworkPolicy to the Argo Rollouts controller; set
 `harness.api.controller` if its namespace or labels differ.
 

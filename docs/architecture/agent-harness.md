@@ -884,7 +884,9 @@ an `error` verdict. Residual limits, to be closed before gate mode is
 relied on (section 5): the check runs when the Job is created and when the
 verdict is computed, not at every connection. The runner resolves the Service
 name on every connection, and a team that controls its namespace can attach
-hand-made EndpointSlices to the Service that point anywhere.
+hand-made EndpointSlices to the Service that point anywhere. With the runner
+egress policy on (`harness.egress.enabled`, section 5), the runner can reach
+only pods on port 8083 that way.
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
 `UnknownDataset`) and answers `error` to the endpoint; it never stops the
@@ -1321,19 +1323,30 @@ starts a platform Job when called, so the protections are layered:
   weakens its own gate (it can already change its Rollout). It cannot use the
   template to act on another team's agent, because of the Rollout check above.
   The harness is a guard against regressions, not a boundary against the owning team.
-**Runner egress (proposed, pending confirmation, section 8 item 4).** The
-runner pods have no egress policy, so a Service redirected with hand-made
-EndpointSlices can aim a Job at any address it can reach. The reviewers did not
-ask for an egress policy, so it is not part of the approved scope. If confirmed,
-the evaluation chart renders one egress NetworkPolicy for pods labelled
-`harness.oap.io/run: "true"`, and only when the cluster-specific values are set:
-`harness.egress.bifrostNamespace`, `harness.egress.bifrostPort` and
-`harness.egress.apiServerCidr` (the API server address cannot be selected by
-label). No port or namespace is a literal in the template. It allows DNS, the
-Bifrost Service, port 8083 to pods in any namespace, and the API server. A wrong
-value stops every run with an `error`, which aborts a gate, so live check 15
-runs a gate to completion with the policy on. A Service of type `ExternalName`
-is already refused. Enforced only where the cluster enforces NetworkPolicy.
+**Runner egress.** Without an egress policy, a preview Service redirected with
+hand-made EndpointSlices can aim a runner Job at any address the Job can reach.
+The evaluation chart renders the NetworkPolicy
+`agent-evaluation-harness-runner-egress` (`templates/46-harness-runner-egress.yaml`)
+for pods labelled `harness.oap.io/run: "true"` when `harness.egress.enabled` is
+true. It allows DNS (port 53, any resolver, because EKS Auto Mode runs CoreDNS
+on the node and not as pods a selector can name), Bifrost pods in
+`harness.egress.bifrostNamespace` on `harness.egress.bifrostPort`, pods in any
+namespace on `harness.egress.agentPort` (8083), and the API server addresses
+in `harness.egress.apiServerCidrs` on `harness.egress.apiServerPort` (the
+runner creates its result ConfigMap there). An address outside the cluster's
+pods, set through a hand-made EndpointSlice, matches no rule. It is off by
+default because the API server address cannot be selected by label and is per
+cluster: the chart fails to render with the policy on and no
+`apiServerCidrs`, and no address is a literal in the template or in
+`values.yaml`. A wrong value stops every run with an `error`, which aborts a
+gate, so live check 15 runs a gate to completion with the policy on. A Service
+of type `ExternalName` is already refused. Enforced only where the cluster
+enforces NetworkPolicy. Not verified on EKS: the agent-sandbox chart records
+that the VPC CNI matches egress on the Service ClusterIP before the DNAT to a
+pod (`gitops/addons/charts/agent-sandbox/values.yaml`), so live check 15 also
+has to show that a preview Service with a hand-made EndpointSlice to an
+outside address gets a connect error with the policy on. The residual it leaves
+by design: an EndpointSlice that points at another pod's port 8083.
 - *Gate is not a security control against the agent's own team.* A team that
   controls its namespace controls its own Rollout and Service. The design does
   not try to stop it from weakening its own gate.
@@ -1354,7 +1367,7 @@ it. The dashboard's run status shows it.
 | Phase | Delivers | Status |
 |---|---|---|
 | **3a** | Report mode on the reconciler's own loop (#137): `harness` block, declaration ConfigMap, platform datasets, Job per revision, `expected-answer` judge, metrics, dashboard row, alerts, online exclusion, two examples | Implemented in PR #153 (first cut). Replaced by 3b |
-| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); runner egress policy only if confirmed (section 8) | Implemented on the PR branch: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. Provider pending; live validation pending |
+| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR, render-tested and not yet run on a cluster (section 7, item 15). Provider pending; live validation pending |
 | **3c** | Follow-ups: the agent image echoes its revision for the exact per-reply check; team-owned datasets (`<namespace>/<name>`); `expectTools`; k runs per case; hold-on-no-verdict through Inconclusive; a harvested dataset from real failures (shares ground with #146); a public image registry | Not scheduled |
 The order of work inside 3b was: (1) Bifrost Option A, because the minter and
 the key location do not depend on the provider; (2) this document; (3) the CUE
@@ -1519,8 +1532,10 @@ Rollout state recorded:
     is refused, on a cluster that enforces NetworkPolicy.
 14. The first revision of a new agent and the first run after enabling the
     harness show no score, as in section 4.7 (rows 1, 2 and 13).
-15. Only if the egress policy is confirmed: a gate run completes with the policy
-    on, with the values taken from chart values.
+15. Runner egress policy (`harness.egress.enabled`, with this cluster's
+    `apiServerCidrs`): a gate run completes with the policy on, and a preview
+    Service given a hand-made EndpointSlice to an address outside the cluster's
+    pods makes the cases fail to connect.
 Unit tests (no cluster, `pytest tests/`): the endpoint handler for each row of D3
 and each step of Contract 6 (idempotent poll, 409 on create, supersede delete,
 suspended Job and slot wait, the total cap with all-`pending` polls giving
@@ -1535,7 +1550,8 @@ failure read from the verdict, pruned-run Job delete, restart republishes);
 declaration `mode: gate`; `app.harness_loop` no longer imports `bifrost_admin`;
 `helm template` assertions for `HARNESS_JUDGE_KEY_MINT: "false"`, the reconciler
 Role with no secret write, the minter Role with `resourceNames`, the endpoint
-NetworkPolicy (and the egress one when its values are set), and `basic_auth` absent from the collector;
+NetworkPolicy, the runner egress NetworkPolicy (rendered only with
+`harness.egress.enabled`, failing without `apiServerCidrs`), and `basic_auth` absent from the collector;
 `vela dry-run` of the three examples (report, manual gate, gate); `cue vet` of
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
@@ -1543,7 +1559,8 @@ the AnalysisTemplate and the Rollout fragment.
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
-  revision (item 14); the runner egress policy (item 15).
+  revision (item 14); the runner egress policy on a cluster (item 15,
+  render-tested only).
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
