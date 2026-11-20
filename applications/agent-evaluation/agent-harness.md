@@ -463,21 +463,111 @@ component) also comes back unscored. So does a rollback inside
 `scaleDownDelaySeconds` (default 30 s) to the ReplicaSet still running: no
 analysis, no re-gate.
 
-**Do not revert to a failed or superseded gate revision within
-`scaleDownDelaySeconds` (default 30 s) of the push that replaced it.** Argo
-Rollouts v1.9.0 promotes any revision whose ReplicaSet still has a scale-down
-deadline, without checking its analysis. On the hub, a revert to an aborted
-revision 14 s after the abort, and a revert to a superseded revision 9 s after
-the supersede, both promoted a revision that never passed. The gate setting
-`abortScaleDownDelaySeconds: 0` does not close these two paths, because after
-the newer push the old ReplicaSet gets the `scaleDownDelaySeconds` deadline
-(TODO(live): confirm with the retest). Wait for the old ReplicaSet to scale
-down, or push a changed template. If it happens, the reconciler writes a
-`HarnessStableRevisionUnverified` Warning on `<agent>-harness`, sets
-`oap_agent_harness_unverified_stable`, and `AgentHarnessGateUnverifiedStable`
-fires; roll back by pushing a known good template. After a second push, the older run's Job
+**A known limit: do not return to a failed or superseded gate revision within
+`scaleDownDelaySeconds` (30 s by default) of the push that replaced it.** A
+gate blocks a revision whose analysis failed, was insufficient, errored or
+ended with no verdict. One exception comes from Argo Rollouts v1.9.0, which
+promotes any revision whose ReplicaSet still has a scale-down deadline,
+without checking its analysis. On the hub, a revert to an aborted revision 15 s
+after the abort, and a revert to a superseded revision 9 s after the
+supersede, both promoted a revision that never passed. The gate setting
+`abortScaleDownDelaySeconds: 0` closes the retry (a `kubectl argo rollouts
+retry` 4 s after an abort creates a new run and aborts again, retested on the
+hub), but not these two reverts, because after the newer push the old
+ReplicaSet gets the `scaleDownDelaySeconds` deadline. Wait for the old
+ReplicaSet to scale down, or push a changed template.
+If it happens, the reconciler writes a `HarnessStableRevisionUnverified`
+Warning on `<agent>-harness` and sets `oap_agent_harness_unverified_stable`
+for that revision. Those two are the signals. The
+`AgentHarnessGateUnverifiedStable` alert uses the same metric, but on a cluster
+where nothing evaluates the PrometheusRule (PF-1, section 4.6) it does not fire.
+A person who sees the Event or the metric aborts or rolls back by pushing a
+known good template.
+A team that wants this closed can set the agent component's existing
+`scaleDownDelaySeconds` parameter for that agent. Do not set `0`: on Argo
+Rollouts v1.9.0 it makes Rollouts keep every old ReplicaSet running (eight old
+ReplicaSets each kept one pod on the hub). A value of `1` closed both reverts
+on the hub. It removes the instant rollback to the previous stable: a rollback
+then starts new pods and runs the analysis again (57 s on the hub), and the old
+pods have no drain time for requests in flight (not measured). The platform does
+not change this value for gates.
+After a second push, the older run's Job
 can still send a few cases to the new pods for up to about 25 seconds before
 Rollouts ends the run; its result is discarded.
+**What a gate looks like in `kubectl argo rollouts get rollout`** (hub,
+Argo Rollouts v1.9.0, plugin v1.9.0, trimmed). A pass promotes, and the
+revision's pre-promotion run is `Successful`:
+```
+Name:            harness-gate
+Namespace:       default
+Status:          ✔ Healthy
+Strategy:        BlueGreen
+Images:          public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0 (active, stable)
+Replicas:
+  Desired:       1
+  Current:       2
+  Updated:       1
+  Ready:         1
+  Available:     1
+
+NAME                                      KIND         STATUS        AGE    INFO
+⟳ harness-gate                            Rollout      ✔ Healthy     4m51s
+├──# revision:3
+│  ├──⧉ harness-gate-bd9b98964            ReplicaSet   ✔ Healthy     66s    stable,active
+│  │  └──□ harness-gate-bd9b98964-d4lvs   Pod          ✔ Running     66s    ready:1/1
+│  └──α harness-gate-bd9b98964-3-pre      AnalysisRun  ✔ Successful  53s    ✔ 1,? 3
+├──# revision:2
+│  ├──⧉ harness-gate-756d8b84c            ReplicaSet   • ScaledDown  4m14s
+│  └──α harness-gate-756d8b84c-2-pre      AnalysisRun  ✖ Failed      3m52s  ✖ 1
+└──# revision:1
+```
+A fail aborts. The Rollout is `Degraded`, the stable revision keeps serving, and
+the failed revision stays as the preview with a `Failed` run:
+```
+Name:            harness-gate
+Namespace:       default
+Status:          ✖ Degraded
+Message:         RolloutAborted: Rollout aborted update to revision 5: Blue/green pre-promotion analysis phase error/failed: Metric "oap-harness" assessed Failed due to failed (1) > failureLimit (0)
+Strategy:        BlueGreen
+Images:          public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0 (active, preview, stable)
+Replicas:
+  Desired:       1
+  Current:       2
+  Updated:       1
+  Ready:         1
+  Available:     1
+
+NAME                                      KIND         STATUS        AGE  INFO
+⟳ harness-gate                            Rollout      ✖ Degraded    18m
+├──# revision:5
+│  ├──⧉ harness-gate-7d8447d9c8           ReplicaSet   ✔ Healthy     65s  preview
+│  │  └──□ harness-gate-7d8447d9c8-vb44p  Pod          ✔ Running     65s  ready:1/1
+│  └──α harness-gate-7d8447d9c8-5-pre     AnalysisRun  ✖ Failed      42s  ✖ 1,? 2
+├──# revision:4
+```
+With `autoPromotionEnabled: false` a pass pauses for a person
+(`BlueGreenPause`), and `kubectl argo rollouts promote harness-gate` promotes it:
+```
+Name:            harness-gate
+Namespace:       default
+Status:          ॥ Paused
+Message:         BlueGreenPause
+Strategy:        BlueGreen
+Images:          public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0 (active, preview, stable)
+Replicas:
+  Desired:       1
+  Current:       2
+  Updated:       1
+  Ready:         1
+  Available:     1
+
+NAME                                      KIND         STATUS        AGE    INFO
+⟳ harness-gate                            Rollout      ॥ Paused      29m
+├──# revision:10
+│  ├──⧉ harness-gate-5d9464f8cf           ReplicaSet   ✔ Healthy     2m16s  preview
+│  │  └──□ harness-gate-5d9464f8cf-xdzsn  Pod          ✔ Running     2m16s  ready:1/1
+│  └──α harness-gate-5d9464f8cf-10-pre    AnalysisRun  ✔ Successful  2m4s   ✔ 1,? 3
+```
 
 #### Run to decision (Manual gate)
 
