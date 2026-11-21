@@ -26,3 +26,19 @@ mcpBackend:
       host: memory-mcp-v1.agent-core-infra.svc.cluster.local
       port: 8080
       protocol: StreamableHTTP
+
+# TEST ONLY (not for merge): the dev grants, so tests/live can run on the hub.
+mcpAccess:
+  mcp-time:
+    namespace: default
+    agents: [oap-assistant-a]
+delegation:
+  agents:
+    - default/deleg-supervisor
+agentAccess:
+  deleg-math:
+    namespace: default
+    agents: [deleg-supervisor]
+  deleg-restricted:
+    namespace: default
+    agents: [default/oap-assistant-a]
