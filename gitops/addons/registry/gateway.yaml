@@ -59,25 +59,47 @@ gateway-api-crds:
   valuesObject:
     gatewayApiVersion: "1.5.0"
 
-# agentgateway 1.4.1 is pinned deliberately, and a HIGHER tag in this registry is not
+# agentgateway v1.7.0 is pinned deliberately, and a HIGHER tag in this registry is not
 # necessarily newer. Both charts below must stay on the same version.
 #
 # cr.agentgateway.dev/charts also publishes v2.2.0 and v2.2.1, which look like a newer
 # major but are not agentgateway releases: upstream agentgateway/agentgateway has no 2.x
-# release at all, and its newest final release is v1.4.1 (2026-07-29). The v2.2.1 chart
-# ships a SMALLER API surface than v1.4.1: its AgentgatewayPolicy backend.auth accepts
+# release at all, and its newest final release is v1.7.0 (2026-10-27). The v2.2.1 chart
+# ships a SMALLER API surface than v1.7.0: its AgentgatewayPolicy backend.auth accepts
 # only [aws, key, passthrough, secretRef], with zero occurrences of oauthTokenExchange,
 # and it drops the agentgatewaymodels CRD. Those CRDs carry kgateway references, so the
 # 2.2.x tags track kgateway's versioning, not this project's.
 #
-# 1.4.1 is what unblocks token exchange (ADR-6 in
-# docs/architecture/agent-identity-and-token-exchange.md). Verified on the pulled chart:
-# backend.auth gains oauthTokenExchange and crossAppAccess, versus v1.1.0 which had only
+# v1.4.1 unblocked token exchange (ADR-6 in
+# docs/architecture/agent-identity-and-token-exchange.md): backend.auth gained
+# oauthTokenExchange and crossAppAccess, versus v1.1.0 which had only
 # [aws, azure, gcp, key, passthrough, secretRef].
+#
+# v1.7.0 is the target for the agent guardrails work
+# (docs/architecture/agent-guardrails.md, Phase 0). Checked by pulling the
+# agentgateway and agentgateway-crds charts at v1.4.1, v1.6.0 and v1.7.0 and comparing:
+#   - the CRD chart ships the same four CRDs at all three tags
+#     (agentgatewaybackends, agentgatewaymodels, agentgatewayparameters,
+#     agentgatewaypolicies);
+#   - oauthTokenExchange and crossAppAccess are still in the CRDs, so ADR-6 still holds;
+#   - the controller Deployment still templates controller.extraEnv, which the
+#     agentgateway entry below relies on.
+# Why v1.7.0 and not v1.4.1:
+#   - the Bedrock guardrail has failureMode with FailClosed as the default (from v1.6.0;
+#     bedrockGuardrails has no failureMode field at v1.4.1);
+#   - CEL can read and replace mcp.params;
+#   - the default prompt guard scope includes ToolOutput, so tool results are inspected.
+# Behavior changes between v1.4.1 and v1.7.0 that touch OAP, and what covers each:
+#   - JWT iss is required, and aud when audiences are set (v1.5.0): tests/live identity rows;
+#   - equal-specificity policy conflicts go to the oldest policy (v1.6.0): mcp-access.yaml;
+#   - CRD defaults are no longer stored (v1.6.0): Argo shows Synced after the upgrade;
+#   - error bodies drop internal details (v1.7.0): live tests assert status codes only;
+#   - CEL request.headers["x"] is a list for a repeated header (v1.7.0): read by
+#     caller-identity-policy.yaml for x-delegated-user, covered by tests/live delegation R3.
 agentgateway-crds:
   namespace: agentgateway-system
   chartName: agentgateway-crds
-  defaultVersion: 'v1.4.1'
+  defaultVersion: 'v1.7.0'
   chartRepository: 'cr.agentgateway.dev'
   chartNamespace: charts
   annotationsAppSet:
@@ -98,7 +120,7 @@ agentgateway-crds:
 agentgateway:
   namespace: agentgateway-system
   chartName: agentgateway
-  defaultVersion: 'v1.4.1'
+  defaultVersion: 'v1.7.0'
   chartRepository: 'cr.agentgateway.dev'
   chartNamespace: charts
   annotationsAppSet:
