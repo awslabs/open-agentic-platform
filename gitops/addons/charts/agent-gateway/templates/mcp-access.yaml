@@ -13,8 +13,9 @@ Why `traffic.authorization` on the server's HTTPRoute, and not `backend.mcp.auth
 on its backend:
   - The mcp-server component already writes `backend.mcp.authorization` (authPolicy).
     Two policies of equal specificity setting the SAME field tie, and agentgateway keeps
-    one at random and silently drops the other while both report Accepted. Writing a
-    DIFFERENT field means the two compose instead.
+    only the oldest by creationTimestamp (deterministic since v1.6.0, random before) and
+    silently drops the other while both report Accepted. Writing a DIFFERENT field means
+    the two compose instead.
   - It is the right granularity: this decides who may reach the server at all. Which
     tools they may use is the server team's authPolicy.
 
