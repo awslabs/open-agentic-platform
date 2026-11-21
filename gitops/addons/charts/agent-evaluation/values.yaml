@@ -285,6 +285,27 @@ harness:
       namespace: argo-rollouts
       podLabels:
         app.kubernetes.io/name: argo-rollouts
+  # Egress NetworkPolicy for the runner Job pods (agent-harness.md section 5).
+  # Off by default, because the API server address is per cluster. With it on,
+  # a runner pod may reach DNS, Bifrost, an agent pod on agentPort and the
+  # addresses in apiServerCidrs, and nothing else, so a preview Service with
+  # hand-made EndpointSlices cannot aim a Job outside the cluster's pods. A
+  # wrong value fails every run with an error, which aborts every gate
+  # revision: run one gate revision to completion after turning it on.
+  egress:
+    enabled: false
+    # Namespace of the Bifrost pods (judge.bifrostUrl points at its Service),
+    # and the Bifrost pod's port (the Service's targetPort).
+    bifrostNamespace: bifrost
+    bifrostPort: 8080
+    # The agent's A2A port, which <agent>-preview targets.
+    agentPort: 8083
+    # Required when enabled: the kubernetes Service ClusterIP and the API server
+    # endpoint addresses of this cluster, as CIDRs
+    # (kubectl get svc,endpoints kubernetes -n default). Set per cluster, never
+    # in this file.
+    apiServerCidrs: []
+    apiServerPort: 443
   # How long a created Job may wait for a free slot (maxConcurrentJobs) before
   # the endpoint answers error. The run's total cap is runTimeoutSeconds plus
   # this, and must stay at or below 2100 s: the AnalysisTemplate polls for

@@ -1,0 +1,4 @@
+# TEST ONLY - never merge. Turns on the harness judge-key minter on the hub so
+# the agent harness can run (the agent-evaluation overlay enables the harness).
+judgeKey:
+  enabled: true

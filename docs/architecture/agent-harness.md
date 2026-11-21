@@ -1,7 +1,7 @@
 # Agent Harness: Per-Revision Evaluation on Argo Rollouts Analysis
 | | |
 |---|---|
-| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested, render-checked and validated live on a hub (live passes 8 and 9, section 7: gate preconditions P2 to P6, report, gate and Bifrost scenarios, and the review round 7 retests). The provider choice (D2, web provider with a platform endpoint) is still pending reviewer confirmation. The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
+| **Status** | Implemented on branch `feature/agent-harness-hub` (PR #153), unit-tested, render-checked and validated live on a hub (live passes 8 and 9, section 7: gate preconditions P2 to P6, report, gate and Bifrost scenarios, and the review round 7 retests). The maintainer confirmed D2 (web provider with a platform endpoint, including the verdict endpoint), D4, the metrics proxy (D5 step 3) and the runner egress policy (section 5) in review of PR #153 (section 8). The first cut, the reconciler's own per-revision loop, is replaced; §4b of [agent-evaluation.md](agent-evaluation.md) is now a pointer to this document |
 | **Implementation** | Reconciler `applications/agent-evaluation/`, addon `gitops/addons/charts/agent-evaluation/`, `agent` component `platform/oam/definitions/components/agent.cue`, Bifrost chart `gitops/addons/charts/bifrost/` |
 | **Operator guide** | [`applications/agent-evaluation/agent-harness.md`](../../applications/agent-evaluation/agent-harness.md) |
 | **Parent design** | [Continuous Agent Evaluation](agent-evaluation.md) (this document was its §4b) |
@@ -120,7 +120,7 @@ spec:
       successCondition: result.state == 'pass'
       failureCondition: result.state in ['fail', 'insufficient', 'error']
       provider:
-        web:                   # proposed provider, see D2
+        web:                   # the provider, see D2
           method: POST
           url: http://agent-evaluation-harness-api.<evaluation namespace>.svc.cluster.local:<port>/v1/verdict?namespace={{args.namespace}}&agent={{args.agent}}&revision={{args.revision}}&hash={{args.hash}}
           timeoutSeconds: 20
@@ -163,11 +163,15 @@ for report only.
 **Rejected: one `ClusterAnalysisTemplate` shared by all agents.** It worked in
 the spike, but the dry-run setting differs by mode, and a namespaced template
 lets a team read what its Rollout runs with `kubectl get analysistemplate`.
-### D2. Provider: web provider with a platform endpoint (PENDING reviewer confirmation)
-> **Pending.** The reviews wrote "job provider". The proposal below differs
-> from that text. It is not final until @shapirov103 and @elamaran11 confirm it.
-> Sections that depend on it carry the marker `[D2]`.
-**Proposed: the `web` provider.** The Argo Rollouts controller calls a small
+### D2. Provider: web provider with a platform endpoint
+> **Decided.** The reviews first wrote "job provider". @shapirov103 confirmed
+> the web provider in review of PR #153: the job provider would put the judge
+> key and the datasets into every team namespace, the web provider keeps them in
+> the platform namespace, and Argo Rollouts still owns the revision lifecycle.
+> The verdict endpoint was accepted as part of D2. It has no credential, so it
+> depends on NetworkPolicy being enforced (Contract 6). Sections that depend on
+> D2 carry the marker `[D2]`.
+**Chosen: the `web` provider.** The Argo Rollouts controller calls a small
 HTTP endpoint in the reconciler on each poll. The first call for a revision
 creates the runner Job in the evaluation namespace. Later calls return its
 state. The runner stays the Job it is today.
@@ -179,7 +183,7 @@ environment variable `ARGO_ROLLOUTS_ANALYSIS_JOB_NAMESPACE`, read in
 on the cluster, including appmod's `service-rollout` gates that call
 `http://<service>-preview:<port>` by short name, and the controller chart is
 appmod's. So the variable is not an option.
-| | Web provider (proposed) | Job provider (alternative) |
+| | Web provider (chosen) | Job provider (alternative) |
 |---|---|---|
 | Where the runner Job runs | `agent-evaluation` namespace | The agent's namespace |
 | Judge key | Only in `agent-evaluation` | A copy in every namespace that enables the harness |
@@ -197,9 +201,8 @@ thing they did not ask for: an endpoint. The job provider matches the text but
 undoes those three. shapirov103 also wrote that the reconciler should "only
 publish metrics from the finished runs". The endpoint is a second job for the
 reconciler. It holds the single rule "start the Job for this revision, once",
-so it is small, but it is not nothing. If the reviewers choose the job
-provider, the pieces marked `[D2]` change as listed in section 4.8 and nothing
-else in this document does.
+so it is small, but it is not nothing. Section 4.8 lists what the job provider
+would have changed.
 Not yet verified with the web provider: a real `POST` with arguments in the
 URL. The spike's test server refused `POST`; `GET` and conditions worked. The
 first implementation task is to verify `POST` live. If it fails, the template
@@ -313,6 +316,8 @@ nothing, the stable revision keeps serving, and the rule fits in one line:
 `insufficient` and `error` to Inconclusive by changing the failure condition).
 That is a later option that needs no new code.
 ### D4. Gate is allowed in every environment (answer to #137 Q2)
+Accepted by @shapirov103 in review of PR #153, together with the guide's
+practice of starting in `report` and then moving to `gate`.
 **Policy statement, not a technical limit.** The `agent` component accepts
 `mode: gate` in any environment (dev, staging, prod) and does not tie it to
 one. A failed gate aborts only the preview revision. The stable revision keeps
@@ -385,8 +390,9 @@ budgets. This closes in three steps. The scratch evidence (Bifrost v1.5.0 with
    Bifrost review, `basic_auth` on the scrape job with the password in a Secret
    in `otel`, is rejected because it breaks the rule "no admin credential outside
    namespace `bifrost`". Bifrost's scoped API keys would solve it but are
-   Enterprise only. **This differs from the wording in the approved decisions
-   ("collector uses `basic_auth`") and needs a go.**
+   Enterprise only. This differs from the wording in the earlier approved
+   decisions ("collector uses `basic_auth`"); @shapirov103 accepted the proxy in
+   review of PR #153, because it keeps the admin credential in `bifrost`.
 **Where the key is readable** (least privilege, `[D2]` web provider):
 | Reader or writer | Where | Access |
 |---|---|---|
@@ -827,12 +833,12 @@ cannot cover. Each row gives what is lost, why, and what replaces it.
 | 12 | Metrics survive AnalysisRun pruning | Rollouts keeps 5 successful and 5 unsuccessful runs by default | The series follow the highest-revision finished run, which is always kept. A run pruned before the reconciler reads it (a restart gap over 5 revisions) is not published |
 | 13 | Gate on a revision with no AnalysisRun | Rollouts creates no run for the first revision of a Rollout, and none for the first push after gate is enabled when the template does not change | Not scored, promoted on health. A gate agent's first revision is unprotected. A revision promoted unscored can return unscored inside `rollbackWindow` (D7) |
 | 14 | Report mode never changes a rollout during an endpoint outage | `dryRun` is verified for a `Failed` metric, not for a measurement `Error` (P6) | If P6 fails, Dashcam needs `consecutiveErrorLimit` above the reconciler's start-up time, set in the template (D3) |
-| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0`, which closes the retry path (retested on the hub). The two reverts inside `scaleDownDelaySeconds` stay open (D7 table, retested on the hub): this is Argo Rollouts v1.9.0 behavior and a known limitation. Setting `scaleDownDelaySeconds` per agent is the lever, with the trade-offs in D7; `0` must not be used. The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run |
+| 15 | Gate on a return to a ReplicaSet that still has a scale-down deadline (fast revert, retry, revert to an aborted or superseded revision) | Rollouts fast-tracks any ReplicaSet with a `scale-down-deadline` and switches the active Service without checking the pre-promotion run (`rollout/bluegreen.go:113-116`, `rollout/service.go:105-107`). Reproduced on the hub for a retry, a revert to an aborted revision and a revert to a superseded one (D7) | Not safe: a revision whose run failed or ended with no verdict is promoted with no new run. A gate sets `abortScaleDownDelaySeconds: 0`, which closes the retry path (retested on the hub). The two reverts inside `scaleDownDelaySeconds` stay open (D7 table, retested on the hub): this is Argo Rollouts v1.9.0 behavior and a known limitation. Setting `scaleDownDelaySeconds` per agent is the lever, with the trade-offs in D7; `0` must not be used. The reader raises `HarnessStableRevisionUnverified` and `oap_agent_harness_unverified_stable`. A fast revert to the previous stable is not scored either. After scale-down a return gets a run. Upstream report: drafted, not yet filed (D7). Link: **[UPSTREAM ISSUE LINK: add the argoproj/argo-rollouts issue URL once filed]** |
 Behaviours kept as they were: Events on `<agent>-harness`, the metric names
 and labels (Contract 5), the dashboard row with digests, `insufficient` and
 `minJudgedRatio`, B1 classification, the two datasets, exclusion from online
 evaluation, the manual-gate posture documentation.
-### 4.8 If the reviewers choose the job provider `[D2]`
+### 4.8 The job provider alternative (not chosen) `[D2]`
 Same template shape, `provider.job` in place of `provider.web`. The pieces that
 change:
 - The runner Job spec moves into the template. It runs in the agent's namespace
@@ -884,7 +890,9 @@ an `error` verdict. Residual limits, to be closed before gate mode is
 relied on (section 5): the check runs when the Job is created and when the
 verdict is computed, not at every connection. The runner resolves the Service
 name on every connection, and a team that controls its namespace can attach
-hand-made EndpointSlices to the Service that point anywhere.
+hand-made EndpointSlices to the Service that point anywhere. With the runner
+egress policy on (`harness.egress.enabled`, section 5), the runner can reach
+only pods on port 8083 that way.
 A malformed declaration, or one naming a dataset the chart does not ship, is
 reported as an Event on that ConfigMap (`InvalidHarnessDeclaration`,
 `UnknownDataset`) and answers `error` to the endpoint; it never stops the
@@ -917,6 +925,15 @@ failing endpoint cannot touch `/metrics` or the probes.
 | Listener | `harness.api.port`, default 8081. Service `agent-evaluation-harness-api` (ClusterIP, same port, `publishNotReadyAddresses: true`). Not the metrics port. The pod's `/readyz` requires the Langfuse rules loop (`main.py`, on a spoke the hub's Langfuse), and Service endpoints follow that one Ready condition. So the verdict Service publishes not-ready addresses: a Langfuse outage that turns the pod NotReady (after 6 x 15 s) does not stop verdicts, and the pod's own readiness stays honest for the metrics Service and the Langfuse alerts |
 | Request | `POST /v1/verdict?namespace=<ns>&agent=<agent>&revision=<n>&hash=<hash>`. No body. Any other path or method is 404 or 405 |
 | Caller | Only the Argo Rollouts controller. A NetworkPolicy enforces it (section 5). There is no credential |
+
+**Dependency: NetworkPolicy enforcement.** The endpoint has no credential, so
+the NetworkPolicy `agent-evaluation-harness-api` is the only thing that keeps
+other pods from calling it. That holds only on a cluster that enforces
+NetworkPolicy. Enforcement is part of the cluster contract
+([aws-samples/appmod-blueprints#1239](https://github.com/aws-samples/appmod-blueprints/issues/1239)),
+so a cluster that runs the harness must enforce it. On a cluster that does
+not, any pod can start or read a run for the current revision of a declared
+agent (section 5).
 Input validation (every field is required; the endpoint fails with HTTP 400
 and an `error` body on the first violation, and starts no Job):
 | Field | Rule |
@@ -1295,8 +1312,9 @@ and in D1 here.
 **Endpoint exposure `[D2]`.** The endpoint is the one new network surface. It
 starts a platform Job when called, so the protections are layered:
 - **Reachability.** Only the Rollouts controller can reach it, by the
-  NetworkPolicy above. This holds where the cluster enforces NetworkPolicy. On
-  a cluster that does not, any pod can call it.
+  NetworkPolicy above. This holds where the cluster enforces NetworkPolicy,
+  which is part of the cluster contract (Contract 6). On a cluster that does
+  not, any pod can call it.
 - **What a caller can do.** The endpoint takes `namespace`, `agent`, `revision`
   and `hash` from the URL, and the Rollouts controller cannot say which team's
   template made the call. So the endpoint trusts none of them: it reads the
@@ -1321,19 +1339,30 @@ starts a platform Job when called, so the protections are layered:
   weakens its own gate (it can already change its Rollout). It cannot use the
   template to act on another team's agent, because of the Rollout check above.
   The harness is a guard against regressions, not a boundary against the owning team.
-**Runner egress (proposed, pending confirmation, section 8 item 4).** The
-runner pods have no egress policy, so a Service redirected with hand-made
-EndpointSlices can aim a Job at any address it can reach. The reviewers did not
-ask for an egress policy, so it is not part of the approved scope. If confirmed,
-the evaluation chart renders one egress NetworkPolicy for pods labelled
-`harness.oap.io/run: "true"`, and only when the cluster-specific values are set:
-`harness.egress.bifrostNamespace`, `harness.egress.bifrostPort` and
-`harness.egress.apiServerCidr` (the API server address cannot be selected by
-label). No port or namespace is a literal in the template. It allows DNS, the
-Bifrost Service, port 8083 to pods in any namespace, and the API server. A wrong
-value stops every run with an `error`, which aborts a gate, so live check 15
-runs a gate to completion with the policy on. A Service of type `ExternalName`
-is already refused. Enforced only where the cluster enforces NetworkPolicy.
+**Runner egress.** Without an egress policy, a preview Service redirected with
+hand-made EndpointSlices can aim a runner Job at any address the Job can reach.
+The evaluation chart renders the NetworkPolicy
+`agent-evaluation-harness-runner-egress` (`templates/46-harness-runner-egress.yaml`)
+for pods labelled `harness.oap.io/run: "true"` when `harness.egress.enabled` is
+true. It allows DNS (port 53, any resolver, because EKS Auto Mode runs CoreDNS
+on the node and not as pods a selector can name), Bifrost pods in
+`harness.egress.bifrostNamespace` on `harness.egress.bifrostPort`, pods in any
+namespace on `harness.egress.agentPort` (8083), and the API server addresses
+in `harness.egress.apiServerCidrs` on `harness.egress.apiServerPort` (the
+runner creates its result ConfigMap there). An address outside the cluster's
+pods, set through a hand-made EndpointSlice, matches no rule. It is off by
+default because the API server address cannot be selected by label and is per
+cluster: the chart fails to render with the policy on and no
+`apiServerCidrs`, and no address is a literal in the template or in
+`values.yaml`. A wrong value stops every run with an `error`, which aborts a
+gate, so live check 15 runs a gate to completion with the policy on. A Service
+of type `ExternalName` is already refused. Enforced only where the cluster
+enforces NetworkPolicy. Not verified on EKS: the agent-sandbox chart records
+that the VPC CNI matches egress on the Service ClusterIP before the DNAT to a
+pod (`gitops/addons/charts/agent-sandbox/values.yaml`), so live check 15 also
+has to show that a preview Service with a hand-made EndpointSlice to an
+outside address gets a connect error with the policy on. The residual it leaves
+by design: an EndpointSlice that points at another pod's port 8083.
 - *Gate is not a security control against the agent's own team.* A team that
   controls its namespace controls its own Rollout and Service. The design does
   not try to stop it from weakening its own gate.
@@ -1354,7 +1383,7 @@ it. The dashboard's run status shows it.
 | Phase | Delivers | Status |
 |---|---|---|
 | **3a** | Report mode on the reconciler's own loop (#137): `harness` block, declaration ConfigMap, platform datasets, Job per revision, `expected-answer` judge, metrics, dashboard row, alerts, online exclusion, two examples | Implemented in PR #153 (first cut). Replaced by 3b |
-| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); runner egress policy only if confirmed (section 8) | Implemented on the PR branch: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. Provider pending; live validation pending |
+| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR, render-tested and not yet run on a cluster (section 7, item 15). Live validation pending |
 | **3c** | Follow-ups: the agent image echoes its revision for the exact per-reply check; team-owned datasets (`<namespace>/<name>`); `expectTools`; k runs per case; hold-on-no-verdict through Inconclusive; a harvested dataset from real failures (shares ground with #146); a public image registry | Not scheduled |
 The order of work inside 3b was: (1) Bifrost Option A, because the minter and
 the key location do not depend on the provider; (2) this document; (3) the CUE
@@ -1484,7 +1513,7 @@ Bifrost Option A (live, test cluster):
 5. `kubectl auth can-i get secret/bifrost-admin -n bifrost` is `no` for every
    service account outside `bifrost`, and no Secret with an admin credential
    exists outside `bifrost`.
-Gate and report (after D2 is confirmed), each with the Event, the metric and the
+Gate and report, each with the Event, the metric and the
 Rollout state recorded:
 6. Gate preconditions P1 to P6 pass.
 7. Gate: a passing revision promotes; a failing one aborts and stable keeps
@@ -1519,8 +1548,10 @@ Rollout state recorded:
     is refused, on a cluster that enforces NetworkPolicy.
 14. The first revision of a new agent and the first run after enabling the
     harness show no score, as in section 4.7 (rows 1, 2 and 13).
-15. Only if the egress policy is confirmed: a gate run completes with the policy
-    on, with the values taken from chart values.
+15. Runner egress policy (`harness.egress.enabled`, with this cluster's
+    `apiServerCidrs`): a gate run completes with the policy on, and a preview
+    Service given a hand-made EndpointSlice to an address outside the cluster's
+    pods makes the cases fail to connect.
 Unit tests (no cluster, `pytest tests/`): the endpoint handler for each row of D3
 and each step of Contract 6 (idempotent poll, 409 on create, supersede delete,
 suspended Job and slot wait, the total cap with all-`pending` polls giving
@@ -1535,7 +1566,8 @@ failure read from the verdict, pruned-run Job delete, restart republishes);
 declaration `mode: gate`; `app.harness_loop` no longer imports `bifrost_admin`;
 `helm template` assertions for `HARNESS_JUDGE_KEY_MINT: "false"`, the reconciler
 Role with no secret write, the minter Role with `resourceNames`, the endpoint
-NetworkPolicy (and the egress one when its values are set), and `basic_auth` absent from the collector;
+NetworkPolicy, the runner egress NetworkPolicy (rendered only with
+`harness.egress.enabled`, failing without `apiServerCidrs`), and `basic_auth` absent from the collector;
 `vela dry-run` of the three examples (report, manual gate, gate); `cue vet` of
 the AnalysisTemplate and the Rollout fragment.
 ### Not verified yet
@@ -1543,7 +1575,8 @@ the AnalysisTemplate and the Rollout fragment.
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
-  revision (item 14); the runner egress policy (item 15).
+  revision (item 14); the runner egress policy on a cluster (item 15,
+  render-tested only).
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).
@@ -1554,19 +1587,19 @@ the AnalysisTemplate and the Rollout fragment.
 - The PostSync minter's ordering against `agent-evaluation` sync waves.
 ---
 ## 8. Open questions
-### Pending reviewer confirmation
-1. **Provider (D2).** Web provider with a platform endpoint, or the job provider
-   with the key and datasets copied into team namespaces. Proposed: web.
-2. **The endpoint itself.** Review 5925886715 wrote that the reconciler should
-   only publish metrics from finished runs. The endpoint starts Jobs. If it
-   stays, the NetworkPolicy that admits only the Rollouts controller is a
-   condition of the design.
+### Decided in review of PR #153
+@shapirov103 answered the five open decisions in review of PR #153:
+1. **Provider (D2).** The web provider with a platform endpoint. The job
+   provider would copy the judge key and datasets into team namespaces.
+2. **The verdict endpoint.** Accepted as part of D2. It has no credential, so
+   it depends on NetworkPolicy being enforced on the cluster, which is part of
+   the cluster contract (Contract 6).
 3. **The metrics proxy (D5 step 3)** in place of `basic_auth` in the collector.
-   This keeps the admin credential in `bifrost`.
-4. **Runner egress NetworkPolicy (section 5).** Not asked for in the reviews.
-   Proposed only. Without a go it moves to phase 3c.
-5. **Gate in every environment (D4).** A policy statement the maintainers can
-   change.
+   Accepted. It keeps the admin credential in `bifrost`.
+4. **Runner egress NetworkPolicy (section 5).** Added, behind
+   `harness.egress.enabled`.
+5. **Gate in every environment (D4).** Accepted, with the practice "start in
+   report, then move to gate".
 ### Agent harness (#137): the five questions
 - **Q1. Where datasets live.** Decided for now: as files in the
   `agent-evaluation` chart (`files/harness/datasets/*.yaml`, rendered into the

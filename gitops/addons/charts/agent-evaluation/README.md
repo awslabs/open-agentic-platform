@@ -144,6 +144,7 @@ on clusters with the harness off.
 | `harness.maxConcurrentJobs` | `2` | Harness Jobs at once on this cluster |
 | `harness.api.port` | `8081` | Verdict endpoint port (match `global.agentEvaluation.harnessApiPort` in `oam-agent-components`) |
 | `harness.api.controller` | `argo-rollouts`, `app.kubernetes.io/name: argo-rollouts` | Pods the NetworkPolicy lets call the endpoint |
+| `harness.egress.enabled` | `false` | Renders NetworkPolicy `agent-evaluation-harness-runner-egress` for the runner pods: DNS, Bifrost (`bifrostNamespace`, `bifrostPort`), pods on `agentPort` (8083) and `apiServerCidrs` on `apiServerPort` (443). Fails to render without `apiServerCidrs`, which is per cluster |
 | `harness.slotWaitSeconds` | `300` | Wait for a free slot; `runTimeoutSeconds + slotWaitSeconds` must be at most 2100 |
 | `harness.caseConcurrency` | `2` | Cases in flight within one run |
 | `harness.caseTimeoutSeconds` | `120` | Per call (agent call, each judge call) |

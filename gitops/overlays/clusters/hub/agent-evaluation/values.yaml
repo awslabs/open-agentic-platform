@@ -1,0 +1,37 @@
+# Hub-only overrides for the agent-evaluation addon.
+#
+# WHY THIS FILE EXISTS AT ALL. The addon's image override used to live only in
+# the LIVE ApplicationSet's `valuesObject` on the cluster -- not in git. That had
+# two bad consequences:
+#
+#   1. the image the hub actually ran was invisible to code review, which is how
+#      the chart came to say 0.1.0 while the cluster ran 0.2.3
+#   2. patching the generated ArgoCD Application had no effect, because the
+#      ApplicationSet re-templates it within seconds -- so the only way to change
+#      it was to patch live cluster state, which nothing records
+#
+# The addon's ArgoCD source already reads this path as a valueFile with
+# `ignoreMissingValueFiles: true`, so putting it here needs no wiring: it is the
+# intended place for per-cluster overrides and it is reviewable.
+#
+# TEMPORARY. Delete this whole file once
+# public.ecr.aws/z0a4o2j5/agent-evaluation exists -- the repository currently
+# answers NAME_UNKNOWN, which is the outstanding handoff ("Ask 2" on #104). At
+# that point the chart default is correct for every cluster and the hub needs no
+# override.
+# TEST ONLY - never merge. Private ECR image built from 3e0448a3
+# (multi-arch index;
+# the chart pins by tag only, so the tag is used).
+image:
+  repository: 257077212816.dkr.ecr.us-west-2.amazonaws.com/agent-evaluation
+  tag: "3e0448a3"
+# TEST ONLY - never merge. Pass 11: turns on the runner egress NetworkPolicy with
+# this test hub's API server addresses (kubernetes Service ClusterIP and the two
+# endpoint addresses, as /32s).
+harness:
+  egress:
+    enabled: true
+    apiServerCidrs:
+      - "172.20.0.1/32"
+      - "10.0.11.162/32"
+      - "10.0.12.178/32"
