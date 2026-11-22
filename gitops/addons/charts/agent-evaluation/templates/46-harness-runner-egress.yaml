@@ -33,13 +33,22 @@ spec:
       harness.oap.io/run: "true"
   policyTypes: [Egress]
   egress:
-    # DNS to any resolver. EKS Auto Mode runs CoreDNS on the node, not as pods
-    # a selector can name. The runner only sends DNS queries to its resolver.
+    # DNS. EKS Auto Mode runs CoreDNS on the node, not as pods a selector can
+    # name, so the resolver is set by address (dnsCidrs: the clusterDNS address
+    # in the pod's resolv.conf). With dnsCidrs empty, port 53 is open to any
+    # address.
     - ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
+      {{- with $e.dnsCidrs }}
+      to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      {{- end }}
     # The judge: Bifrost pods.
     - to:
         - namespaceSelector:

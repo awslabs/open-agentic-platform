@@ -257,6 +257,20 @@ def test_runner_egress_policy_allows_only_dns_bifrost_agents_and_the_api_server(
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_runner_egress_policy_limits_dns_to_dns_cidrs_when_set():
+    docs = _render_eval(
+        "--set", "harness.enabled=true", "--set", "harness.egress.enabled=true",
+        "--set", "harness.egress.apiServerCidrs={" + API_SERVER_CIDRS[0] + "}",
+        "--set", "harness.egress.dnsCidrs={192.0.2.53/32}",
+    )
+    pol = next(d for d in docs if d["metadata"]["name"] == "agent-evaluation-harness-runner-egress")
+    assert pol["spec"]["egress"][0] == {
+        "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+        "to": [{"ipBlock": {"cidr": "192.0.2.53/32"}}],
+    }
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
 def test_runner_egress_policy_is_off_by_default_and_needs_an_api_server_address():
     names = {d["metadata"]["name"] for d in _render_eval("--set", "harness.enabled=true")}
     assert "agent-evaluation-harness-runner-egress" not in names

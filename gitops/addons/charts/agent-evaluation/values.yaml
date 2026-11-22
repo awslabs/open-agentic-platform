@@ -306,6 +306,13 @@ harness:
     # in this file.
     apiServerCidrs: []
     apiServerPort: 443
+    # Optional: the cluster DNS resolver address, as a CIDR, for the DNS rule
+    # (port 53). Use the nameserver in a pod's /etc/resolv.conf, which is the
+    # kubelet clusterDNS address; on EKS Auto Mode it is the .10 address of the
+    # service CIDR and no kube-dns Service owns it. It stays fixed for the
+    # cluster's life. Empty: port 53 is open to any address, so a runner pod
+    # could send DNS queries to any resolver.
+    dnsCidrs: []
   # How long a created Job may wait for a free slot (maxConcurrentJobs) before
   # the endpoint answers error. The run's total cap is runTimeoutSeconds plus
   # this, and must stay at or below 2100 s: the AnalysisTemplate polls for
