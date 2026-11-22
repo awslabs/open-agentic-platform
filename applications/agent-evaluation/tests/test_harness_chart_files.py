@@ -285,6 +285,8 @@ def test_runner_egress_policy_is_off_by_default_and_needs_an_api_server_address(
     assert "agent-evaluation-harness-runner-egress" not in names
     r = _fails("--set", "harness.egress.enabled=true")
     assert r.returncode != 0 and "harness.egress.apiServerCidrs" in r.stderr
+    # It asks for the ClusterIP, not the endpoint addresses EKS replaces.
+    assert "kubernetes Service ClusterIP" in r.stderr and "svc,endpoints" not in r.stderr
     r = _fails(
         "--set", "harness.egress.enabled=true",
         "--set", "harness.egress.apiServerCidrs={" + API_SERVER_CIDRS[0] + "}",

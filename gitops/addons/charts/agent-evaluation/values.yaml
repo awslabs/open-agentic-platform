@@ -300,10 +300,16 @@ harness:
     bifrostPort: 8080
     # The agent's A2A port, which <agent>-preview targets.
     agentPort: 8083
-    # Required when enabled: the kubernetes Service ClusterIP and the API server
-    # endpoint addresses of this cluster, as CIDRs
-    # (kubectl get svc,endpoints kubernetes -n default). Set per cluster, never
-    # in this file.
+    # Required when enabled: the kubernetes Service ClusterIP of this cluster,
+    # as a /32 (kubectl get svc kubernetes -n default). Set per cluster, never
+    # in this file. The runner connects to the ClusterIP (in-cluster config),
+    # and the EKS VPC CNI matches egress on it before the DNAT: tested live on
+    # EKS Auto Mode, the ClusterIP alone admits the runner, and the endpoint
+    # addresses alone do not. Do not list the endpoint addresses
+    # (kubectl get endpoints kubernetes -n default). They are control-plane
+    # ENIs that EKS replaces, for example on a version upgrade, so a list that
+    # depends on them goes stale, and then every run fails and every gate
+    # revision aborts. The ClusterIP stays fixed for the cluster's life.
     apiServerCidrs: []
     apiServerPort: 443
     # Optional: the cluster DNS resolver address, as a CIDR, for the DNS rule

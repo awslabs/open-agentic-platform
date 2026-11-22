@@ -763,7 +763,7 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `api.port` | 8081 | the verdict endpoint's port (match `global.agentEvaluation.harnessApiPort` in `oam-agent-components`) |
 | `api.controller` | `argo-rollouts` namespace, label `app.kubernetes.io/name: argo-rollouts` | which pods the NetworkPolicy lets call the endpoint. Check the labels on your cluster |
 | `egress.enabled` | `false` | renders the runner egress NetworkPolicy (4.3). Needs `egress.apiServerCidrs` |
-| `egress.apiServerCidrs` | `[]` | this cluster's `kubernetes` Service ClusterIP and API server endpoint addresses, as CIDRs. Set per cluster |
+| `egress.apiServerCidrs` | `[]` | this cluster's `kubernetes` Service ClusterIP, as a /32. Not the endpoint addresses, which EKS replaces (4.3). Set per cluster |
 | `egress.bifrostNamespace`, `egress.bifrostPort`, `egress.agentPort`, `egress.apiServerPort` | `bifrost`, 8080, 8083, 443 | the other destinations the runner may reach |
 | `egress.dnsCidrs` | `[]` | the cluster DNS address (the nameserver in a pod's `/etc/resolv.conf`) as a CIDR. Empty leaves port 53 open to any address (4.3) |
 | `slotWaitSeconds` | 300 | how long a created Job may wait for a free slot. `runTimeoutSeconds + slotWaitSeconds` must be at most 2100, or the chart fails to render |
