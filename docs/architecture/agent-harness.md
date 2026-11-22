@@ -1344,28 +1344,65 @@ hand-made EndpointSlices can aim a runner Job at any address the Job can reach.
 The evaluation chart renders the NetworkPolicy
 `agent-evaluation-harness-runner-egress` (`templates/46-harness-runner-egress.yaml`)
 for pods labelled `harness.oap.io/run: "true"` when `harness.egress.enabled` is
-true. It allows DNS (port 53, any resolver, because EKS Auto Mode runs CoreDNS
-on the node and not as pods a selector can name), Bifrost pods in
+true. It allows DNS (port 53), Bifrost pods in
 `harness.egress.bifrostNamespace` on `harness.egress.bifrostPort`, pods in any
 namespace on `harness.egress.agentPort` (8083), and the API server addresses
 in `harness.egress.apiServerCidrs` on `harness.egress.apiServerPort` (the
 runner creates its result ConfigMap there). An address outside the cluster's
-pods, set through a hand-made EndpointSlice, matches no rule. It is off by
-default because the API server address cannot be selected by label and is per
-cluster: the chart fails to render with the policy on and no
+pods and nodes, set through a hand-made EndpointSlice, matches no rule. It is
+off by default because the API server address cannot be selected by label and
+is per cluster: the chart fails to render with the policy on and no
 `apiServerCidrs`, and no address is a literal in the template or in
 `values.yaml`. A wrong value stops every run with an `error`, which aborts a
 gate, so live check 15 runs a gate to completion with the policy on. A Service
 of type `ExternalName` is already refused. Enforced only where the cluster
-enforces NetworkPolicy. Not verified on EKS: the agent-sandbox chart records
-that the VPC CNI matches egress on the Service ClusterIP before the DNAT to a
-pod (`gitops/addons/charts/agent-sandbox/values.yaml`), so live check 15 also
-has to show that a preview Service with a hand-made EndpointSlice to an
-outside address gets a connect error with the policy on. The residual it leaves
-by design: an EndpointSlice that points at another pod's port 8083.
+enforces NetworkPolicy.
 - *Gate is not a security control against the agent's own team.* A team that
   controls its namespace controls its own Rollout and Service. The design does
   not try to stop it from weakening its own gate.
+**Runner egress, live findings** (EKS Auto Mode, VPC CNI network policy agent):
+- *The redirect is blocked.* A preview Service with a hand-made EndpointSlice
+  to a node's kubelet port timed out from a runner pod with the policy on and
+  connected with it off. The CNI matches the Service ClusterIP before the DNAT,
+  and for a pod rule it adds the ClusterIPs of Services whose endpoints are the
+  selected pods' addresses. A Service whose hand-made endpoints are no such
+  address matches no rule.
+- *Exception: node addresses on 8083.* The rule for pods in any namespace on
+  8083 resolves to pod IPs, and a hostNetwork pod's IP is its node's IP. Every
+  node of the hub runs a hostNetwork pod, so a redirect to `<node IP>:8083`
+  still works. Together with another pod's port 8083, this is the residual the
+  policy leaves by design.
+- *DNS.* Port 53 is open to any address unless `harness.egress.dnsCidrs` is
+  set. EKS Auto Mode runs CoreDNS on the node, not as pods a selector can name,
+  and no `kube-dns` Service exists. Pods resolve through the kubelet
+  `clusterDNS` address (the `.10` address of the service CIDR, the nameserver
+  in `/etc/resolv.conf`), which is fixed for the cluster's life. Set to that
+  address, the rule admits cluster DNS and blocks a public resolver.
+- *API server address.* The runner connects to the `kubernetes` Service
+  ClusterIP (in-cluster config), and the CNI matches that address before the
+  DNAT. With only the ClusterIP in `apiServerCidrs` a runner pod reached the
+  API server; with only the endpoint addresses it did not. So
+  `apiServerCidrs` takes the ClusterIP. The endpoint addresses are
+  control-plane ENIs that EKS replaces, for example on a version upgrade, and a
+  list that depends on them goes stale, after which every run fails and every
+  gate revision aborts. On the hub both had changed within a day of writing
+  the policy.
+- *Other pods in the namespace.* Unlabelled pods in the same namespace lost
+  egress while the policy was present. The cause is in the network policy
+  agent, not in this policy: it keeps a pod's policy state per node under a key
+  made of the pod name without its last `-` part and the namespace
+  (`GetPodIdentifier` in
+  [aws-network-policy-agent](https://github.com/aws/aws-network-policy-agent/blob/main/pkg/utils/utils.go)).
+  Pods on one node whose names match up to the last `-` share that state,
+  labelled or not. Live, an unlabelled pod named like the labelled one on the
+  same node was restricted, the same name on another node and other names on
+  the same node were not, and after the labelled pod and then the policy were
+  deleted the unlabelled pod stayed restricted until every pod with that key on
+  the node had gone. Runner pods are named `oap-harness-<12 hex>-<suffix>`, one
+  prefix per Job, and the reconciler's pods do not share it, so the chart's own
+  pods are not affected: the reconciler, which calls Langfuse, Bifrost and the
+  API server, kept working with the policy present. Do not run other pods in
+  the agent-evaluation namespace whose names start with `oap-harness-`.
 **Bifrost.** `/api/*` and `/metrics` need the admin login after D5. A pod in
 any namespace gets 401. The admin credential lives only in `bifrost`. The
 minter's authority outside `bifrost` is one Secret in `agent-evaluation` and a
@@ -1383,7 +1420,7 @@ it. The dashboard's run status shows it.
 | Phase | Delivers | Status |
 |---|---|---|
 | **3a** | Report mode on the reconciler's own loop (#137): `harness` block, declaration ConfigMap, platform datasets, Job per revision, `expected-answer` judge, metrics, dashboard row, alerts, online exclusion, two examples | Implemented in PR #153 (first cut). Replaced by 3b |
-| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR, render-tested and not yet run on a cluster (section 7, item 15). Live validation pending |
+| **3b** | This document: `mode: gate \| report` on analysis, AnalysisTemplate per agent, the endpoint `[D2]`, the slim reconciler, Bifrost Option A (minter, admin login, metrics proxy); the runner egress policy (section 5) | Implemented in PR #153: CUE, endpoint, reader, minter, admin login, metrics proxy, chart changes, docs. The runner egress policy followed in the next PR and was run live on the hub (section 5, section 7 item 15) |
 | **3c** | Follow-ups: the agent image echoes its revision for the exact per-reply check; team-owned datasets (`<namespace>/<name>`); `expectTools`; k runs per case; hold-on-no-verdict through Inconclusive; a harvested dataset from real failures (shares ground with #146); a public image registry | Not scheduled |
 The order of work inside 3b was: (1) Bifrost Option A, because the minter and
 the key location do not depend on the provider; (2) this document; (3) the CUE
@@ -1575,8 +1612,9 @@ the AnalysisTemplate and the Rollout fragment.
 - Item 11's mid-flight return to the stable template; item 12's calls with
   another team's `namespace`, `agent`, revision or hash (unit-tested only); the
   first run after enabling the harness on an agent that already has a stable
-  revision (item 14); the runner egress policy on a cluster (item 15,
-  render-tested only).
+  revision (item 14).
+- The runner egress policy on a cluster other than EKS Auto Mode with the VPC
+  CNI network policy agent (item 15 ran on the hub; section 5).
 - The minter's handling of an existing key whose value Bifrost withholds
   (unit-tested only, `test_vk_minter.py`).
 - Alert state for `AgentHarnessJudgeKeyMissing` (only the metric was checked).

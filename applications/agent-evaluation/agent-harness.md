@@ -869,14 +869,33 @@ and the Kubernetes API.
 The runner egress NetworkPolicy `agent-evaluation-harness-runner-egress` limits
 the runner pods to those destinations and DNS, so a preview Service given
 hand-made EndpointSlices cannot aim a runner at an address outside the
-cluster's pods. It is off by default because the API server address is per
-cluster. To turn it on for a cluster, set `harness.egress.enabled: true` and
-`harness.egress.apiServerCidrs` in that cluster's values (read the addresses with
-`kubectl get svc,endpoints kubernetes -n default`); the chart fails to render
-without them. A wrong value makes every run fail with an `error`, which aborts
-every gate revision, so run one gate revision to completion after turning it
-on. It has been render-tested only, not yet run on a cluster (design section 7,
-item 15). Ingress to the reconciler's verdict endpoint (TCP 8081) is
+cluster's pods and nodes. It is off by default because the API server address
+is per cluster. To turn it on for a cluster, set `harness.egress.enabled: true`
+and `harness.egress.apiServerCidrs` to the `kubernetes` Service ClusterIP as a
+/32 (`kubectl get svc kubernetes -n default`); the chart fails to render
+without it. Do not list the endpoint addresses from `kubectl get endpoints`:
+they are control-plane ENIs that EKS replaces, for example on a version
+upgrade, so the list goes stale and then every run fails and every gate
+revision aborts. The ClusterIP is enough: the runner connects to it, and the
+VPC CNI matches it before the DNAT (tested live on EKS Auto Mode). Optionally
+set `harness.egress.dnsCidrs` to the nameserver in a pod's `/etc/resolv.conf`;
+without it port 53 stays open to any address. A wrong value makes every run
+fail with an `error`, which aborts every gate revision, so run one gate
+revision to completion after turning it on.
+
+Two findings from the live run on EKS Auto Mode (design section 5):
+- Node addresses on 8083. The rule for pods in any namespace on 8083 also
+  admits node IPs, through any hostNetwork pod on the node, so a redirect to
+  `<node IP>:8083` still works.
+- Other pods in the namespace. Unlabelled pods in the same namespace lost
+  egress while the policy was present. The cause is in the EKS network policy
+  agent: pods on one node whose names match up to the last `-` share policy
+  state, labelled or not. Runner pods are named `oap-harness-<12 hex>-<suffix>`
+  and the reconciler's pods do not share that prefix, so the chart's own pods
+  are not affected. Do not run other pods in the agent-evaluation namespace
+  whose names start with `oap-harness-`.
+
+Ingress to the reconciler's verdict endpoint (TCP 8081) is
 limited by NetworkPolicy to the Argo Rollouts controller; set
 `harness.api.controller` if its namespace or labels differ. The endpoint has
 no credential, so the cluster must enforce NetworkPolicy. That is part of the

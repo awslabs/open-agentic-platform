@@ -289,9 +289,27 @@ harness:
   # Off by default, because the API server address is per cluster. With it on,
   # a runner pod may reach DNS, Bifrost, an agent pod on agentPort and the
   # addresses in apiServerCidrs, and nothing else, so a preview Service with
-  # hand-made EndpointSlices cannot aim a Job outside the cluster's pods. A
-  # wrong value fails every run with an error, which aborts every gate
+  # hand-made EndpointSlices cannot aim a Job outside the cluster's pods and
+  # nodes. A wrong value fails every run with an error, which aborts every gate
   # revision: run one gate revision to completion after turning it on.
+  # Two findings from the live run on EKS Auto Mode:
+  # - Node addresses on agentPort. The "any namespace on agentPort" rule
+  #   resolves to pod IPs, and a hostNetwork pod's IP is its node's IP. On a
+  #   cluster where every node runs a hostNetwork pod (a node exporter, say),
+  #   a redirect to <node IP>:8083 still works.
+  # - Other pods in the namespace. Unlabelled pods in the same namespace lost
+  #   egress while the policy was present. Cause: the EKS network policy agent
+  #   keeps policy state per node under the pod name without its last "-"
+  #   part, plus the namespace. Pods on one node whose names match up to the
+  #   last "-" share it, labelled or not. Runner pods are named
+  #   oap-harness-<12 hex>-<suffix>, one prefix per Job, and the reconciler's
+  #   pods do not share it, so the chart's own pods are not affected (the
+  #   reconciler, which calls Langfuse, Bifrost and the API server, kept
+  #   working). Do not run other pods in this namespace whose names start
+  #   with oap-harness-.
+  #   If the runner pod is deleted first, a pod that shares its key stays
+  #   restricted after the policy is gone, until every pod with that key on
+  #   the node has gone.
   egress:
     enabled: false
     # Namespace of the Bifrost pods (judge.bifrostUrl points at its Service),
