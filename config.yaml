@@ -24,6 +24,34 @@ hub:
 domain: ""
 resourcePrefix: ""
 
+# Source-IP allowlist for the shared hub "platform" ALB (all hub UIs: Backstage, Keycloak,
+# Argo Workflows, Kargo, JupyterHub, Grafana, agent gateway, …). Hardening: restrict the
+# internet-facing ALB to known networks FROM INSTALL TIME instead of leaving it open to any
+# source IP. Forwarded unchanged into the platform (appmod-blueprints) config by
+# `task install`; applied by the kind-kro-ack / kind-crossplane providers. A YAML list or a
+# comma-separated string of IPv4 CIDRs. ALWAYS include the NAT egress IP(s) of the hub and of
+# every spoke running agentic (OAP) addons, or in-cluster SSO to the public Keycloak issuer
+# breaks (the hub NAT is appended automatically on those providers). Do NOT set it with
+# insecure: true (internal ALB behind CloudFront). Empty/omitted => ALB open, unchanged.
+# See the platform's docs/platform/alb-ip-allowlist.md.
+# albInboundCidrs:
+#   - 203.0.113.0/24      # corporate / VPN egress range (example)
+#   - 203.0.113.201/32    # NAT egress IP of a spoke running OAP addons (example)
+
+# Fleet-wide default source-IP allowlist for every SPOKE's own "platform" ALB (each spoke runs its
+# own internet-facing ALB fronting the participant applications). Same hardening as albInboundCidrs
+# above, but for the spoke ALBs rather than the hub ALB. Forwarded unchanged into the platform
+# config by `task install`; the appmod provider stamps it onto every spoke cluster secret, and a
+# spoke's own fleet entry may override it. A YAML list or comma-separated string of IPv4 CIDRs; the
+# spoke's own NAT egress IP is added automatically when set. Empty/omitted => every spoke ALB open,
+# unchanged.
+#   WARNING: a spoke ALB is PARTICIPANT-FACING — an allowlist blocks any participant whose source IP
+#   is not listed. Do NOT enable it for an open / public event; only when the participant source
+#   ranges are known (corporate / VPN). Do NOT set it with insecure: true. See the platform's
+#   docs/platform/alb-ip-allowlist.md.
+# spokeAlbInboundCidrs:
+#   - 203.0.113.0/24      # participant / corporate source range (example)
+
 # AWS Identity Center
 identityCenter:
   instanceArn: ""
