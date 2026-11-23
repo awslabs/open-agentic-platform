@@ -1402,7 +1402,9 @@ enforces NetworkPolicy.
   prefix per Job, and the reconciler's pods do not share it, so the chart's own
   pods are not affected: the reconciler, which calls Langfuse, Bifrost and the
   API server, kept working with the policy present. Do not run other pods in
-  the agent-evaluation namespace whose names start with `oap-harness-`.
+  the agent-evaluation namespace whose names start with `oap-harness-`. The
+  stuck state is tracked in
+  [#173](https://github.com/awslabs/open-agentic-platform/issues/173).
 **Bifrost.** `/api/*` and `/metrics` need the admin login after D5. A pod in
 any namespace gets 401. The admin credential lives only in `bifrost`. The
 minter's authority outside `bifrost` is one Secret in `agent-evaluation` and a

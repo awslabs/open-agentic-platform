@@ -309,7 +309,7 @@ harness:
   #   with oap-harness-.
   #   If the runner pod is deleted first, a pod that shares its key stays
   #   restricted after the policy is gone, until every pod with that key on
-  #   the node has gone.
+  #   the node has gone. Tracked in awslabs/open-agentic-platform#173.
   egress:
     enabled: false
     # Namespace of the Bifrost pods (judge.bifrostUrl points at its Service),

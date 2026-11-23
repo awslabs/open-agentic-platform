@@ -893,7 +893,8 @@ Two findings from the live run on EKS Auto Mode (design section 5):
   state, labelled or not. Runner pods are named `oap-harness-<12 hex>-<suffix>`
   and the reconciler's pods do not share that prefix, so the chart's own pods
   are not affected. Do not run other pods in the agent-evaluation namespace
-  whose names start with `oap-harness-`.
+  whose names start with `oap-harness-`. The stuck state is tracked in
+  [#173](https://github.com/awslabs/open-agentic-platform/issues/173).
 
 Ingress to the reconciler's verdict endpoint (TCP 8081) is
 limited by NetworkPolicy to the Argo Rollouts controller; set
