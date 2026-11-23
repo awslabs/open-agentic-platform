@@ -106,6 +106,13 @@ metadata:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
+    {{- if eq (toString .Values.guardrails.enabled) "true" }}
+    {{- /* The /llm routes are cluster-internal (guardrail-routes.yaml matches only the
+           in-cluster Gateway host, which is the primary control). This is the second one:
+           the ALB answers /llm and /llm/* with a 404 before the catch-all below. The rule is
+           listed first, and the controller gives earlier paths higher priority. */}}
+    alb.ingress.kubernetes.io/actions.block-llm: '{"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"404","messageBody":"Not Found"}}'
+    {{- end }}
     argocd.argoproj.io/sync-wave: "10"
 spec:
   ingressClassName: {{ .Values.ingress.className | default "platform" }}
@@ -113,6 +120,15 @@ spec:
     - host: {{ $agentHost }}
       http:
         paths:
+          {{- if eq (toString .Values.guardrails.enabled) "true" }}
+          - path: /llm
+            pathType: Prefix
+            backend:
+              service:
+                name: block-llm
+                port:
+                  name: use-annotation
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

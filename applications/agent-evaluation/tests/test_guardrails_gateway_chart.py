@@ -169,3 +169,27 @@ def test_flag_on_renders_a_cluster_ip_metrics_service():
     }
     assert [p["port"] for p in svc["spec"]["ports"]] == [15020]
     assert "nodePort" not in svc["spec"]["ports"][0]
+# /llm stays off the public ingress (ingress.yaml).
+HOST = ["--set", "ingress.host=idp.example.test"]
+def _agents_ingress(docs):
+    [ing] = [d for d in of_kind(docs, "Ingress") if d["metadata"]["name"] == "agentgateway-agents"]
+    return ing
+def test_flag_off_leaves_the_agents_ingress_without_an_llm_rule():
+    ing = _agents_ingress(render(CHART, *OFF, *HOST))
+    paths = [p["path"] for r in ing["spec"]["rules"] for p in r["http"]["paths"]]
+    assert paths == ["/"]
+    assert not any("block-llm" in k for k in ing["metadata"]["annotations"])
+def test_flag_on_answers_llm_with_a_404_before_the_catch_all():
+    ing = _agents_ingress(render(CHART, *ON, *HOST))
+    paths = ing["spec"]["rules"][0]["http"]["paths"]
+    assert [p["path"] for p in paths] == ["/llm", "/"]
+    block = paths[0]["backend"]["service"]
+    assert block == {"name": "block-llm", "port": {"name": "use-annotation"}}
+    action = json.loads(ing["metadata"]["annotations"]["alb.ingress.kubernetes.io/actions.block-llm"])
+    assert action["type"] == "fixed-response"
+    assert action["fixedResponseConfig"]["statusCode"] == "404"
+def test_the_primary_ingress_never_forwards_llm():
+    docs = render(CHART, *ON, *HOST)
+    primary = [d for d in of_kind(docs, "Ingress") if d["metadata"]["name"] == "agentgateway"][0]
+    paths = [p["path"] for r in primary["spec"]["rules"] for p in r["http"]["paths"]]
+    assert paths and not any(p == "/" or p.startswith("/llm") for p in paths)
