@@ -151,3 +151,21 @@ def test_both_charts_name_the_same_profiles_in_the_same_order():
 def test_flag_off_with_a_bad_catalog_still_renders_nothing():
     docs = render(CHART, *OFF, "--set", "guardrails.profiles.extra.action=Reject")
     assert _llm(docs) == []
+# Metrics Service (proxy-metrics-service.yaml).
+def _metrics_service(docs):
+    return [d for d in of_kind(docs, "Service") if d["metadata"]["name"] == "agentgateway-proxy-metrics"]
+def test_flag_off_renders_no_metrics_service():
+    assert _metrics_service(render(CHART, *OFF)) == []
+def test_flag_on_renders_a_cluster_ip_metrics_service():
+    [svc] = _metrics_service(render(CHART, *ON))
+    assert svc["metadata"]["namespace"] == "agentgateway-system"
+    assert svc["spec"]["type"] == "ClusterIP"
+    ann = svc["metadata"]["annotations"]
+    assert ann["prometheus.io/scrape"] == "true" and ann["prometheus.io/port"] == "15020"
+    assert ann["prometheus.io/path"] == "/metrics"
+    assert svc["spec"]["selector"] == {
+        "app.kubernetes.io/name": "agentgateway-proxy",
+        "app.kubernetes.io/instance": "agentgateway-proxy",
+    }
+    assert [p["port"] for p in svc["spec"]["ports"]] == [15020]
+    assert "nodePort" not in svc["spec"]["ports"][0]

@@ -215,6 +215,13 @@ guardrails:
       action: Reject
       failureMode: FailClosed
       scope: [Messages, ToolOutput]
+  # Scrape target for the gateway proxy's own metrics (templates/proxy-metrics-service.yaml).
+  # 15020 is the proxy's default stats address in v1.7.0 (config.rs, STATS_ADDR), path
+  # /metrics. The guardrail counter is agentgateway_guardrail_checks_total with labels
+  # phase (Request or Response) and action (Allow, FailOpen, Audit, Mask, Reject). It has no
+  # profile or agent label, so per-agent outcomes come from the access log instead.
+  metrics:
+    port: 15020
   # Binder (templates/guardrail-binder.yaml): writes each guardrail's generated ID and
   # version into its AgentgatewayPolicy once Crossplane has created them. A PostSync hook
   # does it after a sync and a CronJob repairs it later, for example after a catalog

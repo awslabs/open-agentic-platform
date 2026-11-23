@@ -1,0 +1,35 @@
+{{- /*
+Metrics Service for the gateway proxy: ClusterIP, discovered by the platform's AMP scraper
+through the prometheus.io/scrape annotations, like agent-evaluation's
+(gitops/addons/charts/agent-evaluation/templates/50-metrics-service.yaml). Nothing scraped the
+gateway before, so the guardrail counter agentgateway_guardrail_checks_total was not collected.
+Rendered only when guardrails.enabled is "true".
+ClusterIP and nothing else on purpose. No NodePort, no LoadBalancer and no Ingress: the proxy's
+/metrics is only ever read from inside the cluster. The proxy's own LoadBalancer Service (made
+by the controller) and agentgateway-ingress in ingress.yaml do not expose this port.
+*/ -}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- $g := .Values.guardrails }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentgateway-proxy-metrics
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ $g.metrics.port | quote }}
+    prometheus.io/path: /metrics
+    prometheus.io/scheme: http
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $g.proxy.gatewayName }}
+    app.kubernetes.io/instance: {{ $g.proxy.gatewayName }}
+  ports:
+    - name: http-metrics
+      port: {{ $g.metrics.port }}
+      targetPort: {{ $g.metrics.port }}
+      protocol: TCP
+{{- end }}
