@@ -24,6 +24,7 @@ crossplane-agentcore:
     # (test_guardrails_enablement.py).
     guardrails:
       enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
+      awsAccountId: '{{.metadata.annotations.aws_account_id}}'
   ignoreDifferences:
     - group: apiextensions.crossplane.io
       kind: Composition

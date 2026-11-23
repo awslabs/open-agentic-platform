@@ -43,9 +43,37 @@ podIdentity:
   # ServiceAccount name used by the bedrockagentcore provider
   serviceAccountName: provider-aws-bedrockagentcore
   namespace: crossplane-system
-# Agent guardrails (docs/architecture/agent-guardrails.md). Not set by hand: the registry
-# derives it from the enable_agent_guardrails, enable_agent_gateway and enable_agent_core
-# cluster-secret labels with the same expression as agent-gateway and
-# oam-agent-components. A string, because the registry renders text. Default off.
+# Agent guardrails (docs/architecture/agent-guardrails.md). The enabled switch is not set
+# by hand: the registry derives it from the enable_agent_guardrails, enable_agent_gateway
+# and enable_agent_core cluster-secret labels with the same expression as agent-gateway and
+# oam-agent-components. A string, because the registry renders text. Default off: nothing
+# in templates/04-bedrock-provider.yaml renders.
 guardrails:
   enabled: "false"
+  # IAM partition of the guardrail ARNs in the provider role policy.
+  arnPartition: aws
+  provider:
+    # provider-aws-bedrock. v2.9.0 is the first family release with GuardrailVersion, so the
+    # chart refuses a lower tag. The Upbound registry needs a login to list tags from
+    # outside a cluster, so this default is the newest tag seen in the provider repository
+    # (https://github.com/crossplane-contrib/provider-upjet-aws/tags). Bump it deliberately.
+    #
+    # Version family: appmod-blueprints crossplane-base installs the v2.7.0 family providers
+    # (provider-family-aws, provider-aws-iam, provider-aws-eks) that supply the ProviderConfig
+    # CRDs and the Role and PodIdentityAssociation kinds. This package is a separate member
+    # at a newer tag, so the Provider keeps skipDependencyResolution: true (as the
+    # bedrockagentcore Provider already does) and Crossplane does not try to align it with
+    # the family. The Guardrail kinds use the ProviderConfig named "default" that the family
+    # provider already supplies. If a cluster rejects that pairing (for example a changed
+    # ProviderConfig schema), the fallback is to raise the family in appmod-blueprints to the
+    # same tag.
+    version: "v2.10.0"
+  podIdentity:
+    # ServiceAccount the provider-aws-bedrock pod runs as. Its own Pod Identity role keeps
+    # guardrail management separate from the AgentCore provider role. The namespace is
+    # podIdentity.namespace above.
+    serviceAccountName: provider-aws-bedrock
+  # Account that owns the guardrails. Set by the registry from the aws_account_id
+  # annotation. Required when guardrails are enabled, because the provider role is scoped
+  # to this account's guardrail ARNs.
+  awsAccountId: ""

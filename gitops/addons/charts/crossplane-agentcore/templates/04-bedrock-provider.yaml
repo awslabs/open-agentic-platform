@@ -1,0 +1,117 @@
+{{/*
+  provider-aws-bedrock, for the Guardrail and GuardrailVersion objects in
+  05-guardrails.yaml (docs/architecture/agent-guardrails.md). Rendered only when
+  guardrails.enabled is "true". It has its own ServiceAccount, runtime config and Pod
+  Identity role, next to the bedrockagentcore provider in 01-provider.yaml and
+  03-pod-identity.yaml, so guardrail management never shares credentials with AgentCore.
+  The role can manage guardrails only. Applying a guardrail at request time is a different
+  permission, held by the gateway proxy (agent-gateway chart).
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- $g := .Values.guardrails }}
+{{- if not (semverCompare ">=2.9.0" $g.provider.version) }}
+{{- fail (printf "crossplane-agentcore: guardrails.provider.version %q is below v2.9.0, the first provider-aws-bedrock release with GuardrailVersion" $g.provider.version) }}
+{{- end }}
+{{- if not .Values.global.eksClusterName }}
+{{- fail "crossplane-agentcore: global.eksClusterName is required when guardrails are enabled" }}
+{{- end }}
+{{- if not $g.awsAccountId }}
+{{- fail "crossplane-agentcore: guardrails.awsAccountId is required when guardrails are enabled" }}
+{{- end }}
+{{- $cluster := .Values.global.eksClusterName }}
+{{- $account := toString $g.awsAccountId }}
+{{- $guardrailArn := printf "arn:%s:bedrock:%s:%s:guardrail/*" $g.arnPartition .Values.global.awsRegion $account }}
+{{- $resources := list $guardrailArn }}
+{{- /* ListGuardrails is a list action that the provider calls without a guardrail ID, so it
+       gets its own statement on "*". It returns names and ARNs only. */}}
+{{- $policy := dict "Version" "2012-10-17" "Statement" (list
+      (dict "Sid" "ManageGuardrails" "Effect" "Allow"
+        "Action" (list "bedrock:CreateGuardrail" "bedrock:CreateGuardrailVersion" "bedrock:GetGuardrail" "bedrock:UpdateGuardrail" "bedrock:DeleteGuardrail" "bedrock:ListTagsForResource" "bedrock:TagResource" "bedrock:UntagResource")
+        "Resource" $resources)
+      (dict "Sid" "ListGuardrails" "Effect" "Allow" "Action" (list "bedrock:ListGuardrails") "Resource" "*")) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $g.podIdentity.serviceAccountName }}
+  namespace: {{ .Values.podIdentity.namespace }}
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: bedrock-provider-runtime
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          serviceAccountName: {{ $g.podIdentity.serviceAccountName }}
+          containers:
+            {{- include "crossplane-agentcore.runtimeContainer" . | nindent 12 }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-bedrock
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-bedrock:{{ $g.provider.version }}
+  packagePullPolicy: IfNotPresent
+  revisionActivationPolicy: Automatic
+  revisionHistoryLimit: 1
+  skipDependencyResolution: true
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: bedrock-provider-runtime
+---
+apiVersion: iam.aws.upbound.io/v1beta1
+kind: Role
+metadata:
+  name: {{ $cluster }}-bedrock-provider-role
+  labels:
+    platform.gitops.io/role: bedrock-provider
+    platform.gitops.io/cluster: {{ $cluster }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  forProvider:
+    assumeRolePolicy: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "pods.eks.amazonaws.com"},
+          "Action": ["sts:AssumeRole", "sts:TagSession"]
+        }]
+      }
+    inlinePolicy:
+      - name: BedrockGuardrailManagement
+        policy: |
+          {{- $policy | toPrettyJson | nindent 10 }}
+    tags:
+      platform.gitops.io/role: bedrock-provider
+      platform.gitops.io/cluster: {{ $cluster }}
+  providerConfigRef:
+    name: default
+---
+apiVersion: eks.aws.upbound.io/v1beta1
+kind: PodIdentityAssociation
+metadata:
+  name: {{ $cluster }}-bedrock-provider
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  forProvider:
+    clusterName: {{ $cluster }}
+    namespace: {{ .Values.podIdentity.namespace }}
+    serviceAccount: {{ $g.podIdentity.serviceAccountName }}
+    roleArnSelector:
+      matchLabels:
+        platform.gitops.io/role: bedrock-provider
+        platform.gitops.io/cluster: {{ $cluster }}
+    region: {{ .Values.global.awsRegion }}
+  providerConfigRef:
+    name: default
+{{- end }}
