@@ -64,3 +64,36 @@
 {{- $p := .Values.guardrails.proxy -}}
 {{- list (printf "%s.%s.svc.%s" $p.gatewayName $p.namespace $p.clusterDomain) | toJson -}}
 {{- end -}}
+{{/* Pod spec shared by the binder Job and CronJob (guardrail-binder.yaml). */}}
+{{- define "agent-gateway.binderPod" }}
+serviceAccountName: guardrail-binder
+restartPolicy: OnFailure
+containers:
+  - name: binder
+    image: {{ .image | quote }}
+    command: ["python", "/scripts/bind-guardrails.py"]
+    env:
+      - name: GUARDRAIL_PROFILES
+        value: {{ .profiles | toJson | quote }}
+      - name: POLICY_NAMESPACE
+        value: {{ .policyNamespace | quote }}
+      - name: DEADLINE_SECONDS
+        value: {{ .deadline | quote }}
+      - name: POLL_SECONDS
+        value: {{ .poll | quote }}
+    volumeMounts:
+      - {name: script, mountPath: /scripts, readOnly: true}
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65532
+      capabilities: {drop: ["ALL"]}
+      seccompProfile: {type: RuntimeDefault}
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 128Mi}
+volumes:
+  - name: script
+    configMap: {name: guardrail-binder}
+{{- end }}

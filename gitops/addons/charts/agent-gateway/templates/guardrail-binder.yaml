@@ -1,0 +1,147 @@
+{{/*
+  Binds each Bedrock guardrail's generated ID and version into its AgentgatewayPolicy
+  (guardrail-policy.yaml). Rendered only when guardrails.enabled is "true".
+
+  Why a Job: the ID exists only in the status of the Crossplane Guardrail after it is
+  created. Helm cannot see it, Argo CD cannot look it up, and no provider-kubernetes is
+  installed. A PostSync hook Job reads the status and patches two fields, which keeps the
+  flow in Git plus Argo CD. The CronJob runs the same script, so a new GuardrailVersion
+  (catalogRevision bump) is bound without a sync.
+
+  Least privilege: the ServiceAccount can get only the named Guardrail and GuardrailVersion
+  objects and get and patch only the named policies. Script: files/bind-guardrails.py.
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- include "agent-gateway.guardrailsValidate" . }}
+{{- $g := .Values.guardrails }}
+{{- $cluster := required "global.clusterName is required when guardrails are enabled" .Values.global.clusterName }}
+{{- $ns := .Release.Namespace }}
+{{- $profiles := list }}
+{{- $guardrailNames := list }}
+{{- $policyNames := list }}
+{{- range $name := $g.order }}
+{{-   $profiles = append $profiles (dict "profile" $name "guardrail" (printf "%s-%s" $cluster $name) "policy" (printf "llm-%s-guard" $name)) }}
+{{-   $guardrailNames = append $guardrailNames (printf "%s-%s" $cluster $name) }}
+{{-   $policyNames = append $policyNames (printf "llm-%s-guard" $name) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardrail-binder
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+data:
+  bind-guardrails.py: |
+{{ .Files.Get "files/bind-guardrails.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guardrail-binder
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $ns }}-guardrail-binder
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+rules:
+  - apiGroups: ["bedrock.aws.upbound.io"]
+    resources: ["guardrails", "guardrailversions"]
+    resourceNames: {{ $guardrailNames | toJson }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $ns }}-guardrail-binder
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $ns }}-guardrail-binder
+subjects:
+  - kind: ServiceAccount
+    name: guardrail-binder
+    namespace: {{ $ns }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: guardrail-binder
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+rules:
+  - apiGroups: ["agentgateway.dev"]
+    resources: ["agentgatewaypolicies"]
+    resourceNames: {{ $policyNames | toJson }}
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: guardrail-binder
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: guardrail-binder
+subjects:
+  - kind: ServiceAccount
+    name: guardrail-binder
+    namespace: {{ $ns }}
+{{- $ctx := dict "image" $g.binder.image "profiles" $profiles "policyNamespace" $g.proxy.namespace "deadline" (toString $g.binder.deadlineSeconds) "poll" (toString $g.binder.pollSeconds) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guardrail-binder
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: guardrail-binder
+    spec:
+      {{- include "agent-gateway.binderPod" $ctx | nindent 6 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: guardrail-binder
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/component: guardrail-binder
+spec:
+  schedule: {{ $g.binder.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ add (int $g.binder.deadlineSeconds) 60 }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: guardrail-binder
+        spec:
+          {{- include "agent-gateway.binderPod" $ctx | nindent 10 }}
+{{- end }}

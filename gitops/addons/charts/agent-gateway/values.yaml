@@ -215,6 +215,15 @@ guardrails:
       action: Reject
       failureMode: FailClosed
       scope: [Messages, ToolOutput]
+  # Binder (templates/guardrail-binder.yaml): writes each guardrail's generated ID and
+  # version into its AgentgatewayPolicy once Crossplane has created them. A PostSync hook
+  # does it after a sync and a CronJob repairs it later, for example after a catalog
+  # revision bump creates a new GuardrailVersion. The image only needs Python.
+  binder:
+    image: python:3.12-alpine
+    schedule: "*/15 * * * *"
+    deadlineSeconds: 600
+    pollSeconds: 10
   # Text of the rejection returned to the caller. The status code is 403.
   rejectMessage: "The request was blocked by the platform guardrail."
   # The LLM gateway the /llm routes forward to: Bifrost, by its in-cluster Service. The

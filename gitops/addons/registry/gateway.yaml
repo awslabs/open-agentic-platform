@@ -139,6 +139,32 @@ agent-gateway:
   namespace: agent-core-infra
   defaultVersion: '0.1.0'
   path: 'gitops/addons/charts/agent-gateway'
+  # Same syncPolicy as _defaults.yaml plus RespectIgnoreDifferences. An entry's syncPolicy
+  # replaces the default wholesale, so the default is repeated here, and a test fails if the
+  # two drift apart. RespectIgnoreDifferences makes a sync leave the guardrail ID and version
+  # alone, which the guardrail-binder Job writes into the prompt guard policies after
+  # Crossplane creates the guardrails (templates/guardrail-binder.yaml).
+  syncPolicy:
+    automated:
+      selfHeal: true
+      allowEmpty: true
+      prune: true
+    retry:
+      limit: -1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 10m
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: agentgateway.dev
+      kind: AgentgatewayPolicy
+      jsonPointers:
+        - /spec/backend/ai/promptGuard/request/0/bedrockGuardrails/identifier
+        - /spec/backend/ai/promptGuard/request/0/bedrockGuardrails/version
   annotationsAppSet:
     argocd.argoproj.io/sync-wave: '9'
   selector:

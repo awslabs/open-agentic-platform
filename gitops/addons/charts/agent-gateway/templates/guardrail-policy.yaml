@@ -1,0 +1,63 @@
+{{/*
+  The prompt guard of each guardrail profile (docs/architecture/agent-guardrails.md): an
+  AgentgatewayPolicy on the profile's HTTPRoute that sends each request to Bedrock
+  ApplyGuardrail before the request reaches Bifrost. Rendered only when guardrails.enabled
+  is "true".
+
+  Request side only. Nothing is set under promptGuard.response, and no webhook guard is
+  used. The guard has exactly one entry, a Bedrock guardrail.
+
+  failureMode is written on every guard even though FailClosed is the default, so a change
+  of the upstream default cannot open the gate. action and scope come from
+  guardrails.profiles.<profile>; Audit records a finding and lets the request through.
+
+  identifier and version are placeholders. The Bedrock guardrail ID and version number exist
+  only after Crossplane has created the Guardrail and GuardrailVersion, which Helm cannot see
+  and Argo CD cannot look up. "pending" is not a valid guardrail, so until the PostSync Job
+  in guardrail-binder.yaml writes the real values, Bedrock rejects the call and FailClosed
+  refuses the request. The registry entry lists those two fields in ignoreDifferences so
+  Argo CD leaves the bound values alone.
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- include "agent-gateway.guardrailsValidate" . }}
+{{- $g := .Values.guardrails }}
+{{- $region := required "global.awsRegion is required when guardrails are enabled" .Values.global.awsRegion }}
+{{- range $name := $g.order }}
+{{- $p := get $g.profiles $name }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: llm-{{ $name }}-guard
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+    oap.dev/guardrail-profile: {{ $name }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: llm-{{ $name }}
+  backend:
+    ai:
+      promptGuard:
+        request:
+          - bedrockGuardrails:
+              identifier: pending
+              version: pending
+              region: {{ $region }}
+              failureMode: {{ $p.failureMode }}
+              action: {{ $p.action }}
+              policies:
+                auth:
+                  # Ambient AWS credentials: the proxy's Pod Identity role (guardrail-iam.yaml).
+                  aws: {}
+            scope:
+              {{- range $p.scope }}
+              - {{ . }}
+              {{- end }}
+            response:
+              message: {{ $g.rejectMessage | quote }}
+              statusCode: 403
+{{- end }}
+{{- end }}

@@ -8,15 +8,17 @@ CHART = "agent-gateway"
 OFF = ["--set", "global.clusterName=c1", "--set", "global.awsRegion=us-west-2",
        "--set-string", "global.awsAccountId=111122223333"]
 ON = OFF + ["--set-string", "guardrails.enabled=true"]
+def _iam_roles(docs):
+    return [d for d in of_kind(docs, "Role") if d["apiVersion"].startswith("iam.aws.upbound.io")]
 def test_flag_off_renders_no_guardrail_role():
     docs = render(CHART, *OFF)
-    assert of_kind(docs, "Role") == [] and of_kind(docs, "PodIdentityAssociation") == []
+    assert _iam_roles(docs) == [] and of_kind(docs, "PodIdentityAssociation") == []
 def _policy(docs):
-    role = of_kind(docs, "Role")[0]
+    role = _iam_roles(docs)[0]
     return json.loads(role["spec"]["forProvider"]["inlinePolicy"][0]["policy"])
 def test_flag_on_renders_role_and_association_for_the_proxy():
     docs = render(CHART, *ON)
-    assert len(of_kind(docs, "Role")) == 1
+    assert len(_iam_roles(docs)) == 1
     assoc = of_kind(docs, "PodIdentityAssociation")[0]["spec"]["forProvider"]
     assert assoc["namespace"] == "agentgateway-system"
     assert assoc["serviceAccount"] == "agentgateway-proxy"
