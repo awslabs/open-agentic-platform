@@ -1,0 +1,90 @@
+{{/*
+  One HTTPRoute per guardrail profile, in the Gateway's namespace, each gated by its own
+  `Require` rule on jwt.sub (docs/architecture/agent-guardrails.md). Rendered only when
+  guardrails.enabled is "true". The guard itself is in guardrail-policy.yaml.
+
+  Who may use a profile:
+    - at or above guardrails.defaultProfile: every agent, meaning any ServiceAccount
+      subject the Gateway accepts (workloadIdentity.allowedSubjectPrefix);
+    - weaker: only the agents in guardrailAccess.<profile>.agents, as <namespace>/<agent>.
+      With no grant the list is empty and nobody may use the profile.
+  The check is a `Require`, not an `Allow`, for the reason given in mcp-access.yaml: it must
+  AND with the Gateway-wide rule in jwt-policy.yaml instead of being ORed with it.
+
+  /llm is cluster-internal. Each route matches only the in-cluster hostname of the Gateway
+  Service, so a request that arrives with another Host header, such as the public agents
+  hostname on the ingress, matches no route. The ingress also answers /llm with a 404
+  (ingress.yaml).
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- include "agent-gateway.guardrailsValidate" . }}
+{{- $g := .Values.guardrails }}
+{{- $indexes := include "agent-gateway.guardrailIndexes" . | fromJson }}
+{{- $defaultIdx := int (index $indexes $g.defaultProfile) }}
+{{- $prefix := .Values.workloadIdentity.allowedSubjectPrefix }}
+{{- range $name := $g.order }}
+{{- $open := ge (int (index $indexes $name)) $defaultIdx }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm-{{ $name }}
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+    oap.dev/guardrail-profile: {{ $name }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $g.proxy.gatewayName }}
+      namespace: {{ $g.proxy.namespace }}
+  hostnames:
+    {{- range (include "agent-gateway.guardrailHostnames" $ | fromJsonArray) }}
+    - {{ . }}
+    {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /llm/{{ $name }}
+      filters:
+        # /llm/<profile>/v1/chat/completions reaches the backend as /v1/chat/completions.
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: {{ $g.backend.name }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: llm-{{ $name }}-access
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+    oap.dev/guardrail-profile: {{ $name }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: llm-{{ $name }}
+  traffic:
+    authorization:
+      # Require, not Allow (Allow would be ORed with the Gateway rule) and not Deny (the CRD
+      # warns Deny fails open when an expression errors).
+      action: Require
+      policy:
+        matchExpressions:
+          {{- if $open }}
+          - {{ printf "has(jwt.sub) && jwt.sub.startsWith(%q)" $prefix | squote }}
+          {{- else }}
+          {{- $grant := get ($.Values.guardrailAccess | default dict) $name | default dict }}
+          - {{ printf "jwt.sub in [%s]" (include "agent-gateway.mcpAccessSubjects" (dict "agents" ($grant.agents | default list) "ns" "")) | squote }}
+          {{- end }}
+{{- end }}
+{{- end }}

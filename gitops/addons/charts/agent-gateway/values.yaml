@@ -173,9 +173,64 @@ guardrails:
   proxy:
     namespace: agentgateway-system
     serviceAccountName: agentgateway-proxy
+    # The Gateway the /llm routes attach to (templates/gateway.yaml). Its Service has the
+    # same name.
+    gatewayName: agentgateway-proxy
+    clusterDomain: cluster.local
   # Same cross-Region guardrail profile as crossplane-agentcore guardrails.crossRegion.profileId
   # (a test pins both). With a cross-Region guardrail, ApplyGuardrail also needs the profile
   # resource in every destination Region, so the policy allows it in any Region of the account.
   # Empty for a CLASSIC tier guardrail.
   crossRegion:
     profileId: "us.guardrail.v1:0"
+  # Profile routing. The same profile names, in the same order, as crossplane-agentcore
+  # guardrails.order (a test pins both). That chart holds what each profile detects; this
+  # chart holds how the gateway enforces it. Order runs from the weakest profile to the
+  # strongest.
+  order:
+    - observe
+    - standard
+    - strict
+  # Profiles at or above this one admit every agent (any ServiceAccount token the gateway
+  # accepts). Weaker profiles admit only agents named in guardrailAccess. The agent
+  # component reads the same value from oam-agent-components global.guardrails.defaultProfile.
+  defaultProfile: standard
+  # Per profile:
+  #   action       Reject blocks a flagged request. Audit records it and lets it through.
+  #   failureMode  FailClosed refuses the call when Bedrock cannot be reached. Set on every
+  #                profile explicitly, because the default could change upstream.
+  #   scope        Which parts of the request are inspected. Tool call inputs are not
+  #                inspected unless ToolInput is listed.
+  # All three are required for every profile. The render fails when one is missing.
+  profiles:
+    observe:
+      action: Audit
+      failureMode: FailClosed
+      scope: [Messages, ToolOutput]
+    standard:
+      action: Reject
+      failureMode: FailClosed
+      scope: [Messages, ToolOutput]
+    strict:
+      action: Reject
+      failureMode: FailClosed
+      scope: [Messages, ToolOutput]
+  # Text of the rejection returned to the caller. The status code is 403.
+  rejectMessage: "The request was blocked by the platform guardrail."
+  # The LLM gateway the /llm routes forward to: Bifrost, by its in-cluster Service. The
+  # AgentgatewayBackend names host and port directly because a backendRef may only point at
+  # a Service in the backend's own namespace, and Bifrost runs in its own namespace.
+  backend:
+    name: llm
+    host: bifrost.bifrost.svc.cluster.local
+    port: 8080
+    # Path Bifrost serves chat completions on. Set explicitly so it does not depend on the
+    # gateway's default for the format.
+    completionsPath: /v1/chat/completions
+# Which agents may use a profile weaker than guardrails.defaultProfile
+# (templates/guardrail-routes.yaml). Same shape as mcpAccess, with the full
+# <namespace>/<agent> form required (a bare name fails the render). Profiles at or above
+# the default admit every agent, so listing one there fails the render. Empty by default:
+# no agent may use a weaker profile. Set per environment in
+# gitops/overlays/environments/<env>/agent-gateway/values.yaml.
+guardrailAccess: {}

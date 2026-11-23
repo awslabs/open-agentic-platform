@@ -39,3 +39,11 @@ agentAccess:
   deleg-restricted:
     namespace: default
     agents: [default/oap-assistant-a]
+# Agents allowed to use a guardrail profile weaker than guardrails.defaultProfile
+# (templates/guardrail-routes.yaml, docs/architecture/agent-guardrails.md). Profiles at or
+# above the default admit every agent, so only the weaker ones (observe) need a grant. The
+# form is <namespace>/<agent>; a bare name fails the render. Empty: no agent may use observe.
+# Left commented because it names no real agent. Example:
+# guardrailAccess:
+#   observe:
+#     agents: [default/my-agent]

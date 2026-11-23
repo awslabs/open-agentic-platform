@@ -1,0 +1,31 @@
+{{/*
+  The AI backend behind the /llm routes (docs/architecture/agent-guardrails.md). Rendered
+  only when guardrails.enabled is "true".
+  A `custom` provider, not `openai`: Bifrost is a self-hosted OpenAI-compatible gateway,
+  and the openai provider is for the OpenAI API (host overrides on it are for proxies of
+  that API). `custom` declares the target and the API format explicitly. The target is a
+  host and port because a custom provider's backendRef may only name a Service in the
+  backend's own namespace, and Bifrost is in its own namespace.
+  Bifrost serves inference without authentication to in-cluster callers
+  (bifrost.client.enforceAuthOnInference is false in configs/bifrost/values.yaml), so the
+  agent's token that reaches it is ignored there.
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- $g := .Values.guardrails }}
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: {{ $g.backend.name }}
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+spec:
+  ai:
+    provider:
+      host: {{ $g.backend.host }}
+      port: {{ $g.backend.port }}
+      custom:
+        formats:
+          - type: Completions
+            path: {{ $g.backend.completionsPath }}
+{{- end }}
