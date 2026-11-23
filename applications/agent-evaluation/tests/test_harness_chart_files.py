@@ -17,6 +17,7 @@ import yaml
 
 from app.datasets import load_dataset
 from app.harness_config import KNOWN_CHECKS, load_checks
+from app.harness_job import LABEL_RUN
 from app.judge import render_prompt
 
 CHART = Path(__file__).resolve().parents[3] / "gitops/addons/charts/agent-evaluation"
@@ -223,6 +224,75 @@ def test_endpoint_service_and_network_policy_admit_only_the_rollouts_controller(
     # The policy isolates the pod, so the metrics port needs its own rule (no `from`).
     assert pol["spec"]["ingress"][1] == {"ports": [{"protocol": "TCP", "port": 9090}]}
     assert not [d for d in _render_eval() if d["metadata"]["name"] == "agent-evaluation-harness-api"]
+
+
+# TEST-NET-1 addresses (RFC 5737), never a real cluster's API server.
+API_SERVER_CIDRS = ["192.0.2.1/32", "192.0.2.10/32"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_runner_egress_policy_allows_only_dns_bifrost_agents_and_the_api_server():
+    docs = _render_eval(
+        "--set", "harness.enabled=true", "--set", "harness.egress.enabled=true",
+        "--set", "harness.egress.apiServerCidrs={" + ",".join(API_SERVER_CIDRS) + "}",
+    )
+    pol = next(d for d in docs if d["metadata"]["name"] == "agent-evaluation-harness-runner-egress")
+    assert pol["kind"] == "NetworkPolicy"
+    # The runner pods only (the label job_body sets); the reconciler's pods do
+    # not carry it.
+    assert pol["spec"]["podSelector"] == {"matchLabels": {LABEL_RUN: "true"}}
+    assert pol["spec"]["policyTypes"] == ["Egress"]
+    assert pol["spec"]["egress"] == [
+        {"ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
+        {
+            "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "bifrost"}}}],
+            "ports": [{"protocol": "TCP", "port": 8080}],
+        },
+        {"to": [{"namespaceSelector": {}}], "ports": [{"protocol": "TCP", "port": 8083}]},
+        {
+            "to": [{"ipBlock": {"cidr": c}} for c in API_SERVER_CIDRS],
+            "ports": [{"protocol": "TCP", "port": 443}],
+        },
+    ]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_runner_egress_policy_limits_dns_to_dns_cidrs_when_set():
+    docs = _render_eval(
+        "--set", "harness.enabled=true", "--set", "harness.egress.enabled=true",
+        "--set", "harness.egress.apiServerCidrs={" + API_SERVER_CIDRS[0] + "}",
+        "--set", "harness.egress.dnsCidrs={192.0.2.53/32}",
+    )
+    pol = next(d for d in docs if d["metadata"]["name"] == "agent-evaluation-harness-runner-egress")
+    assert pol["spec"]["egress"][0] == {
+        "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+        "to": [{"ipBlock": {"cidr": "192.0.2.53/32"}}],
+    }
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_runner_egress_policy_is_off_by_default_and_needs_an_api_server_address():
+    names = {d["metadata"]["name"] for d in _render_eval("--set", "harness.enabled=true")}
+    assert "agent-evaluation-harness-runner-egress" not in names
+    # Off with the harness off, even when asked for.
+    names = {
+        d["metadata"]["name"]
+        for d in _render_eval(
+            "--set", "harness.egress.enabled=true",
+            "--set", "harness.egress.apiServerCidrs={" + API_SERVER_CIDRS[0] + "}",
+        )
+    }
+    assert "agent-evaluation-harness-runner-egress" not in names
+    r = _fails("--set", "harness.egress.enabled=true")
+    assert r.returncode != 0 and "harness.egress.apiServerCidrs" in r.stderr
+    # It asks for the ClusterIP, not the endpoint addresses EKS replaces.
+    assert "kubernetes Service ClusterIP" in r.stderr and "svc,endpoints" not in r.stderr
+    r = _fails(
+        "--set", "harness.egress.enabled=true",
+        "--set", "harness.egress.apiServerCidrs={" + API_SERVER_CIDRS[0] + "}",
+        "--set", "harness.egress.bifrostNamespace=",
+    )
+    assert r.returncode != 0 and "harness.egress.bifrostNamespace" in r.stderr
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")

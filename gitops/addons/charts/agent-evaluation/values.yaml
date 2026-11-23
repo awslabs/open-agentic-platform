@@ -285,6 +285,58 @@ harness:
       namespace: argo-rollouts
       podLabels:
         app.kubernetes.io/name: argo-rollouts
+  # Egress NetworkPolicy for the runner Job pods (agent-harness.md section 5).
+  # Off by default, because the API server address is per cluster. With it on,
+  # a runner pod may reach DNS, Bifrost, an agent pod on agentPort and the
+  # addresses in apiServerCidrs, and nothing else, so a preview Service with
+  # hand-made EndpointSlices cannot aim a Job outside the cluster's pods and
+  # nodes. A wrong value fails every run with an error, which aborts every gate
+  # revision: run one gate revision to completion after turning it on.
+  # Two findings from the live run on EKS Auto Mode:
+  # - Node addresses on agentPort. The "any namespace on agentPort" rule
+  #   resolves to pod IPs, and a hostNetwork pod's IP is its node's IP. On a
+  #   cluster where every node runs a hostNetwork pod (a node exporter, say),
+  #   a redirect to <node IP>:8083 still works.
+  # - Other pods in the namespace. Unlabelled pods in the same namespace lost
+  #   egress while the policy was present. Cause: the EKS network policy agent
+  #   keeps policy state per node under the pod name without its last "-"
+  #   part, plus the namespace. Pods on one node whose names match up to the
+  #   last "-" share it, labelled or not. Runner pods are named
+  #   oap-harness-<12 hex>-<suffix>, one prefix per Job, and the reconciler's
+  #   pods do not share it, so the chart's own pods are not affected (the
+  #   reconciler, which calls Langfuse, Bifrost and the API server, kept
+  #   working). Do not run other pods in this namespace whose names start
+  #   with oap-harness-.
+  #   If the runner pod is deleted first, a pod that shares its key stays
+  #   restricted after the policy is gone, until every pod with that key on
+  #   the node has gone. Tracked in awslabs/open-agentic-platform#173.
+  egress:
+    enabled: false
+    # Namespace of the Bifrost pods (judge.bifrostUrl points at its Service),
+    # and the Bifrost pod's port (the Service's targetPort).
+    bifrostNamespace: bifrost
+    bifrostPort: 8080
+    # The agent's A2A port, which <agent>-preview targets.
+    agentPort: 8083
+    # Required when enabled: the kubernetes Service ClusterIP of this cluster,
+    # as a /32 (kubectl get svc kubernetes -n default). Set per cluster, never
+    # in this file. The runner connects to the ClusterIP (in-cluster config),
+    # and the EKS VPC CNI matches egress on it before the DNAT: tested live on
+    # EKS Auto Mode, the ClusterIP alone admits the runner, and the endpoint
+    # addresses alone do not. Do not list the endpoint addresses
+    # (kubectl get endpoints kubernetes -n default). They are control-plane
+    # ENIs that EKS replaces, for example on a version upgrade, so a list that
+    # depends on them goes stale, and then every run fails and every gate
+    # revision aborts. The ClusterIP stays fixed for the cluster's life.
+    apiServerCidrs: []
+    apiServerPort: 443
+    # Optional: the cluster DNS resolver address, as a CIDR, for the DNS rule
+    # (port 53). Use the nameserver in a pod's /etc/resolv.conf, which is the
+    # kubelet clusterDNS address; on EKS Auto Mode it is the .10 address of the
+    # service CIDR and no kube-dns Service owns it. It stays fixed for the
+    # cluster's life. Empty: port 53 is open to any address, so a runner pod
+    # could send DNS queries to any resolver.
+    dnsCidrs: []
   # How long a created Job may wait for a free slot (maxConcurrentJobs) before
   # the endpoint answers error. The run's total cap is runTimeoutSeconds plus
   # this, and must stay at or below 2100 s: the AnalysisTemplate polls for

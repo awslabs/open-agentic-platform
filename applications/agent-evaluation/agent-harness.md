@@ -762,6 +762,10 @@ Useful `harness.*` values (`values.yaml`; all have working defaults):
 | `maxConcurrentJobs` | 2 | Jobs at once per cluster; a new Job is created suspended and waits for a slot |
 | `api.port` | 8081 | the verdict endpoint's port (match `global.agentEvaluation.harnessApiPort` in `oam-agent-components`) |
 | `api.controller` | `argo-rollouts` namespace, label `app.kubernetes.io/name: argo-rollouts` | which pods the NetworkPolicy lets call the endpoint. Check the labels on your cluster |
+| `egress.enabled` | `false` | renders the runner egress NetworkPolicy (4.3). Needs `egress.apiServerCidrs` |
+| `egress.apiServerCidrs` | `[]` | this cluster's `kubernetes` Service ClusterIP, as a /32. Not the endpoint addresses, which EKS replaces (4.3). Set per cluster |
+| `egress.bifrostNamespace`, `egress.bifrostPort`, `egress.agentPort`, `egress.apiServerPort` | `bifrost`, 8080, 8083, 443 | the other destinations the runner may reach |
+| `egress.dnsCidrs` | `[]` | the cluster DNS address (the nameserver in a pod's `/etc/resolv.conf`) as a CIDR. Empty leaves port 53 open to any address (4.3) |
 | `slotWaitSeconds` | 300 | how long a created Job may wait for a free slot. `runTimeoutSeconds + slotWaitSeconds` must be at most 2100, or the chart fails to render |
 | `caseConcurrency` | 2 | cases in flight per run |
 | `caseTimeoutSeconds` | 120 | per call: the agent call and each judge call |
@@ -817,11 +821,18 @@ image index at the end.
 - Publish to a registry **every cluster that runs agents can pull** (hub and
   spokes). A private repository in one account works only where the node role
   can pull from it.
-- Pin `image.tag` to an immutable tag (we used the commit short sha) and record
-  the index digest. Do not overwrite tags.
-- Publishing the image is also when the hub overlay's `image.tag` moves off
-  `0.2.4` (see 4.1); until then the hub runs the reconciler without a harness
-  loop.
+- The image is set in the registry entry `agent-evaluation`
+  (`gitops/addons/registry/observability.yaml`, `valuesObject.image`), not in
+  an overlay. `image.repository` there resolves to the deploying cluster's own
+  ECR (`<account>.dkr.ecr.<region>.amazonaws.com/agent-evaluation`, from the
+  cluster secret), so push the image to each account that runs the addon.
+  `valuesObject` wins over any overlay values file, so an overlay
+  `image.tag` has no effect.
+- Pin the registry's `image.tag` to an immutable tag (we used the commit short
+  sha) and record the index digest. Do not overwrite tags.
+- Publishing the `0.3.0` image is also when the registry's `image.tag` moves
+  off `0.2.4` (see 4.1); until then every cluster with the addon runs the
+  reconciler without a harness loop.
 - The chart default `image.repository` is the platform public repository, which
   does not exist yet; that is why the addon defaults to off (section 8).
 
@@ -853,9 +864,44 @@ gateway-only policy, unchanged. The runner sends no `X-Forwarded-User`, so it
 reaches the agent as an anonymous caller. If you add your own NetworkPolicies
 on agent namespaces, they need the same allowance. Egress from the
 agent-evaluation namespace must reach the preview Services (TCP 8083), Bifrost
-and the Kubernetes API. Ingress to the reconciler's verdict endpoint (TCP 8081) is
+and the Kubernetes API.
+
+The runner egress NetworkPolicy `agent-evaluation-harness-runner-egress` limits
+the runner pods to those destinations and DNS, so a preview Service given
+hand-made EndpointSlices cannot aim a runner at an address outside the
+cluster's pods and nodes. It is off by default because the API server address
+is per cluster. To turn it on for a cluster, set `harness.egress.enabled: true`
+and `harness.egress.apiServerCidrs` to the `kubernetes` Service ClusterIP as a
+/32 (`kubectl get svc kubernetes -n default`); the chart fails to render
+without it. Do not list the endpoint addresses from `kubectl get endpoints`:
+they are control-plane ENIs that EKS replaces, for example on a version
+upgrade, so the list goes stale and then every run fails and every gate
+revision aborts. The ClusterIP is enough: the runner connects to it, and the
+VPC CNI matches it before the DNAT (tested live on EKS Auto Mode). Optionally
+set `harness.egress.dnsCidrs` to the nameserver in a pod's `/etc/resolv.conf`;
+without it port 53 stays open to any address. A wrong value makes every run
+fail with an `error`, which aborts every gate revision, so run one gate
+revision to completion after turning it on.
+
+Two findings from the live run on EKS Auto Mode (design section 5):
+- Node addresses on 8083. The rule for pods in any namespace on 8083 also
+  admits node IPs, through any hostNetwork pod on the node, so a redirect to
+  `<node IP>:8083` still works.
+- Other pods in the namespace. Unlabelled pods in the same namespace lost
+  egress while the policy was present. The cause is in the EKS network policy
+  agent: pods on one node whose names match up to the last `-` share policy
+  state, labelled or not. Runner pods are named `oap-harness-<12 hex>-<suffix>`
+  and the reconciler's pods do not share that prefix, so the chart's own pods
+  are not affected. Do not run other pods in the agent-evaluation namespace
+  whose names start with `oap-harness-`. The stuck state is tracked in
+  [#173](https://github.com/awslabs/open-agentic-platform/issues/173).
+
+Ingress to the reconciler's verdict endpoint (TCP 8081) is
 limited by NetworkPolicy to the Argo Rollouts controller; set
-`harness.api.controller` if its namespace or labels differ.
+`harness.api.controller` if its namespace or labels differ. The endpoint has
+no credential, so the cluster must enforce NetworkPolicy. That is part of the
+cluster contract
+([aws-samples/appmod-blueprints#1239](https://github.com/aws-samples/appmod-blueprints/issues/1239)).
 
 ### 4.4 The judge key
 
@@ -1022,21 +1068,28 @@ Placeholders: `<registry>` for the image registry, `<tag>` for the image tag,
 
 ### 6.1 Enablement (hub only)
 
-We enabled the harness on the hub only; `dev` and `prod` stayed off. We set
-these two files locally and did not commit them; on `main` the addon is off
-and the hub overlay only pins an image:
+We enabled the harness on the hub only; `dev` and `prod` stayed off. With the
+current mechanism (4.1 and 4.2) that is two files, changed locally and not
+committed; on `main` the addon and the harness are off:
 
-- `gitops/overlays/environments/control-plane/enabled-addons.yaml`:
-  `agent_evaluation: true`.
-- `gitops/overlays/clusters/hub/agent-evaluation/values.yaml`:
+- `gitops/overlays/environments/control-plane/enabled-addons.yaml`: the addon
+  and the harness flag. `agent_harness` alone sets both harness switches.
 
   ```yaml
-  image:
-    repository: <registry>/agent-evaluation
-    tag: "<tag>"            # the fix commit's short sha, multi-arch index
-  harness:
-    enabled: true           # everything else: chart defaults
+  enabledAddons:
+    agent_evaluation: true
+    agent_harness: true     # sets harness.enabled and global.agentEvaluation.harnessEnabled
   ```
+
+- `gitops/addons/registry/observability.yaml`, entry `agent-evaluation`:
+  `valuesObject.image.tag: "<tag>"` (the fix commit's short sha, multi-arch
+  index). `image.repository` already resolves to the hub account's ECR. The
+  tag applies to every cluster with the addon; only the hub had it on.
+
+  Do not put `image` or `harness.enabled` in
+  `gitops/overlays/clusters/hub/agent-evaluation/values.yaml`: the registry
+  sets both in `valuesObject`, which wins over that file. The bifrost chart's
+  `judgeKey.enabled` is set separately (4.4).
 
   Defaults in use: judge key minted in the hub's Bifrost, judge model
   `judge.defaultAlias`, interval 60 s, history 3, `casePassScore` 0.7.
@@ -1224,8 +1277,8 @@ Events. An `InvalidHarnessDeclaration` Event on a result ConfigMap
   [docs/architecture/agent-harness.md](../../docs/architecture/agent-harness.md). A design note, not a commitment.
 - **Publishing images and bumping pins.** The reconciler image with the harness
   is not in the platform's public registry yet, so `agent_evaluation` stays off
-  on `main`. Once published, set the chart's `image.tag` and remove per-cluster
-  image overrides. Publish a `strands-agent` image with the harness marking
+  on `main`. Once published, set the chart's `image.tag` and remove the
+  `image` block from the registry entry (`gitops/addons/registry/observability.yaml`). Publish a `strands-agent` image with the harness marking
   change and bump its default pin.
 - **Team-owned datasets.** The `<namespace>/<name>` dataset form is reserved and
   rejected today; datasets are platform chart files.

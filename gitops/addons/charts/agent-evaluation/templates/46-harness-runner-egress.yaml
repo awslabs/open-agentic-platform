@@ -1,0 +1,77 @@
+{{- /*
+Egress for the harness runner Job pods (harness.egress.enabled, design section 5).
+The runner's target is <agent>-preview, a Service in a team namespace. A team
+can attach hand-made EndpointSlices to that Service and aim the platform Job at
+any address the Job can reach. This policy limits the runner pods to what a run
+needs: DNS, Bifrost (the judge), an agent pod on the A2A port, and the API
+server (the runner creates its result ConfigMap).
+The API server address cannot be selected by label, so it is a list of CIDRs per
+cluster (the kubernetes Service ClusterIP), and the policy does not render
+without one. Nothing here is a cluster
+literal. Only pods labelled harness.oap.io/run: "true" match; the reconciler's
+own pods do not carry the label. The policy takes effect only on clusters that
+enforce NetworkPolicy. A wrong value fails every run with an error, which aborts
+every gate revision.
+*/ -}}
+{{- if and (eq (include "agent-evaluation.harnessEnabled" .) "true") .Values.harness.egress.enabled }}
+{{- $e := .Values.harness.egress }}
+{{- if not $e.apiServerCidrs }}
+{{- fail "agent-evaluation: harness.egress.enabled needs harness.egress.apiServerCidrs. The runner creates its result ConfigMap through the API server, so without an API server address every run fails. List the kubernetes Service ClusterIP of this cluster (kubectl get svc kubernetes -n default) as a /32. The runner connects to that address, and the EKS VPC CNI matches it before the DNAT. The endpoint addresses are not needed, and EKS replaces them." }}
+{{- end }}
+{{- if not $e.bifrostNamespace }}
+{{- fail "agent-evaluation: harness.egress.bifrostNamespace is required with harness.egress.enabled. The judge calls go to Bifrost in that namespace." }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-evaluation-harness-runner-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-evaluation.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      harness.oap.io/run: "true"
+  policyTypes: [Egress]
+  egress:
+    # DNS. EKS Auto Mode runs CoreDNS on the node, not as pods a selector can
+    # name, so the resolver is set by address (dnsCidrs: the clusterDNS address
+    # in the pod's resolv.conf). With dnsCidrs empty, port 53 is open to any
+    # address.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      {{- with $e.dnsCidrs }}
+      to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    # The judge: Bifrost pods.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $e.bifrostNamespace | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $e.bifrostPort }}
+    # The agent: pods in any namespace on the A2A port. An address outside the
+    # cluster's pods, set through a hand-made EndpointSlice, matches no rule.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ $e.agentPort }}
+    # The API server, by address.
+    - to:
+        {{- range $e.apiServerCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $e.apiServerPort }}
+{{- end }}
