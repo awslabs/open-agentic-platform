@@ -77,3 +77,94 @@ guardrails:
   # annotation. Required when guardrails are enabled, because the provider role is scoped
   # to this account's guardrail ARNs.
   awsAccountId: ""
+  # Profile order, weakest to strongest. The agent-gateway chart names the same profiles in
+  # the same order (guardrails.order there), and a test fails if the two differ. Every
+  # profile below must be listed here, and every name listed must have a profile.
+  order:
+    - observe
+    - standard
+    - strict
+  # Catalog revision. A GuardrailVersion is an immutable snapshot of its Guardrail, so
+  # editing a profile below does not change what the gateway applies until a new version is
+  # cut. The revision is part of each GuardrailVersion description, and changing it makes
+  # Crossplane create a new version. The gateway then binds the new version number. Raise
+  # it in the same change as any edit to a profile.
+  catalogRevision: "1"
+  # Tier for content filters and denied topics. STANDARD needs the cross-Region guardrail
+  # profile below: Bedrock may route a guardrail evaluation to another Region of the same
+  # geography. CLASSIC needs no profile and stays in one Region, with weaker detection. Set
+  # CLASSIC and an empty crossRegion.profileId where cross-Region routing is not allowed.
+  tier: STANDARD
+  crossRegion:
+    # System-defined guardrail profile for the cluster's Region. Pick the profile of the
+    # geography that contains awsRegion, from
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-cross-region-support.html
+    # (us.guardrail.v1:0 for us-east-1, us-east-2, us-west-1 and us-west-2;
+    # eu.guardrail.v1:0 for the EU Regions listed there). The gateway role needs the same ID,
+    # so agent-gateway has the same key and a test pins both.
+    profileId: "us.guardrail.v1:0"
+  # Text returned to the caller when a guardrail blocks. The Bedrock API requires both.
+  blockedInputMessaging: "This request was blocked by the platform guardrail."
+  blockedOutputsMessaging: "This response was blocked by the platform guardrail."
+  # STARTER CATALOG. The platform maintainers own the final contents of every profile. These
+  # values are a working starting point, not a reviewed policy. Allowed keys per profile:
+  #   description   free text
+  #   contentFilters  map of filter type -> strength. Types: SEXUAL, VIOLENCE, HATE, INSULTS,
+  #                   MISCONDUCT, PROMPT_ATTACK. Strengths: NONE, LOW, MEDIUM, HIGH.
+  #                   PROMPT_ATTACK is checked on input only (Bedrock requires its output
+  #                   strength to be NONE).
+  #   piiEntities   list of {type, action}. Action: BLOCK, ANONYMIZE or NONE.
+  #   deniedTopics  list of {name, definition, examples}. Each is a DENY topic.
+  # Any other key fails the render.
+  profiles:
+    observe:
+      description: Starter observe profile. Content filters at low strength. The gateway runs it in Audit mode, so nothing is rejected.
+      contentFilters:
+        SEXUAL: LOW
+        VIOLENCE: LOW
+        HATE: LOW
+        INSULTS: LOW
+        MISCONDUCT: LOW
+    standard:
+      description: Starter standard profile. Content filters at medium strength, prompt attack detection, PII anonymized.
+      contentFilters:
+        SEXUAL: MEDIUM
+        VIOLENCE: MEDIUM
+        HATE: MEDIUM
+        INSULTS: MEDIUM
+        MISCONDUCT: MEDIUM
+        PROMPT_ATTACK: MEDIUM
+      piiEntities:
+        - {type: EMAIL, action: ANONYMIZE}
+        - {type: PHONE, action: ANONYMIZE}
+        - {type: NAME, action: ANONYMIZE}
+        - {type: ADDRESS, action: ANONYMIZE}
+        - {type: CREDIT_DEBIT_CARD_NUMBER, action: ANONYMIZE}
+        - {type: AWS_ACCESS_KEY, action: ANONYMIZE}
+        - {type: AWS_SECRET_KEY, action: ANONYMIZE}
+        - {type: PASSWORD, action: ANONYMIZE}
+    strict:
+      description: Starter strict profile. Content filters and prompt attack detection at high strength, PII anonymized, one example denied topic.
+      contentFilters:
+        SEXUAL: HIGH
+        VIOLENCE: HIGH
+        HATE: HIGH
+        INSULTS: HIGH
+        MISCONDUCT: HIGH
+        PROMPT_ATTACK: HIGH
+      piiEntities:
+        - {type: EMAIL, action: ANONYMIZE}
+        - {type: PHONE, action: ANONYMIZE}
+        - {type: NAME, action: ANONYMIZE}
+        - {type: ADDRESS, action: ANONYMIZE}
+        - {type: CREDIT_DEBIT_CARD_NUMBER, action: ANONYMIZE}
+        - {type: AWS_ACCESS_KEY, action: ANONYMIZE}
+        - {type: AWS_SECRET_KEY, action: ANONYMIZE}
+        - {type: PASSWORD, action: ANONYMIZE}
+      # Example only: replace with the topics the platform actually denies.
+      deniedTopics:
+        - name: investment-advice
+          definition: Specific recommendations to buy, sell or hold a financial instrument.
+          examples:
+            - Which stocks should I buy this week?
+            - Should I move my retirement savings into one fund?

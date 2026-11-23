@@ -22,6 +22,11 @@
 {{- $account := toString $g.awsAccountId }}
 {{- $guardrailArn := printf "arn:%s:bedrock:%s:%s:guardrail/*" $g.arnPartition .Values.global.awsRegion $account }}
 {{- $resources := list $guardrailArn }}
+{{- /* A STANDARD tier guardrail is created against a cross-Region guardrail profile, and
+       the create and update calls name that profile as a resource. */}}
+{{- if $g.crossRegion.profileId }}
+{{-   $resources = append $resources (printf "arn:%s:bedrock:%s:%s:guardrail-profile/%s" $g.arnPartition .Values.global.awsRegion $account $g.crossRegion.profileId) }}
+{{- end }}
 {{- /* ListGuardrails is a list action that the provider calls without a guardrail ID, so it
        gets its own statement on "*". It returns names and ARNs only. */}}
 {{- $policy := dict "Version" "2012-10-17" "Statement" (list

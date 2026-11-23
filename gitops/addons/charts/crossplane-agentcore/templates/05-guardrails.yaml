@@ -1,0 +1,162 @@
+{{/*
+  One Guardrail and one GuardrailVersion per profile in guardrails.profiles
+  (docs/architecture/agent-guardrails.md). Rendered only when guardrails.enabled is "true".
+  The gateway applies a guardrail by its generated ID and version number, which exist only
+  after Crossplane creates the objects. The agent-gateway chart binds them into its
+  AgentgatewayPolicy objects after sync.
+*/}}
+{{- if eq (toString .Values.guardrails.enabled) "true" }}
+{{- $g := .Values.guardrails }}
+{{- $cluster := .Values.global.eksClusterName }}
+{{- if not $cluster }}
+{{- fail "crossplane-agentcore: global.eksClusterName is required when guardrails are enabled" }}
+{{- end }}
+{{- $allowedKeys := list "description" "contentFilters" "piiEntities" "deniedTopics" }}
+{{- $filterTypes := list "SEXUAL" "VIOLENCE" "HATE" "INSULTS" "MISCONDUCT" "PROMPT_ATTACK" }}
+{{- $strengths := list "NONE" "LOW" "MEDIUM" "HIGH" }}
+{{- $piiActions := list "BLOCK" "ANONYMIZE" "NONE" }}
+{{- if not (has $g.tier (list "STANDARD" "CLASSIC")) }}
+{{- fail (printf "crossplane-agentcore: guardrails.tier %q must be STANDARD or CLASSIC" $g.tier) }}
+{{- end }}
+{{- if and (eq $g.tier "STANDARD") (not $g.crossRegion.profileId) }}
+{{- fail "crossplane-agentcore: guardrails.tier STANDARD needs guardrails.crossRegion.profileId (the cross-Region guardrail profile)" }}
+{{- end }}
+{{- range $name, $_ := $g.profiles }}
+{{-   if not (has $name $g.order) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.profiles.%s is not listed in guardrails.order" $name) }}
+{{-   end }}
+{{- end }}
+{{- range $g.order }}
+{{-   if not (hasKey $g.profiles .) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.order lists %q but guardrails.profiles has no such profile" .) }}
+{{-   end }}
+{{- end }}
+{{- range $name := $g.order }}
+{{- $p := get $g.profiles $name }}
+{{- range $key, $_ := $p }}
+{{-   if not (has $key $allowedKeys) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.profiles.%s has unknown key %q (allowed: %s)" $name $key (join ", " $allowedKeys)) }}
+{{-   end }}
+{{- end }}
+{{- range $type, $strength := ($p.contentFilters | default dict) }}
+{{-   if not (has $type $filterTypes) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.profiles.%s.contentFilters has unknown type %q (allowed: %s)" $name $type (join ", " $filterTypes)) }}
+{{-   end }}
+{{-   if not (has $strength $strengths) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.profiles.%s.contentFilters.%s strength %q must be one of %s" $name $type $strength (join ", " $strengths)) }}
+{{-   end }}
+{{- end }}
+{{- range ($p.piiEntities | default list) }}
+{{-   if not (has .action $piiActions) }}
+{{-     fail (printf "crossplane-agentcore: guardrails.profiles.%s.piiEntities %s action %q must be one of %s" $name .type .action (join ", " $piiActions)) }}
+{{-   end }}
+{{- end }}
+---
+apiVersion: bedrock.aws.upbound.io/v1beta1
+kind: Guardrail
+metadata:
+  name: {{ $cluster }}-{{ $name }}
+  labels:
+    platform.gitops.io/role: guardrail
+    platform.gitops.io/cluster: {{ $cluster }}
+    platform.gitops.io/guardrail-profile: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  forProvider:
+    region: {{ $.Values.global.awsRegion }}
+    name: {{ $cluster }}-{{ $name }}
+    {{- with $p.description }}
+    description: {{ . | quote }}
+    {{- end }}
+    blockedInputMessaging: {{ $g.blockedInputMessaging | quote }}
+    blockedOutputsMessaging: {{ $g.blockedOutputsMessaging | quote }}
+    {{- if eq $g.tier "STANDARD" }}
+    crossRegionConfig:
+      guardrailProfileIdentifier: {{ $g.crossRegion.profileId | quote }}
+    {{- end }}
+    {{- if $p.contentFilters }}
+    contentPolicyConfig:
+      {{- if eq $g.tier "STANDARD" }}
+      tierConfig:
+        tierName: STANDARD
+      {{- end }}
+      filtersConfig:
+        {{- range $type, $strength := $p.contentFilters }}
+        - type: {{ $type }}
+          inputStrength: {{ $strength }}
+          inputAction: BLOCK
+          inputEnabled: true
+          {{- if eq $type "PROMPT_ATTACK" }}
+          outputStrength: NONE
+          outputEnabled: false
+          {{- else }}
+          outputStrength: {{ $strength }}
+          outputAction: BLOCK
+          outputEnabled: true
+          {{- end }}
+        {{- end }}
+    {{- end }}
+    {{- if $p.piiEntities }}
+    sensitiveInformationPolicyConfig:
+      piiEntitiesConfig:
+        {{- range $p.piiEntities }}
+        - type: {{ .type }}
+          action: {{ .action }}
+          inputAction: {{ .action }}
+          inputEnabled: true
+          outputAction: {{ .action }}
+          outputEnabled: true
+        {{- end }}
+    {{- end }}
+    {{- if $p.deniedTopics }}
+    topicPolicyConfig:
+      {{- if eq $g.tier "STANDARD" }}
+      tierConfig:
+        tierName: STANDARD
+      {{- end }}
+      topicsConfig:
+        {{- range $p.deniedTopics }}
+        - name: {{ .name }}
+          definition: {{ .definition | quote }}
+          type: DENY
+          {{- with .examples }}
+          examples:
+            {{- range . }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+    {{- end }}
+    tags:
+      platform.gitops.io/role: guardrail
+      platform.gitops.io/cluster: {{ $cluster }}
+      platform.gitops.io/guardrail-profile: {{ $name }}
+  providerConfigRef:
+    name: default
+---
+apiVersion: bedrock.aws.upbound.io/v1beta1
+kind: GuardrailVersion
+metadata:
+  name: {{ $cluster }}-{{ $name }}
+  labels:
+    platform.gitops.io/role: guardrail
+    platform.gitops.io/cluster: {{ $cluster }}
+    platform.gitops.io/guardrail-profile: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  forProvider:
+    region: {{ $.Values.global.awsRegion }}
+    description: {{ printf "%s catalog revision %s" $name (toString $g.catalogRevision) | quote }}
+    guardrailArnRef:
+      name: {{ $cluster }}-{{ $name }}
+    # Keep older versions after a revision change, so a request in flight on the previous
+    # version number keeps working until the gateway binds the new one.
+    skipDestroy: true
+  providerConfigRef:
+    name: default
+{{- end }}
+{{- end }}
