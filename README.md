@@ -63,7 +63,9 @@ platform-engineering foundation, all on Amazon EKS Auto Mode:
 - AWS account with Amazon Bedrock access
 - [Task](https://taskfile.dev), `kubectl`, Helm 3.x, AWS CLI, `yq`
 - Podman or Docker (for the Kind-based bootstrap)
-- IAM Identity Center (ArgoCD SSO)
+- IAM Identity Center — **required** (the ArgoCD EKS capability needs an IdC instance; an
+  empty `identityCenter` block makes the install fail partway through). Its region may differ
+  from `aws.region` — a cross-region IdC is supported (see [Gotchas](#gotchas-for-a-custom-domain--agentic-install)).
 
 ### Install — no domain required (fastest path)
 
@@ -101,6 +103,45 @@ Either path bootstraps from Kind, provisions an EKS **hub** cluster, deploys the
 (ArgoCD, Crossplane, observability), provisions optional **spoke** clusters, then layers on the
 agentic capabilities as ArgoCD-managed addons. The Kind bootstrap is destroyed once the hub is
 self-managing.
+
+### Gotchas for a custom-domain / agentic install
+
+Six things that are easy to get wrong on a real own-domain install; each is annotated at its key
+in [`config.yaml`](config.yaml).
+
+- **Don't pin a `platform.ref` TAG yet.** The first clone takes a tag, but a resumed install
+  re-fetches with `+refs/heads/<ref>:...` (branches only), so a tag then fails with
+  `couldn't find remote ref refs/heads/<tag>` (exit 128). Use a **branch** until the re-fetch is
+  made tag-tolerant (tracked in [#165](https://github.com/awslabs/open-agentic-platform/issues/165)). On a resumable install this is the
+  common case, not an edge case.
+- **`aws.profile` and the AWS account.** On a laptop, your configured profile in `~/.aws/config`
+  is used as-is — set a **named** profile whose account equals `aws.accountId`. On an EC2 / Cloud
+  Desktop host where IMDS answers, the entrypoint regenerates `AWS_CONFIG_FILE` to a `[default]`
+  instance-role config that **shadows** `~/.aws/config`, so a named SSO/role profile there is not
+  picked up and the effective identity is the **host instance role** (often a different account).
+  The platform provider guards this: it stops if the resolved identity is not on `aws.accountId`
+  rather than provisioning in the wrong account. On such a host, run on an instance whose role is
+  in `aws.accountId`. Both Taskfiles resolve `aws.profile` from config, so you don't export
+  `AWS_PROFILE` by hand.
+- **`identityCenter` is required, and may be cross-region.** Empty IdC → ack + kro come up but the
+  ArgoCD capability is never created and the install fails later (the root ApplicationSet CRD never
+  appears). `identityCenter.region` is where the **IdC instance** lives and may differ from
+  `aws.region`. Find yours: `aws sso-admin list-instances --region <idc-region>`.
+- **The agent-gateway host is derived and shared per parent zone.** The registry computes
+  `agents.<parent-of-domain>` (for a 3+ label domain), covered by a single-label `*.<parent>`
+  cert. Every hub under the **same parent zone** derives the **same** `agents.<parent>`, so two
+  hubs in one zone collide on that Route53 record. To run more than one hub in one zone, set a
+  distinct `agent_gateway_host` annotation on each hub's cluster-secret (e.g. `agents-b.<parent>`);
+  there is no `config.local.yaml` key for it yet (tracked in [#168](https://github.com/awslabs/open-agentic-platform/issues/168)).
+- **The shared `platform` ALB is internet-facing and open by default.** All hub UIs sit behind one
+  internet-facing ALB that accepts any source IP out of the box. To reduce the exposed surface,
+  restrict it with the `inboundCidrs` allowlist on the shared `platform` ingress — see the platform
+  base's [`docs/platform/alb-ip-allowlist.md`](https://github.com/aws-samples/appmod-blueprints/blob/main/docs/platform/alb-ip-allowlist.md).
+  Include the NAT egress IPs of the hub and of the OAP spokes in the list, or in-cluster callers
+  (SSO, agent traffic) are locked out
+  ([pitfall 1](https://github.com/aws-samples/appmod-blueprints/blob/main/docs/platform/alb-ip-allowlist.md#1-include-the-nat-egress-ips-of-the-hub-and-of-oap-spokes)).
+- **Making a spoke agentic in your own fleet repo** is a per-cluster overlay — see
+  [Use your own fleet repo](#use-your-own-fleet-repo).
 
 ---
 
@@ -225,6 +266,44 @@ platform and agentic addons.
 - **Existing install:** before switching a running hub to a new fleet repo, make its spoke entries
   identical to the live ones (region, prefix, `k8sVersion`, CIDR). Otherwise the next sync tries to
   change the live spoke cluster to match the new entry.
+
+#### Make a spoke agentic
+
+With OAP's **stock** overlays the `dev` environment is **already agentic** — a `dev` spoke comes up
+with the agentic capabilities on and needs no extra step (this is what the no-`fleetRepo` path
+gives you; see `gitops/overlays/environments/dev/enabled-addons.yaml`). You only need a per-cluster
+override to turn the agentic tier on for a spoke whose **environment overlay does not already enable
+it** — for example a spoke in your **own fleet repo** whose environment overlay you keep agent-free.
+(All of OAP's stock overlays — `dev`, `prod`, `control-plane` — are already agentic, so a spoke on a
+stock overlay needs no override.) Add it at your fleet repo's **root** (not under `gitops/`):
+
+```
+overlays/clusters/<spoke>/addon-overrides.yaml
+```
+
+The spoke's `fleet-secret` reads this as its **last** value file (the `$overlay` source at the
+repo root), so it deep-merges over the environment overlay and affects only `<spoke>`. Each `true`
+key becomes an `enable_<key>` label on the spoke's cluster-secret:
+
+```yaml
+# overlays/clusters/<spoke>/addon-overrides.yaml
+enabledAddons:
+  # enablers the agentic addons need
+  cert_manager: true
+  crossplane_aws: true
+  abstractions: true        # Crossplane XRDs incl. PodIdentity
+  karpenter: true
+  # agentic platform
+  agent_platform: true
+  bifrost: true
+  otel_collector: true
+  monitoring: true
+  agent_core: true
+  agent_gateway: true
+  oam_components: true
+```
+
+The same file placed under a **hub** cluster turns the hub agentic the same way.
 
 ---
 
