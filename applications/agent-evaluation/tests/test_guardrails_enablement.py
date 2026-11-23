@@ -68,3 +68,20 @@ def test_all_switches_follow_the_labels_and_agree(tmp_path, guardrails, gateway,
         for name, expr in _expressions().items()
     }
     assert set(values.values()) == {"true" if on else "false"}, values
+
+
+def test_agent_component_and_gateway_agree_on_profile_order_and_default():
+    # The agent component checks a profile against its own order and default, the gateway
+    # routes by its own. If they differed, an agent could pass admission and meet no route.
+    gw = yaml.safe_load((CHARTS / "agent-gateway/values.yaml").read_text())["guardrails"]
+    oam = yaml.safe_load((CHARTS / "oam-agent-components/values.yaml").read_text())["global"]["guardrails"]
+    assert oam["order"].split(",") == gw["order"]
+    assert oam["defaultProfile"] == gw["defaultProfile"]
+    assert oam["defaultProfile"] in gw["order"]
+    assert oam["requiredNamespaces"] == ""
+
+
+def test_agent_token_audience_matches_the_gateway_identity_trait_default():
+    oam = yaml.safe_load((CHARTS / "oam-agent-components/values.yaml").read_text())["global"]
+    trait = (ROOT / "platform/oam/definitions/traits/gateway-identity.cue").read_text()
+    assert f'*"{oam["agentIdentity"]["workloadAudience"]}" | string' in trait

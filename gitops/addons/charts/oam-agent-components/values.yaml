@@ -36,6 +36,10 @@ global:
     # agent. "true": agents forward the user's Keycloak token (main's behaviour, the token
     # passthrough the MCP spec forbids).
     propagateCallerToken: "false"
+    # Audience of the projected ServiceAccount token an agent sends to the agent gateway
+    # (the MCP routes and, with guardrails on, the /llm routes). Must match the audience
+    # the gateway's workload identity provider expects, and the gateway-identity trait default.
+    workloadAudience: agentgateway
   # Namespace of the agentgateway-proxy Gateway. Platform-owned: agents admit ingress
   # only from this namespace (NetworkPolicy emitted by the agent component), and their
   # HTTPRoutes attach to the Gateway here by default. Set it where the gateway is
@@ -60,6 +64,18 @@ global:
     # guardrails.enabled, so the two cannot disagree. A string, because it is substituted
     # into CUE as text. This "false" is the default for a render outside the registry.
     enabled: "false"
+    # Profile order, weakest first, comma separated. Same names in the same order as
+    # agent-gateway guardrails.order (a test pins both). A profile an agent names must be
+    # in this list, and it can only be raised, never lowered, below its namespace minimum.
+    order: "observe,standard,strict"
+    # Minimum profile for a namespace that requiredNamespaces does not list. Same value as
+    # agent-gateway guardrails.defaultProfile.
+    defaultProfile: standard
+    # Namespaces with their own minimum, as comma separated namespace=profile pairs, for
+    # example "team-payments=strict,team-b=standard". An agent in a listed namespace must
+    # turn guardrails on (enabled: false is rejected) and cannot pick a profile below that
+    # namespace's minimum. Empty by default. An application developer cannot set it.
+    requiredNamespaces: ""
   agentEvaluation:
     namespace: agent-evaluation
     # Port of the verdict endpoint (Service agent-evaluation-harness-api) that the
