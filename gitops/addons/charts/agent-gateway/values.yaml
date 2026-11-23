@@ -152,3 +152,10 @@ delegation:
 # as mcpAccess. Empty by default: every agent keeps the Gateway-wide rule (any
 # authenticated caller). Set per environment.
 agentAccess: {}
+# Agent guardrails (docs/architecture/agent-guardrails.md). Not set by hand: the registry
+# derives it from the enable_agent_guardrails, enable_agent_gateway and enable_agent_core
+# cluster-secret labels with the same expression as crossplane-agentcore and
+# oam-agent-components, so the three cannot disagree. A string, because the registry
+# renders text. Default off: nothing guardrail-related renders.
+guardrails:
+  enabled: "false"

@@ -52,6 +52,14 @@ global:
   # is enabled admits ingress on TCP 8083 from the harness runner pods
   # (harness.oap.io/run: "true") in this namespace, because the harness Jobs call the
   # agent's <agent>-preview Service directly. Agents without a harness block do not.
+  # Agent guardrails policy. Platform-owned; an application developer cannot change it.
+  guardrails:
+    # Whether this cluster runs agent guardrails. Not set by hand: the registry derives it
+    # from the enable_agent_guardrails, enable_agent_gateway and enable_agent_core
+    # cluster-secret labels with the same expression as agent-gateway's
+    # guardrails.enabled, so the two cannot disagree. A string, because it is substituted
+    # into CUE as text. This "false" is the default for a render outside the registry.
+    enabled: "false"
   agentEvaluation:
     namespace: agent-evaluation
     # Port of the verdict endpoint (Service agent-evaluation-harness-api) that the

@@ -43,3 +43,9 @@ podIdentity:
   # ServiceAccount name used by the bedrockagentcore provider
   serviceAccountName: provider-aws-bedrockagentcore
   namespace: crossplane-system
+# Agent guardrails (docs/architecture/agent-guardrails.md). Not set by hand: the registry
+# derives it from the enable_agent_guardrails, enable_agent_gateway and enable_agent_core
+# cluster-secret labels with the same expression as agent-gateway and
+# oam-agent-components. A string, because the registry renders text. Default off.
+guardrails:
+  enabled: "false"

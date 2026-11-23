@@ -18,6 +18,12 @@ crossplane-agentcore:
       eksClusterName: '{{.metadata.annotations.aws_cluster_name}}'
       projectName: '{{default "agent-core" (index .metadata.annotations "agent_core_project_name")}}'
       networkMode: '{{default "PUBLIC" (index .metadata.annotations "agent_core_network_mode")}}'
+    # Agent guardrails switch. The SAME expression as agent-gateway's
+    # guardrails.enabled (registry/gateway.yaml) and oam-agent-components'
+    # global.guardrails.enabled, so the three cannot disagree
+    # (test_guardrails_enablement.py).
+    guardrails:
+      enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
   ignoreDifferences:
     - group: apiextensions.crossplane.io
       kind: Composition
@@ -109,6 +115,13 @@ oam-agent-components:
       # verdict endpoint, so it must not let a gate render.
       agentEvaluation:
         harnessEnabled: '{{ if and (eq (index .metadata.labels "enable_agent_evaluation") "true") (eq (index .metadata.labels "enable_agent_harness") "true") }}true{{ else }}false{{ end }}'
+      # Whether this cluster runs agent guardrails, so the agent component accepts
+      # guardrails.enabled: true. The SAME expression as agent-gateway's
+      # guardrails.enabled (registry/gateway.yaml), so the two cannot disagree.
+      # Off unless enable_agent_guardrails, enable_agent_gateway and
+      # enable_agent_core are all "true".
+      guardrails:
+        enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
       # Namespaces admitted to agents besides the gateway's (agent component
       # NetworkPolicy). The aiops-agent addon's chat-ui and incident-bridge call the
       # agent's Service directly from its own namespace, so that namespace is admitted

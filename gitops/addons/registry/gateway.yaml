@@ -153,6 +153,10 @@ agent-gateway:
         issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "oidc_issuer_url")}}'
         serviceName: '{{default "keycloak" (index .metadata.annotations "keycloak_service_name")}}'
         namespace: '{{default "keycloak" (index .metadata.annotations "keycloak_namespace")}}'
+    # Agent guardrails switch. The SAME expression as crossplane-agentcore's and
+    # oam-agent-components' guardrails.enabled (registry/agentcore.yaml).
+    guardrails:
+      enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
     ingress:
       enabled: true
       host: '{{index .metadata.annotations "ingress_domain_name"}}'

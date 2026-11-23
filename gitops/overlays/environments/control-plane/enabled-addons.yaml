@@ -176,6 +176,12 @@ enabledAddons:
   # enable_agent_harness label by both registry entries. Does nothing unless
   # agent_evaluation is also true here, and needs the 0.3.0 image.
   agent_harness: false
+  # Agent guardrails (docs/architecture/agent-guardrails.md): the one switch for
+  # agent-gateway guardrails.enabled, crossplane-agentcore guardrails.enabled and
+  # oam-agent-components global.guardrails.enabled, read from the
+  # enable_agent_guardrails label by all three registry entries. Does nothing
+  # unless agent_gateway and agent_core are also true here. Off by default.
+  agent_guardrails: false
   agent_core: true
   agent_gateway: true
   oam_components: true
