@@ -1,4 +1,9 @@
 global:
+  # Set by the registry from cluster-secret annotations, used by the guardrail IAM role
+  # (templates/guardrail-iam.yaml). Empty outside the registry; the template then fails.
+  awsRegion: ""
+  awsAccountId: ""
+  clusterName: ""
   # insecure=true: ingress serves plain HTTP; TLS is terminated upstream of the
   # ALB (e.g. by CloudFront). Set from the cluster secret's insecure annotation,
   # same convention as the keycloak/argo-workflows charts.
@@ -159,3 +164,18 @@ agentAccess: {}
 # renders text. Default off: nothing guardrail-related renders.
 guardrails:
   enabled: "false"
+  # IAM partition of the guardrail ARNs in the proxy role policy.
+  arnPartition: aws
+  # The gateway proxy, which calls Bedrock ApplyGuardrail. The controller creates its
+  # ServiceAccount from the Gateway name (templates/gateway.yaml), so serviceAccountName is
+  # that name unless an AgentgatewayParameters override renames it. Namespace is the
+  # Gateway's.
+  proxy:
+    namespace: agentgateway-system
+    serviceAccountName: agentgateway-proxy
+  # Same cross-Region guardrail profile as crossplane-agentcore guardrails.crossRegion.profileId
+  # (a test pins both). With a cross-Region guardrail, ApplyGuardrail also needs the profile
+  # resource in every destination Region, so the policy allows it in any Region of the account.
+  # Empty for a CLASSIC tier guardrail.
+  crossRegion:
+    profileId: "us.guardrail.v1:0"

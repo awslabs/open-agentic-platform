@@ -148,6 +148,9 @@ agent-gateway:
         values: ['true']
   valuesObject:
     global:
+      awsRegion: '{{.metadata.annotations.aws_region}}'
+      awsAccountId: '{{.metadata.annotations.aws_account_id}}'
+      clusterName: '{{.metadata.annotations.aws_cluster_name}}'
       insecure: '{{default "false" (index .metadata.annotations "insecure")}}'
       keycloak:
         issuerUrl: '{{default (printf "https://%s/keycloak/realms/platform" (index .metadata.annotations "ingress_domain_name")) (index .metadata.annotations "oidc_issuer_url")}}'
