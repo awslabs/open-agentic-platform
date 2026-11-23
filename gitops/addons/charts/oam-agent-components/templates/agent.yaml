@@ -282,6 +282,66 @@ spec:
         if _harnessEnabled && _harnessMode == "gate" && _harnessPlatform != "true" {
         	_harnessPlatformRequired: "set" & "harness.mode: gate needs the agent harness on this cluster: agent_evaluation: true and agent_harness: true in the environment enabled-addons.yaml (the enable_agent_evaluation and enable_agent_harness cluster-secret labels, which set global.agentEvaluation.harnessEnabled). Without it every revision of this agent aborts after a few polls. Use mode: report, or enable the harness on this cluster."
         }
+
+        // GUARDRAILS (optional). Declared here, not next to the parameter, because the
+        // Rollout env and the checks below both read it. An absent block behaves like
+        // enabled: false, so an Application that never mentions guardrails renders what it
+        // rendered before.
+        _gEnabled: *false | bool
+        if parameter.guardrails != _|_ {
+        	_gEnabled: parameter.guardrails.enabled
+        }
+
+        // Platform policy, substituted as text like the harness switch above. The order
+        // and the required namespaces arrive as comma separated strings and are split here,
+        // the same way extraIngressNamespaces is below. A Helm string "false" is truthy, so
+        // the platform switch is compared as a string.
+        _gPlatform: "{{ .Values.global.guardrails.enabled }}"
+        _gOrder: [for p in strings.Split("{{ .Values.global.guardrails.order }}", ",") if strings.TrimSpace(p) != "" {strings.TrimSpace(p)}]
+        _gDefault: "{{ .Values.global.guardrails.defaultProfile }}"
+        _gRequired: [for pair in strings.Split("{{ .Values.global.guardrails.requiredNamespaces }}", ",") if strings.TrimSpace(pair) != "" {
+        	let kv = strings.Split(strings.TrimSpace(pair), "=")
+        	{ns: strings.TrimSpace(kv[0]), profile: strings.TrimSpace(kv[1])}
+        }]
+        _gRequiredHere: [for r in _gRequired if r.ns == context.namespace {r.profile}]
+        // The minimum profile for this namespace: its own entry, else the platform default.
+        _gMinimum: list.Concat([_gRequiredHere, [_gDefault]])[0]
+        // FAIL CLOSED, like the harness check: guardrails on a cluster without the
+        // guardrail routes would send every model call to a route that does not exist.
+        if _gEnabled && _gPlatform != "true" {
+        	_guardrailsPlatformRequired: "set" & "guardrails.enabled: true needs agent guardrails on this cluster: agent_guardrails: true in the environment enabled-addons.yaml, with agent_gateway and agent_core (the enable_agent_guardrails, enable_agent_gateway and enable_agent_core cluster-secret labels, which set global.guardrails.enabled). Without it the agent's model calls have no route. Remove the guardrails block or enable guardrails on this cluster."
+        }
+
+        // In a required namespace guardrails cannot be off or absent.
+        if !_gEnabled && len(_gRequiredHere) > 0 {
+        	_guardrailsRequired: "set" & "namespace \(context.namespace) requires guardrails (minimum profile \(_gRequiredHere[0])): set guardrails: {enabled: true, profile: \(_gRequiredHere[0])} or a stronger profile. enabled: false and an absent guardrails block are rejected here."
+        }
+        if _gEnabled {
+        	if !list.Contains(_gOrder, parameter.guardrails.profile) {
+        		_guardrailsUnknownProfile: "set" & "guardrails.profile \(parameter.guardrails.profile) is not a profile on this platform. Known profiles, weakest first: \(strings.Join(_gOrder, ", "))."
+        	}
+        	if !list.Contains(_gOrder, _gMinimum) {
+        		_guardrailsMinimumUnknown: "set" & "the platform minimum profile \(_gMinimum) for namespace \(context.namespace) is not in the profile order \(strings.Join(_gOrder, ", ")): fix global.guardrails.defaultProfile and requiredNamespaces."
+        	}
+        	if list.Contains(_gOrder, parameter.guardrails.profile) && list.Contains(_gOrder, _gMinimum) {
+        		// Profile position in the order: weakest is 0.
+        		_gRank: {for i, p in _gOrder {"\(p)": i}}
+        		if _gRank[parameter.guardrails.profile] < _gRank[_gMinimum] {
+        			_guardrailsBelowMinimum: "set" & "guardrails.profile \(parameter.guardrails.profile) is below the minimum \(_gMinimum) for namespace \(context.namespace). A profile can be raised, not lowered: use \(_gMinimum) or stronger (order: \(strings.Join(_gOrder, " < ")))."
+        		}
+        	}
+        }
+
+        // The model endpoint. With guardrails on it is the profile's route on the agent
+        // gateway and modelConfig.llmGatewayUrl is ignored: the URL is not a developer
+        // override, because it is what routes the call through the guard. Off, it is the
+        // developer's modelConfig value, as before.
+        _llmUrl: [
+        		if _gEnabled {
+        		"http://agentgateway-proxy.{{ .Values.global.agentGateway.namespace }}.svc.cluster.local:8080/llm/" + parameter.guardrails.profile + "/v1"
+        	},
+        	parameter.modelConfig.llmGatewayUrl,
+        ][0]
         _harnessAnalysis: {
         	templates: [{templateName: context.name + "-harness"}]
         	analysisRunMetadata: labels: "harness.oap.io/agent": context.name
@@ -449,7 +509,7 @@ spec:
         						},
         						{name: "SYSTEM_PROMPT", value: parameter.systemMessage},
         						{name: "PORT", value: "8083"},
-        						{name: "LLM_GATEWAY_URL", value: parameter.modelConfig.llmGatewayUrl},
+        						{name: "LLM_GATEWAY_URL", value: _llmUrl},
         						{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
         						// The agent gateway the image calls for MCP servers and sub-agents. From the
         						// same platform value as the NetworkPolicy below, so moving the gateway moves both.
@@ -1280,6 +1340,13 @@ spec:
         		mode: *"report" | "gate"
         	}
 
+        	// +usage=Send this agent's model calls through the agent gateway's guardrail route for a profile. The profile is checked against the platform's order: it cannot be lower than the minimum for the namespace, and enabled: false is rejected in a namespace the platform requires guardrails for. Needs agent_guardrails on the cluster. With guardrails on, modelConfig.llmGatewayUrl is ignored. There is no threshold or tools key: the profile owns what is detected.
+        	guardrails?: {
+        		// +usage=Turn guardrails on for this agent.
+        		enabled: *false | bool
+        		// +usage=Profile name from the platform order (weakest to strongest, for example observe, standard, strict).
+        		profile: *"standard" | =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$"
+        	}
         	// Same shape as #EvaluatorName, and a valid ConfigMap value and label value.
         	#DatasetName:  =~"^[a-z0-9]([a-z0-9]|-[a-z0-9])*$" & strings.MaxRunes(63)
         	#HarnessCheck: "expected-answer"
