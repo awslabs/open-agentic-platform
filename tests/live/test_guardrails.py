@@ -117,7 +117,7 @@ def submit(spoke_kubeconfig):
 
     def kc(*args, stdin=None):
         return subprocess.run(["kubectl", "--kubeconfig", spoke_kubeconfig, "--request-timeout=30s", *args],
-                              input=stdin, capture_output=True, text=True, timeout=120)
+                              input=stdin, capture_output=True, text=True, timeout=120, check=False)
 
     def run(app):
         manifest = json.dumps(app)
@@ -405,7 +405,7 @@ def mcp_servers(spoke_kubeconfig, token):
 
     def kc(*args, stdin=None):
         return subprocess.run(["kubectl", "--kubeconfig", spoke_kubeconfig, "--request-timeout=30s", *args],
-                              input=stdin, capture_output=True, text=True, timeout=120)
+                              input=stdin, capture_output=True, text=True, timeout=120, check=False)
     for kind, name in names.items():
         applied = kc("apply", "-f", "-", stdin=json.dumps(mcp_app(name, rules[kind])))
         assert applied.returncode == 0, applied.stderr
