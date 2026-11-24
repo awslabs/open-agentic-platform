@@ -48,6 +48,14 @@ The agent-sandbox **operator** (the `Sandbox` CRD and its controller) is *not* a
 | `global.sandboxRuntimeClass` | `kata-clh` | The Kata RuntimeClass a sandboxed agent selects. Platform-owned; an application developer cannot set it from their OAM. `kata-qemu` is a one-line change (same node pool). `kata-fc` additionally needs `kataFc.enabled` on `kata-nodepool` and the `agent_sandbox_kata_fc` addon. **Empty makes `sandbox: true` fail the render**, by design, rather than silently scheduling an unisolated pod. |
 | `global.agentEvaluation.harnessEnabled` | `"false"` | Whether the `agent` component accepts `harness.mode: gate`. Not set by hand: the registry entry derives it from the `enable_agent_evaluation` and `enable_agent_harness` labels (`agent_evaluation` and `agent_harness` in `enabled-addons.yaml`) with the expression that also sets agent-evaluation's `harness.enabled`, so the two cannot disagree. A string, compared as text. See [agent-harness.md](../../../../applications/agent-evaluation/agent-harness.md) section 4.1. |
 
+| `global.guardrails.enabled` | `"false"` | Whether this cluster runs agent guardrails and the `agent` component accepts a `guardrails` block. Not set by hand: the registry derives it from the `enable_agent_guardrails`, `enable_agent_gateway` and `enable_agent_core` labels (`agent_guardrails`, `agent_gateway` and `agent_core` in `enabled-addons.yaml`) with the expression that also sets `guardrails.enabled` on `agent-gateway` and `crossplane-agentcore`. A string, compared as text. |
+| `global.guardrails.order` | `"observe,standard,strict"` | Profile names, weakest first, comma separated. The same names in the same order as `agent-gateway` `guardrails.order`; a test pins both. A profile an agent names must be in the list. |
+| `global.guardrails.defaultProfile` | `standard` | Minimum profile for a namespace that `requiredNamespaces` does not list. The same value as `agent-gateway` `guardrails.defaultProfile`. |
+| `global.guardrails.requiredNamespaces` | `""` | Namespaces with their own minimum, as `namespace=profile` pairs (`team-payments=strict,team-b=standard`). An agent there must turn guardrails on and cannot choose a lower profile. Platform-owned. |
+| `global.agentImage` | `v1.8.0` tag | An agent with guardrails on needs image v1.8.0 or later, which sends the workload token on model calls. |
+
+The `agent` component's `guardrails: {enabled, profile}` block, what a refusal looks like and the operator steps are in [`docs/agent-guardrails/GUIDE.md`](../../../../docs/agent-guardrails/GUIDE.md).
+
 See [`docs/sandbox-agents/DESIGN.md`](../../../../docs/sandbox-agents/DESIGN.md).
 
 ## Lifecycle

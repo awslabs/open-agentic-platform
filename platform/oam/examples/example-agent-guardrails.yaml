@@ -41,6 +41,7 @@
 # text units per second, shared by every cluster in the account and Region.
 # See the design, section 5.
 #
+# Setup and operation guide: docs/agent-guardrails/GUIDE.md
 # See the design: docs/architecture/agent-guardrails.md
 # Issues: #144 (content and topic control), #146 (Dogwood as the decision layer)
 apiVersion: core.oam.dev/v1beta1
