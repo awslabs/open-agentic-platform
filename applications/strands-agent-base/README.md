@@ -155,7 +155,8 @@ docker push ${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/strands-agent:late
 ### Publishing a release image (agent guardrails e2e)
 
 The default agent image, `global.agentImage` in
-`gitops/addons/charts/oam-agent-components/values.yaml`, names tag `v1.8.0`. A tag is
+`gitops/addons/charts/oam-agent-components/values.yaml`, stays at `v1.7.0` until v1.8.0
+is published. A tag is
 built from `version` in `pyproject.toml` (`IMAGE_TAG` defaults to `v<version>`) and is
 never overwritten, so the tag must be pushed once before any cluster uses it. Agents with
 `guardrails.enabled` need v1.8.0 or later; they send their ServiceAccount token on model
@@ -174,8 +175,8 @@ docker buildx build --platform linux/amd64,linux/arm64 --push \
 
 Then set `global.agentImage` for that cluster to the pushed reference
 (`<account>.dkr.ecr.<region>.amazonaws.com/strands-agent:v1.8.0`) in the cluster's
-oam-agent-components values, and keep it equal to `version` here (the "image version
-line" in `build.sh`). Build and push are not part of any automated check in this repo.
+oam-agent-components values. Bump the chart default to the new tag in a follow-up
+once it is pushed, so it matches `version` here (the "image version line" in `build.sh`). Build and push are not part of any automated check in this repo.
 
 ## Container Image
 

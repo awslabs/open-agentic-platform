@@ -21,12 +21,16 @@ global:
   # v1.7.0 emits that tag next to the bare ['<agent>', 'source:chat'] tags, and
   # adds supervisor delegation (docs/agent-delegation/DESIGN.md §9 "Image
   # contract").
-  # v1.8.0 sends the projected agentgateway ServiceAccount token on model calls when
-  # LLM_GATEWAY_AUTH_MODE=workload-token, which the agent component sets for agents with
-  # guardrails on (the guardrail routes need it). Agents without guardrails behave as in v1.7.0. THE IMAGE VERSION LINE: keep this tag in step with version in
-  # applications/strands-agent-base/pyproject.toml, which the build scripts
-  # there use as their default IMAGE_TAG.
-  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.8.0
+  # THE IMAGE VERSION LINE: keep this tag in step with the last published
+  # version of applications/strands-agent-base/pyproject.toml, which the build
+  # scripts there use as their default IMAGE_TAG.
+  #
+  # The default stays at v1.7.0 until v1.8.0 is built and pushed. v1.8.0 sends
+  # the projected agentgateway ServiceAccount token on model calls when
+  # LLM_GATEWAY_AUTH_MODE=workload-token, which the agent component sets for
+  # agents with guardrails on (the guardrail routes need it). Set agentImage to
+  # the v1.8.0 tag for any cluster that enables agent_guardrails, after the push.
+  agentImage: public.ecr.aws/z0a4o2j5/strands-agent:v1.7.0
   # Account id for scoping IAM resource ARNs. "*" keeps generated ARNs valid when
   # the platform has not supplied it; the addon wiring passes the real value from
   # the cluster secret's aws_account_id annotation.

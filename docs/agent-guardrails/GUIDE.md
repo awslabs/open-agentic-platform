@@ -143,10 +143,11 @@ a minimum profile.
 
 ### 3.3 Image build and push
 Agents need `strands-agent-base` v1.8.0 or later. `global.agentImage` in
-`oam-agent-components` points at the v1.8.0 tag, which does not exist in the registry until
-someone builds and pushes it. Build and push it with the steps in
+`oam-agent-components` stays at v1.7.0 until v1.8.0 is built and pushed. Build and push
+v1.8.0 with the steps in
 [applications/strands-agent-base/README.md](../../applications/strands-agent-base/README.md)
-before enabling the flag on a shared cluster. Do not merge the image bump before the push.
+before enabling the flag on a shared cluster, then set `global.agentImage` to the v1.8.0
+tag for that cluster. Bump the chart default only after the push.
 
 ### 3.4 Required platform pieces
 With the flag on the charts render these, with nothing hardcoded (account, Region and

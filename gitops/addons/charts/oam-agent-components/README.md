@@ -52,7 +52,7 @@ The agent-sandbox **operator** (the `Sandbox` CRD and its controller) is *not* a
 | `global.guardrails.order` | `"observe,standard,strict"` | Profile names, weakest first, comma separated. The same names in the same order as `agent-gateway` `guardrails.order`; a test pins both. A profile an agent names must be in the list. |
 | `global.guardrails.defaultProfile` | `standard` | Minimum profile for a namespace that `requiredNamespaces` does not list. The same value as `agent-gateway` `guardrails.defaultProfile`. |
 | `global.guardrails.requiredNamespaces` | `""` | Namespaces with their own minimum, as `namespace=profile` pairs (`team-payments=strict,team-b=standard`). An agent there must turn guardrails on and cannot choose a lower profile. Platform-owned. |
-| `global.agentImage` | `v1.8.0` tag | An agent with guardrails on needs image v1.8.0 or later, which sends the workload token on model calls. |
+| `global.agentImage` | `v1.7.0` tag until v1.8.0 is pushed | An agent with guardrails on needs image v1.8.0 or later, which sends the workload token on model calls. |
 
 The `agent` component's `guardrails: {enabled, profile}` block, what a refusal looks like and the operator steps are in [`docs/agent-guardrails/GUIDE.md`](../../../../docs/agent-guardrails/GUIDE.md).
 
