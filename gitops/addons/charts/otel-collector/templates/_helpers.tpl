@@ -102,8 +102,8 @@ Two counters:
   oap.guardrail.accesslog.requests  one per request, by agent, route, status, reason, guardrail.
   oap.guardrail.accesslog.versions  by route and guardrail_version, no agent, so a Bedrock
                                     guardrail version never multiplies the per-agent series.
-The count connector emits deltas and prometheusremotewrite only accepts cumulative sums, so
-deltatocumulative sits between them. A stream with no record for max_stale is dropped, which
+prometheusremotewrite only accepts cumulative sums and the output temporality of the count
+connector is not relied on, so deltatocumulative sits between them. A stream with no record for max_stale is dropped, which
 is what makes an idle agent absent instead of a flat line.
 */}}
 {{- define "otel-collector.guardrailLogsConnectors" -}}
