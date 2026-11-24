@@ -268,8 +268,8 @@ guardrails:
     failClosedRatePerSecond: 0
     # Age of the last guard decision, while requests are arriving, before GuardrailDataStale fires.
     dataAgeSeconds: 1800
-    # Profiles set to FailOpen on purpose. A fail-open request on one of them is expected and
-    # does not fire GuardrailFailOpenFired. Any other profile that fails open does.
+    # Profiles set to FailOpen on purpose. A fail-open request on one of them still fires
+    # GuardrailFailOpenFired, at severity info instead of warning.
     deliberateFailOpen: []
   # Grafana dashboard (templates/guardrail-dashboard.yaml). Rendered only where the
   # grafana-operator CRD exists, so a spoke without it still syncs. Same targets as the

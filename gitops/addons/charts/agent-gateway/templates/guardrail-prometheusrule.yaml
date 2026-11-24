@@ -83,19 +83,29 @@ spec:
               identifier and version into the llm-<profile>-guard policy (identifier
               "pending" fails closed), and the gateway logs for "failed to call prompt guard".
               Not a signal about the agent's behaviour.
-{{- $excl := "" }}
+{{- $m := `outcome="error_allowed"` }}
+{{- $sel := dict "std" $m "deliberate" "" }}
 {{- if $deliberate }}
-{{-   $excl = printf ", profile!~%q" (printf "^(%s)$" (join "|" $deliberate)) }}
+{{-   $re := printf "^(%s)$" (join "|" $deliberate) }}
+{{-   $_ := set $sel "std" (printf "%s, profile!~%q" $m $re) }}
+{{-   $_ := set $sel "deliberate" (printf "%s, profile=~%q" $m $re) }}
 {{- end }}
+{{- range $kind := list "std" "deliberate" }}
+{{-   if or (eq $kind "std") $deliberate }}
         - alert: GuardrailFailOpenFired
-          # A guard error let a request through unchecked. Profiles in
-          # guardrails.alerts.deliberateFailOpen are expected to do this and are left out.
+          # A guard error let a request through unchecked. Every profile alerts, because a
+          # deliberate FailOpen is the case the design wants seen (D4). Profiles in
+          # guardrails.alerts.deliberateFailOpen only change the severity to info.
+          # The second branch catches a series new in the window: its first sample is the
+          # first event, so increase() over the window has nothing to subtract.
           expr: >-
             sum by (cluster, namespace, agent, profile)
-            (increase(oap_agent_guardrail_requests_total{outcome="error_allowed"{{ $excl }}}[10m]))
-            > 0
+            (increase(oap_agent_guardrail_requests_total{ {{ index $sel $kind }} }[10m]) > 0)
+            or sum by (cluster, namespace, agent, profile)
+            (oap_agent_guardrail_requests_total{ {{ index $sel $kind }} }
+              unless oap_agent_guardrail_requests_total{ {{ index $sel $kind }} } offset 10m)
           labels:
-            severity: warning
+            severity: {{ ternary "warning" "info" (eq $kind "std") }}
             component: agent-guardrails
           annotations:
             summary: >-
@@ -105,10 +115,15 @@ spec:
               A request was sent to the model without being checked, because the profile's
               failureMode is FailOpen and the guard errored. If the profile should fail
               closed, set failureMode to FailClosed in guardrails.profiles. If it is
-              deliberate, list it in guardrails.alerts.deliberateFailOpen.
+              deliberate, list it in guardrails.alerts.deliberateFailOpen to lower the
+              severity to info.
+{{-   end }}
+{{- end }}
         - alert: GuardrailDataStale
           # Requests reach the /llm routes but no guard has decided one for a while, so the
           # access-log pipeline or the guard itself is not producing data. Per cluster.
+          # Blind spot: it needs an earlier last_success series, so it cannot fire if no guard
+          # has ever decided a request here. GuardrailFailClosedRefusals covers that case.
           expr: >-
             (
               time() - max by (cluster) (max_over_time(oap_agent_guardrail_last_success_timestamp_seconds[6h]))

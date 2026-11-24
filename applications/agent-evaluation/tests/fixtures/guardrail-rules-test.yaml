@@ -73,18 +73,30 @@ tests:
         alertname: GuardrailFailOpenFired
         exp_alerts: []
 
-  # Fail open: the test renders with guardrails.alerts.deliberateFailOpen=[observe], so only the
-  # standard profile fires.
+  # Fail open: the first event of each series is its first sample (series start at minute 3, not
+  # at 0), and both profiles alert. The test renders with guardrails.alerts.deliberateFailOpen
+  # =[observe], so observe fires at severity info and standard at warning.
   - interval: 1m
     input_series:
       - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-observe", status="200", reason="none", guardrail="failOpen"}'
-        values: '0+1x10'
+        values: '_x3 1+0x7'
       - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="200", reason="none", guardrail="failOpen"}'
-        values: '0+1x10'
+        values: '_x3 1+0x7'
     alert_rule_test:
       - eval_time: 10m
         alertname: GuardrailFailOpenFired
         exp_alerts:
+          - exp_labels:
+              severity: info
+              component: agent-guardrails
+              cluster: c1
+              namespace: team-a
+              agent: agent-a
+              profile: observe
+            exp_annotations:
+              summary: "A guardrail failed open for team-a/agent-a on profile observe, cluster c1."
+              description: "A request was sent to the model without being checked, because the profile's failureMode is FailOpen and the guard errored. If the profile should fail closed, set failureMode to FailClosed in guardrails.profiles. If it is deliberate, list it in guardrails.alerts.deliberateFailOpen to lower the severity to info."
+
           - exp_labels:
               severity: warning
               component: agent-guardrails
@@ -94,7 +106,7 @@ tests:
               profile: standard
             exp_annotations:
               summary: "A guardrail failed open for team-a/agent-a on profile standard, cluster c1."
-              description: "A request was sent to the model without being checked, because the profile's failureMode is FailOpen and the guard errored. If the profile should fail closed, set failureMode to FailClosed in guardrails.profiles. If it is deliberate, list it in guardrails.alerts.deliberateFailOpen."
+              description: "A request was sent to the model without being checked, because the profile's failureMode is FailOpen and the guard errored. If the profile should fail closed, set failureMode to FailClosed in guardrails.profiles. If it is deliberate, list it in guardrails.alerts.deliberateFailOpen to lower the severity to info."
 
   # Versions, info and skew. Two versions in use on standard means skew 1; one on observe means 0.
   # The info series carries the version from traffic and the profile constants from values.

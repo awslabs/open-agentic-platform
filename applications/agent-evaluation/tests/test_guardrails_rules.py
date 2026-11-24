@@ -93,12 +93,17 @@ def test_no_content_label_or_field_in_the_rules():
         assert not re.search(rf"\b{banned}", re.sub(r"(?m)^\s*#.*$", "", text)), banned
 
 
-def test_deliberate_fail_open_profiles_are_excluded_and_unknown_ones_fail():
+def test_deliberate_fail_open_profiles_alert_at_info_and_unknown_ones_fail():
     (rule,) = _rule(render(CHART, *ON, *CRD, "--set", "guardrails.alerts.deliberateFailOpen={observe,strict}"))
     expr = next(r["expr"] for r in _rules(rule) if r.get("alert") == "GuardrailFailOpenFired")
-    assert 'profile!~"^(observe|strict)$"' in expr
+    rules = [r for r in _rules(rule) if r.get("alert") == "GuardrailFailOpenFired"]
+    by_sev = {r["labels"]["severity"]: r["expr"] for r in rules}
+    assert 'profile!~"^(observe|strict)$"' in by_sev["warning"]
+    assert 'profile=~"^(observe|strict)$"' in by_sev["info"]
+    assert "offset 10m" in by_sev["warning"]
     (plain,) = _rule(render(CHART, *ON, *CRD))
-    assert "profile!~" not in next(r["expr"] for r in _rules(plain) if r.get("alert") == "GuardrailFailOpenFired")
+    plain_rules = [r for r in _rules(plain) if r.get("alert") == "GuardrailFailOpenFired"]
+    assert len(plain_rules) == 1 and "profile" not in plain_rules[0]["expr"].replace("by (cluster, namespace, agent, profile)", "")
     bad = run(CHART, *ON, *CRD, "--set", "guardrails.alerts.deliberateFailOpen={nope}")
     assert bad.returncode != 0 and "nope" in bad.stderr
 
