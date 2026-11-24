@@ -513,6 +513,17 @@ template: {
 							{name: "PORT", value: "8083"},
 							{name: "LLM_GATEWAY_URL", value: _llmUrl},
 							{name: "LLM_GATEWAY_API_KEY", value: parameter.modelConfig.llmGatewayApiKey},
+							// With guardrails on the model route is behind the gateway's JWT policy, so
+							// the image sends its projected agentgateway token as the bearer
+							// (LLM_GATEWAY_AUTH_MODE) and re-reads the file as the kubelet rotates it.
+							// Same names, path and value as the gateway-identity trait, so an
+							// Application that also carries the trait merges to one entry each.
+							if _gEnabled {
+								{name: "WORKLOAD_TOKEN_PATH", value: "/var/run/secrets/agentgateway/token"}
+							},
+							if _gEnabled {
+								{name: "LLM_GATEWAY_AUTH_MODE", value: "workload-token"}
+							},
 							// The agent gateway the image calls for MCP servers and sub-agents. From the
 							// same platform value as the NetworkPolicy below, so moving the gateway moves both.
 							{name: "GATEWAY_URL", value: "http://agentgateway-proxy.{{ .Values.global.agentGateway.namespace }}.svc.cluster.local:8080"},
@@ -612,6 +623,13 @@ template: {
 							},
 							for e in parameter.env {e},
 						]])
+						if _gEnabled {
+							volumeMounts: [{
+								name:      "agentgateway-token"
+								mountPath: "/var/run/secrets/agentgateway"
+								readOnly:  true
+							}]
+						}
 						livenessProbe: {
 							httpGet: {
 								path: "/health"
@@ -675,6 +693,21 @@ template: {
 							}
 						}
 					}]
+					// The projected ServiceAccount token the agent sends to the agent gateway.
+					// Identical to the gateway-identity trait's volume (name, audience, expiry,
+					// path), so the trait and this block never produce two volumes.
+					if _gEnabled {
+						volumes: [{
+							name: "agentgateway-token"
+							projected: sources: [{
+								serviceAccountToken: {
+									audience:          "{{ .Values.global.agentIdentity.workloadAudience }}"
+									expirationSeconds: 3600
+									path:              "token"
+								}
+							}]
+						}]
+					}
 
 					// Pod-level mirror of the container hardening above. Both levels
 					// are set because they are enforced by different things:
