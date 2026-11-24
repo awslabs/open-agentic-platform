@@ -39,6 +39,12 @@ data:
         send_batch_size: 1024
         timeout: 500ms
         send_batch_max_size: 2048
+      {{- if include "otel-collector.guardrailLogsMain" . }}
+      {{- include "otel-collector.guardrailLogsProcessors" . | nindent 6 }}
+      {{- end }}
+    {{- if include "otel-collector.guardrailLogsMain" . }}
+    {{- include "otel-collector.guardrailLogsConnectors" . | nindent 4 }}
+    {{- end }}
 
     extensions:
       health_check:
@@ -64,6 +70,10 @@ data:
       {{- end }}
       {{- if include "otel-collector.metricsInMain" . }}
       debug:
+        verbosity: basic
+      {{- end }}
+      {{- if and (include "otel-collector.guardrailLogsMain" .) (not (include "otel-collector.ampLiteral" .)) }}
+      debug/guardrail:
         verbosity: basic
       {{- end }}
       {{- if include "otel-collector.ampLiteral" . }}
@@ -102,6 +112,9 @@ data:
             - debug
             {{- end }}
         {{- end }}
+        {{- if include "otel-collector.guardrailLogsMain" . }}
+        {{- include "otel-collector.guardrailLogsPipelines" . | nindent 8 }}
+        {{- end }}
       telemetry:
         logs:
           level: "info"
@@ -131,11 +144,15 @@ spec:
         # Tracks the content-addressed auth Secret name (token template + SM key),
         # so any change to either rolls the collector.
         checksum/langfuse-auth: {{ include "otel-collector.langfuseAuthSecretName" . | sha256sum | trunc 8 }}
+        {{- if include "otel-collector.guardrailLogsMain" . }}
+        # The guardrail access-log pipeline is rendered into the config above; roll on a change.
+        checksum/guardrail-logs: {{ printf "%s|%s" .Values.guardrails.accessLog.image .Values.guardrails.accessLog.maxStale | sha256sum | trunc 8 }}
+        {{- end }}
     spec:
       serviceAccountName: otel-collector
       containers:
         - name: collector
-          image: {{ .Values.collector.image }}
+          image: {{ if include "otel-collector.guardrailLogsMain" . }}{{ include "otel-collector.guardrailLogsImage" . }}{{ else }}{{ .Values.collector.image }}{{ end }}
           args:
             - '--config=/conf/config.yaml'
           ports:
@@ -200,3 +217,7 @@ spec:
       targetPort: 4318
       protocol: TCP
   type: ClusterIP
+{{- if include "otel-collector.guardrailLogsMain" . }}
+---
+{{ include "otel-collector.guardrailLogsService" (dict "ctx" . "app" "otel-collector") }}
+{{- end }}

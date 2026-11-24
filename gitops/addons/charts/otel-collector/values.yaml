@@ -43,3 +43,23 @@ amp:
   # collector service account. Set false where another chart already associates
   # otel/otel-collector on this cluster. The literal-endpoint path always renders them.
   podIdentity: true
+# Per-agent guardrail outcomes from the gateway access log (docs/architecture/agent-guardrails.md,
+# D8). The gateway cannot put the caller on its own guardrail counter, so it exports one OTLP
+# log record per /llm request to this collector, a count connector turns the records into
+# counters, and they are written to AMP next to the Bifrost series. Not set by hand: the
+# registry derives enabled from the enable_agent_guardrails, enable_agent_gateway and
+# enable_agent_core labels with the same expression as agent-gateway. A string, because the
+# registry renders text. Off by default: the collector config is unchanged.
+guardrails:
+  accessLog:
+    enabled: "false"
+    # The count connector and the deltatocumulative processor are not in the ADOT build pinned
+    # in collector.image, so the collector that hosts this pipeline runs this OpenTelemetry
+    # Collector contrib release instead. Pinned, so an upgrade is deliberate.
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.165.0
+    # A stream with no record for this long is dropped, so an idle agent disappears from the
+    # series instead of staying at its last count.
+    maxStale: 1h
+    # Cluster-internal Service the gateway exports to (agent-gateway guardrails.accessLog.collector
+    # names the same Service).
+    serviceName: otel-collector-guardrail

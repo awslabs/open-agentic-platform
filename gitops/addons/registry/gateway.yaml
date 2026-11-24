@@ -186,6 +186,10 @@ agent-gateway:
     # oam-agent-components' guardrails.enabled (registry/agentcore.yaml).
     guardrails:
       enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
+      # Export the /llm access log to the OTel collector, which turns it into per-agent
+      # outcome counters. Needs the collector, so it also requires enable_otel_collector.
+      accessLog:
+        enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") (eq (index .metadata.labels "enable_otel_collector") "true") }}true{{ else }}false{{ end }}'
     ingress:
       enabled: true
       host: '{{index .metadata.annotations "ingress_domain_name"}}'

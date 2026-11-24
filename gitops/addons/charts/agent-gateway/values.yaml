@@ -231,6 +231,21 @@ guardrails:
     schedule: "*/15 * * * *"
     deadlineSeconds: 600
     pollSeconds: 10
+  # Access log export for per-agent outcomes (templates/guardrail-accesslog.yaml). The native
+  # guardrail counter has no agent label, so the gateway sends one OTLP log record per /llm
+  # request to the OTel collector, which counts them (otel-collector guardrails.accessLog).
+  # Not set by hand: the registry derives enabled like guardrails.enabled, plus the
+  # enable_otel_collector label, so the gateway exports only where a collector is ready.
+  # A string, because the registry renders text.
+  accessLog:
+    enabled: "false"
+    # The collector Service that receives OTLP over HTTP. The same name as the otel-collector
+    # chart's guardrails.accessLog.serviceName, in the namespace the otel-collector addon
+    # installs to (gitops/addons/registry/observability.yaml).
+    collector:
+      name: otel-collector-guardrail
+      namespace: otel
+      port: 4318
   # Text of the rejection returned to the caller. The status code is 403.
   rejectMessage: "The request was blocked by the platform guardrail."
   # The LLM gateway the /llm routes forward to: Bifrost, by its in-cluster Service. The

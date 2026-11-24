@@ -134,6 +134,12 @@ otel-collector:
       # control-plane overlay). EKS allows one association per service account, so the
       # chart skips its own there. Only read on the Secrets Manager path.
       podIdentity: '{{ if and (eq (index .metadata.labels "environment") "control-plane") (ne (index .metadata.labels "provider") "kro-ack") }}false{{ else }}true{{ end }}'
+    # Per-agent guardrail outcomes from the gateway access log. The SAME expression as
+    # agent-gateway's guardrails.enabled (registry/gateway.yaml), so the gateway exports
+    # exactly where a collector is ready to receive.
+    guardrails:
+      accessLog:
+        enabled: '{{ if and (eq (index .metadata.labels "enable_agent_guardrails") "true") (eq (index .metadata.labels "enable_agent_gateway") "true") (eq (index .metadata.labels "enable_agent_core") "true") }}true{{ else }}false{{ end }}'
 
 prometheus-operator-crds:
   namespace: monitoring

@@ -12,6 +12,12 @@ metadata:
 data:
   config.yaml: |
     receivers:
+      {{- if include "otel-collector.guardrailLogsMetrics" . }}
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+      {{- end }}
       prometheus:
         config:
           scrape_configs:
@@ -25,6 +31,16 @@ data:
         send_batch_size: 1024
         timeout: 500ms
         send_batch_max_size: 2048
+      {{- if include "otel-collector.guardrailLogsMetrics" . }}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 85
+        spike_limit_percentage: 10
+      {{- include "otel-collector.guardrailLogsProcessors" . | nindent 6 }}
+      {{- end }}
+    {{- if include "otel-collector.guardrailLogsMetrics" . }}
+    {{- include "otel-collector.guardrailLogsConnectors" . | nindent 4 }}
+    {{- end }}
 
     extensions:
       health_check:
@@ -53,6 +69,9 @@ data:
           processors: [batch]
           exporters:
             - prometheusremotewrite/amp
+        {{- if include "otel-collector.guardrailLogsMetrics" . }}
+        {{- include "otel-collector.guardrailLogsPipelines" . | nindent 8 }}
+        {{- end }}
       telemetry:
         logs:
           level: "info"
@@ -76,13 +95,16 @@ spec:
         app: otel-collector-metrics
       annotations:
         checksum/config: {{ printf "%s|%s|%s" .Values.bifrost.scrapeEndpoint .Values.amp.secretManagerKey (.Values.amp.clusterName | default "") | sha256sum | trunc 32 }}
+        {{- if include "otel-collector.guardrailLogsMetrics" . }}
+        checksum/guardrail-logs: {{ printf "%s|%s" .Values.guardrails.accessLog.image .Values.guardrails.accessLog.maxStale | sha256sum | trunc 8 }}
+        {{- end }}
     spec:
       # Same service account as the traces collector: the AMP PodIdentityAssociation
       # binds otel/otel-collector.
       serviceAccountName: otel-collector
       containers:
         - name: collector
-          image: {{ .Values.collector.image }}
+          image: {{ if include "otel-collector.guardrailLogsMetrics" . }}{{ include "otel-collector.guardrailLogsImage" . }}{{ else }}{{ .Values.collector.image }}{{ end }}
           args:
             - '--config=/conf/config.yaml'
           env:
@@ -123,4 +145,8 @@ spec:
         - name: config
           configMap:
             name: otel-collector-metrics-config
+{{- if include "otel-collector.guardrailLogsMetrics" . }}
+---
+{{ include "otel-collector.guardrailLogsService" (dict "ctx" . "app" "otel-collector-metrics") }}
+{{- end }}
 {{- end }}

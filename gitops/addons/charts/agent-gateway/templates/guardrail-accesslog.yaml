@@ -1,0 +1,63 @@
+{{/*
+  Access log export for per-agent guardrail outcomes (docs/architecture/agent-guardrails.md,
+  D8). The native counter agentgateway_guardrail_checks_total has only {phase, action}: the
+  caller cannot reach it. The access log can see jwt.sub, the route, the response status and
+  the guard result, so the proxy sends one OTLP log record per /llm request to the OTel
+  collector, which counts them (otel-collector chart, guardrails.accessLog) and writes the
+  counters to AMP. Rendered only when guardrails.enabled and guardrails.accessLog.enabled are
+  both "true".
+  A frontend policy targets the Gateway, so the filter limits the export to the /llm routes
+  (llm-<profile>, guardrail-routes.yaml). It sits under otlp, not under accessLog, and so does
+  the attribute list: the default access log of the other routes stays as it is.
+  The record carries ONLY the attributes below. Prompt text, completions, headers, bodies, the
+  guard's assessments and its reason text are never added, because the Bedrock trace returns
+  unmasked values and a label or log line must not hold them (design D3, D8). guardrails[0]
+  is the Phase 1 request guard, the only one on a route; its action and version are
+  metadata. An expression that cannot be evaluated drops its attribute and not the record
+  (no guard ran, or no error), and the collector fills a default for those two.
+    agent              jwt.sub, a ServiceAccount subject (the open profiles admit nothing else)
+    route              llm-<profile>
+    status             HTTP status the agent got
+    reason             the gateway's own error class, when it synthesised the response
+    guardrail          action of the guard: allow, failOpen, audit, mask, reject
+    guardrail_version  Bedrock guardrail version that checked the request
+  A FailClosed refusal is a 503 with reason Internal and no guard action (v1.7.0
+  llm/mod.rs maps a guard error to AIError::PromptWebhookError, proxy/mod.rs to 503
+  Internal); the recording rules derive error_blocked from that.
+*/}}
+{{- if and (eq (toString .Values.guardrails.enabled) "true") (eq (toString .Values.guardrails.accessLog.enabled) "true") }}
+{{- $g := .Values.guardrails }}
+{{- $c := $g.accessLog.collector }}
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: llm-guardrail-accesslog
+  namespace: {{ $g.proxy.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $g.proxy.gatewayName }}
+  frontend:
+    accessLog:
+      otlp:
+        url: {{ printf "http://%s.%s.svc.%s:%v" $c.name $c.namespace $g.proxy.clusterDomain $c.port | quote }}
+        protocol: HTTP
+        filter: 'has(proxy.route) && proxy.route.name.startsWith("llm-")'
+        attributes:
+          add:
+            - name: agent
+              expression: jwt.sub
+            - name: route
+              expression: proxy.route.name
+            - name: status
+              expression: response.code
+            - name: reason
+              expression: string(proxy.error.reason)
+            - name: guardrail
+              expression: string(guardrails[0].action)
+            - name: guardrail_version
+              expression: string(guardrails[0].guardrailVersion)
+{{- end }}
