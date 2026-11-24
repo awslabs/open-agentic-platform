@@ -196,7 +196,9 @@ Per-agent outcomes cannot come from the gateway's own guardrail counter, which h
    `guardrail_version`. No prompt text, completion or guard response body is exported.
 2. The OTel collector counts the records and writes the counters to AMP. The collector that
    writes to AMP runs a pinned OpenTelemetry Collector contrib image while the flag is on,
-   because the ADOT build does not include the count connector.
+   because the ADOT build does not include the count connector. The image applies to every
+   pipeline of that collector. On first enablement, re-check that traces and Langfuse export
+   still arrive.
 3. Recording rules turn the counters and the proxy metrics into `oap_agent_guardrail_*`.
 
 Both `agent-gateway` and `otel-collector` take `guardrails.accessLog.enabled`, derived in
@@ -214,8 +216,8 @@ Alerts, all about the platform and none about a rising block rate:
 | Alert | Fires when |
 |---|---|
 | `GuardrailFailClosedRefusals` | `error_blocked` per second is above `guardrails.alerts.failClosedRatePerSecond` for 5 minutes. The guard failed and the request was refused |
-| `GuardrailFailOpenFired` | a request went through unchecked because a profile fails open. Profiles in `guardrails.alerts.deliberateFailOpen` are left out |
-| `GuardrailDataStale` | requests reach `/llm` and no guard decision has been counted for `guardrails.alerts.dataAgeSeconds` |
+| `GuardrailFailOpenFired` | a request went through unchecked because a profile fails open. Severity warning, or info for profiles in `guardrails.alerts.deliberateFailOpen`, which still alert |
+| `GuardrailDataStale` | requests reach `/llm` and no guard decision has been counted for `guardrails.alerts.dataAgeSeconds`. It cannot fire if no guard ever decided a request (for example every call is refused right after enabling), so `GuardrailFailClosedRefusals` covers that case |
 | `GuardrailConfigSkew` | more than one guardrail version checked one profile for over 15 minutes |
 
 `error_blocked` is derived from a 503 with reason `Internal` and no guard action, because

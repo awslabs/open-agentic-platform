@@ -1628,7 +1628,8 @@ anything**
       moves and `blocked` does not
 - [ ] A guard deliberately set to `failureMode: FailOpen` forwards the request,
       increments `guardrail_checks{action="FailOpen"}`, and fires the FailOpen
-      alert in a fault-injection test
+      alert in a fault-injection test (severity info if the profile is listed in
+      `guardrails.alerts.deliberateFailOpen`, warning otherwise)
 - [ ] A throttled call is retried within the gateway's budget before the
       fail-closed refusal
 - [ ] Killing the **gateway** does not silently un-guard an agent: measure what the
@@ -1763,6 +1764,7 @@ matching question in §8 unless §8 says so.
 | GAP-1 | A PostSync hook Job (and a CronJob that repairs drift) in `agent-gateway` reads each `Guardrail` ID and `GuardrailVersion` number from the Crossplane status and writes them into that profile's `AgentgatewayPolicy` with a JSON patch. The policy renders with the placeholder `pending`, which fails closed. The registry lists the two fields in `ignoreDifferences` | The ID exists only after Crossplane creates the guardrail. Argo CD cannot `lookup`, and no `provider-kubernetes` is installed. The flow stays in Git and Argo CD |
 | GAP-2 | `bedrock:ApplyGuardrail` on the proxy role is scoped to `arn:<partition>:bedrock:<region>:<account>:guardrail/*` with an `aws:ResourceTag` condition on the cluster tag, plus the cross-Region `guardrail-profile` resource. The `Guardrail` objects carry the tag | Guardrail ARNs contain a generated ID, so "the catalog's ARNs" cannot be written at render time. The IAM Service Authorization Reference lists `aws:ResourceTag/${TagKey}` for `ApplyGuardrail` |
 | GAP-3 | `requiredNamespaces` and `order` reach CUE as comma-separated strings (`team-payments=strict,team-b=standard`) and are split in CUE | Same precedent as `extraIngressNamespaces`. No JSON escaping risk |
+| FAILOPEN-1 | `guardrails.alerts.deliberateFailOpen` lowers `GuardrailFailOpenFired` from warning to info for the listed profiles. It never silences it | D4 wants a deliberate FailOpen seen, and the §7 checklist needs it to alert. The list only tells the on-call that the operator chose it |
 
 ### Where the design and upstream disagreed
 
@@ -1793,7 +1795,10 @@ v2.9.0 and v2.10.0 CRDs, and AWS documentation. Upstream was followed every time
 - That the `count` connector drops a record that lacks an attribute with no default,
   and that its output is accepted by `prometheusremotewrite` after `deltatocumulative`.
 - The format of the `route` label on the proxy's own metrics. The rules accept
-  `llm-<profile>` with or without a namespace prefix.
+  `llm-<profile>` with or without a namespace prefix. The access-log export filter accepts
+  both forms too, but the real `proxy.route.name` format is unconfirmed.
+- That swapping the collector to the contrib image leaves the traces and Langfuse pipelines
+  working.
 - That the AI backend sends `/v1/chat/completions` to Bifrost after the `/llm/<profile>`
   prefix rewrite, that the ALB orders the `/llm` rule before `/`, and that the platform's
   AMP scraper picks up the proxy metrics Service.
