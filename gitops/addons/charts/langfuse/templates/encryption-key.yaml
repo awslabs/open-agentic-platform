@@ -160,7 +160,7 @@ spec:
     name: aws-secrets-manager
   # Short, for the same reason as the collector's: on a fresh environment the
   # generator Job lands only moments before this first syncs.
-  refreshInterval: "1m"
+  refreshInterval: {{ .Values.externalSecrets.langfuseEncryption.refreshInterval | default .Values.externalSecrets.refreshInterval | default "1m" | quote }}
   target:
     name: {{ .Values.encryptionKey.secretRef }}
     creationPolicy: Owner
