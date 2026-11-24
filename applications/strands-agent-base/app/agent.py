@@ -51,6 +51,7 @@ from .identity import (
     caller_subject,
     is_no_identity_key,
     outbound,
+    workload_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,19 @@ def _is_access_denied(exc: BaseException) -> bool:
     return isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") == "AccessDeniedException"
 
 
+async def _workload_bearer() -> str:
+    """The projected ServiceAccount token, read fresh on every model request.
+
+    The OpenAI client calls this before each request when it is given as api_key, and
+    sends the result as the bearer. The kubelet rewrites the token file before it
+    expires, so a long-lived model picks up the rotated value. No token is logged here.
+    A missing file gives a placeholder, so the gateway answers 401 and the cause shows
+    in the agent's logs (identity.workload_headers warns) instead of the model build
+    failing.
+    """
+    return workload_headers().get("Authorization", "").removeprefix("Bearer ") or "not-used"
+
+
 def _get_model() -> OpenAIModel:
     global _model
     if _model is None:
@@ -127,12 +141,20 @@ def _get_model() -> OpenAIModel:
         # via the `x-bf-vk` header (Bifrost governance). The OpenAI client also
         # requires a non-empty api_key, so we pass the same value there.
         vk = config.LLM_GATEWAY_API_KEY
+        client_args = {
+            "api_key": vk or "not-used",
+            "base_url": config.LLM_GATEWAY_URL,
+            "default_headers": {"x-bf-vk": vk},
+        }
+        if config.LLM_GATEWAY_AUTH_MODE == "workload-token":
+            # Agent guardrails route model calls through the agent gateway, which
+            # requires the agent's ServiceAccount token as the bearer. strands builds a
+            # new AsyncOpenAI per request from these args, so a callable api_key is the
+            # way to re-read the token: a shared http_client would be closed after the
+            # first request.
+            client_args["api_key"] = _workload_bearer
         _model = OpenAIModel(
-            client_args={
-                "api_key": vk or "not-used",
-                "base_url": config.LLM_GATEWAY_URL,
-                "default_headers": {"x-bf-vk": vk},
-            },
+            client_args=client_args,
             model_id=config.MODEL_ID,
             params={
                 "max_tokens": config.MAX_TOKENS,

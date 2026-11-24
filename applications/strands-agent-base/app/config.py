@@ -115,6 +115,11 @@ For example, always use the time tool when asked about the current time or date.
     )
     # Bifrost virtual key — presented to the gateway via the x-bf-vk header.
     LLM_GATEWAY_API_KEY: str = os.getenv("LLM_GATEWAY_API_KEY", "")
+    # "workload-token": send the projected ServiceAccount token (WORKLOAD_TOKEN_PATH) as the
+    # bearer on model calls. Set by the agent component when guardrails are enabled, because
+    # the guardrail routes sit behind the gateway's JWT policy. Unset keeps the Bifrost
+    # request headers exactly as they were.
+    LLM_GATEWAY_AUTH_MODE: str = os.getenv("LLM_GATEWAY_AUTH_MODE", "")
     
     # AgentGateway MCP proxy base URL (internal cluster DNS)
     GATEWAY_URL: str = os.getenv(
@@ -198,6 +203,7 @@ For example, always use the time tool when asked about the current time or date.
             f"max_tokens={self.MAX_TOKENS}, "
             f"region={self.AWS_REGION}, "
             f"llm_gateway={self.LLM_GATEWAY_URL}, "
+            f"llm_auth_mode={self.LLM_GATEWAY_AUTH_MODE or 'none'}, "
             f"mcp_servers={self.MCP_SERVER_NAMES}, "
             f"port={self.PORT})"
         )
