@@ -36,6 +36,7 @@ platform/oam/
     ├── example-sandbox-confidential.yaml    Claimable warm pool, confidential mode + attestation
     ├── example-agent-with-mcp.yaml          Agent integrated with an MCP server
     ├── example-agent-agentcore-memory.yaml Agent backed by Bedrock AgentCore Memory
+    ├── example-agent-guardrails.yaml       Agent with runtime content guardrails (guardrails block)
     ├── example-agent-milvus-memory.yaml    Agent backed by Milvus vector store
     ├── example-mcp-local.yaml              MCP server
     ├── test-agentcore-memory.yaml          Standalone AgentCore Memory test

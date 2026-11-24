@@ -64,6 +64,15 @@ def _rejected(out, *words):
         assert w in out.stderr + out.stdout, (w, out.stderr)
 
 
+def test_the_published_example_renders_on_a_guardrails_cluster(on):
+    docs = on(yaml.safe_load(EXAMPLE.read_text(encoding="utf-8")))
+    assert _env(docs)["LLM_GATEWAY_URL"] == ROUTE.format("standard")
+
+
+def test_the_published_example_is_rejected_where_guardrails_are_off(off):
+    _rejected(off.fails(yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))), "agent_guardrails")
+
+
 def test_an_absent_block_and_enabled_false_keep_the_developer_url(on):
     for gr in (None, {"enabled": False}):
         docs = on(_app(gr))
