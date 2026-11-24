@@ -407,6 +407,12 @@ spec:
         	// reference optional field: authPolicy" (issue #61, fixed in #62). The policy is
         	// still emitted only when matchExpressions is non-empty.
         	authPolicy: {
+        		// Write rules on identity fields only: mcp.tool.name, and the prompt or resource
+        		// name. The expressions run before the call is processed, so request payload
+        		// fields such as mcp.tool.arguments are not available to them. A rule that
+        		// reads an argument never matches: under Deny the call is allowed (the rule
+        		// fails open), and under Allow or Require every call is denied. To decide on
+        		// arguments, use an ExtMCP processor, which is handed the request params.
         		// The CRD enum is Allow | Deny | Require. Prefer Allow or Require: the CRD
         		// warns "Deny is not recommended because expression failures fail to deny",
         		// i.e. a CEL evaluation error in a Deny rule fails OPEN.
