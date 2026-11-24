@@ -1,0 +1,153 @@
+# promtool unit test for the guardrail recording rules and alerts. tests/test_guardrails_rules.py
+# renders the PrometheusRule, writes its groups to rules.yaml next to this file's copy, and runs
+# `promtool test rules`.
+rule_files:
+  - rules.yaml
+evaluation_interval: 30s
+tests:
+  # A fail-closed refusal (503 Internal, no guard action) moves error_blocked and never blocked.
+  # agent-b has no series at all: it must stay absent.
+  - interval: 1m
+    input_series:
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="200", reason="none", guardrail="allow"}'
+        values: '0+10x10'
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="403", reason="Guardrail", guardrail="reject"}'
+        values: '0+2x10'
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="503", reason="Internal", guardrail="none"}'
+        values: '0+1x10'
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-observe", status="200", reason="none", guardrail="audit"}'
+        values: '0+3x10'
+      # Not a guard outcome: the caller was denied by the route's access rule.
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-strict", status="403", reason="Authorization", guardrail="none"}'
+        values: '0+5x10'
+    promql_expr_test:
+      - expr: 'oap_agent_guardrail_requests_total{agent="agent-a", outcome="error_blocked"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_requests_total{cluster="c1", hop="model", namespace="team-a", agent="agent-a", profile="standard", direction="request", outcome="error_blocked"}'
+            value: 10
+      - expr: 'oap_agent_guardrail_requests_total{agent="agent-a", outcome="blocked"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_requests_total{cluster="c1", hop="model", namespace="team-a", agent="agent-a", profile="standard", direction="request", outcome="blocked"}'
+            value: 20
+      - expr: 'oap_agent_guardrail_requests_total{agent="agent-a", outcome="reported"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_requests_total{cluster="c1", hop="model", namespace="team-a", agent="agent-a", profile="observe", direction="request", outcome="reported"}'
+            value: 30
+      # Access denials are not guard outcomes.
+      - expr: 'count(oap_agent_guardrail_requests_total{profile="strict"})'
+        eval_time: 10m
+        exp_samples: []
+      # An idle agent is absent, not zero.
+      - expr: 'oap_agent_guardrail_requests_total{agent="agent-b"}'
+        eval_time: 10m
+        exp_samples: []
+      - expr: 'oap_agent_guardrail_errors_total'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_errors_total{cluster="c1", hop="model", loop="request_guard"}'
+            value: 10
+      - expr: 'time() - oap_agent_guardrail_last_success_timestamp_seconds'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{cluster="c1", hop="model"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GuardrailFailClosedRefusals
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: agent-guardrails
+              cluster: c1
+              namespace: team-a
+              agent: agent-a
+              profile: standard
+            exp_annotations:
+              summary: "Guardrail refusals caused by a guard failure for team-a/agent-a on profile standard, cluster c1."
+              description: "Requests are being refused with 503 because the guard could not decide, and every profile fails closed. Check Bedrock ApplyGuardrail throttling and errors for the gateway role, that the guardrail binder has written a real identifier and version into the llm-<profile>-guard policy (identifier \"pending\" fails closed), and the gateway logs for \"failed to call prompt guard\". Not a signal about the agent's behaviour."
+      # A rising blocked rate alone never alerts.
+      - eval_time: 10m
+        alertname: GuardrailFailOpenFired
+        exp_alerts: []
+
+  # Fail open: the test renders with guardrails.alerts.deliberateFailOpen=[observe], so only the
+  # standard profile fires.
+  - interval: 1m
+    input_series:
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-observe", status="200", reason="none", guardrail="failOpen"}'
+        values: '0+1x10'
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="200", reason="none", guardrail="failOpen"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GuardrailFailOpenFired
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: agent-guardrails
+              cluster: c1
+              namespace: team-a
+              agent: agent-a
+              profile: standard
+            exp_annotations:
+              summary: "A guardrail failed open for team-a/agent-a on profile standard, cluster c1."
+              description: "A request was sent to the model without being checked, because the profile's failureMode is FailOpen and the guard errored. If the profile should fail closed, set failureMode to FailClosed in guardrails.profiles. If it is deliberate, list it in guardrails.alerts.deliberateFailOpen."
+
+  # Versions, info and skew. Two versions in use on standard means skew 1; one on observe means 0.
+  # The info series carries the version from traffic and the profile constants from values.
+  - interval: 1m
+    input_series:
+      - series: 'oap_guardrail_accesslog_requests_total{cluster="c1", agent="system:serviceaccount:team-a:agent-a", route="llm-standard", status="200", reason="none", guardrail="allow"}'
+        values: '0+1x20'
+      - series: 'oap_guardrail_accesslog_versions_total{cluster="c1", route="llm-standard", guardrail_version="2"}'
+        values: '0+1x20'
+      - series: 'oap_guardrail_accesslog_versions_total{cluster="c1", route="llm-standard", guardrail_version="3"}'
+        values: '0+1x20'
+      - series: 'oap_guardrail_accesslog_versions_total{cluster="c1", route="llm-observe", guardrail_version="1"}'
+        values: '0+1x20'
+    promql_expr_test:
+      - expr: 'oap_agent_guardrail_config_skew'
+        eval_time: 15m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_config_skew{cluster="c1", hop="model"}'
+            value: 1
+      - expr: 'oap_agent_guardrail_info{profile="standard"}'
+        eval_time: 15m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_info{cluster="c1", hop="model", profile="standard", guardrail_version="2", profile_version="1", failure_mode="FailClosed", backend="bedrock-applyguardrail", streaming="false"}'
+            value: 1
+          - labels: 'oap_agent_guardrail_info{cluster="c1", hop="model", profile="standard", guardrail_version="3", profile_version="1", failure_mode="FailClosed", backend="bedrock-applyguardrail", streaming="false"}'
+            value: 1
+
+  # Latency comes from the gateway's request duration on the /llm routes only.
+  - interval: 1m
+    input_series:
+      - series: 'agentgateway_request_duration_seconds_bucket{cluster="c1", route="agentgateway-system/llm-standard", le="1"}'
+        values: '0+5x10'
+      - series: 'agentgateway_request_duration_seconds_bucket{cluster="c1", route="agentgateway-system/llm-standard", le="+Inf"}'
+        values: '0+10x10'
+      - series: 'agentgateway_request_duration_seconds_bucket{cluster="c1", route="agentgateway-system/mcp-code", le="+Inf"}'
+        values: '0+99x10'
+    promql_expr_test:
+      - expr: 'oap_agent_guardrail_latency_seconds_bucket{le="+Inf"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_latency_seconds_bucket{cluster="c1", hop="model", profile="standard", direction="request", le="+Inf"}'
+            value: 100
+
+  # Findings count Audit, Mask and Reject, not Allow.
+  - interval: 1m
+    input_series:
+      - series: 'agentgateway_guardrail_checks_total{cluster="c1", phase="Request", action="Allow"}'
+        values: '0+7x10'
+      - series: 'agentgateway_guardrail_checks_total{cluster="c1", phase="Request", action="Reject"}'
+        values: '0+2x10'
+    promql_expr_test:
+      - expr: 'oap_agent_guardrail_findings_total'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'oap_agent_guardrail_findings_total{cluster="c1", hop="model", phase="Request", action="Reject"}'
+            value: 20

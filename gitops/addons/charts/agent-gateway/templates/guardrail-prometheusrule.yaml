@@ -1,0 +1,148 @@
+{{- /*
+Recording rules and alerts for the oap_agent_guardrail_* family
+(docs/architecture/agent-guardrails.md, D8). The recording rules are files/guardrail-rules.yaml,
+embedded unchanged so the promtool tests and the cluster run the same text. This template adds
+two things that need values: oap_agent_guardrail_info (profile constants) and the alerts.
+Gated like agent-evaluation's templates/61-prometheus-rule.yaml: guardrails on, alerts on, and
+the prometheus-operator CRD present (monitoring.coreos.com/v1). Without the CRD the kind would
+make Argo CD reject the whole sync of this chart, which also carries the gateway routes.
+Alerts are about the platform, not about agent behaviour. A rising blocked rate is a signal for
+the agent's owner, so there is no alert on it, only on refusals caused by a guard failure
+(error_blocked), on a profile failing open, and on stale or disagreeing data.
+*/ -}}
+{{- if and (eq (toString .Values.guardrails.enabled) "true") .Values.guardrails.alerts.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+{{- include "agent-gateway.guardrailsValidate" . }}
+{{- $g := .Values.guardrails }}
+{{- $info := $g.observability.info }}
+{{- $deliberate := $g.alerts.deliberateFailOpen | default list }}
+{{- range $name := $deliberate }}
+{{-   if not (has $name $g.order) }}
+{{-     fail (printf "agent-gateway: guardrails.alerts.deliberateFailOpen names %q, which is not in guardrails.order" $name) }}
+{{-   end }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agent-guardrails
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+spec:
+  groups:
+    {{- (.Files.Get "files/guardrail-rules.yaml" | fromYaml).groups | toYaml | nindent 4 }}
+    - name: oap-agent-guardrail-info
+      interval: 30s
+      rules:
+        # Always 1, one series per profile and Bedrock guardrail version seen in traffic. The
+        # per-profile constants come from chart values, so a profile switched to FailOpen or a
+        # new catalog revision shows up here. A profile with no traffic has no series.
+        - record: oap_agent_guardrail_info
+          expr: |
+            group by (cluster, hop, profile, guardrail_version) (
+              label_replace(label_replace(
+                oap_guardrail_accesslog_versions_total,
+                "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+                "hop", "model", "", "")
+            )
+            * on (profile) group_left (profile_version, failure_mode, backend, streaming)
+            (
+            {{- range $i, $name := $g.order }}
+            {{- $p := get $g.profiles $name }}
+              {{ if $i }}or {{ end }}label_replace(label_replace(label_replace(label_replace(label_replace(vector(1),
+                "profile", {{ $name | quote }}, "", ""),
+                "profile_version", {{ $info.catalogRevision | toString | quote }}, "", ""),
+                "failure_mode", {{ $p.failureMode | quote }}, "", ""),
+                "backend", {{ $info.backend | quote }}, "", ""),
+                "streaming", {{ $info.streaming | toString | quote }}, "", "")
+            {{- end }}
+            )
+    - name: oap-agent-guardrail-alerts
+      rules:
+        - alert: GuardrailFailClosedRefusals
+          # error_blocked is a request refused because the guard could not decide (Bedrock
+          # throttled or unreachable, or the guardrail is not bound yet). It is not a
+          # violation: the agent did nothing wrong. At v1.7.0 it is derived from a 503 with
+          # reason Internal on an /llm route, so a different internal fault there also counts.
+          expr: >-
+            sum by (cluster, namespace, agent, profile)
+            (rate(oap_agent_guardrail_requests_total{outcome="error_blocked"}[5m]))
+            > {{ $g.alerts.failClosedRatePerSecond }}
+          for: 5m
+          labels:
+            severity: warning
+            component: agent-guardrails
+          annotations:
+            summary: >-
+              Guardrail refusals caused by a guard failure for
+              {{ `{{ $labels.namespace }}/{{ $labels.agent }}` }} on profile
+              {{ `{{ $labels.profile }}` }}, cluster {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              Requests are being refused with 503 because the guard could not decide,
+              and every profile fails closed. Check Bedrock ApplyGuardrail throttling and
+              errors for the gateway role, that the guardrail binder has written a real
+              identifier and version into the llm-<profile>-guard policy (identifier
+              "pending" fails closed), and the gateway logs for "failed to call prompt guard".
+              Not a signal about the agent's behaviour.
+{{- $excl := "" }}
+{{- if $deliberate }}
+{{-   $excl = printf ", profile!~%q" (printf "^(%s)$" (join "|" $deliberate)) }}
+{{- end }}
+        - alert: GuardrailFailOpenFired
+          # A guard error let a request through unchecked. Profiles in
+          # guardrails.alerts.deliberateFailOpen are expected to do this and are left out.
+          expr: >-
+            sum by (cluster, namespace, agent, profile)
+            (increase(oap_agent_guardrail_requests_total{outcome="error_allowed"{{ $excl }}}[10m]))
+            > 0
+          labels:
+            severity: warning
+            component: agent-guardrails
+          annotations:
+            summary: >-
+              A guardrail failed open for {{ `{{ $labels.namespace }}/{{ $labels.agent }}` }} on
+              profile {{ `{{ $labels.profile }}` }}, cluster {{ `{{ $labels.cluster }}` }}.
+            description: >-
+              A request was sent to the model without being checked, because the profile's
+              failureMode is FailOpen and the guard errored. If the profile should fail
+              closed, set failureMode to FailClosed in guardrails.profiles. If it is
+              deliberate, list it in guardrails.alerts.deliberateFailOpen.
+        - alert: GuardrailDataStale
+          # Requests reach the /llm routes but no guard has decided one for a while, so the
+          # access-log pipeline or the guard itself is not producing data. Per cluster.
+          expr: >-
+            (
+              time() - max by (cluster) (max_over_time(oap_agent_guardrail_last_success_timestamp_seconds[6h]))
+              > {{ $g.alerts.dataAgeSeconds }}
+            )
+            and on (cluster)
+            (
+              sum by (cluster) (rate(agentgateway_requests_total{route=~"(.*/)?llm-.+"}[10m])) > 0
+            )
+          for: 10m
+          labels:
+            severity: warning
+            component: agent-guardrails
+          annotations:
+            summary: >-
+              Guardrail data on cluster {{ `{{ $labels.cluster }}` }} has not refreshed for over
+              {{ div $g.alerts.dataAgeSeconds 60 }} minutes while requests arrive.
+            description: >-
+              The gateway handles /llm requests, but no guard decision has been counted.
+              Usual causes: the access-log export (frontend accessLog policy, the
+              otel-collector-guardrail Service, the collector pipeline) is down, or the guard
+              fails on every request (see GuardrailFailClosedRefusals).
+        - alert: GuardrailConfigSkew
+          expr: max by (cluster) (oap_agent_guardrail_config_skew) > 0
+          for: 15m
+          labels:
+            severity: info
+            component: agent-guardrails
+          annotations:
+            summary: >-
+              Gateway replicas on cluster {{ `{{ $labels.cluster }}` }} use different guardrail
+              versions.
+            description: >-
+              More than one Bedrock guardrail version checked requests on one profile in the
+              last 10 minutes, for over 15 minutes. A rollout explains it for a short time. If it
+              persists, a replica did not pick up the version the guardrail binder wrote.
+{{- end }}

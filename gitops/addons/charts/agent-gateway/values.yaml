@@ -246,6 +246,31 @@ guardrails:
       name: otel-collector-guardrail
       namespace: otel
       port: 4318
+  # Observability (templates/guardrail-prometheusrule.yaml, guardrail-dashboard.yaml).
+  # Recording rules turn the access-log counters (accessLog above) and the proxy metrics
+  # into the oap_agent_guardrail_* family of the design.
+  observability:
+    # Constants of oap_agent_guardrail_info. catalogRevision is the same value as
+    # crossplane-agentcore guardrails.catalogRevision (a test pins both), so a catalog change
+    # shows as a new profile_version. The Bedrock guardrail version comes from traffic.
+    # failure_mode comes from guardrails.profiles, so a weakened profile is visible.
+    info:
+      catalogRevision: "1"
+      backend: bedrock-applyguardrail
+      # Phase 1 inspects the request only; streaming responses are not guarded.
+      streaming: "false"
+  # PrometheusRule. Rendered only where the prometheus-operator CRDs exist, exactly like
+  # agent-evaluation: the rest of the chart still syncs elsewhere.
+  alerts:
+    enabled: true
+    # Refusals per second, per agent, above which GuardrailFailClosedRefusals fires after 5 m.
+    # 0 means any refusal.
+    failClosedRatePerSecond: 0
+    # Age of the last guard decision, while requests are arriving, before GuardrailDataStale fires.
+    dataAgeSeconds: 1800
+    # Profiles set to FailOpen on purpose. A fail-open request on one of them is expected and
+    # does not fire GuardrailFailOpenFired. Any other profile that fails open does.
+    deliberateFailOpen: []
   # Text of the rejection returned to the caller. The status code is 403.
   rejectMessage: "The request was blocked by the platform guardrail."
   # The LLM gateway the /llm routes forward to: Bifrost, by its in-cluster Service. The

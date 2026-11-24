@@ -1,0 +1,116 @@
+# Recording rules for the oap_agent_guardrail_* family (docs/architecture/agent-guardrails.md,
+# D8). Single source: templates/guardrail-prometheusrule.yaml embeds this file, and the rule
+# tests run it with promtool.
+#
+# Inputs, all written to the same AMP workspace with a `cluster` label:
+#   oap_guardrail_accesslog_requests_total{agent,route,status,reason,guardrail}
+#       one count per /llm request, from the gateway access log through the OTel collector
+#       (otel-collector chart, guardrails.accessLog). `agent` is jwt.sub, `route` is
+#       llm-<profile>, `guardrail` is the guard's action (allow, audit, mask, reject, failOpen)
+#       or none, `reason` is the gateway's error class or none.
+#   oap_guardrail_accesslog_requests_total is the only source with the caller in it. The native
+#       agentgateway_guardrail_checks_total has only {phase, action}.
+#   oap_guardrail_accesslog_versions_total{route,guardrail_version}, no agent, so a guardrail
+#       version never multiplies the per-agent series.
+#   agentgateway_request_duration_seconds_* and agentgateway_guardrail_checks_total, scraped
+#       from the proxy (templates/proxy-metrics-service.yaml).
+#
+# Every output series carries hop="model", reserved so a later tool-hop denial can join the same
+# family with hop="tool". An idle agent is absent, not zero: the collector drops a stream that has
+# had no request for guardrails.accessLog.maxStale, and these rules add no `or vector(0)`.
+#
+# error_blocked: agentgateway v1.7.0 has no FailClosed metric action. A guard error is not
+# recorded by the guard at all; the request fails with 503 and reason Internal, and the access log
+# has no guard action for it. That combination is counted as error_blocked and never as blocked.
+# A 503 Internal for another cause on an /llm route is counted the same way; the gateway offers
+# no finer signal at v1.7.0, and the alert text says so.
+#
+# findings_total has no category or severity label yet: the gateway does not expose them as
+# metadata (the assessments are redacted detail, and are not exported). The label set stays
+# phase and action until it does.
+groups:
+  - name: oap-agent-guardrail
+    interval: 30s
+    rules:
+      # Outcome per access-log record, in the design's vocabulary. The branches are mutually
+      # exclusive on guardrail, so no request is counted twice.
+      - record: oap_guardrail_accesslog:outcome
+        expr: |
+          label_replace(oap_guardrail_accesslog_requests_total{guardrail="allow"}, "outcome", "allowed", "", "")
+          or label_replace(oap_guardrail_accesslog_requests_total{guardrail="reject"}, "outcome", "blocked", "", "")
+          or label_replace(oap_guardrail_accesslog_requests_total{guardrail="mask"}, "outcome", "redacted", "", "")
+          or label_replace(oap_guardrail_accesslog_requests_total{guardrail="audit"}, "outcome", "reported", "", "")
+          or label_replace(oap_guardrail_accesslog_requests_total{guardrail="failOpen"}, "outcome", "error_allowed", "", "")
+          or label_replace(oap_guardrail_accesslog_requests_total{guardrail="none", status="503", reason="Internal"}, "outcome", "error_blocked", "", "")
+      - record: oap_agent_guardrail_requests_total
+        expr: |
+          sum by (cluster, hop, namespace, agent, profile, direction, outcome) (
+            label_replace(label_replace(label_replace(label_replace(label_replace(
+              oap_guardrail_accesslog:outcome,
+              "namespace", "$1", "agent", "system:serviceaccount:([^:]+):.+"),
+              "agent", "$1", "agent", "system:serviceaccount:[^:]+:(.+)"),
+              "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+              "hop", "model", "", ""),
+              "direction", "request", "", "")
+          )
+      - record: oap_agent_guardrail_findings_total
+        expr: |
+          sum by (cluster, hop, phase, action) (
+            label_replace(agentgateway_guardrail_checks_total{action=~"Audit|Mask|Reject"}, "hop", "model", "", "")
+          )
+      # The gateway's request duration on the /llm routes. It includes the model call, so it is
+      # an upper bound on the guard's own cost, not the guard alone.
+      - record: oap_agent_guardrail_latency_seconds_bucket
+        expr: |
+          sum by (cluster, hop, profile, direction, le) (
+            label_replace(label_replace(label_replace(
+              agentgateway_request_duration_seconds_bucket{route=~"(.*/)?llm-.+"},
+              "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+              "hop", "model", "", ""),
+              "direction", "request", "", "")
+          )
+      - record: oap_agent_guardrail_latency_seconds_sum
+        expr: |
+          sum by (cluster, hop, profile, direction) (
+            label_replace(label_replace(label_replace(
+              agentgateway_request_duration_seconds_sum{route=~"(.*/)?llm-.+"},
+              "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+              "hop", "model", "", ""),
+              "direction", "request", "", "")
+          )
+      - record: oap_agent_guardrail_latency_seconds_count
+        expr: |
+          sum by (cluster, hop, profile, direction) (
+            label_replace(label_replace(label_replace(
+              agentgateway_request_duration_seconds_count{route=~"(.*/)?llm-.+"},
+              "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+              "hop", "model", "", ""),
+              "direction", "request", "", "")
+          )
+      # Guard failures, kept apart from violations. loop names the guard phase, like the
+      # evaluation family's loop label.
+      - record: oap_agent_guardrail_errors_total
+        expr: |
+          sum by (cluster, hop, loop) (
+            label_replace(oap_agent_guardrail_requests_total{outcome=~"error_blocked|error_allowed"}, "loop", "request_guard", "", "")
+          )
+      # Time of the last request a guard actually decided (not an error).
+      - record: oap_agent_guardrail_last_success_timestamp_seconds
+        expr: |
+          max by (cluster, hop) (
+            label_replace(timestamp(oap_guardrail_accesslog_requests_total{guardrail=~"allow|audit|mask|reject"}), "hop", "model", "", "")
+          )
+      # Distinct guardrail versions in use per profile in the last 10 minutes, minus one.
+      # 0 is agreement, above 0 is a rollout or a replica holding an old version.
+      - record: oap_agent_guardrail_config_skew
+        expr: |
+          max by (cluster, hop) (
+            count by (cluster, hop, profile) (
+              group by (cluster, hop, profile, guardrail_version) (
+                label_replace(label_replace(
+                  increase(oap_guardrail_accesslog_versions_total[10m]) > 0,
+                  "profile", "$1", "route", "(?:.*/)?llm-(.+)"),
+                  "hop", "model", "", "")
+              )
+            ) - 1
+          )
