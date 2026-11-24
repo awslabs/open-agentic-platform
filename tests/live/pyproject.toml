@@ -16,6 +16,7 @@ package = false
 markers = [
     "identity: gateway identity and access rules (agent, MCP)",
     "delegation: supervisor agents delegating to other agents",
+    "guardrails: agent guardrails at the gateway (needs a cluster with agent_guardrails on)",
 ]
 # Live calls go through a model, so a slow row should fail on its own timeout, not hang.
 addopts = "-ra --tb=short"
