@@ -45,7 +45,7 @@ spec:
       otlp:
         url: {{ printf "http://%s.%s.svc.%s:%v" $c.name $c.namespace $g.proxy.clusterDomain $c.port | quote }}
         protocol: HTTP
-        filter: 'has(proxy.route) && proxy.route.name.startsWith("llm-")'
+        filter: 'has(proxy.route) && (proxy.route.name.startsWith("llm-") || proxy.route.name.contains("/llm-"))'
         attributes:
           add:
             - name: agent

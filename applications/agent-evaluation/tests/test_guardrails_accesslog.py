@@ -65,7 +65,9 @@ def test_export_is_limited_to_the_llm_routes_and_leaves_other_access_logs_alone(
     # Filter and attributes sit under otlp only: a filter on accessLog itself would also
     # drop the MCP and A2A routes from the default log.
     assert set(access_log) == {"otlp"}
+    # Both the bare route name and a namespace/name form are accepted.
     assert 'startsWith("llm-")' in access_log["otlp"]["filter"]
+    assert 'contains("/llm-")' in access_log["otlp"]["filter"]
 
 
 def test_attributes_are_exactly_the_allowlist_and_none_carries_content():
