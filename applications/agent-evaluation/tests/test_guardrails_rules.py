@@ -143,3 +143,52 @@ def test_promtool_unit_tests_pass(tmp_path):
     out = subprocess.run(["promtool", "test", "rules", str(tmp_path / "t.yaml")],
                          capture_output=True, text=True, cwd=tmp_path)
     assert out.returncode == 0, out.stdout + out.stderr
+
+
+# ---- dashboard ----------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+GRAFANA = ["--api-versions", "grafana.integreatly.org/v1beta1/GrafanaDashboard"]
+DASHBOARD_SRC = CHARTS.parents[2] / "docs/architecture/diagrams/src/agent-guardrails-dashboard.json"
+DASHBOARD_COPY = CHARTS / "agent-gateway/files/guardrails-dashboard.json"
+
+
+def _dashboards(docs):
+    return of_kind(docs, "GrafanaDashboard")
+
+
+def test_dashboard_flag_off_renders_nothing_even_with_the_crd():
+    assert _dashboards(render(CHART, *BASE, *GRAFANA)) == []
+
+
+def test_dashboard_without_the_crd_renders_nothing_and_the_chart_still_renders():
+    docs = render(CHART, *ON)
+    assert _dashboards(docs) == [] and of_kind(docs, "HTTPRoute")
+
+
+def test_dashboard_can_be_turned_off_where_the_crd_exists():
+    assert _dashboards(render(CHART, *ON, *GRAFANA, "--set", "guardrails.grafana.enabled=false")) == []
+
+
+def test_dashboard_with_the_crd_renders_one_object_with_parseable_json():
+    (dash,) = _dashboards(render(CHART, *ON, *GRAFANA))
+    parsed = json.loads(dash["spec"]["json"])
+    assert parsed["uid"] == "agent-guardrails"
+    assert parsed == json.loads(DASHBOARD_SRC.read_text())
+    assert dash["spec"]["instanceSelector"]["matchLabels"] == {"dashboards": "external-grafana"}
+
+
+def test_the_chart_copy_equals_the_source_dashboard():
+    assert DASHBOARD_COPY.read_bytes() == DASHBOARD_SRC.read_bytes()
+
+
+def test_dashboard_panels_cover_the_design_views_and_use_only_the_family():
+    parsed = json.loads(DASHBOARD_SRC.read_text())
+    titles = [p["title"] for p in parsed["panels"]]
+    for needed in ("Outcomes by profile", "Blocked by agent", "error_blocked",
+                   "Request latency p50 and p99", "Configuration in use"):
+        assert needed in titles
+    exprs = " ".join(t["expr"] for p in parsed["panels"] for t in p.get("targets", []))
+    assert set(re.findall(r"\b(oap_[a-z_]+)", exprs)) <= set(FAMILY)
+    assert "guardrail=" not in exprs and "agentgateway_" not in exprs

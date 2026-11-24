@@ -271,6 +271,15 @@ guardrails:
     # Profiles set to FailOpen on purpose. A fail-open request on one of them is expected and
     # does not fire GuardrailFailOpenFired. Any other profile that fails open does.
     deliberateFailOpen: []
+  # Grafana dashboard (templates/guardrail-dashboard.yaml). Rendered only where the
+  # grafana-operator CRD exists, so a spoke without it still syncs. Same targets as the
+  # agent-evaluation dashboard.
+  grafana:
+    enabled: true
+    namespace: grafana-operator
+    instanceSelector:
+      dashboards: external-grafana
+    folder: "Agent Platform"
   # Text of the rejection returned to the caller. The status code is 403.
   rejectMessage: "The request was blocked by the platform guardrail."
   # The LLM gateway the /llm routes forward to: Bifrost, by its in-cluster Service. The

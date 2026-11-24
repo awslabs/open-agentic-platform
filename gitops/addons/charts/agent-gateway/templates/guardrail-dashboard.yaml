@@ -1,0 +1,35 @@
+{{- /*
+The Agent Guardrails dashboard, imported by grafana-operator into the same instance and folder
+as the platform's other dashboards. Same pattern as agent-evaluation's
+60-grafana-dashboard.yaml: the JSON is read from files/ because Helm does not template file
+contents, so Grafana's own placeholders survive. files/guardrails-dashboard.json is a copy of
+docs/architecture/diagrams/src/agent-guardrails-dashboard.json, which stays the source of truth
+for review; a test fails if the two differ.
+Gated on the CRD being present, exactly as guardrail-prometheusrule.yaml gates on
+monitoring.coreos.com/v1/PrometheusRule. Without the gate a cluster with no grafana-operator
+makes Argo CD reject the sync of this whole chart, routes included.
+guardrails.grafana.enabled stays an explicit opt-out for a cluster that has the CRD and does
+not want the dashboard.
+*/ -}}
+{{- if and (eq (toString .Values.guardrails.enabled) "true") .Values.guardrails.grafana.enabled (.Capabilities.APIVersions.Has "grafana.integreatly.org/v1beta1/GrafanaDashboard") }}
+{{- $dashboard := .Files.Get "files/guardrails-dashboard.json" }}
+{{- if not $dashboard }}
+{{- fail "agent-gateway: files/guardrails-dashboard.json is missing from the chart; the dashboard would be imported empty." }}
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: agent-guardrails
+  namespace: {{ .Values.guardrails.grafana.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: agent-gateway
+spec:
+  allowCrossNamespaceImport: true
+  folder: {{ .Values.guardrails.grafana.folder | quote }}
+  instanceSelector:
+    matchLabels:
+      {{- toYaml .Values.guardrails.grafana.instanceSelector | nindent 6 }}
+  resyncPeriod: 10m
+  json: |
+    {{- $dashboard | nindent 4 }}
+{{- end }}
