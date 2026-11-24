@@ -152,6 +152,31 @@ docker tag strands-agent:latest \
 docker push ${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/strands-agent:latest
 ```
 
+### Publishing a release image (agent guardrails e2e)
+
+The default agent image, `global.agentImage` in
+`gitops/addons/charts/oam-agent-components/values.yaml`, names tag `v1.8.0`. A tag is
+built from `version` in `pyproject.toml` (`IMAGE_TAG` defaults to `v<version>`) and is
+never overwritten, so the tag must be pushed once before any cluster uses it. Agents with
+`guardrails.enabled` need v1.8.0 or later; they send their ServiceAccount token on model
+calls and an older image does not.
+
+```bash
+# Build and push to the registry your cluster pulls from (ECR). AWS_ACCOUNT_ID and
+# AWS_REGION default to your current credentials and AWS_DEFAULT_REGION.
+./build.sh push                    # or ./build-podman.sh push
+
+# The scripts build one platform per run (PLATFORM, default linux/amd64). If the
+# cluster mixes amd64 and arm64 nodes, publish one multi-platform tag instead:
+docker buildx build --platform linux/amd64,linux/arm64 --push \
+  -t "<account>.dkr.ecr.<region>.amazonaws.com/strands-agent:v1.8.0" .
+```
+
+Then set `global.agentImage` for that cluster to the pushed reference
+(`<account>.dkr.ecr.<region>.amazonaws.com/strands-agent:v1.8.0`) in the cluster's
+oam-agent-components values, and keep it equal to `version` here (the "image version
+line" in `build.sh`). Build and push are not part of any automated check in this repo.
+
 ## Container Image
 
 **Base:** `python:3.11-slim-bookworm`  
