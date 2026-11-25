@@ -360,3 +360,12 @@ encryptionKey:
   # Name of the Secret the ExternalSecret creates, loaded by the web and worker
   # Deployments with envFrom.
   secretRef: langfuse-encryption
+
+# ExternalSecret refresh intervals (how often External Secrets polls AWS Secrets Manager).
+# Empty = chart built-in default. Precedence: per-object key > global key > built-in.
+externalSecrets:
+  refreshInterval: ""          # global: langfuse-encryption, langfuse-keycloak-secret
+  langfuseEncryption:
+    refreshInterval: ""        # built-in 1m
+  langfuseKeycloakSecret:
+    refreshInterval: ""        # built-in 5m

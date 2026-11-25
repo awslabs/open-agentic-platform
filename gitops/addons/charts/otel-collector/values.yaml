@@ -43,3 +43,14 @@ amp:
   # collector service account. Set false where another chart already associates
   # otel/otel-collector on this cluster. The literal-endpoint path always renders them.
   podIdentity: true
+
+# ExternalSecret refresh intervals (how often External Secrets polls AWS Secrets Manager).
+# Empty = chart built-in default. Precedence: per-object key > global key > built-in.
+externalSecrets:
+  refreshInterval: ""          # global: otel-collector-amp, langfuse-otel-auth
+  amp:
+    refreshInterval: ""        # built-in 5m
+  langfuseOtelAuth:
+    # Built-in 1m: langfuse-otel-auth self-heals within ~1m on a fresh env. A longer
+    # value can leave the collector at 401 for that long after a new install.
+    refreshInterval: ""

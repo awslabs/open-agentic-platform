@@ -703,7 +703,7 @@ spec:
   secretStoreRef:
     kind: ClusterSecretStore
     name: aws-secrets-manager
-  refreshInterval: "5m"
+  refreshInterval: {{ .Values.externalSecrets.langfuseKeycloakSecret.refreshInterval | default .Values.externalSecrets.refreshInterval | default "5m" | quote }}
   target:
     name: langfuse-keycloak-secret
     creationPolicy: Owner
